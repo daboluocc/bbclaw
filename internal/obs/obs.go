@@ -1,29 +1,47 @@
 package obs
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"sync"
+	"time"
 )
 
 type Logger struct {
-	base *log.Logger
+	base   *log.Logger
+	prefix string
 }
 
 func NewLogger() *Logger {
-	return &Logger{base: log.New(os.Stdout, "bbclaw-adapter ", log.LstdFlags|log.LUTC)}
+	return &Logger{
+		base:   log.New(os.Stdout, "", 0),
+		prefix: "bbclaw-adapter",
+	}
+}
+
+func (l *Logger) logf(level, format string, args ...any) {
+	if l == nil || l.base == nil {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	l.base.Printf("%s ts=%s level=%s %s",
+		l.prefix,
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		level,
+		msg)
 }
 
 func (l *Logger) Infof(format string, args ...any) {
-	l.base.Printf("INFO "+format, args...)
+	l.logf("INFO", format, args...)
 }
 
 func (l *Logger) Warnf(format string, args ...any) {
-	l.base.Printf("WARN "+format, args...)
+	l.logf("WARN", format, args...)
 }
 
 func (l *Logger) Errorf(format string, args ...any) {
-	l.base.Printf("ERROR "+format, args...)
+	l.logf("ERROR", format, args...)
 }
 
 type Metrics struct {

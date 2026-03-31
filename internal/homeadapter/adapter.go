@@ -150,13 +150,15 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	source, _ := env.Payload["source"].(string)
 	nodeID, _ := env.Payload["nodeId"].(string)
 	routeStart := time.Now()
-	a.log.Infof("voice.transcript request device=%s session=%s stream=%s text_chars=%d",
+	a.log.Infof("phase=transcript_request_recv device=%s session=%s stream=%s text_chars=%d",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 
 	a.metrics.Inc("voice_transcript_forwarded")
 	_ = a.writeStreamEvent(conn, env, "voice.reply.status", map[string]any{
 		"phase": "processing",
 	})
+	a.log.Infof("phase=openclaw_request_start device=%s session=%s stream=%s elapsed_s=0.000 text_chars=%d",
+		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 	deltaSeq := 0
 	delivery, err := a.sink.SendVoiceTranscriptStream(ctx, openclaw.VoiceTranscriptEvent{
 		Text:       text,
@@ -184,12 +186,12 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 		}
 	})
 	if err != nil {
-		a.log.Warnf("voice.transcript failed device=%s session=%s stream=%s elapsed_s=%.3f err=%v",
+		a.log.Warnf("phase=openclaw_request_failed device=%s session=%s stream=%s elapsed_s=%.3f err=%v",
 			env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), err)
 		return err
 	}
 	replyText := strings.TrimSpace(delivery.ReplyText)
-	a.log.Infof("voice.transcript reply device=%s session=%s stream=%s elapsed_s=%.3f reply_chars=%d reply_wait_timed_out=%t",
+	a.log.Infof("phase=transcript_request_done device=%s session=%s stream=%s elapsed_s=%.3f reply_chars=%d reply_wait_timed_out=%t",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText), delivery.ReplyWaitTimedOut)
 	if err := conn.WriteJSON(CloudEnvelope{
 		Type:       "reply",
@@ -205,6 +207,8 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	}); err != nil {
 		return fmt.Errorf("write reply: %w", err)
 	}
+	a.log.Infof("phase=voice_reply_sent device=%s session=%s stream=%s elapsed_s=%.3f reply_chars=%d",
+		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
 	a.metrics.Inc("voice_reply_sent")
 	return nil
 }
