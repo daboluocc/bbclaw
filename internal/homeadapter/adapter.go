@@ -157,6 +157,7 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	_ = a.writeStreamEvent(conn, env, "voice.reply.status", map[string]any{
 		"phase": "processing",
 	})
+	deltaSeq := 0
 	delivery, err := a.sink.SendVoiceTranscriptStream(ctx, openclaw.VoiceTranscriptEvent{
 		Text:       text,
 		SessionKey: strings.TrimSpace(sessionKey),
@@ -167,11 +168,19 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 		if evt.Type != "reply.delta" || strings.TrimSpace(evt.Text) == "" {
 			return
 		}
+		deltaSeq++
+		a.log.Infof("phase=reply_delta_recv device=%s session=%s stream=%s delta_seq=%d text_chars=%d elapsed_s=%.3f text=%.80s",
+			env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), deltaSeq,
+			utf8.RuneCountInString(evt.Text), time.Since(routeStart).Seconds(), evt.Text)
 		if writeErr := a.writeStreamEvent(conn, env, "voice.reply.delta", map[string]any{
 			"text": evt.Text,
 		}); writeErr != nil {
 			a.log.Warnf("voice.reply.delta failed device=%s session=%s stream=%s err=%v",
 				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), writeErr)
+		} else {
+			a.log.Infof("phase=reply_delta_sent device=%s session=%s stream=%s delta_seq=%d elapsed_s=%.3f",
+				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), deltaSeq,
+				time.Since(routeStart).Seconds())
 		}
 	})
 	if err != nil {
