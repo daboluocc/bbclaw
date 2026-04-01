@@ -6,6 +6,7 @@ typedef enum {
   BB_TRANSPORT_PAIRING_NOT_APPLICABLE = 0,
   BB_TRANSPORT_PAIRING_PENDING = 1,
   BB_TRANSPORT_PAIRING_APPROVED = 2,
+  BB_TRANSPORT_PAIRING_BINDING_REQUIRED = 3,
 } bb_transport_pairing_status_t;
 
 typedef struct {
@@ -16,6 +17,8 @@ typedef struct {
   int http_status;
   bb_transport_pairing_status_t pairing_status;
   char detail[64];
+  char cloud_registration_code[16];
+  char cloud_registration_expires_at[40];
   int cloud_volume_pct;      /* -1 = not present */
   int cloud_speed_ratio_x10; /* -1 = not present */
 } bb_transport_state_t;

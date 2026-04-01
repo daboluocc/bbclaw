@@ -12,7 +12,7 @@ static const char* TAG = "bb_cloud";
 
 typedef struct {
   int status_code;
-  char body[1024];
+  char body[2048];
 } bb_http_resp_t;
 
 typedef struct {
@@ -27,7 +27,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t* evt) {
   }
 
   if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data != NULL && evt->data_len > 0) {
-    size_t cap = sizeof(accum->resp->body) - 1U;
+    size_t cap = sizeof(accum->resp->body) - 1U; /* pairing JSON may include data.config */
     if (accum->offset < cap) {
       size_t remain = cap - accum->offset;
       size_t n = (size_t)evt->data_len;
@@ -221,6 +221,55 @@ static int json_extract_string(const char* body, const char* key, char* out, siz
   return 1;
 }
 
+/** Copy the JSON object value of the top-level `"data"` key into `slice` (brace-balanced). Returns 1 on success. */
+static int json_copy_data_object(const char* body, char* slice, size_t slice_len) {
+  if (body == NULL || slice == NULL || slice_len < 4U) {
+    return 0;
+  }
+  const char* key = strstr(body, "\"data\"");
+  if (key == NULL) {
+    return 0;
+  }
+  const char* p = strchr(key, '{');
+  if (p == NULL) {
+    return 0;
+  }
+  const char* start = p;
+  int depth = 0;
+  int in_str = 0;
+  for (; *p != '\0'; ++p) {
+    if (in_str) {
+      if (*p == '\\' && p[1] != '\0') {
+        ++p;
+        continue;
+      }
+      if (*p == '"') {
+        in_str = 0;
+      }
+      continue;
+    }
+    if (*p == '"') {
+      in_str = 1;
+      continue;
+    }
+    if (*p == '{') {
+      depth++;
+    } else if (*p == '}') {
+      depth--;
+      if (depth == 0) {
+        size_t n = (size_t)(p - start + 1);
+        if (n >= slice_len) {
+          return 0;
+        }
+        memcpy(slice, start, n);
+        slice[n] = '\0';
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 static void resolve_pairing_error_detail(int http_status, const char* body, char* out, size_t out_len) {
   if (out == NULL || out_len == 0U) {
     return;
@@ -252,6 +301,8 @@ const char* bb_cloud_pair_status_name(bb_cloud_pair_status_t status) {
       return "pending";
     case BB_CLOUD_PAIR_STATUS_APPROVED:
       return "approved";
+    case BB_CLOUD_PAIR_STATUS_BINDING_REQUIRED:
+      return "binding_required";
     default:
       return "unknown";
   }
@@ -285,7 +336,7 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   memset(out_pairing, 0, sizeof(*out_pairing));
 
   char body[256] = {0};
-  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"homeSiteId\":\"%s\"}", BBCLAW_DEVICE_ID, BBCLAW_HOME_SITE_ID);
+  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\"}", BBCLAW_DEVICE_ID);
 
   bb_http_resp_t resp = {0};
   ESP_RETURN_ON_ERROR(http_perform_json("POST", "/v1/pairings/request", body, &resp), TAG, "pair request failed");
@@ -300,19 +351,30 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
     return ESP_FAIL;
   }
 
-  (void)json_extract_string(resp.body, "homeSiteId", out_pairing->home_site_id, sizeof(out_pairing->home_site_id));
-  if (!json_extract_string(resp.body, "status", out_pairing->detail, sizeof(out_pairing->detail))) {
+  char data_scope[2048] = {0};
+  const char* parse = resp.body;
+  if (json_copy_data_object(resp.body, data_scope, sizeof(data_scope))) {
+    parse = data_scope;
+  }
+  (void)json_extract_string(parse, "homeSiteId", out_pairing->home_site_id, sizeof(out_pairing->home_site_id));
+  if (!json_extract_string(parse, "status", out_pairing->detail, sizeof(out_pairing->detail))) {
     snprintf(out_pairing->detail, sizeof(out_pairing->detail), "unknown");
   }
+  (void)json_extract_string(parse, "code", out_pairing->registration_code, sizeof(out_pairing->registration_code));
+  (void)json_extract_string(parse, "expiresAt", out_pairing->registration_expires_at,
+                            sizeof(out_pairing->registration_expires_at));
 
   if (strcmp(out_pairing->detail, "approved") == 0) {
     out_pairing->status = BB_CLOUD_PAIR_STATUS_APPROVED;
+  } else if (strcmp(out_pairing->detail, "binding_required") == 0) {
+    out_pairing->status = BB_CLOUD_PAIR_STATUS_BINDING_REQUIRED;
   } else {
     out_pairing->status = BB_CLOUD_PAIR_STATUS_PENDING;
   }
-  ESP_LOGI(TAG, "pair request device=%s home_site=%s status=%s", BBCLAW_DEVICE_ID,
-           out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : BBCLAW_HOME_SITE_ID,
-           bb_cloud_pair_status_name(out_pairing->status));
+  ESP_LOGI(TAG, "pair request device=%s home_site=%s status=%s code=%s", BBCLAW_DEVICE_ID,
+           out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : "(n/a)",
+           bb_cloud_pair_status_name(out_pairing->status),
+           out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-");
   out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
   out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
   /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */

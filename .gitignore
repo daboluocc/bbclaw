@@ -23,6 +23,20 @@ firmware/sdkconfig.bak
 # Environment & secrets
 .env
 .env.*
+!.env.example
+!.env.home.example
+
+# references/cloud — local runtime / build artifacts (keep only source in git)
+references/cloud/data/
+references/cloud/tmp/
+references/cloud/bbclaw-cloud
+references/cloud/cmd/bbclaw-cloud/bbclaw-cloud
+references/cloud/.env
+
+# Large / vendored trees under references/ (not part of core BBClaw PRs)
+references/openclaw/
+references/promo/
+references/web/
 
 # LVGL font generated locally (run: `make -C firmware gen-lv-font`)
 firmware/generated/
@@ -49,3 +63,4 @@ Thumbs.db
 *~
 
 .workbuddy/
+.agents/

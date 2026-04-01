@@ -118,6 +118,7 @@ gen-lvgl-elements:
 		--allow-any-size \
 		--out-c "$(CURDIR)/generated/bb_lvgl_element_assets.c" \
 		--out-h "$(CURDIR)/generated/bb_lvgl_element_assets.h"
+	@echo "[gen-lvgl-elements] If CMake was configured before generated/*.c existed, run: make reconfigure && make build"
 
 sim-config:
 	@cmake -S "$(SIM_DIR)" -B "$(SIM_BUILD_DIR)"

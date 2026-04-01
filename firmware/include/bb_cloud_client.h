@@ -6,13 +6,16 @@ typedef enum {
   BB_CLOUD_PAIR_STATUS_UNKNOWN = 0,
   BB_CLOUD_PAIR_STATUS_PENDING = 1,
   BB_CLOUD_PAIR_STATUS_APPROVED = 2,
+  BB_CLOUD_PAIR_STATUS_BINDING_REQUIRED = 3,
 } bb_cloud_pair_status_t;
 
 typedef struct {
   bb_cloud_pair_status_t status;
   int http_status;
   char home_site_id[64];
-  char detail[32];
+  char detail[40];
+  char registration_code[16];
+  char registration_expires_at[40];
   int volume_pct;      /* 0-100, from cloud config; -1 = not present */
   int speed_ratio_x10; /* e.g. 12 = 1.2x; -1 = not present */
 } bb_cloud_pairing_t;

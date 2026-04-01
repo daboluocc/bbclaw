@@ -171,6 +171,9 @@ static volatile int s_transport_tts_ready;
 static volatile int s_transport_display_ready;
 static int s_transport_http_status;
 static char s_transport_detail[64];
+static char s_transport_registration_code[16];
+static char s_transport_registration_expires_at[40];
+static bb_transport_pairing_status_t s_transport_pairing_status;
 static uint8_t s_stream_task_pcm_read_buf[1024];
 static uint8_t s_stream_pcm_chunk_buf[(BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_STREAM_CHUNK_MS / 1000) * sizeof(int16_t) *
                                       BBCLAW_AUDIO_CHANNELS];
@@ -537,6 +540,10 @@ static void remember_transport_state(const bb_transport_state_t* state) {
   s_transport_tts_ready = state->supports_tts;
   s_transport_display_ready = state->supports_display;
   snprintf(s_transport_detail, sizeof(s_transport_detail), "%s", state->detail);
+  snprintf(s_transport_registration_code, sizeof(s_transport_registration_code), "%s", state->cloud_registration_code);
+  snprintf(s_transport_registration_expires_at, sizeof(s_transport_registration_expires_at), "%s",
+           state->cloud_registration_expires_at);
+  s_transport_pairing_status = state->pairing_status;
 }
 
 static void show_cloud_transport_message(const bb_transport_state_t* state) {
@@ -550,11 +557,24 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
     return;
   }
 
-  if (state->pairing_status == BB_TRANSPORT_PAIRING_PENDING) {
-    char pair_line[BBCLAW_DISPLAY_CHAT_LINE_LEN];
-    snprintf(pair_line, sizeof(pair_line), "Approve %s -> %s", BBCLAW_DEVICE_ID, BBCLAW_HOME_SITE_ID);
+  if (state->pairing_status == BB_TRANSPORT_PAIRING_PENDING ||
+      state->pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
+    char line1[BBCLAW_DISPLAY_CHAT_LINE_LEN];
+    char line2[BBCLAW_DISPLAY_CHAT_LINE_LEN];
     show_status_processing("PAIR");
-    (void)bb_display_show_chat_turn("Cloud pairing pending", pair_line);
+    if (state->cloud_registration_code[0] != '\0') {
+      snprintf(line1, sizeof(line1), "Enter 6-digit code in portal");
+      snprintf(line2, sizeof(line2), "%s", state->cloud_registration_code);
+      (void)bb_display_show_chat_turn(line1, line2);
+    } else if (state->pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
+      snprintf(line1, sizeof(line1), "Create binding in portal");
+      snprintf(line2, sizeof(line2), "%s", BBCLAW_DEVICE_ID);
+      (void)bb_display_show_chat_turn(line1, line2);
+    } else {
+      snprintf(line1, sizeof(line1), "Cloud pairing pending");
+      snprintf(line2, sizeof(line2), "%s", BBCLAW_DEVICE_ID);
+      (void)bb_display_show_chat_turn(line1, line2);
+    }
     return;
   }
 
@@ -823,9 +843,13 @@ static void stream_task(void* arg) {
               .supports_tts = s_transport_tts_ready,
               .supports_display = s_transport_display_ready,
               .http_status = s_transport_http_status,
-              .pairing_status = BB_TRANSPORT_PAIRING_PENDING,
+              .pairing_status = s_transport_pairing_status,
           };
           snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
+          snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
+                   s_transport_registration_code);
+          snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
+                   s_transport_registration_expires_at);
           show_cloud_transport_message(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
@@ -838,9 +862,13 @@ static void stream_task(void* arg) {
               .supports_tts = s_transport_tts_ready,
               .supports_display = s_transport_display_ready,
               .http_status = s_transport_http_status,
-              .pairing_status = BB_TRANSPORT_PAIRING_APPROVED,
+              .pairing_status = s_transport_pairing_status,
           };
           snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
+          snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
+                   s_transport_registration_code);
+          snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
+                   s_transport_registration_expires_at);
           show_cloud_transport_message(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
@@ -1275,6 +1303,8 @@ static void stream_task(void* arg) {
         int prev_http_status = s_transport_http_status;
         char prev_detail[sizeof(s_transport_detail)];
         snprintf(prev_detail, sizeof(prev_detail), "%s", s_transport_detail);
+        char prev_reg[sizeof(s_transport_registration_code)];
+        snprintf(prev_reg, sizeof(prev_reg), "%s", s_transport_registration_code);
         last_adapter_heartbeat_ms = now_ms;
         bb_transport_state_t state = {0};
         esp_err_t health_err = bb_transport_refresh_state(&state);
@@ -1304,7 +1334,8 @@ static void stream_task(void* arg) {
           } else if (bb_transport_is_cloud_saas() &&
                      (prev_ready != state.ready || prev_audio_ready != state.supports_audio_streaming ||
                       prev_tts_ready != state.supports_tts || prev_display_ready != state.supports_display ||
-                      prev_http_status != state.http_status || strcmp(prev_detail, state.detail) != 0)) {
+                      prev_http_status != state.http_status || strcmp(prev_detail, state.detail) != 0 ||
+                      strcmp(prev_reg, state.cloud_registration_code) != 0)) {
             ESP_LOGI(TAG, "cloud transport state updated status=%d ready=%d audio=%d tts=%d display=%d detail=%s",
                      health_status, state.ready, state.supports_audio_streaming, state.supports_tts,
                      state.supports_display, state.detail);
@@ -1346,8 +1377,8 @@ esp_err_t bb_radio_app_start(void) {
   esp_err_t audio_err = ESP_OK;
 
   ESP_LOGI(TAG, "boot node_id=%s", BBCLAW_NODE_ID);
-  ESP_LOGI(TAG, "transport=%s adapter=%s cloud=%s home_site=%s codec=%s", bb_transport_profile_name(),
-           BBCLAW_ADAPTER_BASE_URL, BBCLAW_CLOUD_BASE_URL, BBCLAW_HOME_SITE_ID, BBCLAW_STREAM_CODEC);
+  ESP_LOGI(TAG, "transport=%s adapter=%s cloud=%s codec=%s", bb_transport_profile_name(), BBCLAW_ADAPTER_BASE_URL,
+           BBCLAW_CLOUD_BASE_URL, BBCLAW_STREAM_CODEC);
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
@@ -1421,9 +1452,13 @@ esp_err_t bb_radio_app_start(void) {
           .supports_tts = s_transport_tts_ready,
           .supports_display = s_transport_display_ready,
           .http_status = s_transport_http_status != 0 ? s_transport_http_status : health_status,
-          .pairing_status = s_transport_ready ? BB_TRANSPORT_PAIRING_APPROVED : BB_TRANSPORT_PAIRING_PENDING,
+          .pairing_status = s_transport_pairing_status,
       };
       snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
+      snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
+               s_transport_registration_code);
+      snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
+               s_transport_registration_expires_at);
       if (s_transport_ready && s_transport_audio_streaming_ready) {
         ESP_LOGI(TAG, "cloud transport ready status=%d", health_status);
       } else {
@@ -1447,9 +1482,13 @@ esp_err_t bb_radio_app_start(void) {
           .supports_tts = s_transport_tts_ready,
           .supports_display = s_transport_display_ready,
           .http_status = s_transport_http_status != 0 ? s_transport_http_status : health_status,
-          .pairing_status = BB_TRANSPORT_PAIRING_PENDING,
+          .pairing_status = s_transport_pairing_status,
       };
       snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
+      snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
+               s_transport_registration_code);
+      snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
+               s_transport_registration_expires_at);
       show_cloud_transport_message(&state);
     } else {
       show_status_error("LINK ERR");

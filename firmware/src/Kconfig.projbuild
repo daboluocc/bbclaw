@@ -39,11 +39,6 @@ config BBCLAW_CLOUD_AUTH_TOKEN
     depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
     default ""
 
-config BBCLAW_HOME_SITE_ID
-    string "Home Site ID"
-    depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
-    default "home-main"
-
 config BBCLAW_ENABLE_TTS_PLAYBACK
     bool "Enable TTS Playback"
     default y if BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS

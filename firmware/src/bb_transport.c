@@ -38,6 +38,8 @@ int bb_transport_supports_display(void) {
 static void fill_local_state(bb_transport_state_t* state, int http_status, esp_err_t err) {
   state->http_status = http_status;
   state->pairing_status = BB_TRANSPORT_PAIRING_NOT_APPLICABLE;
+  state->cloud_registration_code[0] = '\0';
+  state->cloud_registration_expires_at[0] = '\0';
   state->supports_audio_streaming = 1;
   state->supports_tts = 1;
   state->supports_display = 1;
@@ -54,6 +56,8 @@ static void fill_cloud_state(bb_transport_state_t* state, const bb_cloud_health_
   if (err != ESP_OK) {
     state->ready = 0;
     state->pairing_status = BB_TRANSPORT_PAIRING_PENDING;
+    state->cloud_registration_code[0] = '\0';
+    state->cloud_registration_expires_at[0] = '\0';
     if (pairing != NULL && pairing->detail[0] != '\0') {
       snprintf(state->detail, sizeof(state->detail), "%s", pairing->detail);
     } else if (state->http_status == 401 || state->http_status == 403) {
@@ -74,11 +78,17 @@ static void fill_cloud_state(bb_transport_state_t* state, const bb_cloud_health_
   if (pairing->status == BB_CLOUD_PAIR_STATUS_APPROVED) {
     state->ready = 1;
     state->pairing_status = BB_TRANSPORT_PAIRING_APPROVED;
+  } else if (pairing->status == BB_CLOUD_PAIR_STATUS_BINDING_REQUIRED) {
+    state->ready = 0;
+    state->pairing_status = BB_TRANSPORT_PAIRING_BINDING_REQUIRED;
   } else {
     state->ready = 0;
     state->pairing_status = BB_TRANSPORT_PAIRING_PENDING;
   }
   snprintf(state->detail, sizeof(state->detail), "%s", pairing->detail);
+  snprintf(state->cloud_registration_code, sizeof(state->cloud_registration_code), "%s", pairing->registration_code);
+  snprintf(state->cloud_registration_expires_at, sizeof(state->cloud_registration_expires_at), "%s",
+           pairing->registration_expires_at);
   state->cloud_volume_pct = pairing->volume_pct;
   state->cloud_speed_ratio_x10 = pairing->speed_ratio_x10;
 }
