@@ -12,7 +12,7 @@ static const char* TAG = "bb_cloud";
 
 typedef struct {
   int status_code;
-  char body[2048];
+  char body[8192];
 } bb_http_resp_t;
 
 typedef struct {
@@ -27,7 +27,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t* evt) {
   }
 
   if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data != NULL && evt->data_len > 0) {
-    size_t cap = sizeof(accum->resp->body) - 1U; /* pairing JSON may include data.config */
+    size_t cap = sizeof(accum->resp->body) - 1U; /* pairing JSON: data + config; keep headroom */
     if (accum->offset < cap) {
       size_t remain = cap - accum->offset;
       size_t n = (size_t)evt->data_len;
@@ -270,6 +270,39 @@ static int json_copy_data_object(const char* body, char* slice, size_t slice_len
   return 0;
 }
 
+/** Extract pairing "code" as a JSON string or a bare integer (digits only). */
+static int json_extract_pairing_code(const char* body, char* out, size_t out_len) {
+  if (body == NULL || out == NULL || out_len == 0U) {
+    return 0;
+  }
+  if (json_extract_string(body, "code", out, out_len)) {
+    return 1;
+  }
+  const char* key = strstr(body, "\"code\"");
+  if (key == NULL) {
+    out[0] = '\0';
+    return 0;
+  }
+  const char* colon = strchr(key, ':');
+  if (colon == NULL) {
+    out[0] = '\0';
+    return 0;
+  }
+  const char* p = colon + 1;
+  while (*p == ' ' || *p == '\t') {
+    p++;
+  }
+  if (*p == '"') {
+    return json_extract_string(body, "code", out, out_len);
+  }
+  size_t j = 0;
+  while (*p >= '0' && *p <= '9' && j + 1 < out_len) {
+    out[j++] = *p++;
+  }
+  out[j] = '\0';
+  return j > 0;
+}
+
 static void resolve_pairing_error_detail(int http_status, const char* body, char* out, size_t out_len) {
   if (out == NULL || out_len == 0U) {
     return;
@@ -351,7 +384,7 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
     return ESP_FAIL;
   }
 
-  char data_scope[2048] = {0};
+  char data_scope[8192] = {0};
   const char* parse = resp.body;
   if (json_copy_data_object(resp.body, data_scope, sizeof(data_scope))) {
     parse = data_scope;
@@ -360,7 +393,7 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   if (!json_extract_string(parse, "status", out_pairing->detail, sizeof(out_pairing->detail))) {
     snprintf(out_pairing->detail, sizeof(out_pairing->detail), "unknown");
   }
-  (void)json_extract_string(parse, "code", out_pairing->registration_code, sizeof(out_pairing->registration_code));
+  (void)json_extract_pairing_code(parse, out_pairing->registration_code, sizeof(out_pairing->registration_code));
   (void)json_extract_string(parse, "expiresAt", out_pairing->registration_expires_at,
                             sizeof(out_pairing->registration_expires_at));
 
@@ -371,10 +404,12 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   } else {
     out_pairing->status = BB_CLOUD_PAIR_STATUS_PENDING;
   }
-  ESP_LOGI(TAG, "pair request device=%s home_site=%s status=%s code=%s", BBCLAW_DEVICE_ID,
+  ESP_LOGI(TAG,
+           "pair request device=%s api_status=%s pair_state=%s home_site=%s code=%s expires=%s",
+           BBCLAW_DEVICE_ID, out_pairing->detail, bb_cloud_pair_status_name(out_pairing->status),
            out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : "(n/a)",
-           bb_cloud_pair_status_name(out_pairing->status),
-           out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-");
+           out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-",
+           out_pairing->registration_expires_at[0] != '\0' ? out_pairing->registration_expires_at : "-");
   out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
   out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
   /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */
