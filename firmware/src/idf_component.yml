@@ -1,0 +1,9 @@
+## BBClaw: LVGL + esp_lvgl_port（ST7789 RGB565）
+dependencies:
+  78/esp-opus: "^1.0.5"
+  78/esp-opus-encoder: "^2.1.0"
+  espressif/esp_lvgl_port: "^2.7.0"
+  espressif/esp_websocket_client: "^1.6.1"
+  lvgl/lvgl:
+    version: "^9.2.0"
+    public: true

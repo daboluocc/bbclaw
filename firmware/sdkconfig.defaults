@@ -1,0 +1,28 @@
+CONFIG_IDF_TARGET="esp32s3"
+# 与常见 8MB SPI Flash 一致；若写 4MB 而芯片为 8MB 会告警且 esptool 只认 header 容量
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# LVGL 偶发整屏 SW 合成较慢时给 IDLE 留出余量（默认 5s 可能偏紧）
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# LVGL 字库 + 应用体积：single_app_large 仅 1500K，不够 → 自定义 factory（见 partitions_bbclaw.csv）
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_bbclaw.csv"
+
+# lv_font_conv 默认输出压缩位图；未开启则 get_bitmap 恒为 NULL → 中英文皆方框
+CONFIG_LV_USE_FONT_COMPRESSED=y
+# 全量 CJK 字库 bitmap 常 >1MB；关闭时 glyph bitmap_index 仅 20 位会溢出错位
+CONFIG_LV_FONT_FMT_TXT_LARGE=y
+
+# 待机大屏时钟（仅数字与 ASCII，可与 CJK 并存）
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# SNTP（bb_sntp_start → pool.ntp.org）
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
+# PSRAM (ESP-PSRAM64H, 8MB Quad SPI)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y

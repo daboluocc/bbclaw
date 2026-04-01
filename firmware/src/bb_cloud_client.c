@@ -1,0 +1,359 @@
+#include "bb_cloud_client.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "bb_config.h"
+#include "esp_check.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+
+static const char* TAG = "bb_cloud";
+
+typedef struct {
+  int status_code;
+  char body[1024];
+} bb_http_resp_t;
+
+typedef struct {
+  bb_http_resp_t* resp;
+  size_t offset;
+} bb_http_accum_t;
+
+static esp_err_t http_event_handler(esp_http_client_event_t* evt) {
+  bb_http_accum_t* accum = (bb_http_accum_t*)evt->user_data;
+  if (accum == NULL || accum->resp == NULL) {
+    return ESP_OK;
+  }
+
+  if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data != NULL && evt->data_len > 0) {
+    size_t cap = sizeof(accum->resp->body) - 1U;
+    if (accum->offset < cap) {
+      size_t remain = cap - accum->offset;
+      size_t n = (size_t)evt->data_len;
+      if (n > remain) {
+        n = remain;
+      }
+      memcpy(accum->resp->body + accum->offset, evt->data, n);
+      accum->offset += n;
+      accum->resp->body[accum->offset] = '\0';
+    }
+  }
+  return ESP_OK;
+}
+
+static esp_err_t http_perform_json(const char* method, const char* path, const char* payload, bb_http_resp_t* out_resp) {
+  if (method == NULL || path == NULL || out_resp == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  char url[256] = {0};
+  snprintf(url, sizeof(url), "%s%s", BBCLAW_CLOUD_BASE_URL, path);
+  memset(out_resp, 0, sizeof(*out_resp));
+  bb_http_accum_t accum = {.resp = out_resp, .offset = 0};
+
+  esp_http_client_method_t http_method = HTTP_METHOD_GET;
+  if (strcmp(method, "POST") == 0) {
+    http_method = HTTP_METHOD_POST;
+  }
+
+  esp_http_client_config_t cfg = {
+      .url = url,
+      .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
+      .method = http_method,
+      .transport_type = HTTP_TRANSPORT_OVER_TCP,
+      .event_handler = http_event_handler,
+      .user_data = &accum,
+  };
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  if (strlen(BBCLAW_CLOUD_AUTH_TOKEN) > 0U) {
+    char auth[192] = {0};
+    snprintf(auth, sizeof(auth), "Bearer %s", BBCLAW_CLOUD_AUTH_TOKEN);
+    esp_http_client_set_header(client, "Authorization", auth);
+  }
+  if (payload != NULL) {
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, payload, (int)strlen(payload));
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  if (err != ESP_OK) {
+    esp_http_client_cleanup(client);
+    return err;
+  }
+
+  out_resp->status_code = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+  return ESP_OK;
+}
+
+static int body_contains_ok_true(const char* body) {
+  if (body == NULL) {
+    return 0;
+  }
+  if (strstr(body, "\"ok\":true") != NULL) {
+    return 1;
+  }
+  /* Cloud 可能返回 "ok": true（冒号后带空格） */
+  return strstr(body, "\"ok\": true") != NULL;
+}
+
+static int json_object_extract_bool(const char* body, const char* object_key, const char* value_key, int fallback) {
+  if (body == NULL || object_key == NULL || value_key == NULL) {
+    return fallback;
+  }
+
+  /* 兼容 "key":{ 和 "key": { */
+  char p1[64] = {0};
+  char p2[64] = {0};
+  snprintf(p1, sizeof(p1), "\"%s\":{", object_key);
+  snprintf(p2, sizeof(p2), "\"%s\": {", object_key);
+  const char* scope = strstr(body, p1);
+  if (scope == NULL) {
+    scope = strstr(body, p2);
+  }
+  if (scope == NULL) {
+    return fallback;
+  }
+  const char* scope_end = strchr(scope, '}');
+  if (scope_end == NULL) {
+    return fallback;
+  }
+
+  char t1[64], t2[64], f1[64], f2[64];
+  snprintf(t1, sizeof(t1), "\"%s\":true", value_key);
+  snprintf(t2, sizeof(t2), "\"%s\": true", value_key);
+  snprintf(f1, sizeof(f1), "\"%s\":false", value_key);
+  snprintf(f2, sizeof(f2), "\"%s\": false", value_key);
+  const char* hit;
+  hit = strstr(scope, t1);
+  if (hit == NULL) { hit = strstr(scope, t2); }
+  if (hit != NULL && hit < scope_end) {
+    return 1;
+  }
+  hit = strstr(scope, f1);
+  if (hit == NULL) { hit = strstr(scope, f2); }
+  if (hit != NULL && hit < scope_end) {
+    return 0;
+  }
+  return fallback;
+}
+
+
+static int json_object_extract_int(const char* body, const char* object_key, const char* value_key, int fallback) {
+  if (body == NULL || object_key == NULL || value_key == NULL) {
+    return fallback;
+  }
+  char p1[64], p2[64];
+  snprintf(p1, sizeof(p1), "\"%s\":{", object_key);
+  snprintf(p2, sizeof(p2), "\"%s\": {", object_key);
+  const char* scope = strstr(body, p1);
+  if (scope == NULL) { scope = strstr(body, p2); }
+  if (scope == NULL) { return fallback; }
+  const char* scope_end = strchr(scope, '}');
+  if (scope_end == NULL) { return fallback; }
+  char k1[64], k2[64];
+  snprintf(k1, sizeof(k1), "\"%s\":", value_key);
+  snprintf(k2, sizeof(k2), "\"%s\": ", value_key);
+  const char* hit = strstr(scope, k1);
+  if (hit == NULL) { hit = strstr(scope, k2); }
+  if (hit == NULL || hit >= scope_end) { return fallback; }
+  const char* vp = hit + strlen(hit == strstr(scope, k1) ? k1 : k2);
+  while (*vp == ' ') { vp++; }
+  return atoi(vp);
+}
+static void copy_lower_ascii(char* out, size_t out_len, const char* in) {
+  if (out == NULL || out_len == 0U) {
+    return;
+  }
+  size_t i = 0;
+  if (in != NULL) {
+    for (; in[i] != '\0' && i + 1 < out_len; ++i) {
+      char c = in[i];
+      if (c >= 'A' && c <= 'Z') {
+        c = (char)(c - 'A' + 'a');
+      }
+      out[i] = c;
+    }
+  }
+  out[i] = '\0';
+}
+
+static int json_extract_string(const char* body, const char* key, char* out, size_t out_len) {
+  if (body == NULL || key == NULL || out == NULL || out_len == 0U) {
+    return 0;
+  }
+
+  char p1[64] = {0};
+  char p2[64] = {0};
+  snprintf(p1, sizeof(p1), "\"%s\":\"", key);
+  snprintf(p2, sizeof(p2), "\"%s\": \"", key);
+  const char* start = strstr(body, p1);
+  if (start != NULL) {
+    start += strlen(p1);
+  } else {
+    start = strstr(body, p2);
+    if (start != NULL) {
+      start += strlen(p2);
+    }
+  }
+  if (start == NULL) {
+    out[0] = '\0';
+    return 0;
+  }
+
+  size_t j = 0;
+  for (const char* p = start; *p != '\0' && j + 1 < out_len; ++p) {
+    if (*p == '"') {
+      break;
+    }
+    if (*p == '\\' && p[1] != '\0') {
+      ++p;
+    }
+    out[j++] = *p;
+  }
+  out[j] = '\0';
+  return 1;
+}
+
+static void resolve_pairing_error_detail(int http_status, const char* body, char* out, size_t out_len) {
+  if (out == NULL || out_len == 0U) {
+    return;
+  }
+  out[0] = '\0';
+
+  if (http_status == 401 || http_status == 403) {
+    snprintf(out, out_len, "%s", "unauthorized");
+    return;
+  }
+
+  char raw_error[32] = {0};
+  if (json_extract_string(body, "error", raw_error, sizeof(raw_error)) && raw_error[0] != '\0') {
+    copy_lower_ascii(out, out_len, raw_error);
+    return;
+  }
+
+  if (http_status >= 500) {
+    snprintf(out, out_len, "%s", "cloud_unavailable");
+    return;
+  }
+
+  snprintf(out, out_len, "%s", "request_failed");
+}
+
+const char* bb_cloud_pair_status_name(bb_cloud_pair_status_t status) {
+  switch (status) {
+    case BB_CLOUD_PAIR_STATUS_PENDING:
+      return "pending";
+    case BB_CLOUD_PAIR_STATUS_APPROVED:
+      return "approved";
+    default:
+      return "unknown";
+  }
+}
+
+esp_err_t bb_cloud_healthz(bb_cloud_health_t* out_health) {
+  if (out_health == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  memset(out_health, 0, sizeof(*out_health));
+
+  bb_http_resp_t resp = {0};
+  ESP_RETURN_ON_ERROR(http_perform_json("GET", "/healthz", NULL, &resp), TAG, "cloud healthz failed");
+  out_health->http_status = resp.status_code;
+  if (resp.status_code < 200 || resp.status_code >= 300 || !body_contains_ok_true(resp.body)) {
+    ESP_LOGE(TAG, "cloud healthz bad status=%d body=%s", resp.status_code, resp.body);
+    return ESP_FAIL;
+  }
+  out_health->supports_audio_streaming = json_object_extract_bool(resp.body, "asr", "deviceWsAudio",
+                                                                  json_object_extract_bool(resp.body, "asr", "ready", 1));
+  out_health->supports_tts =
+      json_object_extract_bool(resp.body, "tts", "deviceWsAudio", json_object_extract_bool(resp.body, "tts", "ready", 0));
+  out_health->supports_display = json_object_extract_bool(resp.body, "display", "enabled", 0);
+  return ESP_OK;
+}
+
+esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
+  if (out_pairing == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  memset(out_pairing, 0, sizeof(*out_pairing));
+
+  char body[256] = {0};
+  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"homeSiteId\":\"%s\"}", BBCLAW_DEVICE_ID, BBCLAW_HOME_SITE_ID);
+
+  bb_http_resp_t resp = {0};
+  ESP_RETURN_ON_ERROR(http_perform_json("POST", "/v1/pairings/request", body, &resp), TAG, "pair request failed");
+  out_pairing->http_status = resp.status_code;
+
+  if (resp.status_code < 200 || resp.status_code >= 300 || !body_contains_ok_true(resp.body)) {
+    resolve_pairing_error_detail(resp.status_code, resp.body, out_pairing->detail, sizeof(out_pairing->detail));
+    ESP_LOGE(TAG, "pair request bad status=%d body=%s", resp.status_code, resp.body);
+    if (resp.status_code == 401 || resp.status_code == 403) {
+      return ESP_ERR_INVALID_STATE;
+    }
+    return ESP_FAIL;
+  }
+
+  (void)json_extract_string(resp.body, "homeSiteId", out_pairing->home_site_id, sizeof(out_pairing->home_site_id));
+  if (!json_extract_string(resp.body, "status", out_pairing->detail, sizeof(out_pairing->detail))) {
+    snprintf(out_pairing->detail, sizeof(out_pairing->detail), "unknown");
+  }
+
+  if (strcmp(out_pairing->detail, "approved") == 0) {
+    out_pairing->status = BB_CLOUD_PAIR_STATUS_APPROVED;
+  } else {
+    out_pairing->status = BB_CLOUD_PAIR_STATUS_PENDING;
+  }
+  ESP_LOGI(TAG, "pair request device=%s home_site=%s status=%s", BBCLAW_DEVICE_ID,
+           out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : BBCLAW_HOME_SITE_ID,
+           bb_cloud_pair_status_name(out_pairing->status));
+  out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
+  out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
+  /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */
+  {
+    char sr_buf[16] = {0};
+    /* Extract raw speedRatio string to get decimal */
+    char p1[64], p2[64];
+    snprintf(p1, sizeof(p1), "\"speedRatio\":");
+    snprintf(p2, sizeof(p2), "\"speedRatio\": ");
+    const char* cfg_scope = strstr(resp.body, "\"config\"");
+    if (cfg_scope != NULL) {
+      const char* sr = strstr(cfg_scope, p1);
+      if (sr == NULL) { sr = strstr(cfg_scope, p2); }
+      if (sr != NULL) {
+        sr += strlen(sr == strstr(cfg_scope, p1) ? p1 : p2);
+        while (*sr == ' ') { sr++; }
+        int di = 0;
+        while (di < 15 && ((*sr >= '0' && *sr <= '9') || *sr == '.')) { sr_buf[di++] = *sr++; }
+        sr_buf[di] = '\0';
+        /* Convert "1.2" -> 12 (x10) */
+        float fv = 0;
+        if (di > 0) {
+          /* simple: multiply by 10 and round */
+          int whole = 0, frac = 0;
+          char* dot = strchr(sr_buf, '.');
+          if (dot != NULL) {
+            *dot = '\0';
+            whole = atoi(sr_buf);
+            frac = atoi(dot + 1);
+            if (frac > 9) { frac = frac / 10; } /* handle "1.20" */
+          } else {
+            whole = atoi(sr_buf);
+          }
+          out_pairing->speed_ratio_x10 = whole * 10 + frac;
+        }
+        (void)fv;
+      }
+    }
+  }
+  if (out_pairing->volume_pct >= 0 || out_pairing->speed_ratio_x10 > 0) {
+    ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
+  }
+  return ESP_OK;
+}

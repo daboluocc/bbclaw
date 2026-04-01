@@ -1,0 +1,165 @@
+menu "BBClaw"
+
+menu "Transport"
+
+choice BBCLAW_TRANSPORT_PROFILE_CHOICE
+    prompt "Transport Profile"
+    default BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
+
+config BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
+    bool "local_home"
+    help
+        Directly connect firmware to the local bbclaw-adapter over HTTP.
+
+config BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    bool "cloud_saas"
+    help
+        Send firmware traffic to BBClaw Cloud. Cloud terminates audio and ASR,
+        then relays transcript/reply through Home Adapter.
+
+endchoice
+
+config BBCLAW_ADAPTER_BASE_URL
+    string "Local Adapter Base URL"
+    depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
+    default "http://192.168.10.26:18080"
+
+config BBCLAW_ADAPTER_AUTH_TOKEN
+    string "Local Adapter Auth Token"
+    depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
+    default "bbclaw-adapter-token"
+
+config BBCLAW_CLOUD_BASE_URL
+    string "Cloud Base URL"
+    depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    default "http://cloud.example.com:38081"
+
+config BBCLAW_CLOUD_AUTH_TOKEN
+    string "Cloud Auth Token"
+    depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    default ""
+
+config BBCLAW_HOME_SITE_ID
+    string "Home Site ID"
+    depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    default "home-main"
+
+config BBCLAW_ENABLE_TTS_PLAYBACK
+    bool "Enable TTS Playback"
+    default y if BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    default n
+    help
+        Play back TTS audio from Cloud or Adapter after receiving a reply.
+
+config BBCLAW_ENABLE_DISPLAY_PULL
+    bool "Enable Display Pull"
+    default y if BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
+    default n
+    help
+        Poll Cloud or Adapter for display tasks and show them on screen.
+
+endmenu
+
+menu "Wi-Fi"
+
+config BBCLAW_WIFI_SSID
+    string "Default Wi-Fi SSID"
+    default ""
+    help
+        Optional compile-time fallback Wi-Fi SSID. Firmware tries saved slots
+        first, then this SSID/password pair if configured.
+
+config BBCLAW_WIFI_PASSWORD
+    string "Default Wi-Fi Password"
+    default ""
+    help
+        Optional compile-time fallback Wi-Fi password paired with Default
+        Wi-Fi SSID.
+
+endmenu
+
+menu "Status LED"
+
+config BBCLAW_STATUS_LED_ENABLE
+    bool "Enable status LED"
+    default y
+    help
+        Drive GPIO status output(s). Choose wiring below: discrete R/Y/G LEDs or a common-cathode RGB module.
+
+choice BBCLAW_STATUS_LED_KIND_CHOICE
+    prompt "Wiring"
+    default BBCLAW_STATUS_LED_KIND_RYG
+    depends on BBCLAW_STATUS_LED_ENABLE
+    help
+        Discrete R/Y/G: three separate LEDs (yellow has its own pin).
+        RGB module: single 5mm RGB LED PCB (R/G/B + GND), high level on (see docs/led-RGB.png).
+
+config BBCLAW_STATUS_LED_KIND_RYG
+    bool "Discrete R / Y / G LEDs"
+
+config BBCLAW_STATUS_LED_KIND_RGB_MODULE
+    bool "RGB module (common cathode, R/G/B + GND)"
+
+endchoice
+
+config BBCLAW_STATUS_LED_R_GPIO
+    int "Red channel GPIO"
+    depends on BBCLAW_STATUS_LED_ENABLE
+    range 0 48
+    default 2
+
+config BBCLAW_STATUS_LED_Y_GPIO
+    int "Yellow channel GPIO (RYG only)"
+    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RYG
+    range 0 48
+    default 4
+
+config BBCLAW_STATUS_LED_G_GPIO
+    int "Green channel GPIO (RYG only)"
+    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RYG
+    range 0 48
+    default 5
+
+config BBCLAW_STATUS_LED_RGB_G_GPIO
+    int "Green channel GPIO (RGB module)"
+    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RGB_MODULE
+    range 0 48
+    default 4
+
+config BBCLAW_STATUS_LED_RGB_B_GPIO
+    int "Blue channel GPIO (RGB module)"
+    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RGB_MODULE
+    range 0 48
+    default 5
+
+config BBCLAW_STATUS_LED_GPIO_ON_LEVEL
+    int "GPIO level when LED on (0 or 1)"
+    depends on BBCLAW_STATUS_LED_ENABLE
+    range 0 1
+    default 1
+    help
+        1: high drives LED on (common-cathode + resistor to GPIO). 0: active-low hardware.
+
+endmenu
+
+menu "Display"
+
+choice BBCLAW_SCREEN_PRESET_CHOICE
+    prompt "Screen Preset"
+    default BBCLAW_SCREEN_PRESET_ST7789_147_V2
+
+config BBCLAW_SCREEN_PRESET_ST7789_147_V1
+    bool "ST7789 1.47\" 172x320 V1"
+    help
+        Original 12-pin 1.47 inch ST7789 panel preset.
+
+config BBCLAW_SCREEN_PRESET_ST7789_147_V2
+    bool "ST7789 1.47\" 172x320 V2"
+    help
+        Current default 12-pin 1.47 inch ST7789 panel preset.
+
+endchoice
+
+endmenu
+
+endmenu

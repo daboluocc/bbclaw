@@ -1,0 +1,5 @@
+# BBClaw: 全量 CJK + LVGL app 约 1.6MB+；8MB Flash 上给 factory 3MB 留 OTA/资源余量
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        0x300000,

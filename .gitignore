@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Build / output
+dist/
+build/
+out/
+*.o
+*.a
+*.elf
+*.map
+
+# ESP-IDF / Arduino-ESP32 / PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/sdkconfig.bak
+!firmware/sdkconfig.defaults
+!firmware/sdkconfig.defaults.esp32s3
+
+# Environment & secrets
+.env
+.env.*
+
+# LVGL font generated locally (run: `make -C firmware gen-lv-font`)
+firmware/generated/
+
+# ESP-IDF Component Manager（idf.py 根据 idf_component.yml / dependencies.lock 拉取）
+firmware/managed_components/
+
+# Logs & temp
+*.log
+*.tmp
+*.temp
+.cache/
+process
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+.workbuddy/
