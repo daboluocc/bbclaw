@@ -1690,8 +1690,18 @@ esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_
 
   out_audio->pcm_data = pcm;
   out_audio->pcm_len = pcm_len;
-  out_audio->sample_rate = BBCLAW_TTS_SAMPLE_RATE;
-  out_audio->channels = BBCLAW_TTS_CHANNELS;
+  {
+    int sr = json_extract_int(resp.body, "sampleRate", BBCLAW_TTS_SAMPLE_RATE);
+    int ch = json_extract_int(resp.body, "channels", BBCLAW_TTS_CHANNELS);
+    if (sr <= 0) {
+      sr = BBCLAW_TTS_SAMPLE_RATE;
+    }
+    if (ch <= 0) {
+      ch = BBCLAW_TTS_CHANNELS;
+    }
+    out_audio->sample_rate = sr;
+    out_audio->channels = ch;
+  }
   return ESP_OK;
 }
 

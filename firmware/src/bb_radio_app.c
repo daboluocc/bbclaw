@@ -174,6 +174,9 @@ static char s_transport_detail[64];
 static char s_transport_registration_code[16];
 static char s_transport_registration_expires_at[40];
 static bb_transport_pairing_status_t s_transport_pairing_status;
+#if BBCLAW_ENABLE_TTS_PLAYBACK
+static char s_spoken_registration_code[16];
+#endif
 static uint8_t s_stream_task_pcm_read_buf[1024];
 static uint8_t s_stream_pcm_chunk_buf[(BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_STREAM_CHUNK_MS / 1000) * sizeof(int16_t) *
                                       BBCLAW_AUDIO_CHANNELS];
@@ -546,6 +549,67 @@ static void remember_transport_state(const bb_transport_state_t* state) {
   s_transport_pairing_status = state->pairing_status;
 }
 
+#if BBCLAW_ENABLE_TTS_PLAYBACK
+static void maybe_speak_pairing_code(const bb_transport_state_t* state) {
+  if (state == NULL || !bb_transport_is_cloud_saas()) {
+    return;
+  }
+  if (state->cloud_registration_code[0] == '\0') {
+    return;
+  }
+  if (strcmp(state->detail, "claim_required") != 0) {
+    return;
+  }
+  if (strcmp(s_spoken_registration_code, state->cloud_registration_code) == 0) {
+    return;
+  }
+
+  const char* code = state->cloud_registration_code;
+  size_t n = strlen(code);
+  if (n == 0U || n > 12U) {
+    return;
+  }
+  /* 中文逗号让 TTS 在数字间停顿，比空格更易听清（与 cloud speedRatio 无关） */
+  char utter[192];
+  int pos = snprintf(utter, sizeof(utter), "验证码");
+  for (size_t i = 0; i < n && pos < (int)sizeof(utter) - 8; i++) {
+    pos += snprintf(utter + (size_t)pos, sizeof(utter) - (size_t)pos, "，%c", code[i]);
+  }
+
+  bb_tts_audio_t tts = {0};
+  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(utter, &tts);
+  if (syn != ESP_OK || tts.pcm_data == NULL || tts.pcm_len == 0U) {
+    ESP_LOGW(TAG, "pairing code TTS failed err=%s pcm=%p len=%u", esp_err_to_name(syn), (void*)tts.pcm_data,
+             (unsigned)tts.pcm_len);
+    bb_adapter_tts_audio_free(&tts);
+    return;
+  }
+
+  esp_err_t tx = bb_audio_start_playback();
+  if (tx != ESP_OK) {
+    ESP_LOGW(TAG, "pairing code TTS playback start failed err=%s", esp_err_to_name(tx));
+    bb_adapter_tts_audio_free(&tts);
+    return;
+  }
+  if (tts.sample_rate > 0 && tts.sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
+    (void)bb_audio_set_playback_sample_rate(tts.sample_rate);
+  }
+  if (bb_audio_play_pcm_blocking(tts.pcm_data, tts.pcm_len) != ESP_OK) {
+    ESP_LOGW(TAG, "pairing code TTS pcm play failed");
+  }
+  (void)bb_audio_stop_playback();
+  (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
+  bb_adapter_tts_audio_free(&tts);
+
+  snprintf(s_spoken_registration_code, sizeof(s_spoken_registration_code), "%s", state->cloud_registration_code);
+  ESP_LOGI(TAG, "pairing code spoken via TTS code=%s", state->cloud_registration_code);
+}
+#else
+static void maybe_speak_pairing_code(const bb_transport_state_t* state) {
+  (void)state;
+}
+#endif
+
 static void show_cloud_transport_message(const bb_transport_state_t* state) {
   if (state == NULL) {
     return;
@@ -566,6 +630,9 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
       snprintf(line1, sizeof(line1), "Enter 6-digit code in portal");
       snprintf(line2, sizeof(line2), "%s", state->cloud_registration_code);
       (void)bb_display_show_chat_turn(line1, line2);
+      ESP_LOGI(TAG, "pairing claim_required code=%s detail=%s expires=%s", state->cloud_registration_code,
+               state->detail, state->cloud_registration_expires_at);
+      maybe_speak_pairing_code(state);
     } else if (state->pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
       snprintf(line1, sizeof(line1), "Create binding in portal");
       snprintf(line2, sizeof(line2), "%s", BBCLAW_DEVICE_ID);

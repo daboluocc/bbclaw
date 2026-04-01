@@ -1,6 +1,7 @@
 #include "bb_cloud_client.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bb_config.h"
@@ -384,9 +385,10 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
     return ESP_FAIL;
   }
 
-  char data_scope[8192] = {0};
+  /* Avoid ~8KB on stack: main task stack is limited; bb_http_resp_t already holds body[8192]. */
+  char* data_scope = (char*)malloc(8192U);
   const char* parse = resp.body;
-  if (json_copy_data_object(resp.body, data_scope, sizeof(data_scope))) {
+  if (data_scope != NULL && json_copy_data_object(resp.body, data_scope, 8192U)) {
     parse = data_scope;
   }
   (void)json_extract_string(parse, "homeSiteId", out_pairing->home_site_id, sizeof(out_pairing->home_site_id));
@@ -452,5 +454,6 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   if (out_pairing->volume_pct >= 0 || out_pairing->speed_ratio_x10 > 0) {
     ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
   }
+  free(data_scope);
   return ESP_OK;
 }

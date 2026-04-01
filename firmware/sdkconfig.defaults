@@ -1,7 +1,8 @@
 CONFIG_IDF_TARGET="esp32s3"
 # 与常见 8MB SPI Flash 一致；若写 4MB 而芯片为 8MB 会告警且 esptool 只认 header 容量
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# bb_http_resp_t.body[8192] + 调用链：须大于 8K，否则 main 任务栈溢出（见 bb_cloud_pair_request）
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 # LVGL 偶发整屏 SW 合成较慢时给 IDLE 留出余量（默认 5s 可能偏紧）
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
