@@ -1682,26 +1682,25 @@ esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_
   size_t pcm_len = 0;
   ret = mbedtls_base64_decode(pcm, pcm_cap, &pcm_len, (const unsigned char*)audio_b64, audio_b64_len);
   free(audio_b64);
+  /* Must read JSON fields before free(resp.body) — sampleRate/channels live in data{} */
+  int sr = json_extract_int(resp.body, "sampleRate", BBCLAW_TTS_SAMPLE_RATE);
+  int ch = json_extract_int(resp.body, "channels", BBCLAW_TTS_CHANNELS);
   free(resp.body);
   if (ret != 0 || pcm_len == 0U) {
     free(pcm);
     return ESP_FAIL;
   }
+  if (sr <= 0) {
+    sr = BBCLAW_TTS_SAMPLE_RATE;
+  }
+  if (ch <= 0) {
+    ch = BBCLAW_TTS_CHANNELS;
+  }
 
   out_audio->pcm_data = pcm;
   out_audio->pcm_len = pcm_len;
-  {
-    int sr = json_extract_int(resp.body, "sampleRate", BBCLAW_TTS_SAMPLE_RATE);
-    int ch = json_extract_int(resp.body, "channels", BBCLAW_TTS_CHANNELS);
-    if (sr <= 0) {
-      sr = BBCLAW_TTS_SAMPLE_RATE;
-    }
-    if (ch <= 0) {
-      ch = BBCLAW_TTS_CHANNELS;
-    }
-    out_audio->sample_rate = sr;
-    out_audio->channels = ch;
-  }
+  out_audio->sample_rate = sr;
+  out_audio->channels = ch;
   return ESP_OK;
 }
 
