@@ -23,6 +23,8 @@
 typedef enum {
   APP_MODE_AUTO = 0,
   APP_MODE_STANDBY = 1,
+  APP_MODE_ACTIVE = 2,
+  /* Legacy aliases for CLI compat */
   APP_MODE_NOTIFICATION = 2,
   APP_MODE_SPEAKING = 3,
 } app_mode_t;
@@ -213,12 +215,7 @@ static void populate_preview_state(const app_state_t* state) {
     return;
   }
 
-  if (state->mode == APP_MODE_SPEAKING) {
-    const char* status = state->status[0] != '\0' ? state->status : "TX";
-    (void)bb_display_show_status(status);
-    return;
-  }
-
+  /* For speaking/active modes, always populate chat turns first */
   int turns = state->turn_den > 0 ? state->turn_den : 1;
   for (int i = 1; i < turns; ++i) {
     char older_you[64];
@@ -229,7 +226,10 @@ static void populate_preview_state(const app_state_t* state) {
   }
   (void)bb_display_show_chat_turn(state->you, state->reply);
 
-  if (state->mode == APP_MODE_NOTIFICATION || state->turn_den > 0) {
+  if (state->mode == APP_MODE_SPEAKING) {
+    const char* status = state->status[0] != '\0' ? state->status : "TX";
+    (void)bb_display_show_status(status);
+  } else if (state->mode == APP_MODE_NOTIFICATION || state->turn_den > 0) {
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "TASK");
   } else {
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "READY");

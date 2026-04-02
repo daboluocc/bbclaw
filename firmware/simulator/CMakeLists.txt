@@ -42,6 +42,7 @@ target_include_directories(bbclaw_lvgl_sim PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/../include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../generated"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../build/config"
   ${SDL2_INCLUDE_DIRS}
 )
 

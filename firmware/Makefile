@@ -15,7 +15,7 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen-lv-font gen-lvgl-assets gen-lvgl-screens gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback
+.PHONY: help idf-env init set-target reconfigure build flash erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -25,10 +25,7 @@ help:
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
-	@echo "  make gen-lv-font   # 生成本地 LVGL 中文字库 C 文件（Node npx + lv_font_conv）"
-	@echo "  make gen-lvgl-assets # 从 assets/svg 生成 bb_lvgl_assets.c（npx sharp-cli + Pillow）"
-	@echo "  make gen-lvgl-screens # 从 Figma 导出的 ui/lvgl/screens PNG 生成整页 LVGL 资源"
-	@echo "  make gen-lvgl-elements # 从 Figma 导出的 ui/lvgl/elements PNG 生成元素 LVGL 资源"
+	@echo "  make gen             # 一键生成所有 LVGL 资源（字库 + SVG 位图 + 元素位图）"
 	@echo "  make lvgl-kconfig-fix  # 打开压缩字库 + LARGE 索引（屏上全方框时执行一次后 reconfigure）"
 	@echo "  make sim-build       # 构建 macOS/SDL2 本地 LVGL 预览"
 	@echo "  make sim-run         # 运行本地 LVGL 预览（可配 SIM_ARGS='--mode speaking'）"
@@ -101,15 +98,15 @@ t=t.replace('# CONFIG_LV_USE_FONT_COMPRESSED is not set','CONFIG_LV_USE_FONT_COM
 t=t.replace('# CONFIG_LV_FONT_FMT_TXT_LARGE is not set','CONFIG_LV_FONT_FMT_TXT_LARGE=y'); \
 p.write_text(t); print('lvgl kconfig: patched sdkconfig (run: make reconfigure build)')"
 
+# 一键生成所有 LVGL 资源（字库 + SVG 位图 + 元素位图）
+gen: gen-lv-font gen-lvgl-assets gen-lvgl-elements
+
 # 与 lvgl.io Font Converter 同源引擎（lv_font_conv），无需手搓网页
 gen-lv-font:
 	@python3 "$(CURDIR)/scripts/gen_lvgl_cjk_font.py"
 
 gen-lvgl-assets:
 	@python3 "$(CURDIR)/scripts/gen_lvgl_assets_from_svg.py"
-
-gen-lvgl-screens:
-	@python3 "$(CURDIR)/scripts/gen_lvgl_screen_assets_from_png.py"
 
 gen-lvgl-elements:
 	@python3 "$(CURDIR)/scripts/gen_lvgl_screen_assets_from_png.py" \
@@ -132,6 +129,7 @@ sim-run: sim-build
 sim-export-feedback: sim-build
 	@mkdir -p "$(SIM_FEEDBACK_DIR)"
 	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode standby --export "$(SIM_FEEDBACK_DIR)/01-standby.png"
-	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode notification --status TASK --reply "A much longer notification body is waiting on the desk unit, so we can quickly inspect wrap, clipping, and overflow without reflashing hardware first." --export "$(SIM_FEEDBACK_DIR)/02-notification-long.png"
-	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode speaking --status RX --reply "The audio decode is still running. This preview exists mainly to validate long text blocks and overall spacing before a real device flash." --export "$(SIM_FEEDBACK_DIR)/03-speaking-long.png"
+	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode notification --status TASK --reply "这是一段较长的回复文本，用来测试纯文本区域的自动换行和滚动效果。" --export "$(SIM_FEEDBACK_DIR)/02-task-long.png"
+	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode speaking --status TX --export "$(SIM_FEEDBACK_DIR)/03-listening.png"
+	@"$(SIM_BUILD_DIR)/bbclaw_lvgl_sim" --mode speaking --status RESULT --reply "The audio decode is still running. This preview exists mainly to validate long text blocks and overall spacing." --export "$(SIM_FEEDBACK_DIR)/04-result.png"
 	@echo "[sim-export-feedback] exported previews -> $(SIM_FEEDBACK_DIR)"

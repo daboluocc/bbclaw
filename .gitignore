@@ -14,11 +14,6 @@ out/
 .pio/
 .pioenvs/
 .piolibdeps/
-firmware/sdkconfig
-firmware/sdkconfig.old
-firmware/sdkconfig.bak
-!firmware/sdkconfig.defaults
-!firmware/sdkconfig.defaults.esp32s3
 
 # Environment & secrets
 .env
@@ -26,23 +21,8 @@ firmware/sdkconfig.bak
 !.env.example
 !.env.home.example
 
-# references/cloud — local runtime / build artifacts (keep only source in git)
-references/cloud/data/
-references/cloud/tmp/
-references/cloud/bbclaw-cloud
-references/cloud/cmd/bbclaw-cloud/bbclaw-cloud
-references/cloud/.env
-
-# Large / vendored trees under references/ (not part of core BBClaw PRs)
-references/openclaw/
-references/promo/
-references/web/
-
-# LVGL font generated locally (run: `make -C firmware gen-lv-font`)
-firmware/generated/
-
-# ESP-IDF Component Manager（idf.py 根据 idf_component.yml / dependencies.lock 拉取）
-firmware/managed_components/
+# 参考与本地运行时，不纳入版本控制
+references/
 
 # Logs & temp
 *.log
@@ -64,3 +44,4 @@ Thumbs.db
 
 .workbuddy/
 .agents/
+.kiro/

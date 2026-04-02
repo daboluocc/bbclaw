@@ -1,0 +1,19 @@
+# ESP-IDF
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.bak
+!sdkconfig.defaults
+!sdkconfig.defaults.esp32s3
+
+# ESP-IDF Component Manager（idf.py 根据 idf_component.yml 拉取）
+managed_components/
+
+# 本地生成（见 Makefile：gen-lv-font 等）
+generated/
+
+# make monitor-log、sim-export-feedback 等
+.cache/
+
+# macOS/SDL2 LVGL 预览
+simulator/build/
