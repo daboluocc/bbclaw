@@ -66,7 +66,7 @@ def main() -> int:
         default=root / "generated" / "lv_font_bbclaw_cjk.c",
         help="Output C file path",
     )
-    ap.add_argument("--size", type=int, default=int(os.environ.get("LV_FONT_SIZE", "14")))
+    ap.add_argument("--size", type=int, default=int(os.environ.get("LV_FONT_SIZE", "16")))
     ap.add_argument("--bpp", type=int, default=int(os.environ.get("LV_FONT_BPP", "4")))
     ap.add_argument(
         "--subset",
