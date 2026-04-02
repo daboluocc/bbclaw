@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,16 +24,33 @@ type Config struct {
 	OpenClawIdentityPath string
 }
 
+func readHomeSiteIDFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".bbclaw", "home_site_id"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 func LoadFromEnv() (Config, error) {
 	openclawURL := strings.TrimSpace(os.Getenv("OPENCLAW_WS_URL"))
 	if openclawURL == "" {
 		openclawURL = "ws://127.0.0.1:18789"
 	}
 
+	homeSiteID := strings.TrimSpace(os.Getenv("HOME_SITE_ID"))
+	if homeSiteID == "" {
+		homeSiteID = readHomeSiteIDFile()
+	}
+
 	cfg := Config{
 		CloudWSURL:           strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
 		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
-		HomeSiteID:           strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
+		HomeSiteID:           homeSiteID,
 		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
 		HTTPTimeout:          time.Duration(getEnvInt("HTTP_TIMEOUT_SECONDS", 30)) * time.Second,
 		OpenClawURL:          openclawURL,
@@ -55,7 +73,10 @@ func (c Config) Validate() error {
 		return errors.New("CLOUD_AUTH_TOKEN is required")
 	}
 	if strings.TrimSpace(c.HomeSiteID) == "" {
-		return errors.New("HOME_SITE_ID is required")
+		return errors.New("set HOME_SITE_ID or write the home-site UUID to ~/.bbclaw/home_site_id")
+	}
+	if strings.EqualFold(strings.TrimSpace(c.HomeSiteID), "home-main") {
+		return errors.New("HOME_SITE_ID must be your portal home-site UUID, not the legacy placeholder home-main")
 	}
 	if c.ReconnectDelay <= 0 {
 		return errors.New("CLOUD_RECONNECT_DELAY_SECONDS must be > 0")

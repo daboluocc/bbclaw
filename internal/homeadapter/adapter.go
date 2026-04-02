@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +31,9 @@ type Adapter struct {
 	log     *obs.Logger
 	metrics *obs.Metrics
 	dialer  *websocket.Dialer
+
+	mu          sync.Mutex
+	lastRegCode string
 }
 
 type transcriptSink interface {
@@ -54,6 +58,10 @@ func New(cfg Config, sink transcriptSink, logger *obs.Logger, metrics *obs.Metri
 }
 
 func (a *Adapter) Run(ctx context.Context) error {
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	defer cancelPoll()
+	go a.pairingPollLoop(pollCtx)
+
 	dialURL, err := resolveCloudDialURL(a.cfg.CloudWSURL, a.cfg.HomeSiteID, a.cfg.CloudAuthToken)
 	if err != nil {
 		return err
@@ -109,10 +117,25 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 
 		switch strings.ToLower(strings.TrimSpace(env.Type)) {
 		case "welcome", "ack":
+			if strings.EqualFold(strings.TrimSpace(env.Type), "welcome") && env.Payload != nil {
+				if reg, ok := env.Payload["homeAdapterRegistration"].(string); ok {
+					reg = strings.TrimSpace(reg)
+					if reg != "" {
+						a.log.Infof("cloud welcome home_site=%s home_adapter_registration=%s", a.cfg.HomeSiteID, reg)
+					}
+				}
+			}
 			continue
 		case "ping":
 			if err := conn.WriteJSON(CloudEnvelope{Type: "pong"}); err != nil {
 				return fmt.Errorf("write pong: %w", err)
+			}
+			continue
+		case "event":
+			if strings.EqualFold(strings.TrimSpace(env.Kind), "registration.code") {
+				code, _ := env.Payload["code"].(string)
+				expiresAt, _ := env.Payload["expiresAt"].(string)
+				a.announceRegistrationCode("ws", code, expiresAt)
 			}
 			continue
 		case "request":
@@ -125,6 +148,22 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 			}
 		}
 	}
+}
+
+func (a *Adapter) announceRegistrationCode(source, code, expiresAt string) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lastRegCode == code {
+		return
+	}
+	a.lastRegCode = code
+	expiresAt = strings.TrimSpace(expiresAt)
+	a.log.Infof("home-adapter registration claim_required code=%s expires_at=%s home_site=%s source=%s — claim in BBClaw Cloud portal: POST /v1/registrations/claim",
+		code, expiresAt, a.cfg.HomeSiteID, source)
 }
 
 func (a *Adapter) handleRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
