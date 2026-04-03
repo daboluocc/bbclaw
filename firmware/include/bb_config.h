@@ -444,7 +444,7 @@ const char *bbclaw_device_id(void);
 #endif
 
 #ifndef BBCLAW_HTTP_TIMEOUT_MS
-#define BBCLAW_HTTP_TIMEOUT_MS 8000
+#define BBCLAW_HTTP_TIMEOUT_MS 20000
 #endif
 
 #ifndef BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
