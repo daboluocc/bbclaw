@@ -69,9 +69,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.CloudWSURL) == "" {
 		return errors.New("CLOUD_WS_URL is required")
 	}
-	if strings.TrimSpace(c.CloudAuthToken) == "" {
-		return errors.New("CLOUD_AUTH_TOKEN is required")
-	}
 	if strings.TrimSpace(c.HomeSiteID) == "" {
 		return errors.New("set HOME_SITE_ID or write the home-site UUID to ~/.bbclaw/home_site_id")
 	}
@@ -122,7 +119,9 @@ func resolveCloudDialURL(baseURL, homeSiteID, token string) (string, error) {
 	query := parsed.Query()
 	query.Set("role", "home_adapter")
 	query.Set("home_site_id", homeSiteID)
-	query.Set("token", token)
+	if strings.TrimSpace(token) != "" {
+		query.Set("token", token)
+	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
 }
