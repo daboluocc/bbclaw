@@ -94,24 +94,8 @@
 #endif
 #endif
 
-#ifndef BBCLAW_CLOUD_AUTH_TOKEN
-#ifdef CONFIG_BBCLAW_CLOUD_AUTH_TOKEN
-#define BBCLAW_CLOUD_AUTH_TOKEN CONFIG_BBCLAW_CLOUD_AUTH_TOKEN
-#else
-#define BBCLAW_CLOUD_AUTH_TOKEN "5951fc622a78c9b0dd7e543f458a8a182b9207edfbc42cf7"
-#endif
-#endif
-
 #ifndef BBCLAW_CLOUD_AUDIO_STREAMING_READY
 #define BBCLAW_CLOUD_AUDIO_STREAMING_READY 1
-#endif
-
-#ifndef BBCLAW_ADAPTER_AUTH_TOKEN
-#ifdef CONFIG_BBCLAW_ADAPTER_AUTH_TOKEN
-#define BBCLAW_ADAPTER_AUTH_TOKEN CONFIG_BBCLAW_ADAPTER_AUTH_TOKEN
-#else
-#define BBCLAW_ADAPTER_AUTH_TOKEN "bbclaw-adapter-token"
-#endif
 #endif
 
 /** 为 1 时：每包 /v1/stream/chunk 打印 wall_span_ms / gap_prev_ms / http_ms，便于对照服务端 AUDIO_TOO_LONG */

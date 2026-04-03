@@ -91,7 +91,7 @@ make sim-export-feedback
 ## 你接下来需要填的硬件参数
 
 - Wi-Fi: 首次上电走 AP 配网；如需编译期覆盖，可显式设置 `BBCLAW_WIFI_SSID`, `BBCLAW_WIFI_PASSWORD`
-- Adapter: `BBCLAW_ADAPTER_BASE_URL`, `BBCLAW_ADAPTER_AUTH_TOKEN`
+- Adapter: `BBCLAW_ADAPTER_BASE_URL`
 - 设备标识: `BBCLAW_DEVICE_ID`, `BBCLAW_SESSION_KEY`
 - PTT/音频/屏幕引脚（均在 `bb_config.h`）
 
@@ -209,10 +209,7 @@ make menuconfig
 常用配置项：
 
 - `BBClaw -> Transport Endpoints -> Local Adapter Base URL`
-- `BBClaw -> Transport Endpoints -> Local Adapter Auth Token`
 - `BBClaw -> Transport Endpoints -> Cloud Base URL`
-- `BBClaw -> Transport Endpoints -> Cloud Auth Token`
-- `BBClaw -> Transport Endpoints -> Home Site ID`
 
 当前规则：
 

@@ -24,20 +24,10 @@ config BBCLAW_ADAPTER_BASE_URL
     depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
     default "http://192.168.10.26:18080"
 
-config BBCLAW_ADAPTER_AUTH_TOKEN
-    string "Local Adapter Auth Token"
-    depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
-    default "bbclaw-adapter-token"
-
 config BBCLAW_CLOUD_BASE_URL
     string "Cloud Base URL"
     depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
     default "http://cloud.example.com:38081"
-
-config BBCLAW_CLOUD_AUTH_TOKEN
-    string "Cloud Auth Token"
-    depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
-    default ""
 
 config BBCLAW_ENABLE_TTS_PLAYBACK
     bool "Enable TTS Playback"
