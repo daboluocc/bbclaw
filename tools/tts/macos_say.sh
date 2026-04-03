@@ -12,8 +12,7 @@ TEXT="$1"
 OUT="$2"
 SPEED="${3:-1.00}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TMP_AIFF="$(mktemp "${SCRIPT_DIR}/macos-say-XXXXXX.aiff")"
+TMP_AIFF="$(mktemp /tmp/macos-say-XXXXXX.aiff)"
 trap 'rm -f "$TMP_AIFF"' EXIT
 
 RATE="185"

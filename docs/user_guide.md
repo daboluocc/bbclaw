@@ -126,8 +126,8 @@ openclaw:
 auth_token: "your-secret-token"
 
 cloud:
-  base_url: "https://cloud.bbclaw.cc"
-  device_token: "your-device-token"  # 在 bbclaw.cc 注册后获取
+  base_url: "https://cloud.https://bbclaw.daboluo.cc"
+  device_token: "your-device-token"  # 在 https://bbclaw.daboluo.cc 注册后获取
 
 asr:
   provider: "openai_compatible"
@@ -234,6 +234,6 @@ sudo systemctl start bbclaw-adapter
 
 ### 公网模式无法连接
 
-- 确认已在 bbclaw.cc 完成注册和设备绑定
+- 确认已在 https://bbclaw.daboluo.cc 完成注册和设备绑定
 - 确认 Adapter 使用的是 internet 版本
 - 检查家中网络是否正常，Adapter 是否在运行
