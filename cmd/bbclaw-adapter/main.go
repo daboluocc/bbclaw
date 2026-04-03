@@ -64,6 +64,12 @@ func main() {
 	switch strings.ToLower(strings.TrimSpace(cfg.TTSProvider)) {
 	case "mock":
 		ttsProvider = tts.NewMockProvider()
+	case "local_command":
+		ttsProvider = tts.NewLocalCommandProvider(
+			cfg.TTSLocalBin,
+			cfg.TTSLocalArgs,
+			cfg.TTSLocalOutputFormat,
+		)
 	default:
 		ttsProvider = tts.NewDoubaoNativeProvider(
 			cfg.TTSWSURL,

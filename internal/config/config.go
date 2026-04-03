@@ -34,6 +34,9 @@ type Config struct {
 	TTSCluster           string
 	TTSVoice             string
 	TTSWSURL             string
+	TTSLocalBin          string
+	TTSLocalArgs         []string
+	TTSLocalOutputFormat string
 	OpenClawURL          string
 	OpenClawAuthToken    string
 	OpenClawIdentityPath string
@@ -80,6 +83,9 @@ func LoadFromEnv() (Config, error) {
 		TTSCluster:           getEnvOrDefault("TTS_CLUSTER", "volcano_tts"),
 		TTSVoice:             getEnvOrDefault("TTS_VOICE", "zh_female_wanwanxiaohe_moon_bigtts"),
 		TTSWSURL:             getEnvOrDefault("TTS_WS_URL", "wss://openspeech.bytedance.com/api/v1/tts/ws_binary"),
+		TTSLocalBin:          strings.TrimSpace(os.Getenv("TTS_LOCAL_BIN")),
+		TTSLocalArgs:         splitLocalArgs(os.Getenv("TTS_LOCAL_ARGS")),
+		TTSLocalOutputFormat: getEnvOrDefault("TTS_LOCAL_OUTPUT_FORMAT", "wav"),
 		OpenClawURL:          openclawURL,
 		OpenClawAuthToken:    strings.TrimSpace(os.Getenv("OPENCLAW_AUTH_TOKEN")),
 		OpenClawIdentityPath: strings.TrimSpace(os.Getenv("OPENCLAW_DEVICE_IDENTITY_PATH")),
@@ -190,6 +196,10 @@ func (c Config) Validate() error {
 	switch strings.ToLower(strings.TrimSpace(c.TTSProvider)) {
 	case "mock":
 		// No external credentials needed in mock mode.
+	case "local_command":
+		if strings.TrimSpace(c.TTSLocalBin) == "" {
+			return errors.New("TTS_LOCAL_BIN is required for TTS_PROVIDER=local_command")
+		}
 	case "", "doubao_native":
 		if strings.TrimSpace(c.TTSWSURL) == "" {
 			return errors.New("TTS_WS_URL is required for doubao_native")
