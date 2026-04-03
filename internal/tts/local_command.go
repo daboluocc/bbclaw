@@ -25,6 +25,10 @@ func NewLocalCommandProvider(bin string, args []string, outputFormat string) *Lo
 	}
 }
 
+func (p *LocalCommandProvider) OutputFormat() string {
+	return p.outputFormat
+}
+
 func (p *LocalCommandProvider) Synthesize(ctx context.Context, text string) ([]byte, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {

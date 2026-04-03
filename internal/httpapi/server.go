@@ -47,6 +47,11 @@ type TTSProvider interface {
 	Synthesize(ctx context.Context, text string) ([]byte, error)
 }
 
+// TTSFormatProvider is optionally implemented by TTS providers that output non-mp3 audio.
+type TTSFormatProvider interface {
+	OutputFormat() string
+}
+
 type Server struct {
 	cfg     AppConfig
 	streams *audio.Manager
@@ -526,8 +531,12 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 	if outputCodec == "" {
 		outputCodec = "mp3"
 	}
+	ttsFormat := "mp3"
+	if fp, ok := s.tts.(TTSFormatProvider); ok && fp.OutputFormat() != "" {
+		ttsFormat = fp.OutputFormat()
+	}
 	outAudio := audioBytes
-	outFormat := "mp3"
+	outFormat := ttsFormat
 	outSampleRate := 0
 	outChannels := 0
 	if outputCodec == "pcm16" || outputCodec == "pcm_s16le" {
@@ -539,7 +548,7 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 		if ch <= 0 {
 			ch = 1
 		}
-		decoded, decodeErr := audio.DecodeMediaToPCM16LE(r.Context(), "mp3", sr, ch, audioBytes)
+		decoded, decodeErr := audio.DecodeMediaToPCM16LE(r.Context(), ttsFormat, sr, ch, audioBytes)
 		if decodeErr != nil {
 			s.metrics.Inc("tts_failed")
 			s.log.Errorf("tts pcm transcode failed err=%v", decodeErr)
@@ -554,10 +563,7 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 
 	outputSavedPath := ""
 	if s.cfg.SaveAudio {
-		suffix := ".mp3"
-		if outFormat == "pcm16" {
-			suffix = ".pcm"
-		}
+		suffix := "." + outFormat
 		outputSavedPath, err = saveAudioFile(s.cfg.AudioOutDir, fmt.Sprintf("tts-%d", time.Now().UnixMilli()), suffix, outAudio)
 		if err != nil {
 			s.metrics.Inc("audio_save_failed")
