@@ -96,8 +96,9 @@ bbclaw/
 
 ## 文档
 
+- [使用手册](docs/user_guide.md) — 从零开始配置和使用
 - [架构](docs/architecture.md)
-- [公网 SaaS 架构](docs/cloud_saas_architecture.md)
+- [公网模式](docs/cloud_saas_architecture.md)
 - [协议规范](docs/protocol_specs.md)
 - [协议 V1 基线](docs/protocol_specs_v1.md)
 
