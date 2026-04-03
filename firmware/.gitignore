@@ -3,6 +3,7 @@ build/
 sdkconfig
 sdkconfig.old
 sdkconfig.bak
+sdkconfig.local*
 !sdkconfig.defaults
 !sdkconfig.defaults.esp32s3
 
