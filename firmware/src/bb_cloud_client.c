@@ -72,11 +72,6 @@ static esp_err_t http_perform_json(const char* method, const char* path, const c
     return ESP_ERR_NO_MEM;
   }
 
-  if (strlen(BBCLAW_CLOUD_AUTH_TOKEN) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", BBCLAW_CLOUD_AUTH_TOKEN);
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
   if (payload != NULL) {
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, payload, (int)strlen(payload));

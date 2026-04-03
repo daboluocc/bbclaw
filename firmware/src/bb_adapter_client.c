@@ -41,13 +41,6 @@ static const char* active_base_url(void) {
   return BBCLAW_ADAPTER_BASE_URL;
 }
 
-static const char* active_auth_token(void) {
-  if (strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0) {
-    return BBCLAW_CLOUD_AUTH_TOKEN;
-  }
-  return BBCLAW_ADAPTER_AUTH_TOKEN;
-}
-
 typedef struct {
   int status_code;
   char body[1024];
@@ -335,11 +328,6 @@ static esp_err_t http_post_json_with_timeout(const char* path, const char* paylo
   }
 
   esp_http_client_set_header(client, "Content-Type", "application/json");
-  if (strlen(active_auth_token()) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", active_auth_token());
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
 
   esp_http_client_set_post_field(client, payload, (int)strlen(payload));
 
@@ -378,11 +366,6 @@ static esp_err_t http_get(const char* path, bb_http_resp_t* out_resp) {
     return ESP_ERR_NO_MEM;
   }
 
-  if (strlen(active_auth_token()) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", active_auth_token());
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
 
   esp_err_t err = esp_http_client_perform(client);
   if (err != ESP_OK) {
@@ -420,11 +403,6 @@ static esp_err_t http_post_json_dynamic(const char* path, const char* payload, b
   }
 
   esp_http_client_set_header(client, "Content-Type", "application/json");
-  if (strlen(active_auth_token()) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", active_auth_token());
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
 
   esp_http_client_set_post_field(client, payload, (int)strlen(payload));
 
@@ -472,11 +450,6 @@ static esp_err_t http_post_json_with_timeout_dynamic(const char* path, const cha
   }
 
   esp_http_client_set_header(client, "Content-Type", "application/json");
-  if (strlen(active_auth_token()) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", active_auth_token());
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
 
   esp_http_client_set_post_field(client, payload, (int)strlen(payload));
 
@@ -545,8 +518,7 @@ static void build_cloud_ws_url(char* out, size_t out_len) {
     host_len--;
   }
 
-  snprintf(out, out_len, "%s%s%s?role=device&device_id=%s&token=%s", scheme, host_part, path_part, BBCLAW_DEVICE_ID,
-           BBCLAW_CLOUD_AUTH_TOKEN);
+  snprintf(out, out_len, "%s%s%s?role=device&device_id=%s", scheme, host_part, path_part, BBCLAW_DEVICE_ID);
 }
 
 static void ws_finish_reset_locked(void) {
@@ -1554,11 +1526,6 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
   }
 
   esp_http_client_set_header(client, "Content-Type", "application/json");
-  if (strlen(active_auth_token()) > 0U) {
-    char auth[192] = {0};
-    snprintf(auth, sizeof(auth), "Bearer %s", active_auth_token());
-    esp_http_client_set_header(client, "Authorization", auth);
-  }
   esp_http_client_set_post_field(client, body, (int)strlen(body));
 
   esp_err_t err = esp_http_client_perform(client);
