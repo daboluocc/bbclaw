@@ -13,7 +13,7 @@ var (
 func ShouldPrintVersion(args []string) bool {
 	for _, arg := range args {
 		switch strings.TrimSpace(arg) {
-		case "--version", "-version", "version":
+		case "-v", "--version", "-version", "version":
 			return true
 		}
 	}
