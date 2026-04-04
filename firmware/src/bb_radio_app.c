@@ -297,6 +297,72 @@ static void show_status_error(const char* status) {
   (void)bb_led_set_status(BB_LED_ERROR);
 }
 
+/* ---------------------------------------------------------------------------
+ * Voice-command interception: map short spoken phrases to OpenClaw slash
+ * commands.  Returns the slash command string (e.g. "/stop") when the
+ * transcript matches, or NULL for normal conversation flow.
+ * -------------------------------------------------------------------------*/
+typedef struct {
+  const char* phrase;   /* spoken keyword (case-insensitive) */
+  const char* command;  /* OpenClaw slash command to emit     */
+} bb_voice_cmd_entry_t;
+
+static const bb_voice_cmd_entry_t s_voice_cmds[] = {
+    /* stop / cancel */
+    {"停止", "/stop"},
+    {"stop", "/stop"},
+    {"取消", "/stop"},
+    {"cancel", "/stop"},
+    /* new session */
+    {"新对话", "/new"},
+    {"重新开始", "/new"},
+    {"new", "/new"},
+    /* status */
+    {"状态", "/status"},
+    {"status", "/status"},
+};
+
+static const char* match_voice_command(const char* transcript) {
+  if (transcript == NULL || transcript[0] == '\0') {
+    return NULL;
+  }
+  /* work on a mutable copy so we can strip whitespace / punctuation */
+  static char buf[128];
+  size_t len = strlen(transcript);
+  if (len >= sizeof(buf)) {
+    return NULL; /* too long to be a short command */
+  }
+  memcpy(buf, transcript, len + 1);
+  /* strip leading whitespace */
+  char* p = buf;
+  while (*p == ' ') {
+    p++;
+  }
+  /* strip trailing ASCII punctuation and whitespace (covers .,!? etc.) */
+  char* end = p + strlen(p);
+  while (end > p && (end[-1] == ' ' || end[-1] == '.' || end[-1] == '!' || end[-1] == '?' || end[-1] == ',')) {
+    end--;
+  }
+  /* strip trailing CJK fullwidth punctuation (UTF-8: 3-byte sequences starting with 0xE3 or 0xEF) */
+  while (end - p >= 3) {
+    unsigned char b0 = (unsigned char)end[-3], b1 = (unsigned char)end[-2], b2 = (unsigned char)end[-1];
+    /* U+3002 。 = E3 80 82 | U+FF01 ！ = EF BC 81 | U+FF0C ， = EF BC 8C | U+FF1F ？ = EF BC 9F */
+    if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x82) { end -= 3; continue; }
+    if (b0 == 0xEF && b1 == 0xBC && (b2 == 0x81 || b2 == 0x8C || b2 == 0x9F)) { end -= 3; continue; }
+    break;
+  }
+  *end = '\0';
+  if (*p == '\0') {
+    return NULL;
+  }
+  for (size_t i = 0; i < sizeof(s_voice_cmds) / sizeof(s_voice_cmds[0]); i++) {
+    if (strcasecmp(p, s_voice_cmds[i].phrase) == 0) {
+      return s_voice_cmds[i].command;
+    }
+  }
+  return NULL;
+}
+
 static void pulse_success_on_idle(const char* status) {
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_IDLE);
@@ -1065,6 +1131,17 @@ static void stream_task(void* arg) {
             log_phase_text_chunks("phase=assistant text=", reply_text);
           }
 
+          /* --- voice command interception --- */
+          const char* vcmd = match_voice_command(finish->transcript);
+          if (vcmd != NULL) {
+            ESP_LOGI(TAG, "phase=voice_command transcript=\"%s\" cmd=%s stream=%s", finish->transcript, vcmd,
+                     stream.stream_id);
+            (void)bb_gateway_node_send_voice_transcript(vcmd, BBCLAW_SESSION_KEY, stream.stream_id);
+            (void)bb_display_upsert_chat_turn(finish->transcript, vcmd, 1);
+            pulse_success_on_idle("CMD");
+            goto finish_cleanup;
+          }
+
           if (reply_text[0] != '\0') {
             (void)bb_display_show_status("RESULT");
             (void)bb_led_set_status(BB_LED_REPLY);
@@ -1095,7 +1172,11 @@ static void stream_task(void* arg) {
                    esp_err_to_name(finish_err), finish->http_status,
                    finish->error_code[0] != '\0' ? finish->error_code : "(none)", stream.stream_id,
                    finish->reply_wait_timed_out);
-          show_status_error("ERR");
+          {
+            const char* ecode = finish->error_code[0] != '\0' ? finish->error_code : "ERR";
+            show_status_error(ecode);
+            (void)bb_display_upsert_chat_turn("(error)", ecode, 1);
+          }
           signal_error_haptic();
         }
       } else {
@@ -1197,6 +1278,7 @@ static void stream_task(void* arg) {
         }
       }
 #endif
+finish_cleanup:
       if (finish != NULL) {
         bb_adapter_tts_chunks_free(finish->tts_chunks);
         finish->tts_chunks = NULL;
