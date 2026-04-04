@@ -227,12 +227,12 @@ const char *bbclaw_device_id(void);
 
 /** PTT 按下：偏心马达需 ~50ms+ 才易感知，过短会像“没震” */
 #ifndef BBCLAW_MOTOR_PULSE_SHORT_MS
-#define BBCLAW_MOTOR_PULSE_SHORT_MS 200
+#define BBCLAW_MOTOR_PULSE_SHORT_MS 500
 #endif
 
 /** PTT 松开：比按下略短、略轻，形成“按下—松开”一对触觉 */
 #ifndef BBCLAW_MOTOR_PULSE_RELEASE_MS
-#define BBCLAW_MOTOR_PULSE_RELEASE_MS 150
+#define BBCLAW_MOTOR_PULSE_RELEASE_MS 400
 #endif
 
 #ifndef BBCLAW_MOTOR_PULSE_LONG_MS

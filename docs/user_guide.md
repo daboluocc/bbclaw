@@ -42,15 +42,16 @@ cd bbclaw
 make -C firmware menuconfig
 ```
 
-需要配置的关键项（在 `BBClaw Configuration` 菜单下）：
+需要配置的关键项（在 `BBClaw` → `Transport` / `Wi-Fi` 等子菜单下）：
 
 | 配置项 | 说明 |
 |--------|------|
 | **Transport Profile** | 选择 `local_home`（局域网）或 `cloud_saas`（公网） |
-| **Wi-Fi SSID** | 你的 WiFi 名称 |
-| **Wi-Fi Password** | 你的 WiFi 密码 |
-| **Adapter Base URL** | Adapter 地址，如 `http://192.168.1.100:18080`（局域网模式） |
-| **Adapter Auth Token** | Adapter 认证 token，需与 Adapter 配置一致 |
+| **Local Adapter Base URL** | 仅在 `local_home` 下出现：运行 Adapter 的机器地址，如 `http://192.168.1.100:18080` |
+| **Cloud Base URL** | 仅在 `cloud_saas` 下出现：云端入口，默认见菜单说明 |
+| **Wi-Fi SSID / Password** | 可选编译期默认 WiFi；不填则上电后用 SoftAP 网页配网 |
+
+当前 **menuconfig 中没有单独的「Adapter Auth Token」项**。局域网下 Adapter 的 `auth_token` 在主机侧 `adapter.yaml` 中配置；固件若向 Adapter 发送 `Authorization: Bearer`，须与该值一致，详见 [Adapter 对接说明](../firmware/docs/bbclaw_adapter_integration.md)。
 
 > 如果不在 menuconfig 中配置 WiFi，设备启动后会自动进入配网模式（热点名 `BBClaw-Setup-xxxx`，密码 `bbclaw1234`），连接后访问 `http://192.168.4.1` 输入 WiFi 信息。
 
@@ -109,7 +110,7 @@ chmod +x bbclaw-adapter-*
 
 ```yaml
 listen: "0.0.0.0:18080"
-auth_token: "your-secret-token"    # 与固件 menuconfig 中设置的一致
+auth_token: "your-secret-token"    # 与固件访问 Adapter 时使用的 Bearer token 一致（见 bbclaw_adapter_integration.md）
 
 asr:
   provider: "openai_compatible"    # 或 "local"
@@ -126,7 +127,7 @@ openclaw:
 auth_token: "your-secret-token"
 
 cloud:
-  base_url: "https://cloud.https://bbclaw.daboluo.cc"
+  base_url: "https://bbclaw.daboluo.cc"
   device_token: "your-device-token"  # 在 https://bbclaw.daboluo.cc 注册后获取
 
 asr:
