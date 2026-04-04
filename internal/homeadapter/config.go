@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Config struct {
@@ -24,16 +25,49 @@ type Config struct {
 	OpenClawIdentityPath string
 }
 
-func readHomeSiteIDFile() string {
+// homeSiteFingerprint collects stable per-machine inputs so the derived ID is the same on every
+// process start without persisting state. Linux machine-id disambiguates hosts that share hostname.
+func homeSiteFingerprint() (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("hostname: %w", err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("user home: %w", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(home, ".bbclaw", "home_site_id"))
+	user := strings.TrimSpace(os.Getenv("USER"))
+	if user == "" {
+		user = strings.TrimSpace(os.Getenv("USERNAME"))
+	}
+	var machineID string
+	for _, p := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		machineID = strings.TrimSpace(string(raw))
+		break
+	}
+	// NUL-separated single string for deterministic UUID v5 name bytes.
+	return fmt.Sprintf("bbclaw-home-site/v1\000%s\000%s\000%s\000%s", hostname, home, user, machineID), nil
+}
+
+// derivedHomeSiteID returns a UUID v5 from homeSiteFingerprint (same machine → same ID every run).
+func derivedHomeSiteID() (string, error) {
+	fp, err := homeSiteFingerprint()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(raw))
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fp)).String(), nil
+}
+
+// ensureHomeSiteID returns HOME_SITE_ID if set; otherwise a deterministic UUID derived from this host.
+func ensureHomeSiteID() (string, error) {
+	if id := strings.TrimSpace(os.Getenv("HOME_SITE_ID")); id != "" {
+		return id, nil
+	}
+	return derivedHomeSiteID()
 }
 
 func LoadFromEnv() (Config, error) {
@@ -42,9 +76,9 @@ func LoadFromEnv() (Config, error) {
 		openclawURL = "ws://127.0.0.1:18789"
 	}
 
-	homeSiteID := strings.TrimSpace(os.Getenv("HOME_SITE_ID"))
-	if homeSiteID == "" {
-		homeSiteID = readHomeSiteIDFile()
+	homeSiteID, err := ensureHomeSiteID()
+	if err != nil {
+		return Config{}, err
 	}
 
 	cfg := Config{
@@ -70,7 +104,7 @@ func (c Config) Validate() error {
 		return errors.New("CLOUD_WS_URL is required")
 	}
 	if strings.TrimSpace(c.HomeSiteID) == "" {
-		return errors.New("set HOME_SITE_ID or write the home-site UUID to ~/.bbclaw/home_site_id")
+		return errors.New("HOME_SITE_ID is empty (unexpected after ensureHomeSiteID)")
 	}
 	if strings.EqualFold(strings.TrimSpace(c.HomeSiteID), "home-main") {
 		return errors.New("HOME_SITE_ID must be your portal home-site UUID, not the legacy placeholder home-main")

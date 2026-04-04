@@ -1,8 +1,6 @@
 package homeadapter
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -41,18 +39,55 @@ func TestValidateRejectsLegacyHomeMain(t *testing.T) {
 	}
 }
 
-func TestReadHomeSiteIDFile(t *testing.T) {
+func TestEnsureHomeSiteIDDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
-	if err := os.MkdirAll(filepath.Join(dir, ".bbclaw"), 0o755); err != nil {
+	t.Setenv("HOME_SITE_ID", "")
+	a, err := ensureHomeSiteID()
+	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ".bbclaw", "home_site_id")
-	if err := os.WriteFile(path, []byte(" 9646c421-e179-497d-a237-384e0d226e97 \n"), 0o644); err != nil {
+	b, err := ensureHomeSiteID()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readHomeSiteIDFile(); got != "9646c421-e179-497d-a237-384e0d226e97" {
-		t.Fatalf("readHomeSiteIDFile() = %q", got)
+	if a != b {
+		t.Fatalf("two calls: %q vs %q", a, b)
+	}
+	if len(a) != 36 {
+		t.Fatalf("expected UUID, got %q", a)
+	}
+}
+
+func TestEnsureHomeSiteIDDifferentHOME(t *testing.T) {
+	t.Setenv("HOME_SITE_ID", "")
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	t.Setenv("HOME", dir1)
+	id1, err := ensureHomeSiteID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", dir2)
+	id2, err := ensureHomeSiteID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 {
+		t.Fatalf("different HOME should yield different home_site_id: %q", id1)
+	}
+}
+
+func TestEnsureHomeSiteIDPrefersEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("HOME_SITE_ID", "from-env")
+	got, err := ensureHomeSiteID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-env" {
+		t.Fatalf("ensureHomeSiteID() = %q", got)
 	}
 }
 
