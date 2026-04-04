@@ -60,15 +60,17 @@ static esp_err_t http_perform_json(const char* method, const char* path, const c
     http_method = HTTP_METHOD_POST;
   }
 
-  esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
-      .method = http_method,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler,
-      .user_data = &accum,
-      .crt_bundle_attach = esp_crt_bundle_attach,
-  };
+  esp_http_client_config_t cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.url = url;
+  cfg.timeout_ms = BBCLAW_HTTP_TIMEOUT_MS;
+  cfg.method = http_method;
+  cfg.transport_type = HTTP_TRANSPORT_OVER_TCP;
+  cfg.event_handler = http_event_handler;
+  cfg.user_data = &accum;
+  if (strncasecmp(url, "https", 5) == 0) {
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  }
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {

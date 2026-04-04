@@ -42,6 +42,21 @@ static const char* active_base_url(void) {
   return BBCLAW_ADAPTER_BASE_URL;
 }
 
+/** Populate common esp_http_client_config_t fields; auto-attach TLS bundle for https URLs. */
+static inline void bb_http_cfg_init(esp_http_client_config_t* cfg, const char* url, int timeout_ms,
+                                    esp_http_client_method_t method, esp_event_handler_t handler, void* user_data) {
+  memset(cfg, 0, sizeof(*cfg));
+  cfg->url = url;
+  cfg->timeout_ms = timeout_ms > 0 ? timeout_ms : BBCLAW_HTTP_TIMEOUT_MS;
+  cfg->method = method;
+  cfg->transport_type = HTTP_TRANSPORT_OVER_TCP;
+  cfg->event_handler = handler;
+  cfg->user_data = user_data;
+  if (strncasecmp(url, "https", 5) == 0) {
+    cfg->crt_bundle_attach = esp_crt_bundle_attach;
+  }
+}
+
 typedef struct {
   int status_code;
   char body[1024];
@@ -314,15 +329,8 @@ static esp_err_t http_post_json_with_timeout(const char* path, const char* paylo
     timeout_ms = BBCLAW_HTTP_TIMEOUT_MS;
   }
 
-  esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = timeout_ms,
-        .method = HTTP_METHOD_POST,
-        .transport_type = HTTP_TRANSPORT_OVER_TCP,
-        .event_handler = http_event_handler,
-        .user_data = &accum,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, timeout_ms, HTTP_METHOD_POST, http_event_handler, &accum);
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -354,15 +362,8 @@ static esp_err_t http_get(const char* path, bb_http_resp_t* out_resp) {
   memset(out_resp, 0, sizeof(*out_resp));
   bb_http_accum_t accum = {.resp = out_resp, .offset = 0};
 
-  esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
-        .method = HTTP_METHOD_GET,
-        .transport_type = HTTP_TRANSPORT_OVER_TCP,
-        .event_handler = http_event_handler,
-        .user_data = &accum,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_GET, http_event_handler, &accum);
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -391,15 +392,8 @@ static esp_err_t http_post_json_dynamic(const char* path, const char* payload, b
   snprintf(url, sizeof(url), "%s%s", active_base_url(), path);
   bb_http_dyn_accum_t accum = {0};
 
-  esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
-        .method = HTTP_METHOD_POST,
-        .transport_type = HTTP_TRANSPORT_OVER_TCP,
-        .event_handler = http_event_handler_dyn,
-        .user_data = &accum,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_POST, http_event_handler_dyn, &accum);
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -439,15 +433,8 @@ static esp_err_t http_post_json_with_timeout_dynamic(const char* path, const cha
     timeout_ms = BBCLAW_HTTP_TIMEOUT_MS;
   }
 
-  esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = timeout_ms,
-        .method = HTTP_METHOD_POST,
-        .transport_type = HTTP_TRANSPORT_OVER_TCP,
-        .event_handler = http_event_handler_dyn,
-        .user_data = &accum,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, timeout_ms, HTTP_METHOD_POST, http_event_handler_dyn, &accum);
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -1516,15 +1503,9 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
       .user_ctx = user_ctx,
   };
 
-  esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS,
-        .method = HTTP_METHOD_POST,
-        .transport_type = HTTP_TRANSPORT_OVER_TCP,
-        .event_handler = http_event_handler_finish_stream,
-        .user_data = &accum,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS, HTTP_METHOD_POST,
+                   http_event_handler_finish_stream, &accum);
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
