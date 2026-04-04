@@ -13,6 +13,7 @@
 #include "bb_button_test.h"
 #include "bb_led.h"
 #include "bb_motor.h"
+#include "bb_ogg_opus.h"
 #include "bb_ptt.h"
 #include "bb_time.h"
 #include "bb_transport.h"
@@ -1279,6 +1280,11 @@ static void stream_task(void* arg) {
       }
 #endif
 finish_cleanup:
+      /* Release Opus encoder if skip_finish bypassed stream_finish_stream. */
+      if (stream.ws_encoder != NULL) {
+        bb_ogg_opus_encoder_destroy((bb_ogg_opus_encoder_t*)stream.ws_encoder);
+        stream.ws_encoder = NULL;
+      }
       if (finish != NULL) {
         bb_adapter_tts_chunks_free(finish->tts_chunks);
         finish->tts_chunks = NULL;
