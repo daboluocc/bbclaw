@@ -10,6 +10,7 @@
 #include "bb_time.h"
 #include "bb_transport.h"
 #include "esp_check.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -314,13 +315,14 @@ static esp_err_t http_post_json_with_timeout(const char* path, const char* paylo
   }
 
   esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = timeout_ms,
-      .method = HTTP_METHOD_POST,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler,
-      .user_data = &accum,
-  };
+        .url = url,
+        .timeout_ms = timeout_ms,
+        .method = HTTP_METHOD_POST,
+        .transport_type = HTTP_TRANSPORT_OVER_TCP,
+        .event_handler = http_event_handler,
+        .user_data = &accum,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -353,13 +355,14 @@ static esp_err_t http_get(const char* path, bb_http_resp_t* out_resp) {
   bb_http_accum_t accum = {.resp = out_resp, .offset = 0};
 
   esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
-      .method = HTTP_METHOD_GET,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler,
-      .user_data = &accum,
-  };
+        .url = url,
+        .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
+        .method = HTTP_METHOD_GET,
+        .transport_type = HTTP_TRANSPORT_OVER_TCP,
+        .event_handler = http_event_handler,
+        .user_data = &accum,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -389,13 +392,14 @@ static esp_err_t http_post_json_dynamic(const char* path, const char* payload, b
   bb_http_dyn_accum_t accum = {0};
 
   esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
-      .method = HTTP_METHOD_POST,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler_dyn,
-      .user_data = &accum,
-  };
+        .url = url,
+        .timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
+        .method = HTTP_METHOD_POST,
+        .transport_type = HTTP_TRANSPORT_OVER_TCP,
+        .event_handler = http_event_handler_dyn,
+        .user_data = &accum,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -436,13 +440,14 @@ static esp_err_t http_post_json_with_timeout_dynamic(const char* path, const cha
   }
 
   esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = timeout_ms,
-      .method = HTTP_METHOD_POST,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler_dyn,
-      .user_data = &accum,
-  };
+        .url = url,
+        .timeout_ms = timeout_ms,
+        .method = HTTP_METHOD_POST,
+        .transport_type = HTTP_TRANSPORT_OVER_TCP,
+        .event_handler = http_event_handler_dyn,
+        .user_data = &accum,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
@@ -1512,13 +1517,14 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
   };
 
   esp_http_client_config_t cfg = {
-      .url = url,
-      .timeout_ms = BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS,
-      .method = HTTP_METHOD_POST,
-      .transport_type = HTTP_TRANSPORT_OVER_TCP,
-      .event_handler = http_event_handler_finish_stream,
-      .user_data = &accum,
-  };
+        .url = url,
+        .timeout_ms = BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS,
+        .method = HTTP_METHOD_POST,
+        .transport_type = HTTP_TRANSPORT_OVER_TCP,
+        .event_handler = http_event_handler_finish_stream,
+        .user_data = &accum,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (client == NULL) {
