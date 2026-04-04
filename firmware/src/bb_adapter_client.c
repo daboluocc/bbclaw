@@ -42,7 +42,11 @@ static const char* active_base_url(void) {
   return BBCLAW_ADAPTER_BASE_URL;
 }
 
-/** Populate common esp_http_client_config_t fields; auto-attach TLS bundle for https URLs. */
+/** Embedded ISRG Root X1 CA for Let's Encrypt RSA chain verification. */
+extern const uint8_t isrg_root_x1_pem_start[] asm("_binary_isrg_root_x1_pem_start");
+extern const uint8_t isrg_root_x1_pem_end[]   asm("_binary_isrg_root_x1_pem_end");
+
+/** Populate common esp_http_client_config_t fields; auto-attach TLS for https URLs. */
 static inline void bb_http_cfg_init(esp_http_client_config_t* cfg, const char* url, int timeout_ms,
                                     esp_http_client_method_t method, http_event_handle_cb handler, void* user_data) {
   memset(cfg, 0, sizeof(*cfg));
@@ -54,6 +58,7 @@ static inline void bb_http_cfg_init(esp_http_client_config_t* cfg, const char* u
   cfg->user_data = user_data;
   if (strncasecmp(url, "https", 5) == 0) {
     cfg->crt_bundle_attach = esp_crt_bundle_attach;
+    cfg->cert_pem = (const char*)isrg_root_x1_pem_start;
   }
 }
 
@@ -574,6 +579,7 @@ static esp_err_t ws_client_ensure_connected(void) {
         .disable_auto_reconnect = false,
         .task_name = "bbclaw_ws",
         .crt_bundle_attach = strncmp(ws_url, "wss", 3) == 0 ? esp_crt_bundle_attach : NULL,
+        .cert_pem = strncmp(ws_url, "wss", 3) == 0 ? (const char*)isrg_root_x1_pem_start : NULL,
     };
     s_ws.client = esp_websocket_client_init(&cfg);
     if (s_ws.client == NULL) {

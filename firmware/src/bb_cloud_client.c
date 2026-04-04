@@ -13,6 +13,9 @@
 
 static const char* TAG = "bb_cloud";
 
+extern const uint8_t isrg_root_x1_pem_start[] asm("_binary_isrg_root_x1_pem_start");
+extern const uint8_t isrg_root_x1_pem_end[]   asm("_binary_isrg_root_x1_pem_end");
+
 typedef struct {
   int status_code;
   char body[8192];
@@ -70,6 +73,7 @@ static esp_err_t http_perform_json(const char* method, const char* path, const c
   cfg.user_data = &accum;
   if (strncasecmp(url, "https", 5) == 0) {
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.cert_pem = (const char*)isrg_root_x1_pem_start;
   }
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
