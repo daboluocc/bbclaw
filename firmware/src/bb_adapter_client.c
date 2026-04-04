@@ -44,7 +44,7 @@ static const char* active_base_url(void) {
 
 /** Populate common esp_http_client_config_t fields; auto-attach TLS bundle for https URLs. */
 static inline void bb_http_cfg_init(esp_http_client_config_t* cfg, const char* url, int timeout_ms,
-                                    esp_http_client_method_t method, esp_event_handler_t handler, void* user_data) {
+                                    esp_http_client_method_t method, http_event_handle_cb handler, void* user_data) {
   memset(cfg, 0, sizeof(*cfg));
   cfg->url = url;
   cfg->timeout_ms = timeout_ms > 0 ? timeout_ms : BBCLAW_HTTP_TIMEOUT_MS;
