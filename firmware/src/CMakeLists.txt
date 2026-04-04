@@ -35,6 +35,7 @@ idf_component_register(
     INCLUDE_DIRS "../include" "../generated"
     EMBED_FILES
         "../assets/svg/bbclaw.wav"
+    EMBED_TXTFILES
         "../assets/isrg_root_x1.pem"
     REQUIRES
         esp_app_format
