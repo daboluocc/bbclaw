@@ -1508,12 +1508,6 @@ esp_err_t bb_radio_app_start(void) {
     return ESP_OK;
   }
   bb_sntp_start();
-  if (bb_transport_is_cloud_saas()) {
-    /* TLS cert validation needs correct wall time; wait for SNTP sync */
-    for (int i = 0; i < 20 && !bb_wall_time_ready(); i++) {
-      vTaskDelay(pdMS_TO_TICKS(250));
-    }
-  }
   show_status_processing("LINK...");
   esp_err_t health_err = wait_for_transport_health(&health_status);
   if (health_err == ESP_OK) {

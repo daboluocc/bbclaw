@@ -27,7 +27,7 @@ config BBCLAW_ADAPTER_BASE_URL
 config BBCLAW_CLOUD_BASE_URL
     string "Cloud Base URL"
     depends on BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
-    default "https://bbclaw.daboluo.cc"
+    default "http://bbclaw.daboluo.cc:38082"
 
 config BBCLAW_ENABLE_TTS_PLAYBACK
     bool "Enable TTS Playback"
