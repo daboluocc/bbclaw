@@ -1528,6 +1528,10 @@ esp_err_t bb_radio_app_start(void) {
                s_transport_registration_expires_at);
       if (s_transport_ready && s_transport_audio_streaming_ready) {
         ESP_LOGI(TAG, "cloud transport ready status=%d", health_status);
+        esp_err_t rpt = bb_transport_report_device_info();
+        if (rpt != ESP_OK) {
+          ESP_LOGW(TAG, "device info report failed err=%s (non-fatal)", esp_err_to_name(rpt));
+        }
       } else {
         ESP_LOGI(TAG, "cloud pairing requested and pending approval status=%d detail=%s", health_status,
                  state.detail);

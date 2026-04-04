@@ -30,3 +30,6 @@ int bb_transport_supports_tts(void);
 int bb_transport_supports_display(void);
 esp_err_t bb_transport_bootstrap(bb_transport_state_t* out_state);
 esp_err_t bb_transport_refresh_state(bb_transport_state_t* out_state);
+
+/** Report device info to the transport backend (Cloud only; no-op for local_home). */
+esp_err_t bb_transport_report_device_info(void);

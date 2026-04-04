@@ -90,7 +90,7 @@
 #ifdef CONFIG_BBCLAW_CLOUD_BASE_URL
 #define BBCLAW_CLOUD_BASE_URL CONFIG_BBCLAW_CLOUD_BASE_URL
 #else
-#define BBCLAW_CLOUD_BASE_URL "http://cloud.example.com:38081"
+#define BBCLAW_CLOUD_BASE_URL "https://bbclaw.daboluo.cc"
 #endif
 #endif
 

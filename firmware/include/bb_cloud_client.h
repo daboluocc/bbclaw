@@ -30,3 +30,6 @@ typedef struct {
 esp_err_t bb_cloud_healthz(bb_cloud_health_t* out_health);
 esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing);
 const char* bb_cloud_pair_status_name(bb_cloud_pair_status_t status);
+
+/** POST device info to Cloud once after successful pairing. */
+esp_err_t bb_cloud_report_device_info(void);

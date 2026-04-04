@@ -131,3 +131,10 @@ esp_err_t bb_transport_bootstrap(bb_transport_state_t* out_state) {
 esp_err_t bb_transport_refresh_state(bb_transport_state_t* out_state) {
   return bb_transport_bootstrap(out_state);
 }
+
+esp_err_t bb_transport_report_device_info(void) {
+  if (!is_cloud_profile()) {
+    return ESP_OK;
+  }
+  return bb_cloud_report_device_info();
+}

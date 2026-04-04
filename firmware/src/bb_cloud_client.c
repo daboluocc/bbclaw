@@ -5,7 +5,9 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "esp_app_desc.h"
 #include "esp_check.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 
@@ -65,6 +67,7 @@ static esp_err_t http_perform_json(const char* method, const char* path, const c
       .transport_type = HTTP_TRANSPORT_OVER_TCP,
       .event_handler = http_event_handler,
       .user_data = &accum,
+      .crt_bundle_attach = esp_crt_bundle_attach,
   };
 
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -450,5 +453,47 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
     ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
   }
   free(data_scope);
+  return ESP_OK;
+}
+
+esp_err_t bb_cloud_report_device_info(void) {
+  const esp_app_desc_t *app = esp_app_get_description();
+  const char *fw_ver = (app && app->version[0]) ? app->version : "unknown";
+
+  char body[512];
+  snprintf(body, sizeof(body),
+           "{\"deviceId\":\"%s\","
+           "\"firmwareVersion\":\"%s\","
+           "\"capabilities\":{"
+           "\"audioStreaming\":%s,"
+           "\"tts\":%s,"
+           "\"display\":%s,"
+           "\"vad\":%s"
+           "},"
+           "\"hardware\":{"
+           "\"audioInput\":\"%s\","
+           "\"sampleRate\":%d,"
+           "\"codec\":\"%s\","
+           "\"screenWidth\":%d,"
+           "\"screenHeight\":%d"
+           "}}",
+           BBCLAW_DEVICE_ID, fw_ver,
+           BBCLAW_CLOUD_AUDIO_STREAMING_READY ? "true" : "false",
+           BBCLAW_ENABLE_TTS_PLAYBACK ? "true" : "false",
+           BBCLAW_ENABLE_DISPLAY_PULL ? "true" : "false",
+           BBCLAW_VAD_ENABLE ? "true" : "false",
+           BBCLAW_AUDIO_INPUT_SOURCE,
+           BBCLAW_AUDIO_SAMPLE_RATE,
+           BBCLAW_STREAM_CODEC,
+           BBCLAW_ST7789_WIDTH,
+           BBCLAW_ST7789_HEIGHT);
+
+  bb_http_resp_t resp = {0};
+  ESP_RETURN_ON_ERROR(http_perform_json("POST", "/v1/devices/info", body, &resp), TAG, "device info report failed");
+  if (resp.status_code < 200 || resp.status_code >= 300) {
+    ESP_LOGW(TAG, "device info report bad status=%d body=%s", resp.status_code, resp.body);
+    return ESP_FAIL;
+  }
+  ESP_LOGI(TAG, "device info reported device=%s fw=%s", BBCLAW_DEVICE_ID, fw_ver);
   return ESP_OK;
 }
