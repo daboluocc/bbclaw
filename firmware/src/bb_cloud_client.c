@@ -72,7 +72,6 @@ static esp_err_t http_perform_json(const char* method, const char* path, const c
   cfg.event_handler = http_event_handler;
   cfg.user_data = &accum;
   if (strncasecmp(url, "https", 5) == 0) {
-    cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.cert_pem = (const char*)isrg_root_x1_pem_start;
   }
 

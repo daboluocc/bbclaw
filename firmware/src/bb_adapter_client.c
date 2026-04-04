@@ -57,7 +57,6 @@ static inline void bb_http_cfg_init(esp_http_client_config_t* cfg, const char* u
   cfg->event_handler = handler;
   cfg->user_data = user_data;
   if (strncasecmp(url, "https", 5) == 0) {
-    cfg->crt_bundle_attach = esp_crt_bundle_attach;
     cfg->cert_pem = (const char*)isrg_root_x1_pem_start;
   }
 }
@@ -578,7 +577,7 @@ static esp_err_t ws_client_ensure_connected(void) {
         .task_stack = 8192,
         .disable_auto_reconnect = false,
         .task_name = "bbclaw_ws",
-        .crt_bundle_attach = strncmp(ws_url, "wss", 3) == 0 ? esp_crt_bundle_attach : NULL,
+        .crt_bundle_attach = NULL,
         .cert_pem = strncmp(ws_url, "wss", 3) == 0 ? (const char*)isrg_root_x1_pem_start : NULL,
     };
     s_ws.client = esp_websocket_client_init(&cfg);
