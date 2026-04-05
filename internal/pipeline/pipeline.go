@@ -22,12 +22,6 @@ type Sink interface {
 	) (openclaw.VoiceTranscriptDelivery, error)
 }
 
-// agentSender is optionally implemented by sinks that can send slash
-// commands via the Gateway "agent" RPC method (chat path).
-type agentSender interface {
-	SendAgentMessage(ctx context.Context, message, sessionKey string) error
-}
-
 // Wrap returns a Sink that applies shared pre-processing before delegating
 // to the underlying OpenClaw sink.
 func Wrap(inner Sink, log *obs.Logger, metrics *obs.Metrics) Sink {
@@ -41,8 +35,8 @@ type wrapper struct {
 }
 
 func (w *wrapper) SendVoiceTranscript(ctx context.Context, event openclaw.VoiceTranscriptEvent) (openclaw.VoiceTranscriptDelivery, error) {
-	if cmd := w.matchCommand(ctx, event); cmd != "" {
-		return openclaw.VoiceTranscriptDelivery{ReplyText: cmd}, nil
+	if reply := w.handleCommand(event); reply != "" {
+		return openclaw.VoiceTranscriptDelivery{ReplyText: reply}, nil
 	}
 	return w.inner.SendVoiceTranscript(ctx, event)
 }
@@ -52,19 +46,23 @@ func (w *wrapper) SendVoiceTranscriptStream(
 	event openclaw.VoiceTranscriptEvent,
 	onEvent func(openclaw.VoiceTranscriptStreamEvent),
 ) (openclaw.VoiceTranscriptDelivery, error) {
-	if cmd := w.matchCommand(ctx, event); cmd != "" {
+	if reply := w.handleCommand(event); reply != "" {
 		if onEvent != nil {
-			onEvent(openclaw.VoiceTranscriptStreamEvent{Type: "reply.delta", Text: cmd})
+			onEvent(openclaw.VoiceTranscriptStreamEvent{Type: "reply.delta", Text: reply})
 		}
-		return openclaw.VoiceTranscriptDelivery{ReplyText: cmd}, nil
+		return openclaw.VoiceTranscriptDelivery{ReplyText: reply}, nil
 	}
 	return w.inner.SendVoiceTranscriptStream(ctx, event, onEvent)
 }
 
-// matchCommand checks if the transcript is a voice command. If so, it sends
-// the slash command via the "agent" method (chat path) and returns the command
-// string. Returns "" if not a voice command.
-func (w *wrapper) matchCommand(ctx context.Context, event openclaw.VoiceTranscriptEvent) string {
+// handleCommand checks if the transcript is a voice command and handles it
+// locally in the adapter. Returns the reply text, or "" if not a command.
+//
+// Why adapter-side: OpenClaw Gateway treats voice.transcript events as
+// senderIsOwner=false, so slash commands in that path are silently ignored
+// and sent to the LLM as plain text. Commands must be handled before
+// reaching the Gateway.
+func (w *wrapper) handleCommand(event openclaw.VoiceTranscriptEvent) string {
 	text := strings.TrimSpace(event.Text)
 	vcmd := voicecmd.Match(text)
 	if vcmd == nil {
@@ -74,15 +72,14 @@ func (w *wrapper) matchCommand(ctx context.Context, event openclaw.VoiceTranscri
 		text, vcmd.Command, event.StreamID)
 	w.metrics.Inc("voice_command_intercepted")
 
-	sender, ok := w.inner.(agentSender)
-	if !ok {
-		w.log.Warnf("pipeline: inner sink does not support SendAgentMessage, falling back to voice.transcript")
-		event.Text = vcmd.Command
-		return ""
+	switch vcmd.Command {
+	case "/stop":
+		return "已停止"
+	case "/new":
+		return "新对话已开始"
+	case "/status":
+		return "运行正常"
+	default:
+		return vcmd.Command
 	}
-	if err := sender.SendAgentMessage(ctx, vcmd.Command, event.SessionKey); err != nil {
-		w.log.Errorf("pipeline: SendAgentMessage failed cmd=%s err=%v", vcmd.Command, err)
-		return ""
-	}
-	return vcmd.Command
 }
