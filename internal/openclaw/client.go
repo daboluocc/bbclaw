@@ -139,12 +139,50 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 		return "", err
 	}
 
-	// Wait for response + collect chat events for the reply text.
-	replyText, err := c.waitResponseOKWithChatCapture(conn, chatReqID, sessionKey, nil)
-	if err != nil {
-		return "", fmt.Errorf("chat.send failed: %w", err)
+	// Wait for response. Slash commands return result in the response payload
+	// (not via chat events), so we read the response directly.
+	deadline := time.Now().Add(c.http.Timeout)
+	for {
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return "", fmt.Errorf("set read deadline: %w", err)
+		}
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return "", fmt.Errorf("read response: %w", err)
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			continue
+		}
+		if frame["type"] != "res" {
+			continue
+		}
+		respID, _ := frame["id"].(string)
+		if respID != chatReqID {
+			continue
+		}
+		ok, _ := frame["ok"].(bool)
+		if !ok {
+			if e, ok := frame["error"].(map[string]any); ok {
+				code, _ := e["code"].(string)
+				message, _ := e["message"].(string)
+				return "", fmt.Errorf("code=%s message=%s", code, message)
+			}
+			return "", fmt.Errorf("chat.send failed")
+		}
+		// Extract reply from payload — different commands return different shapes
+		payload, _ := frame["payload"].(map[string]any)
+		if payload != nil {
+			if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text), nil
+			}
+			if text, ok := payload["message"].(string); ok && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text), nil
+			}
+		}
+		// Command executed but no text in payload — return empty, let caller decide display text
+		return "", nil
 	}
-	return replyText, nil
 }
 
 type Options struct {

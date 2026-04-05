@@ -79,14 +79,24 @@ func (w *wrapper) handleCommand(ctx context.Context, event openclaw.VoiceTranscr
 		w.log.Warnf("pipeline: inner sink does not support SendSlashCommand (type=%T)", w.inner)
 		return ""
 	}
-	w.log.Infof("pipeline: sending slash command via HTTP cmd=%s session=%s", vcmd.Command, event.SessionKey)
+	w.log.Infof("pipeline: sending slash command cmd=%s session=%s", vcmd.Command, event.SessionKey)
 	reply, err := sender.SendSlashCommand(ctx, vcmd.Command, event.SessionKey)
 	if err != nil {
 		w.log.Errorf("pipeline: SendSlashCommand failed cmd=%s err=%v", vcmd.Command, err)
 		return ""
 	}
 	if reply == "" {
-		reply = vcmd.Command
+		// Gateway executed the command but returned no text — provide a confirmation
+		switch vcmd.Command {
+		case "/stop":
+			reply = "已停止"
+		case "/new":
+			reply = "新对话已开始"
+		case "/status":
+			reply = "状态已查询"
+		default:
+			reply = "已执行"
+		}
 	}
 	return reply
 }
