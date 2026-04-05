@@ -124,6 +124,16 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 		return "", fmt.Errorf("openclaw connect (operator) failed: %w", err)
 	}
 
+	// Subscribe to session messages so we can capture command output
+	subReqID := "sub-" + uuid.NewString()
+	_ = c.writeJSON(ctx, conn, map[string]any{
+		"type":   "req",
+		"id":     subReqID,
+		"method": "sessions.messages.subscribe",
+		"params": map[string]any{"sessionKey": sessionKey},
+	})
+	_ = c.waitResponseOK(conn, subReqID)
+
 	// Use chat.send to send the slash command — Gateway parses /commands from chat.send.
 	chatReqID := "chat-" + uuid.NewString()
 	if err := c.writeJSON(ctx, conn, map[string]any{
@@ -139,21 +149,33 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 		return "", err
 	}
 
-	// Wait for response. Slash commands return result in the response payload
-	// (not via chat events), so we read the response directly.
+	// Wait for response. Then try to capture any chat events that carry the
+	// command output (e.g. /status results). Use a short window after the
+	// response to collect streamed output.
 	deadline := time.Now().Add(c.http.Timeout)
+	var replyText string
+	responseReceived := false
 	for {
 		if err := conn.SetReadDeadline(deadline); err != nil {
-			return "", fmt.Errorf("set read deadline: %w", err)
+			return replyText, fmt.Errorf("set read deadline: %w", err)
 		}
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
+			if responseReceived {
+				return replyText, nil // timeout after response is OK
+			}
 			return "", fmt.Errorf("read response: %w", err)
 		}
 		var frame map[string]any
 		if err := json.Unmarshal(msg, &frame); err != nil {
 			continue
 		}
+
+		// Capture chat events (command output like /status results)
+		if frame["type"] == "event" {
+			replyText, _ = captureChatFrame(frame, sessionKey, replyText, "", nil)
+		}
+
 		if frame["type"] != "res" {
 			continue
 		}
@@ -170,18 +192,17 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 			}
 			return "", fmt.Errorf("chat.send failed")
 		}
-		// Extract reply from payload — different commands return different shapes
+		// Check payload for inline text
 		payload, _ := frame["payload"].(map[string]any)
 		if payload != nil {
 			if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
 				return strings.TrimSpace(text), nil
 			}
-			if text, ok := payload["message"].(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text), nil
-			}
 		}
-		// Command executed but no text in payload — return empty, let caller decide display text
-		return "", nil
+		// Response received but command output may still arrive via chat events.
+		// Wait a short window to collect it.
+		responseReceived = true
+		deadline = time.Now().Add(2 * time.Second)
 	}
 }
 
