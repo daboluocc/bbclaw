@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 72" width="64" height="72">
+  <!-- 龙虾手拿 BB 机 — 像素风 -->
+  <!-- 蟹身主体 -->
+  <g fill="#ff4f40">
+    <rect x="26" y="4" width="12" height="8"/>
+    <rect x="24" y="12" width="16" height="12"/>
+    <rect x="22" y="24" width="20" height="10"/>
+    <rect x="24" y="34" width="16" height="6"/>
+  </g>
+  <!-- 蟹身深色 -->
+  <g fill="#cc2020">
+    <rect x="24" y="14" width="4" height="8"/>
+    <rect x="36" y="14" width="4" height="8"/>
+  </g>
+  <!-- 龙虾眼睛 -->
+  <g fill="#050810">
+    <rect x="27" y="4" width="3" height="3"/>
+    <rect x="34" y="4" width="3" height="3"/>
+  </g>
+  <g fill="#00e5cc">
+    <rect x="28" y="4" width="1.5" height="1.5"/>
+    <rect x="35" y="4" width="1.5" height="1.5"/>
+  </g>
+
+  <!-- 左蟹钳 — 夹住 BB 机左侧 -->
+  <g fill="#ff4f40">
+    <rect x="10" y="24" width="12" height="6"/>
+    <rect x="6" y="26" width="8" height="4"/>
+    <rect x="2" y="28" width="6" height="5"/>
+    <rect x="0" y="30" width="4" height="3"/>
+    <rect x="2" y="32" width="3" height="4"/>
+    <rect x="4" y="34" width="4" height="3"/>
+  </g>
+  <g fill="#cc2020">
+    <rect x="10" y="26" width="12" height="2"/>
+  </g>
+
+  <!-- 右蟹钳 — 夹住 BB 机右侧 -->
+  <g fill="#ff4f40">
+    <rect x="42" y="24" width="12" height="6"/>
+    <rect x="50" y="26" width="8" height="4"/>
+    <rect x="56" y="28" width="6" height="5"/>
+    <rect x="60" y="30" width="4" height="3"/>
+    <rect x="59" y="32" width="3" height="4"/>
+    <rect x="56" y="34" width="4" height="3"/>
+  </g>
+  <g fill="#cc2020">
+    <rect x="42" y="26" width="12" height="2"/>
+  </g>
+
+  <!-- BB 机 — 黑色外壳 -->
+  <rect x="14" y="36" width="36" height="28" rx="4" fill="#1a1a1a"/>
+  <rect x="14" y="36" width="36" height="28" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+
+  <!-- BB 机屏幕（白底） -->
+  <rect x="18" y="40" width="28" height="12" rx="2" fill="#e8e8e0"/>
+
+  <!-- 屏幕内文字/LCD 效果 -->
+  <g fill="#88aa88" opacity="0.7">
+    <rect x="20" y="42" width="8" height="1.5"/>
+    <rect x="30" y="42" width="4" height="1.5"/>
+    <rect x="20" y="45" width="12" height="1"/>
+    <rect x="20" y="47.5" width="6" height="1"/>
+  </g>
+
+  <!-- BB 机喇叭网（右侧） -->
+  <g fill="#2a2a2a">
+    <rect x="50" y="42" width="3" height="2" rx="1"/>
+    <rect x="50" y="46" width="3" height="2" rx="1"/>
+    <rect x="50" y="50" width="3" height="2" rx="1"/>
+    <rect x="50" y="54" width="3" height="2" rx="1"/>
+  </g>
+
+  <!-- BB 机 LED 指示灯 -->
+  <circle cx="21" cy="56" r="2" fill="#ff3030"/>
+  <circle cx="21" cy="56" r="1" fill="#ff9090"/>
+
+  <!-- BB 机按键区 -->
+  <g fill="#2e2e2e">
+    <rect x="20" y="58" width="4" height="4" rx="1"/>
+    <rect x="26" y="58" width="4" height="4" rx="1"/>
+    <rect x="32" y="58" width="4" height="4" rx="1"/>
+    <rect x="38" y="58" width="4" height="4" rx="1"/>
+  </g>
+  <g fill="#444">
+    <rect x="21" y="59" width="2" height="2" rx="0.5"/>
+    <rect x="27" y="59" width="2" height="2" rx="0.5"/>
+    <rect x="33" y="59" width="2" height="2" rx="0.5"/>
+    <rect x="39" y="59" width="2" height="2" rx="0.5"/>
+  </g>
+
+  <!-- 蟹腿 -->
+  <g fill="#cc2020">
+    <rect x="22" y="36" width="3" height="4"/>
+    <rect x="18" y="38" width="3" height="3"/>
+    <rect x="39" y="36" width="3" height="4"/>
+    <rect x="43" y="38" width="3" height="3"/>
+  </g>
+
+  <!-- 天线（BB 机顶部伸出） -->
+  <rect x="29" y="30" width="3" height="8" rx="1.5" fill="#888"/>
+  <rect x="29.5" y="30" width="1.5" height="8" rx="0.75" fill="#aaa"/>
+
+  <!-- 龙虾腹部 -->
+  <g fill="#ff6040">
+    <rect x="26" y="36" width="12" height="4"/>
+  </g>
+</svg>
