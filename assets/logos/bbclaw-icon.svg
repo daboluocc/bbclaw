@@ -1,70 +1,69 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- BBClaw device icon: radio/对讲机外形 + pixel lobster accent -->
-  <defs>
-    <linearGradient id="body-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#2a2a2a"/>
-      <stop offset="100%" stop-color="#1a1a1a"/>
-    </linearGradient>
-  </defs>
+  <!-- 天线（粗壮，对讲机灵魂） -->
+  <rect x="28" y="1" width="6" height="16" rx="3" fill="#777"/>
+  <rect x="29.5" y="1" width="3" height="16" rx="1.5" fill="#999"/>
+  <!-- 天线顶部圆球 -->
+  <circle cx="31" cy="2" r="2" fill="#aaa"/>
 
-  <!-- Antenna -->
-  <rect x="30" y="2" width="4" height="12" rx="2" fill="#444"/>
-  <rect x="31" y="2" width="2" height="12" rx="1" fill="#666"/>
+  <!-- 机身主体 -->
+  <rect x="10" y="15" width="44" height="48" rx="6" fill="#1c1c1c"/>
+  <rect x="10" y="15" width="44" height="48" rx="6" fill="none" stroke="#3a3a3a" stroke-width="1"/>
 
-  <!-- Main body / 对讲机机身 -->
-  <rect x="12" y="14" width="40" height="48" rx="6" fill="url(#body-grad)" stroke="#3a3a3a" stroke-width="1"/>
+  <!-- 顶部信号指示灯条 -->
+  <g fill="#2a2a2a">
+    <rect x="13" y="18" width="4" height="3" rx="1"/>
+    <rect x="19" y="18" width="4" height="3" rx="1"/>
+    <rect x="25" y="18" width="4" height="3" rx="1"/>
+  </g>
+  <!-- 绿色信号灯 -->
+  <rect x="13" y="18" width="4" height="3" rx="1" fill="#00cc44"/>
+  <rect x="19" y="18" width="4" height="3" rx="1" fill="#00cc44" opacity="0.6"/>
+  <rect x="25" y="18" width="4" height="3" rx="1" fill="#00cc44" opacity="0.3"/>
 
-  <!-- Speaker grille -->
-  <g fill="#444">
-    <rect x="16" y="18" width="8" height="3" rx="1.5"/>
-    <rect x="16" y="23" width="8" height="3" rx="1.5"/>
-    <rect x="16" y="28" width="8" height="3" rx="1.5"/>
-    <rect x="16" y="33" width="8" height="3" rx="1.5"/>
+  <!-- 喇叭网（蜂窝状，对讲机核心元素） -->
+  <g fill="#252525" stroke="#1a1a1a" stroke-width="0.3">
+    <circle cx="20" cy="30" r="2.5"/>
+    <circle cx="28" cy="30" r="2.5"/>
+    <circle cx="36" cy="30" r="2.5"/>
+    <circle cx="24" cy="35" r="2.5"/>
+    <circle cx="32" cy="35" r="2.5"/>
+    <circle cx="20" cy="40" r="2.5"/>
+    <circle cx="28" cy="40" r="2.5"/>
+    <circle cx="36" cy="40" r="2.5"/>
+    <circle cx="24" cy="45" r="2.5"/>
+    <circle cx="32" cy="45" r="2.5"/>
   </g>
 
-  <!-- LED indicator -->
-  <circle cx="36" cy="22" r="4" fill="#ff4f40" opacity="0.9"/>
-  <circle cx="36" cy="22" r="2" fill="#ff8880"/>
+  <!-- LED 发射灯（红色，对讲机灵魂） -->
+  <circle cx="46" cy="30" r="5" fill="#1a0808"/>
+  <circle cx="46" cy="30" r="3.5" fill="#ff2020" opacity="0.95"/>
+  <circle cx="46" cy="30" r="1.8" fill="#ff8080"/>
 
-  <!-- Display area -->
-  <rect x="26" y="18" width="22" height="14" rx="2" fill="#0a1a0a"/>
-  <rect x="27" y="19" width="20" height="12" rx="1.5" fill="#0f2f0f" opacity="0.6"/>
-
-  <!-- Pixel lobster in display (tiny!) -->
-  <g transform="translate(28, 20) scale(0.35)">
-    <g fill="#ff4f40">
-      <rect x="5" y="3" width="6" height="1"/>
-      <rect x="4" y="4" width="8" height="1"/>
-      <rect x="3" y="5" width="10" height="1"/>
-      <rect x="3" y="6" width="10" height="1"/>
-      <rect x="3" y="7" width="10" height="1"/>
-      <rect x="4" y="8" width="8" height="1"/>
-      <rect x="5" y="9" width="6" height="1"/>
-      <rect x="5" y="12" width="6" height="1"/>
-      <rect x="6" y="13" width="4" height="1"/>
-    </g>
-    <g fill="#ff775f">
-      <rect x="1" y="6" width="2" height="1"/>
-      <rect x="2" y="5" width="1" height="1"/>
-      <rect x="2" y="7" width="1" height="1"/>
-      <rect x="13" y="6" width="2" height="1"/>
-      <rect x="13" y="5" width="1" height="1"/>
-      <rect x="13" y="7" width="1" height="1"/>
-    </g>
-    <g fill="#081016">
-      <rect x="6" y="5" width="1" height="1"/>
-      <rect x="9" y="5" width="1" height="1"/>
-    </g>
-    <g fill="#f5fbff">
-      <rect x="6" y="4" width="1" height="1"/>
-      <rect x="9" y="4" width="1" height="1"/>
-    </g>
+  <!-- 发射时声波动画暗示 -->
+  <g stroke="#ff4040" stroke-width="0.6" fill="none" opacity="0.5">
+    <path d="M42 30 Q40 27 42 24"/>
+    <path d="M50 30 Q52 27 50 24"/>
+    <path d="M41 30 Q38 26 41 22"/>
+    <path d="M51 30 Q54 26 51 22"/>
   </g>
 
-  <!-- PTT button (push-to-talk) -->
-  <rect x="26" y="36" width="22" height="10" rx="3" fill="#3a3a3a" stroke="#555" stroke-width="0.5"/>
-  <rect x="28" y="38" width="18" height="6" rx="2" fill="#ff4f40" opacity="0.8"/>
+  <!-- PTT 按键区域（对讲机灵魂，侧面大型按键） -->
+  <rect x="42" y="40" width="10" height="16" rx="3" fill="#222" stroke="#444" stroke-width="0.8"/>
+  <!-- PTT 按键本体 -->
+  <rect x="43.5" y="42" width="7" height="12" rx="2" fill="#2e2e2e"/>
+  <rect x="44" y="43" width="6" height="10" rx="1.5" fill="#ff3030" opacity="0.9"/>
+  <!-- PTT 阴影线 -->
+  <rect x="44" y="43" width="6" height="2" rx="1" fill="#ff6060" opacity="0.5"/>
+  <!-- PTT 标识 -->
+  <text x="47" y="52" font-family="Arial" font-size="3.5" font-weight="bold" fill="#ffcccc" text-anchor="middle">PTT</text>
 
-  <!-- Bottom detail -->
-  <rect x="24" y="50" width="16" height="6" rx="2" fill="#333"/>
+  <!-- 频道旋钮 -->
+  <circle cx="46" cy="52" r="3" fill="#333" stroke="#555" stroke-width="0.5"/>
+  <circle cx="46" cy="52" r="1.5" fill="#222"/>
+  <line x1="46" y1="49.5" x2="46" y2="51" stroke="#888" stroke-width="0.8"/>
+
+  <!-- 音量/电源指示小点 -->
+  <circle cx="13" cy="55" r="1.5" fill="#333"/>
+  <circle cx="17" cy="55" r="1.5" fill="#333"/>
+  <circle cx="21" cy="55" r="1.5" fill="#444"/>
 </svg>

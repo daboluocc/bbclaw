@@ -1,15 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- 对讲机 favicon: 32x32 适合 tab -->
-  <!-- Antenna -->
-  <rect x="14" y="1" width="4" height="7" rx="2" fill="#666"/>
-  <!-- Body -->
-  <rect x="5" y="7" width="22" height="24" rx="4" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="0.5"/>
-  <!-- Speaker grille dots -->
-  <circle cx="9" cy="12" r="1" fill="#444"/>
-  <circle cx="9" cy="16" r="1" fill="#444"/>
-  <circle cx="9" cy="20" r="1" fill="#444"/>
-  <!-- LED -->
-  <circle cx="23" cy="12" r="2.5" fill="#ff4f40"/>
-  <!-- PTT button -->
-  <rect x="18" y="17" width="6" height="5" rx="2" fill="#ff4f40" opacity="0.85"/>
+  <!-- 天线 -->
+  <rect x="14" y="1" width="4" height="8" rx="2" fill="#888"/>
+  <rect x="15" y="1" width="2" height="8" rx="1" fill="#aaa"/>
+
+  <!-- 机身 -->
+  <rect x="5" y="8" width="22" height="23" rx="3" fill="#1e1e1e"/>
+  <rect x="5" y="8" width="22" height="23" rx="3" fill="none" stroke="#3a3a3a" stroke-width="0.6"/>
+
+  <!-- 喇叭网（对讲机灵魂元素） -->
+  <g fill="#2e2e2e">
+    <rect x="7" y="11" width="12" height="1.5" rx="0.75"/>
+    <rect x="7" y="14" width="12" height="1.5" rx="0.75"/>
+    <rect x="7" y="17" width="12" height="1.5" rx="0.75"/>
+    <rect x="7" y="20" width="12" height="1.5" rx="0.75"/>
+  </g>
+
+  <!-- LED 环形灯（发射时红色呼吸灯） -->
+  <circle cx="23" cy="13" r="3" fill="#1a0808"/>
+  <circle cx="23" cy="13" r="2" fill="#ff3030" opacity="0.9"/>
+  <circle cx="23" cy="13" r="1" fill="#ff8888"/>
+
+  <!-- PTT 大按键（对讲机灵魂） -->
+  <rect x="20" y="22" width="7" height="6" rx="2" fill="#2e2e2e" stroke="#555" stroke-width="0.5"/>
+  <rect x="21" y="23" width="5" height="4" rx="1" fill="#ff3a3a" opacity="0.9"/>
+  <!-- PTT 文字暗示 -->
+  <rect x="22" y="24" width="3" height="0.8" rx="0.4" fill="#ffaaaa" opacity="0.7"/>
 </svg>

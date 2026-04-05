@@ -1,41 +1,52 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- 对讲机 + 像素龙虾脸的融合 -->
-  <!-- Antenna -->
-  <rect x="22" y="2" width="4" height="10" rx="2" fill="#666"/>
+  <!-- 对讲机 + 像素龙虾脸融合 -->
+  <!-- 天线 -->
+  <rect x="21" y="1" width="5" height="12" rx="2.5" fill="#888"/>
+  <rect x="22.5" y="1" width="2" height="12" rx="1" fill="#aaa"/>
 
-  <!-- Body -->
-  <rect x="8" y="10" width="32" height="36" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <!-- 机身 -->
+  <rect x="8" y="12" width="32" height="35" rx="5" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="0.8"/>
 
-  <!-- Speaker area (lobster face) - circular grille -->
-  <circle cx="18" cy="22" r="8" fill="#2a1a1a"/>
-  <g stroke="#3a2a2a" stroke-width="0.8" fill="none">
-    <circle cx="18" cy="22" r="3"/>
-    <circle cx="18" cy="22" r="5.5"/>
-    <line x1="18" y1="14" x2="18" y2="16"/>
-    <line x1="18" y1="28" x2="18" y2="30"/>
-    <line x1="10" y1="22" x2="12" y2="22"/>
-    <line x1="24" y1="22" x2="26" y2="22"/>
-    <line x1="11.8" y1="15.8" x2="13.2" y2="17.2"/>
-    <line x1="24.2" y1="15.8" x2="22.8" y2="17.2"/>
-    <line x1="11.8" y1="28.2" x2="13.2" y2="26.8"/>
-    <line x1="24.2" y1="28.2" x2="22.8" y2="26.8"/>
+  <!-- 喇叭区（圆形龙虾脸风格） -->
+  <circle cx="20" cy="24" r="9" fill="#1a0a0a"/>
+  <circle cx="20" cy="24" r="8" fill="#221010" stroke="#2a1515" stroke-width="0.5"/>
+  <!-- 蜂窝喇叭孔 -->
+  <g fill="#140808">
+    <circle cx="20" cy="20" r="1.2"/>
+    <circle cx="16" cy="22" r="1.2"/>
+    <circle cx="24" cy="22" r="1.2"/>
+    <circle cx="17" cy="26" r="1.2"/>
+    <circle cx="23" cy="26" r="1.2"/>
+    <circle cx="20" cy="29" r="1.2"/>
+    <circle cx="14" cy="24" r="1.2"/>
+    <circle cx="26" cy="24" r="1.2"/>
   </g>
 
-  <!-- Lobster eyes in speaker (small red dots) -->
-  <circle cx="15" cy="20" r="1.5" fill="#ff4f40"/>
-  <circle cx="21" cy="20" r="1.5" fill="#ff4f40"/>
-  <circle cx="15" cy="20" r="0.6" fill="#ffaaaa"/>
-  <circle cx="21" cy="20" r="0.6" fill="#ffaaaa"/>
+  <!-- 龙虾眼睛（发射灯位置复用） -->
+  <circle cx="16" cy="22" r="2.2" fill="#ff3030"/>
+  <circle cx="24" cy="22" r="2.2" fill="#ff3030"/>
+  <circle cx="16" cy="22" r="1" fill="#ffaaaa"/>
+  <circle cx="24" cy="22" r="1" fill="#ffaaaa"/>
 
-  <!-- LED indicator -->
-  <circle cx="36" cy="16" r="3" fill="#ff4f40" opacity="0.9"/>
-  <circle cx="36" cy="16" r="1.2" fill="#ff8880"/>
+  <!-- LED 发射指示 -->
+  <circle cx="34" cy="18" r="4" fill="#1a0808"/>
+  <circle cx="34" cy="18" r="2.8" fill="#ff2020" opacity="0.95"/>
+  <circle cx="34" cy="18" r="1.2" fill="#ff9090"/>
 
-  <!-- PTT button -->
-  <rect x="30" y="24" width="10" height="8" rx="3" fill="#2a2a2a" stroke="#444" stroke-width="0.5"/>
-  <rect x="32" y="26" width="6" height="4" rx="1.5" fill="#ff4f40" opacity="0.85"/>
+  <!-- 声波 -->
+  <g stroke="#ff4040" stroke-width="0.7" fill="none" opacity="0.45">
+    <path d="M30 18 Q28 15 30 12"/>
+    <path d="M38 18 Q40 15 38 12"/>
+  </g>
 
-  <!-- Bottom label area -->
-  <rect x="30" y="36" width="10" height="6" rx="1.5" fill="#222"/>
-  <rect x="31.5" y="37.5" width="7" height="3" rx="0.5" fill="#333"/>
+  <!-- PTT 按键 -->
+  <rect x="30" y="28" width="10" height="14" rx="3" fill="#222" stroke="#444" stroke-width="0.6"/>
+  <rect x="31.5" y="30" width="7" height="10" rx="2" fill="#2e2e2e"/>
+  <rect x="32" y="31" width="6" height="8" rx="1.5" fill="#ff3030" opacity="0.9"/>
+  <text x="35" y="38" font-family="Arial" font-size="3" font-weight="bold" fill="#ffcccc" text-anchor="middle">PTT</text>
+
+  <!-- 频道旋钮 -->
+  <circle cx="34" cy="44" r="2.5" fill="#333" stroke="#555" stroke-width="0.4"/>
+  <circle cx="34" cy="44" r="1" fill="#222"/>
+  <line x1="34" y1="42" x2="34" y2="43.2" stroke="#888" stroke-width="0.7"/>
 </svg>
