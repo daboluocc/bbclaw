@@ -65,6 +65,8 @@ BBClaw 设备 ──WiFi──► 同一内网 ◄──WiFi── 运行面 (Ad
 
 - [ ] 面向极客套件的文档（接线、BOM、打印注意事项）
 - [ ] 社区反馈与稳定性迭代
+- [ ] **语音命令拦截**：ASR 后、LLM 前识别 /stop /new /status 等 slash command（adapter 侧）
+- [ ] **OpenClaw Agent 协议对接**：从 node.event/voice.transcript 切换到 method:"agent" + event streaming，支持长任务 subagent、实时 delta 播报、chat.abort 取消
 
 ### v1.0.0 — 极客版 + 3D 打印成品形态
 
