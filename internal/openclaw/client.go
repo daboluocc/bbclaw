@@ -82,10 +82,9 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 
 	agentReqID := "agent-" + uuid.NewString()
 	if err := c.writeJSON(ctx, conn, map[string]any{
-		"jsonrpc": "2.0",
-		"type":    "req",
-		"id":      agentReqID,
-		"method":  "agent",
+		"type":   "req",
+		"id":     agentReqID,
+		"method": "agent",
 		"params": map[string]any{
 			"message":    message,
 			"sessionKey": sessionKey,
