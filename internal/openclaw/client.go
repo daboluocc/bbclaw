@@ -36,46 +36,49 @@ type VoiceTranscriptStreamEvent struct {
 	Text string
 }
 
-// SendAgentMessage sends a chat message via the "agent" RPC method.
-// This is used for slash commands (/stop, /new, /status) which must
-// go through the chat path for Gateway command parsing.
-func (c *Client) SendAgentMessage(ctx context.Context, message, sessionKey string) error {
+// SendSlashCommand sends a slash command via the WS protocol using chat.send
+// with operator role. Gateway parses /commands from chat.send when senderIsOwner.
+func (c *Client) SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error) {
 	u, err := url.Parse(c.endpoint)
 	if err != nil {
-		return fmt.Errorf("parse openclaw endpoint: %w", err)
+		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
 	case "ws", "wss":
-		return c.sendAgentMessageWS(ctx, message, sessionKey)
+		return c.sendSlashCommandWS(ctx, command, sessionKey)
 	default:
-		return fmt.Errorf("agent message requires ws/wss endpoint, got %s", u.Scheme)
+		return "", fmt.Errorf("slash command requires ws/wss endpoint, got %s", u.Scheme)
 	}
 }
 
-func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey string) error {
+func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey string) (string, error) {
 	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("dial openclaw ws: %w", err)
+		return "", fmt.Errorf("dial openclaw ws: %w", err)
 	}
 	defer conn.Close()
 
 	nonce, err := c.waitConnectChallenge(conn)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// Build operator-role connect with device identity so scopes are preserved.
+	// Operator connect with device identity — same keypair as node connections.
+	// Uses cli client id + mode per official protocol docs.
 	identity, err := loadOrCreateDeviceIdentity(c.deviceIdentityPath)
 	if err != nil {
-		return fmt.Errorf("load device identity: %w", err)
+		return "", fmt.Errorf("load device identity: %w", err)
 	}
 	signedAtMs := time.Now().UnixMilli()
+	scopes := []string{"operator.read", "operator.write"}
+	scopesCSV := strings.Join(scopes, ",")
+	_ = scopesCSV
 	payload := buildDeviceAuthPayloadV3(deviceAuthPayloadV3{
 		deviceID:     identity.DeviceID,
-		clientID:     "gateway-client",
-		clientMode:   "backend",
+		clientID:     "cli",
+		clientMode:   "cli",
 		role:         "operator",
-		scopes:       []string{"operator.admin"},
+		scopes:       scopes,
 		signedAtMs:   signedAtMs,
 		token:        c.authToken,
 		nonce:        nonce,
@@ -88,14 +91,14 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 		"minProtocol": 3,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":           "gateway-client",
+			"id":           "cli",
 			"version":      "bbclaw-adapter",
 			"platform":     runtime.GOOS,
-			"mode":         "backend",
+			"mode":         "cli",
 			"deviceFamily": "bbclaw",
 		},
 		"role":   "operator",
-		"scopes": []string{"operator.admin"},
+		"scopes": scopes,
 		"device": map[string]any{
 			"id":        identity.DeviceID,
 			"publicKey": identity.PublicKey,
@@ -115,97 +118,33 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 		"method": "connect",
 		"params": connectParams,
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.waitResponseOK(conn, connectReqID); err != nil {
-		return fmt.Errorf("openclaw connect (operator) failed: %w", err)
+		return "", fmt.Errorf("openclaw connect (operator) failed: %w", err)
 	}
 
-	agentReqID := "agent-" + uuid.NewString()
+	// Use chat.send to send the slash command — Gateway parses /commands from chat.send.
+	chatReqID := "chat-" + uuid.NewString()
 	if err := c.writeJSON(ctx, conn, map[string]any{
 		"type":   "req",
-		"id":     agentReqID,
-		"method": "agent",
+		"id":     chatReqID,
+		"method": "chat.send",
 		"params": map[string]any{
-			"message":    message,
-			"sessionKey": sessionKey,
+			"sessionKey":     sessionKey,
+			"message":        command,
+			"idempotencyKey": chatReqID,
 		},
 	}); err != nil {
-		return err
-	}
-	return c.waitResponseOK(conn, agentReqID)
-}
-
-// SendSlashCommand sends a slash command via the OpenAI-compatible HTTP API
-// (POST /v1/chat/completions). This path uses Bearer token auth which gives
-// senderIsOwner=true, so Gateway correctly parses /status, /stop, /new etc.
-func (c *Client) SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error) {
-	// Convert ws:// to http:// for the REST endpoint
-	u, err := url.Parse(c.endpoint)
-	if err != nil {
-		return "", fmt.Errorf("parse endpoint: %w", err)
-	}
-	switch u.Scheme {
-	case "ws":
-		u.Scheme = "http"
-	case "wss":
-		u.Scheme = "https"
-	}
-	u.Path = "/v1/chat/completions"
-
-	body, err := json.Marshal(map[string]any{
-		"model": "openclaw",
-		"messages": []map[string]string{
-			{"role": "user", "content": command},
-		},
-		"user":   sessionKey,
-		"stream": false,
-	})
-	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	// Wait for response + collect chat events for the reply text.
+	replyText, err := c.waitResponseOKWithChatCapture(conn, chatReqID, sessionKey, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("chat.send failed: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	if sessionKey != "" {
-		req.Header.Set("X-OpenClaw-Session-Key", sessionKey)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("slash command http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	rb, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("slash command status=%d body=%s", resp.StatusCode, string(rb))
-	}
-
-	// Parse OpenAI-compatible response
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(rb, &result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	if len(result.Choices) > 0 {
-		return strings.TrimSpace(result.Choices[0].Message.Content), nil
-	}
-	return "", nil
+	return replyText, nil
 }
 
 type Options struct {

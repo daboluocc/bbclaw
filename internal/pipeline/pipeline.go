@@ -76,9 +76,10 @@ func (w *wrapper) handleCommand(ctx context.Context, event openclaw.VoiceTranscr
 
 	sender, ok := w.inner.(commandSender)
 	if !ok {
-		w.log.Warnf("pipeline: inner sink does not support SendSlashCommand")
+		w.log.Warnf("pipeline: inner sink does not support SendSlashCommand (type=%T)", w.inner)
 		return ""
 	}
+	w.log.Infof("pipeline: sending slash command via HTTP cmd=%s session=%s", vcmd.Command, event.SessionKey)
 	reply, err := sender.SendSlashCommand(ctx, vcmd.Command, event.SessionKey)
 	if err != nil {
 		w.log.Errorf("pipeline: SendSlashCommand failed cmd=%s err=%v", vcmd.Command, err)
