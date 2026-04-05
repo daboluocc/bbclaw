@@ -65,11 +65,10 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 		"minProtocol": 3,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":          "bbclaw-agent-cmd",
-			"displayName": c.resolveNodeID(),
-			"version":     "bbclaw-adapter",
-			"platform":    runtime.GOOS,
-			"mode":        "control",
+			"id":       "control-ui",
+			"name":     "bbclaw-adapter",
+			"version":  "1.0.0",
+			"platform": runtime.GOOS,
 		},
 		"role": "control",
 	}
