@@ -59,24 +59,56 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 	}
 	defer conn.Close()
 
-	// agent method requires role:"operator" with write scope (not role:"node").
-	// See: firmware/docs/openclaw_gateway_ws_reference.md
-	connectReqID := "connect-" + uuid.NewString()
+	nonce, err := c.waitConnectChallenge(conn)
+	if err != nil {
+		return err
+	}
+
+	// Build operator-role connect with device identity so scopes are preserved.
+	identity, err := loadOrCreateDeviceIdentity(c.deviceIdentityPath)
+	if err != nil {
+		return fmt.Errorf("load device identity: %w", err)
+	}
+	signedAtMs := time.Now().UnixMilli()
+	payload := buildDeviceAuthPayloadV3(deviceAuthPayloadV3{
+		deviceID:     identity.DeviceID,
+		clientID:     "gateway-client",
+		clientMode:   "backend",
+		role:         "operator",
+		scopes:       []string{"operator.admin"},
+		signedAtMs:   signedAtMs,
+		token:        c.authToken,
+		nonce:        nonce,
+		platform:     runtime.GOOS,
+		deviceFamily: "bbclaw",
+	})
+	signature := signDevicePayload(identity.PrivateKey, payload)
+
 	connectParams := map[string]any{
 		"minProtocol": 3,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":       "gateway-client",
-			"version":  "bbclaw-adapter",
-			"platform": runtime.GOOS,
-			"mode":     "backend",
+			"id":           "gateway-client",
+			"version":      "bbclaw-adapter",
+			"platform":     runtime.GOOS,
+			"mode":         "backend",
+			"deviceFamily": "bbclaw",
 		},
 		"role":   "operator",
 		"scopes": []string{"operator.admin"},
+		"device": map[string]any{
+			"id":        identity.DeviceID,
+			"publicKey": identity.PublicKey,
+			"signature": signature,
+			"signedAt":  signedAtMs,
+			"nonce":     nonce,
+		},
 	}
 	if c.authToken != "" {
 		connectParams["auth"] = map[string]any{"token": c.authToken}
 	}
+
+	connectReqID := "connect-" + uuid.NewString()
 	if err := c.writeJSON(ctx, conn, map[string]any{
 		"type":   "req",
 		"id":     connectReqID,
@@ -86,7 +118,7 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 		return err
 	}
 	if err := c.waitResponseOK(conn, connectReqID); err != nil {
-		return fmt.Errorf("openclaw connect (control) failed: %w", err)
+		return fmt.Errorf("openclaw connect (operator) failed: %w", err)
 	}
 
 	agentReqID := "agent-" + uuid.NewString()
