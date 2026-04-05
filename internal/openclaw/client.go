@@ -72,7 +72,7 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 			"mode":     "backend",
 		},
 		"role":   "operator",
-		"scopes": []string{"write"},
+		"scopes": []string{"operator.admin"},
 	}
 	if c.authToken != "" {
 		connectParams["auth"] = map[string]any{"token": c.authToken}
