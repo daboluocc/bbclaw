@@ -18,11 +18,13 @@ BBCLAW_BUILD_TAG  ?= $(shell git -C "$(REPO_ROOT)" describe --tags --always --di
 BBCLAW_BUILD_TIME ?= $(shell date -u +%Y%m%d-%H%M)
 GO_LDFLAGS := -X github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
 
-# 默认配置文件（可 ENV_FILE= 覆盖）
+LOG_DIR  ?= $(CURDIR)/tmp
+LOG_ADAPTER ?= $(LOG_DIR)/adapter-runtime.log
+LOG_HOME    ?= $(LOG_DIR)/home-adapter-runtime.log
 ENV_ADAPTER ?= $(CURDIR)/.env
 ENV_HOME    ?= $(CURDIR)/.env.home
 
-.PHONY: help build build-adapter build-home test run run-adapter run-home dev dev-adapter dev-home
+.PHONY: help build build-adapter build-home test run run-adapter run-home dev dev-adapter dev-home log log-adapter log-home
 
 help:
 	@echo "BBClaw adapter — 两种模式（配置来自文件，由 make 在启动前 export 到环境）"
@@ -30,6 +32,7 @@ help:
 	@echo "  make run-adapter   # go run bbclaw-adapter，默认配置: $(ENV_ADAPTER)"
 	@echo "  make run-home      # go run bbclaw-home-adapter，默认配置: $(ENV_HOME)"
 	@echo "  make dev-adapter / dev-home  # 与 run-* 相同（别名）"
+	@echo "  make log-home / log-adapter  # tail -f 运行日志"
 	@echo "  make build         # 两个二进制都构建到 $(BIN_DIR)/（launchd / 部署用）"
 	@echo "  make test          # go test ./..."
 	@echo ""
@@ -54,22 +57,36 @@ run-adapter:
 	@_ENV="$(ENV_FILE)"; \
 	if [ -n "$$_ENV" ]; then CFG="$$_ENV"; else CFG="$(ENV_ADAPTER)"; fi; \
 	test -f "$$CFG" || { echo "missing $$CFG — copy from .env.example"; exit 1; }; \
+	mkdir -p "$(LOG_DIR)"; \
 	set -a; \
 	. "$$CFG"; \
 	set +a; \
-	exec $(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter
+	echo "=== adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$(LOG_ADAPTER)"; \
+	echo "log: $(LOG_ADAPTER)"; \
+	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter 2>&1 | tee -a "$(LOG_ADAPTER)"
 
 run-home:
 	@_ENV="$(ENV_FILE)"; \
 	if [ -n "$$_ENV" ]; then CFG="$$_ENV"; else CFG="$(ENV_HOME)"; fi; \
 	test -f "$$CFG" || { echo "missing $$CFG — copy from .env.home.example"; exit 1; }; \
+	mkdir -p "$(LOG_DIR)"; \
 	set -a; \
 	. "$$CFG"; \
 	set +a; \
-	exec $(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-home-adapter
+	echo "=== home-adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$(LOG_HOME)"; \
+	echo "log: $(LOG_HOME)"; \
+	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-home-adapter 2>&1 | tee -a "$(LOG_HOME)"
 
 dev-adapter: run-adapter
 dev-home: run-home
+
+log-adapter:
+	@tail -f "$(LOG_ADAPTER)"
+
+log-home:
+	@tail -f "$(LOG_HOME)"
+
+log: log-home
 
 # 默认列出帮助
 run:
