@@ -96,21 +96,6 @@ bbclaw/
 └── LICENSE          # Apache 2.0
 ```
 
-## 进度
-
-### 当前进行
-
-- 语音与通知链路的端侧体验持续优化
-- 公网 CloudSaaS 拓扑工程化
-
-### 下一步
-
-1. 马达与 LVGL 界面打磨
-2. BLE 等连接模式（规划中）
-3. 极客套件文档：接线、BOM、3D 打印外壳说明
-
-完整路线图见 [ROADMAP.md](ROADMAP.md)。
-
 ## 文档
 
 - [使用手册](docs/user_guide.md) — 从零开始配置和使用
