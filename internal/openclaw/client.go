@@ -59,15 +59,23 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 	}
 	defer conn.Close()
 
-	nonce, err := c.waitConnectChallenge(conn)
-	if err != nil {
-		return err
-	}
-	connectParams, err := c.buildConnectParams(nonce)
-	if err != nil {
-		return err
-	}
+	// agent method requires role:"control", not role:"node".
 	connectReqID := "connect-" + uuid.NewString()
+	connectParams := map[string]any{
+		"minProtocol": 3,
+		"maxProtocol": 3,
+		"client": map[string]any{
+			"id":          "bbclaw-agent-cmd",
+			"displayName": c.resolveNodeID(),
+			"version":     "bbclaw-adapter",
+			"platform":    runtime.GOOS,
+			"mode":        "control",
+		},
+		"role": "control",
+	}
+	if c.authToken != "" {
+		connectParams["auth"] = map[string]any{"token": c.authToken}
+	}
 	if err := c.writeJSON(ctx, conn, map[string]any{
 		"type":   "req",
 		"id":     connectReqID,
@@ -77,7 +85,7 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 		return err
 	}
 	if err := c.waitResponseOK(conn, connectReqID); err != nil {
-		return fmt.Errorf("openclaw connect failed: %w", err)
+		return fmt.Errorf("openclaw connect (control) failed: %w", err)
 	}
 
 	agentReqID := "agent-" + uuid.NewString()
