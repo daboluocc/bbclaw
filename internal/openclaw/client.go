@@ -36,6 +36,66 @@ type VoiceTranscriptStreamEvent struct {
 	Text string
 }
 
+// SendAgentMessage sends a chat message via the "agent" RPC method.
+// This is used for slash commands (/stop, /new, /status) which must
+// go through the chat path for Gateway command parsing.
+func (c *Client) SendAgentMessage(ctx context.Context, message, sessionKey string) error {
+	u, err := url.Parse(c.endpoint)
+	if err != nil {
+		return fmt.Errorf("parse openclaw endpoint: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+	case "ws", "wss":
+		return c.sendAgentMessageWS(ctx, message, sessionKey)
+	default:
+		return fmt.Errorf("agent message requires ws/wss endpoint, got %s", u.Scheme)
+	}
+}
+
+func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey string) error {
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("dial openclaw ws: %w", err)
+	}
+	defer conn.Close()
+
+	nonce, err := c.waitConnectChallenge(conn)
+	if err != nil {
+		return err
+	}
+	connectParams, err := c.buildConnectParams(nonce)
+	if err != nil {
+		return err
+	}
+	connectReqID := "connect-" + uuid.NewString()
+	if err := c.writeJSON(ctx, conn, map[string]any{
+		"type":   "req",
+		"id":     connectReqID,
+		"method": "connect",
+		"params": connectParams,
+	}); err != nil {
+		return err
+	}
+	if err := c.waitResponseOK(conn, connectReqID); err != nil {
+		return fmt.Errorf("openclaw connect failed: %w", err)
+	}
+
+	agentReqID := "agent-" + uuid.NewString()
+	if err := c.writeJSON(ctx, conn, map[string]any{
+		"jsonrpc": "2.0",
+		"type":    "req",
+		"id":      agentReqID,
+		"method":  "agent",
+		"params": map[string]any{
+			"message":    message,
+			"sessionKey": sessionKey,
+		},
+	}); err != nil {
+		return err
+	}
+	return c.waitResponseOK(conn, agentReqID)
+}
+
 type Options struct {
 	NodeID             string
 	AuthToken          string
