@@ -160,6 +160,7 @@ static int s_scroll_you;
 static int s_scroll_ai;
 static int s_focus_ai;
 static char s_status[32];
+static int64_t s_last_active_ms;  /* last non-idle activity timestamp */
 
 /* LVGL objects — standby */
 static lv_obj_t* s_view_standby;
@@ -691,6 +692,14 @@ static void refresh_ui(void) {
 
   portENTER_CRITICAL(&s_state_lock);
   memcpy(status, s_status, sizeof(status));
+  /* Auto-clear history after idle timeout to return to standby */
+  if (BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS > 0 && s_history_count > 0 && is_standby_status(s_status) &&
+      s_last_active_ms > 0 && (bb_now_ms() - s_last_active_ms) >= BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS) {
+    s_history_count = 0;
+    s_view_back = 0;
+    s_scroll_you = 0;
+    s_scroll_ai = 0;
+  }
   turn_den = s_history_count;
   if (s_history_count <= 0) {
     you[0] = '\0';
@@ -915,6 +924,7 @@ esp_err_t bb_display_show_status(const char* status_line) {
     portENTER_CRITICAL(&s_state_lock);
     strncpy(s_status, status_line, sizeof(s_status) - 1);
     s_status[sizeof(s_status) - 1] = '\0';
+    if (!is_standby_status(s_status)) s_last_active_ms = bb_now_ms();
     portEXIT_CRITICAL(&s_state_lock);
   }
   if (s_ready) refresh_ui();
@@ -931,6 +941,7 @@ esp_err_t bb_display_upsert_chat_turn(const char* user_said, const char* assista
   if (u[0] == '\0' && r[0] == '\0') return ESP_OK;
 
   portENTER_CRITICAL(&s_state_lock);
+  s_last_active_ms = bb_now_ms();
   if (s_stream_turn_active && s_history_count > 0) {
     strncpy(s_history[s_history_count - 1].you, u, sizeof(s_history[0].you) - 1);
     s_history[s_history_count - 1].you[sizeof(s_history[0].you) - 1] = '\0';

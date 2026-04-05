@@ -558,6 +558,11 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_DISPLAY_CHAT_HISTORY 8
 #endif
 
+/** READY 状态下无操作多久后自动回到待机画面（清掉聊天历史），单位 ms；0 = 不自动回待机 */
+#ifndef BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS
+#define BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS 30000
+#endif
+
 /**
  * 1.47" 172x320 SPI ST7789 模组预设：
  * - 1: V1，原先默认那块屏
