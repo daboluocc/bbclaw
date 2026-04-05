@@ -545,7 +545,7 @@ const char *bbclaw_session_key(void);
 
 /** READY 状态下无操作多久后自动回到待机画面（清掉聊天历史），单位 ms；0 = 不自动回待机 */
 #ifndef BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS
-#define BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS 30000
+#define BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS 120000
 #endif
 
 /**
