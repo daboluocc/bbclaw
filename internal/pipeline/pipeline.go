@@ -22,6 +22,11 @@ type Sink interface {
 	) (openclaw.VoiceTranscriptDelivery, error)
 }
 
+// commandSender can send slash commands via the OpenAI-compatible HTTP API.
+type commandSender interface {
+	SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error)
+}
+
 // Wrap returns a Sink that applies shared pre-processing before delegating
 // to the underlying OpenClaw sink.
 func Wrap(inner Sink, log *obs.Logger, metrics *obs.Metrics) Sink {
@@ -35,7 +40,7 @@ type wrapper struct {
 }
 
 func (w *wrapper) SendVoiceTranscript(ctx context.Context, event openclaw.VoiceTranscriptEvent) (openclaw.VoiceTranscriptDelivery, error) {
-	if reply := w.handleCommand(event); reply != "" {
+	if reply := w.handleCommand(ctx, event); reply != "" {
 		return openclaw.VoiceTranscriptDelivery{ReplyText: reply}, nil
 	}
 	return w.inner.SendVoiceTranscript(ctx, event)
@@ -46,7 +51,7 @@ func (w *wrapper) SendVoiceTranscriptStream(
 	event openclaw.VoiceTranscriptEvent,
 	onEvent func(openclaw.VoiceTranscriptStreamEvent),
 ) (openclaw.VoiceTranscriptDelivery, error) {
-	if reply := w.handleCommand(event); reply != "" {
+	if reply := w.handleCommand(ctx, event); reply != "" {
 		if onEvent != nil {
 			onEvent(openclaw.VoiceTranscriptStreamEvent{Type: "reply.delta", Text: reply})
 		}
@@ -55,14 +60,11 @@ func (w *wrapper) SendVoiceTranscriptStream(
 	return w.inner.SendVoiceTranscriptStream(ctx, event, onEvent)
 }
 
-// handleCommand checks if the transcript is a voice command and handles it
-// locally in the adapter. Returns the reply text, or "" if not a command.
-//
-// Why adapter-side: OpenClaw Gateway treats voice.transcript events as
-// senderIsOwner=false, so slash commands in that path are silently ignored
-// and sent to the LLM as plain text. Commands must be handled before
-// reaching the Gateway.
-func (w *wrapper) handleCommand(event openclaw.VoiceTranscriptEvent) string {
+// handleCommand sends slash commands via the OpenAI-compatible HTTP API
+// (POST /v1/chat/completions with Bearer token). This path sets
+// senderIsOwner=true for shared-secret auth, so Gateway correctly parses
+// slash commands like /status, /stop, /new.
+func (w *wrapper) handleCommand(ctx context.Context, event openclaw.VoiceTranscriptEvent) string {
 	text := strings.TrimSpace(event.Text)
 	vcmd := voicecmd.Match(text)
 	if vcmd == nil {
@@ -72,14 +74,18 @@ func (w *wrapper) handleCommand(event openclaw.VoiceTranscriptEvent) string {
 		text, vcmd.Command, event.StreamID)
 	w.metrics.Inc("voice_command_intercepted")
 
-	switch vcmd.Command {
-	case "/stop":
-		return "已停止"
-	case "/new":
-		return "新对话已开始"
-	case "/status":
-		return "运行正常"
-	default:
-		return vcmd.Command
+	sender, ok := w.inner.(commandSender)
+	if !ok {
+		w.log.Warnf("pipeline: inner sink does not support SendSlashCommand")
+		return ""
 	}
+	reply, err := sender.SendSlashCommand(ctx, vcmd.Command, event.SessionKey)
+	if err != nil {
+		w.log.Errorf("pipeline: SendSlashCommand failed cmd=%s err=%v", vcmd.Command, err)
+		return ""
+	}
+	if reply == "" {
+		reply = vcmd.Command
+	}
+	return reply
 }

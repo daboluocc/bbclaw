@@ -136,6 +136,78 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 	return c.waitResponseOK(conn, agentReqID)
 }
 
+// SendSlashCommand sends a slash command via the OpenAI-compatible HTTP API
+// (POST /v1/chat/completions). This path uses Bearer token auth which gives
+// senderIsOwner=true, so Gateway correctly parses /status, /stop, /new etc.
+func (c *Client) SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error) {
+	// Convert ws:// to http:// for the REST endpoint
+	u, err := url.Parse(c.endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	switch u.Scheme {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	}
+	u.Path = "/v1/chat/completions"
+
+	body, err := json.Marshal(map[string]any{
+		"model": "openclaw",
+		"messages": []map[string]string{
+			{"role": "user", "content": command},
+		},
+		"user":   sessionKey,
+		"stream": false,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	if sessionKey != "" {
+		req.Header.Set("X-OpenClaw-Session-Key", sessionKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("slash command http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	rb, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("slash command status=%d body=%s", resp.StatusCode, string(rb))
+	}
+
+	// Parse OpenAI-compatible response
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(rb, &result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if len(result.Choices) > 0 {
+		return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	}
+	return "", nil
+}
+
 type Options struct {
 	NodeID             string
 	AuthToken          string
