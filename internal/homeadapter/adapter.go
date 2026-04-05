@@ -139,13 +139,14 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 			}
 			continue
 		case "request":
-			if err := a.handleRequest(ctx, conn, env); err != nil {
-				a.metrics.Inc("cloud_request_failed")
-				if writeErr := a.writeErrorResponse(conn, env, err); writeErr != nil {
-					return fmt.Errorf("write error reply: %w", writeErr)
+			go func(env CloudEnvelope) {
+				if err := a.handleRequest(ctx, conn, env); err != nil {
+					a.metrics.Inc("cloud_request_failed")
+					if writeErr := a.writeErrorResponse(conn, env, err); writeErr != nil {
+						a.log.Warnf("write error reply failed device=%s err=%v", env.DeviceID, writeErr)
+					}
 				}
-				continue
-			}
+			}(env)
 		}
 	}
 }

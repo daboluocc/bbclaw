@@ -130,7 +130,7 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 		"type":   "req",
 		"id":     subReqID,
 		"method": "sessions.messages.subscribe",
-		"params": map[string]any{"sessionKey": sessionKey},
+		"params": map[string]any{"key": sessionKey},
 	})
 	_ = c.waitResponseOK(conn, subReqID)
 
@@ -343,6 +343,10 @@ func (c *Client) sendVoiceTranscriptWS(
 	event VoiceTranscriptEvent,
 	onEvent func(VoiceTranscriptStreamEvent),
 ) (VoiceTranscriptDelivery, error) {
+	// Gateway canonicalizes session keys to lowercase; normalize here to ensure
+	// chat.subscribe and voice.transcript use the same casing.
+	event.SessionKey = strings.ToLower(strings.TrimSpace(event.SessionKey))
+
 	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
 	if err != nil {
 		return VoiceTranscriptDelivery{}, fmt.Errorf("dial openclaw ws: %w", err)
