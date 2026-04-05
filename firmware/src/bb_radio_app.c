@@ -299,9 +299,9 @@ static void show_status_error(const char* status) {
 }
 
 /* ---------------------------------------------------------------------------
- * Voice-command interception: map short spoken phrases to OpenClaw slash
- * commands.  Returns the slash command string (e.g. "/stop") when the
- * transcript matches, or NULL for normal conversation flow.
+ * Voice-command keyword table: map short spoken phrases to OpenClaw slash
+ * commands.  Currently used by the Cloud/Adapter side (between ASR and LLM).
+ * Kept here as reference; firmware may use it for offline/local_home fallback.
  * -------------------------------------------------------------------------*/
 typedef struct {
   const char* phrase;   /* spoken keyword (case-insensitive) */
@@ -1132,16 +1132,13 @@ static void stream_task(void* arg) {
             log_phase_text_chunks("phase=assistant text=", reply_text);
           }
 
-          /* --- voice command interception --- */
-          const char* vcmd = match_voice_command(finish->transcript);
-          if (vcmd != NULL) {
-            ESP_LOGI(TAG, "phase=voice_command transcript=\"%s\" cmd=%s stream=%s", finish->transcript, vcmd,
-                     stream.stream_id);
-            (void)bb_gateway_node_send_voice_transcript(vcmd, BBCLAW_SESSION_KEY, stream.stream_id);
-            (void)bb_display_upsert_chat_turn(finish->transcript, vcmd, 1);
-            pulse_success_on_idle("CMD");
-            goto finish_cleanup;
-          }
+          /* --- voice command interception ---
+           * NOTE: command matching is done on the Cloud/Adapter side, between
+           * ASR and LLM, so that /stop can cancel before the model runs.
+           * Firmware only displays the result when the adapter returns a
+           * command acknowledgement instead of a normal reply.
+           * See: adapter voice_command_intercept design note.
+           */
 
           if (reply_text[0] != '\0') {
             (void)bb_display_show_status("RESULT");
@@ -1279,7 +1276,6 @@ static void stream_task(void* arg) {
         }
       }
 #endif
-finish_cleanup:
       /* Release Opus encoder if skip_finish bypassed stream_finish_stream. */
       if (stream.ws_encoder != NULL) {
         bb_ogg_opus_encoder_destroy((bb_ogg_opus_encoder_t*)stream.ws_encoder);
