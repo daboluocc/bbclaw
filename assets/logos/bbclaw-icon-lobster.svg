@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- 对讲机 + 像素龙虾脸的融合 -->
+  <!-- Antenna -->
+  <rect x="22" y="2" width="4" height="10" rx="2" fill="#666"/>
+
+  <!-- Body -->
+  <rect x="8" y="10" width="32" height="36" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Speaker area (lobster face) - circular grille -->
+  <circle cx="18" cy="22" r="8" fill="#2a1a1a"/>
+  <g stroke="#3a2a2a" stroke-width="0.8" fill="none">
+    <circle cx="18" cy="22" r="3"/>
+    <circle cx="18" cy="22" r="5.5"/>
+    <line x1="18" y1="14" x2="18" y2="16"/>
+    <line x1="18" y1="28" x2="18" y2="30"/>
+    <line x1="10" y1="22" x2="12" y2="22"/>
+    <line x1="24" y1="22" x2="26" y2="22"/>
+    <line x1="11.8" y1="15.8" x2="13.2" y2="17.2"/>
+    <line x1="24.2" y1="15.8" x2="22.8" y2="17.2"/>
+    <line x1="11.8" y1="28.2" x2="13.2" y2="26.8"/>
+    <line x1="24.2" y1="28.2" x2="22.8" y2="26.8"/>
+  </g>
+
+  <!-- Lobster eyes in speaker (small red dots) -->
+  <circle cx="15" cy="20" r="1.5" fill="#ff4f40"/>
+  <circle cx="21" cy="20" r="1.5" fill="#ff4f40"/>
+  <circle cx="15" cy="20" r="0.6" fill="#ffaaaa"/>
+  <circle cx="21" cy="20" r="0.6" fill="#ffaaaa"/>
+
+  <!-- LED indicator -->
+  <circle cx="36" cy="16" r="3" fill="#ff4f40" opacity="0.9"/>
+  <circle cx="36" cy="16" r="1.2" fill="#ff8880"/>
+
+  <!-- PTT button -->
+  <rect x="30" y="24" width="10" height="8" rx="3" fill="#2a2a2a" stroke="#444" stroke-width="0.5"/>
+  <rect x="32" y="26" width="6" height="4" rx="1.5" fill="#ff4f40" opacity="0.85"/>
+
+  <!-- Bottom label area -->
+  <rect x="30" y="36" width="10" height="6" rx="1.5" fill="#222"/>
+  <rect x="31.5" y="37.5" width="7" height="3" rx="0.5" fill="#333"/>
+</svg>
