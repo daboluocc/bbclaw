@@ -14,6 +14,7 @@ import (
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/httpapi"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
+	"github.com/zhoushoujianwork/bbclaw/adapter/internal/pipeline"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/tts"
 )
 
@@ -54,12 +55,12 @@ func main() {
 			&http.Client{Timeout: cfg.HTTPTimeout},
 		)
 	}
-	sink := openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
+	sink := pipeline.Wrap(openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
 		NodeID:             cfg.OpenClawNodeID,
 		AuthToken:          cfg.OpenClawAuthToken,
 		DeviceIdentityPath: cfg.OpenClawIdentityPath,
 		ReplyWaitTimeout:   cfg.OpenClawReplyWait,
-	})
+	}), logger, metrics)
 	var ttsProvider tts.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.TTSProvider)) {
 	case "mock":

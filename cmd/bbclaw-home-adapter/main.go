@@ -12,6 +12,7 @@ import (
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/homeadapter"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
+	"github.com/zhoushoujianwork/bbclaw/adapter/internal/pipeline"
 )
 
 func main() {
@@ -29,12 +30,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	sink := openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
+	sink := pipeline.Wrap(openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
 		NodeID:             cfg.OpenClawNodeID,
 		AuthToken:          cfg.OpenClawAuthToken,
 		DeviceIdentityPath: cfg.OpenClawIdentityPath,
 		ReplyWaitTimeout:   cfg.OpenClawReplyWait,
-	})
+	}), logger, metrics)
 	adapter := homeadapter.New(cfg, sink, logger, metrics)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

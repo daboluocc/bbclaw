@@ -12,7 +12,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/voicecmd"
 )
 
 type CloudEnvelope struct {
@@ -192,13 +191,6 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	routeStart := time.Now()
 	a.log.Infof("phase=transcript_request_recv device=%s session=%s stream=%s text_chars=%d",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
-
-	if vcmd := voicecmd.Match(text); vcmd != nil {
-		a.log.Infof("phase=voice_command device=%s stream=%s transcript=%q cmd=%s",
-			env.DeviceID, strings.TrimSpace(streamID), text, vcmd.Command)
-		a.metrics.Inc("voice_command_intercepted")
-		text = vcmd.Command
-	}
 
 	a.metrics.Inc("voice_transcript_forwarded")
 	_ = a.writeStreamEvent(conn, env, "voice.reply.status", map[string]any{

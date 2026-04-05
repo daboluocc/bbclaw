@@ -18,7 +18,6 @@ import (
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/audio"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
 	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/voicecmd"
 )
 
 type AppConfig struct {
@@ -303,33 +302,6 @@ func (s *Server) handleFinish(w http.ResponseWriter, r *http.Request) {
 	s.log.Infof("phase=asr_done stream=%s elapsed_s=%.3f asr_elapsed_s=%.3f text_chars=%d text=%q",
 		stream.StreamID, time.Since(t0).Seconds(), time.Since(tASR).Seconds(), trChars, result.Text)
 
-	if vcmd := voicecmd.Match(result.Text); vcmd != nil {
-		s.log.Infof("phase=voice_command stream=%s transcript=%q cmd=%s", stream.StreamID, result.Text, vcmd.Command)
-		s.metrics.Inc("voice_command_intercepted")
-		delivery, err := s.sink.SendVoiceTranscript(r.Context(), openclaw.VoiceTranscriptEvent{
-			Text:       vcmd.Command,
-			SessionKey: stream.SessionKey,
-			StreamID:   stream.StreamID,
-			Source:     "bbclaw.adapter",
-			NodeID:     s.cfg.NodeID,
-		})
-		replyText := ""
-		if err == nil {
-			replyText = strings.TrimSpace(delivery.ReplyText)
-		}
-		writeJSON(w, http.StatusOK, response{
-			OK: true,
-			Data: map[string]any{
-				"streamId":       stream.StreamID,
-				"text":           result.Text,
-				"replyText":      replyText,
-				"voiceCommand":   vcmd.Command,
-				"savedInputPath": inputSavedPath,
-			},
-		})
-		return
-	}
-
 	s.log.Infof("phase=openclaw_send stream=%s elapsed_s=%.3f session=%s transcript_chars=%d",
 		stream.StreamID, time.Since(t0).Seconds(), stream.SessionKey, trChars)
 	delivery, err := s.sink.SendVoiceTranscript(r.Context(), openclaw.VoiceTranscriptEvent{
@@ -457,31 +429,6 @@ func (s *Server) handleFinishStream(
 	s.log.Infof("phase=asr_done stream=%s elapsed_s=%.3f asr_elapsed_s=%.3f text_chars=%d text=%q",
 		stream.StreamID, time.Since(t0).Seconds(), time.Since(tASR).Seconds(), trChars, result.Text)
 	_ = sw.write(map[string]any{"type": "asr.final", "text": result.Text})
-
-	if vcmd := voicecmd.Match(result.Text); vcmd != nil {
-		s.log.Infof("phase=voice_command stream=%s transcript=%q cmd=%s", stream.StreamID, result.Text, vcmd.Command)
-		s.metrics.Inc("voice_command_intercepted")
-		delivery, err := s.sink.SendVoiceTranscript(r.Context(), openclaw.VoiceTranscriptEvent{
-			Text:       vcmd.Command,
-			SessionKey: stream.SessionKey,
-			StreamID:   stream.StreamID,
-			Source:     "bbclaw.adapter",
-			NodeID:     s.cfg.NodeID,
-		})
-		replyText := ""
-		if err == nil {
-			replyText = strings.TrimSpace(delivery.ReplyText)
-		}
-		_ = sw.write(map[string]any{
-			"type":              "done",
-			"streamId":          stream.StreamID,
-			"text":              result.Text,
-			"replyText":         replyText,
-			"voiceCommand":      vcmd.Command,
-			"savedInputPath":    inputSavedPath,
-		})
-		return
-	}
 
 	if strings.TrimSpace(result.Text) == "" {
 		_ = sw.write(map[string]any{
