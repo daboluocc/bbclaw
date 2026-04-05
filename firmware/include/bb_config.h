@@ -118,7 +118,8 @@ const char *bbclaw_device_id(void);
 #endif
 
 #ifndef BBCLAW_SESSION_KEY
-#define BBCLAW_SESSION_KEY "agent:main:bbclaw"
+const char *bbclaw_session_key(void);
+#define BBCLAW_SESSION_KEY (bbclaw_session_key())
 #endif
 
 #ifndef BBCLAW_STREAM_CODEC

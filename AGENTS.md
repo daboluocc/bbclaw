@@ -96,6 +96,20 @@ BBClaw 是 OpenClaw 生态中的硬件节点：ESP32-S3 固件，承载语音（
 - `firmware/include/bb_transport.h`、`firmware/src/bb_transport.c` — `bb_transport_report_device_info()`（cloud_saas 转发，local_home 为 no-op）
 - `firmware/src/bb_radio_app.c` — 启动流程中调用
 
+## 特性开发流程
+
+新特性采用「先讨论、再验证、最后实现」的三阶段流程：
+
+1. **方案讨论**：在 `firmware/docs/feat/` 下创建 `<feature-name>.md`，包含现状分析、方案设计、改动范围
+2. **调研验证**：在同一文档中补充验证计划，用 curl / mock / 本地联调确认协议层可行性
+3. **代码实现**：验证通过后按文档中的改动范围逐步实现，PR 中引用对应的 feat 文档
+
+当前进行中的特性：
+
+| 特性 | 文档 | 状态 |
+|------|------|------|
+| 多设备并行 Session | [multi-device-session.md](firmware/docs/feat/multi-device-session.md) | P0 已实现 |
+
 ## TODO
 
 - **HTTPS 恢复**：ESP-IDF `crt_bundle` 对 Let's Encrypt R12 链有启动初期验证失败问题（~8s 后自愈）。方案：将 healthz 改为非阻塞延迟检查，或 bootstrap 时先 pair 再补 healthz。当前临时走 HTTP 38082（nginx 代理到 bbclaw-cloud 38081）。
