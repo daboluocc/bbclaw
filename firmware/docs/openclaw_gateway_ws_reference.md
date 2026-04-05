@@ -380,3 +380,18 @@ Session 是 Gateway 管理对话上下文的单元。
 | `unexpected property 'name'` | client 里不能有 name 字段（用 displayName） |
 | `unauthorized role: node` | node 角色调用了 operator 方法（如 agent） |
 | `NOT_PAIRED` + `PAIRING_REQUIRED` | 设备未配对，需要审批 |
+| `missing scope: operator.write` | 没有 device identity 时 scopes 被清空 |
+
+## 13. 重要限制：voice.transcript 与 slash command
+
+**voice.transcript 事件不支持 slash command。**
+
+Gateway 源码（`server-node-events.ts`）中，`voice.transcript` 事件调用 `agentCommandFromIngress` 时设置了 `senderIsOwner: false`。
+
+根据 OpenClaw 的命令授权机制：
+- `senderIsOwner: false` → 发送者不是 owner
+- 非 owner 的 slash command 会被静默忽略，`/status` 等文本直接送给 LLM
+
+**结论**：不能通过 `voice.transcript` 发送 slash command。要么：
+1. 在 adapter 侧本地处理命令（当前方案）
+2. 迁移到 `method: "agent"` 协议，以 operator 角色 + `senderIsOwner: true` 发送（v0.2.x 计划）
