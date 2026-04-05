@@ -1116,6 +1116,24 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
     return;
   }
 
+  if (strcmp(type, "thinking") == 0) {
+    char text[128] = {0};
+    (void)json_extract_string(line, "text", text, sizeof(text));
+    if (accum->on_event != NULL && text[0] != '\0') {
+      emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_THINKING, NULL, text, NULL, 0);
+    }
+    return;
+  }
+
+  if (strcmp(type, "tool_call") == 0) {
+    char name[64] = {0};
+    (void)json_extract_string(line, "name", name, sizeof(name));
+    if (accum->on_event != NULL && name[0] != '\0') {
+      emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL, name, NULL, 0);
+    }
+    return;
+  }
+
   if (strcmp(type, "error") == 0) {
     (void)json_extract_string(line, "error", accum->result->error_code, sizeof(accum->result->error_code));
     if (accum->on_event != NULL) {
