@@ -18,6 +18,7 @@
 #include "bb_time.h"
 #include "bb_transport.h"
 #include "bb_wifi.h"
+#include "bb_xl9555.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -1478,6 +1479,17 @@ esp_err_t bb_radio_app_start(void) {
     show_status_error("AUDIO ERR");
     return audio_err;
   }
+#if BBCLAW_XL9555_ENABLE
+  {
+    esp_err_t xl_err = bb_xl9555_init();
+    if (xl_err != ESP_OK) {
+      ESP_LOGW(TAG, "xl9555 init failed err=%s", esp_err_to_name(xl_err));
+    } else {
+      (void)bb_xl9555_set_output(BBCLAW_XL9555_SPK_EN_BIT, 1);
+      (void)bb_xl9555_set_output(BBCLAW_XL9555_AMP_EN_BIT, 1);
+    }
+  }
+#endif
 #if BBCLAW_SPK_TEST_ON_BOOT
   show_status_processing("SPK TEST");
   if (bb_audio_start_playback() == ESP_OK) {

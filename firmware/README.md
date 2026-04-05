@@ -216,3 +216,33 @@ make menuconfig
 - `local_home` 直接走本地 `bbclaw-adapter`
 - `cloud_saas` 走 `Cloud -> Home Adapter -> 本地 bbclaw-adapter`
 - `bb_config.h` 里的 transport 相关值现在主要作为兜底默认值
+
+## Board 适配
+
+固件支持多板子通过 Kconfig 切换，硬件引脚、音频、屏幕参数统一收敛在 `boards/<board>/board_config.h`。
+
+当前支持：
+
+| Board | 说明 |
+| --- | --- |
+| `breadboard` | 默认开发配置（INMP441 + MAX98357A + SPI ST7789 1.47"） |
+| `atk-dnesp32s3-box` | 正点原子 ESP32-S3 开发盒（ES8311 / NS4168 + i80 并口 ST7789 320×240） |
+
+切换方式：
+
+```bash
+make set-board BOARD=atk-dnesp32s3-box
+make reconfigure
+make build
+```
+
+或通过 `make menuconfig → BBClaw → Board` 选择。
+
+新增 board 只需：
+1. 新建 `boards/<name>/board_config.h`
+2. 在 `Kconfig.projbuild` 加一个 choice
+3. 在 `bb_config.h` 顶部加 `#elif`
+
+## 致谢
+
+- [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的 board 适配体系受其多板子架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现

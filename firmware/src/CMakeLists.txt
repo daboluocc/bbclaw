@@ -8,6 +8,7 @@ set(_bb_srcs
     "bb_lvgl_assets.c"
     "bb_lvgl_display.c"
     "bb_led.c"
+    "bb_panel.c"
     "bb_ui_assets.c"
     "bb_gateway_node.c"
     "bb_motor.c"
@@ -16,6 +17,7 @@ set(_bb_srcs
     "bb_time.c"
     "bb_transport.c"
     "bb_wifi.c"
+    "bb_xl9555.c"
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")
@@ -32,7 +34,7 @@ endif()
 
 idf_component_register(
     SRCS ${_bb_srcs}
-    INCLUDE_DIRS "../include" "../generated"
+    INCLUDE_DIRS "../include" "../generated" "../boards"
     EMBED_FILES
         "../assets/svg/bbclaw.wav"
     EMBED_TXTFILES

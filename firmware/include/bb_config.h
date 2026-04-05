@@ -2,6 +2,25 @@
 
 #include "sdkconfig.h"
 
+/* ── Board selection: include board-specific pin map and hardware config ── */
+#if defined(CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX)
+#include "../boards/atk-dnesp32s3-box/board_config.h"
+#elif defined(CONFIG_BBCLAW_BOARD_BREADBOARD) || !defined(BBCLAW_DISPLAY_BUS_SPI)
+#include "../boards/breadboard/board_config.h"
+#endif
+
+/* ── Default bus flags (boards that predate the bus flag) ── */
+#ifndef BBCLAW_DISPLAY_BUS_SPI
+#define BBCLAW_DISPLAY_BUS_SPI 1
+#endif
+#ifndef BBCLAW_DISPLAY_BUS_I80
+#define BBCLAW_DISPLAY_BUS_I80 0
+#endif
+
+#ifndef BBCLAW_XL9555_ENABLE
+#define BBCLAW_XL9555_ENABLE 0
+#endif
+
 #ifndef BBCLAW_NODE_ID
 #define BBCLAW_NODE_ID "bbclaw-esp32s3"
 #endif
@@ -245,69 +264,35 @@ const char *bbclaw_session_key(void);
 #endif
 
 #ifndef BBCLAW_STATUS_LED_ENABLE
-#if defined(CONFIG_BBCLAW_STATUS_LED_ENABLE)
-#define BBCLAW_STATUS_LED_ENABLE CONFIG_BBCLAW_STATUS_LED_ENABLE
-#else
 #define BBCLAW_STATUS_LED_ENABLE 1
 #endif
-#endif
 
-/** 1 = 共阴 RGB 模块（R/G/B 三线 + GND），与独立 R/Y/G 三灯互斥；见 docs/led-RGB.png */
 #ifndef BBCLAW_STATUS_LED_KIND_RGB_MODULE
-#if defined(CONFIG_BBCLAW_STATUS_LED_KIND_RGB_MODULE) && CONFIG_BBCLAW_STATUS_LED_KIND_RGB_MODULE
-#define BBCLAW_STATUS_LED_KIND_RGB_MODULE 1
-#else
 #define BBCLAW_STATUS_LED_KIND_RGB_MODULE 0
-#endif
 #endif
 
 #ifndef BBCLAW_STATUS_LED_R_GPIO
-#if defined(CONFIG_BBCLAW_STATUS_LED_R_GPIO)
-#define BBCLAW_STATUS_LED_R_GPIO CONFIG_BBCLAW_STATUS_LED_R_GPIO
-#else
 #define BBCLAW_STATUS_LED_R_GPIO 2
-#endif
 #endif
 
 #ifndef BBCLAW_STATUS_LED_Y_GPIO
-#if defined(CONFIG_BBCLAW_STATUS_LED_Y_GPIO)
-#define BBCLAW_STATUS_LED_Y_GPIO CONFIG_BBCLAW_STATUS_LED_Y_GPIO
-#else
 #define BBCLAW_STATUS_LED_Y_GPIO 4
-#endif
 #endif
 
 #ifndef BBCLAW_STATUS_LED_G_GPIO
-#if defined(CONFIG_BBCLAW_STATUS_LED_G_GPIO)
-#define BBCLAW_STATUS_LED_G_GPIO CONFIG_BBCLAW_STATUS_LED_G_GPIO
-#else
 #define BBCLAW_STATUS_LED_G_GPIO 5
-#endif
 #endif
 
 #ifndef BBCLAW_STATUS_LED_RGB_G_GPIO
-#if defined(CONFIG_BBCLAW_STATUS_LED_RGB_G_GPIO)
-#define BBCLAW_STATUS_LED_RGB_G_GPIO CONFIG_BBCLAW_STATUS_LED_RGB_G_GPIO
-#else
 #define BBCLAW_STATUS_LED_RGB_G_GPIO 4
-#endif
 #endif
 
 #ifndef BBCLAW_STATUS_LED_RGB_B_GPIO
-#if defined(CONFIG_BBCLAW_STATUS_LED_RGB_B_GPIO)
-#define BBCLAW_STATUS_LED_RGB_B_GPIO CONFIG_BBCLAW_STATUS_LED_RGB_B_GPIO
-#else
 #define BBCLAW_STATUS_LED_RGB_B_GPIO 5
 #endif
-#endif
 
-/** 点亮 LED 时 GPIO 电平：共阴 + 阳极接限流电阻到 GPIO 时一般为 1=亮；若硬件为低电平点亮则设为 0 */
 #ifndef BBCLAW_STATUS_LED_GPIO_ON_LEVEL
-#if defined(CONFIG_BBCLAW_STATUS_LED_GPIO_ON_LEVEL)
-#define BBCLAW_STATUS_LED_GPIO_ON_LEVEL CONFIG_BBCLAW_STATUS_LED_GPIO_ON_LEVEL
-#else
 #define BBCLAW_STATUS_LED_GPIO_ON_LEVEL 1
-#endif
 #endif
 
 /** 开机 RYG 跑马灯：依次点亮 R→Y→G，每色停留步长；整段时长 = 3 × 步长 × 圈数 */
@@ -564,91 +549,41 @@ const char *bbclaw_session_key(void);
 #endif
 
 /**
- * 1.47" 172x320 SPI ST7789 模组预设：
- * - 1: V1，原先默认那块屏
- * - 2: V2，新调通的第二块 12pin 屏
- *
- * 默认仍然使用 V1；若切到当前新屏，只改这一项即可。
+ * Display orientation defaults — boards define these in board_config.h.
+ * These are fallbacks only.
  */
-#ifndef BBCLAW_ST7789_147_VARIANT
-#if defined(CONFIG_BBCLAW_SCREEN_PRESET_ST7789_147_V1)
-#define BBCLAW_ST7789_147_VARIANT 1
-#elif defined(CONFIG_BBCLAW_SCREEN_PRESET_ST7789_147_V2)
-#define BBCLAW_ST7789_147_VARIANT 2
-#else
-#define BBCLAW_ST7789_147_VARIANT 2
-#endif
-#endif
-
-#if BBCLAW_ST7789_147_VARIANT == 1
-#define BBCLAW_ST7789_X_GAP_DEFAULT 0
-#define BBCLAW_ST7789_Y_GAP_DEFAULT 34
-#define BBCLAW_ST7789_PCLK_HZ_DEFAULT (20 * 1000 * 1000)
-#define BBCLAW_ST7789_SWAP_XY_DEFAULT 1
-#define BBCLAW_ST7789_MIRROR_X_DEFAULT 1
-#define BBCLAW_ST7789_MIRROR_Y_DEFAULT 0
-#define BBCLAW_ST7789_INVERT_COLOR_DEFAULT 1
-#define BBCLAW_ST7789_RGB_ORDER_BGR_DEFAULT 1
-#define BBCLAW_ST7789_SWAP_BYTES_DEFAULT 1
-#elif BBCLAW_ST7789_147_VARIANT == 2
-#define BBCLAW_ST7789_X_GAP_DEFAULT 0
-#define BBCLAW_ST7789_Y_GAP_DEFAULT 34
-#define BBCLAW_ST7789_PCLK_HZ_DEFAULT (20 * 1000 * 1000)
-#define BBCLAW_ST7789_SWAP_XY_DEFAULT 1
-#define BBCLAW_ST7789_MIRROR_X_DEFAULT 0
-#define BBCLAW_ST7789_MIRROR_Y_DEFAULT 0
-#define BBCLAW_ST7789_INVERT_COLOR_DEFAULT 0
-#define BBCLAW_ST7789_RGB_ORDER_BGR_DEFAULT 0
-#define BBCLAW_ST7789_SWAP_BYTES_DEFAULT 1
-#else
-#error "Unsupported BBCLAW_ST7789_147_VARIANT"
-#endif
-
 #ifndef BBCLAW_ST7789_X_GAP
-#define BBCLAW_ST7789_X_GAP BBCLAW_ST7789_X_GAP_DEFAULT
+#define BBCLAW_ST7789_X_GAP 0
 #endif
 
 #ifndef BBCLAW_ST7789_Y_GAP
-#define BBCLAW_ST7789_Y_GAP BBCLAW_ST7789_Y_GAP_DEFAULT
+#define BBCLAW_ST7789_Y_GAP 34
 #endif
 
 #ifndef BBCLAW_ST7789_PCLK_HZ
-#define BBCLAW_ST7789_PCLK_HZ BBCLAW_ST7789_PCLK_HZ_DEFAULT
+#define BBCLAW_ST7789_PCLK_HZ (20 * 1000 * 1000)
 #endif
 
 #ifndef BBCLAW_ST7789_SWAP_XY
-#define BBCLAW_ST7789_SWAP_XY BBCLAW_ST7789_SWAP_XY_DEFAULT
+#define BBCLAW_ST7789_SWAP_XY 1
 #endif
 
 #ifndef BBCLAW_ST7789_MIRROR_X
-#define BBCLAW_ST7789_MIRROR_X BBCLAW_ST7789_MIRROR_X_DEFAULT
+#define BBCLAW_ST7789_MIRROR_X 0
 #endif
 
 #ifndef BBCLAW_ST7789_MIRROR_Y
-#define BBCLAW_ST7789_MIRROR_Y BBCLAW_ST7789_MIRROR_Y_DEFAULT
+#define BBCLAW_ST7789_MIRROR_Y 0
 #endif
 
 #ifndef BBCLAW_ST7789_INVERT_COLOR
-#define BBCLAW_ST7789_INVERT_COLOR BBCLAW_ST7789_INVERT_COLOR_DEFAULT
+#define BBCLAW_ST7789_INVERT_COLOR 0
 #endif
 
-/**
- * 常见屏厂差异不是分辨率变了，而是：
- * 1. RGB/BGR 颜色顺序不同
- * 2. MADCTL 方向位（swap / mirror）不同
- * 3. col/row offset（gap）不同
- *
- * 现象通常是：
- * - 红蓝互换：先改 RGB_ORDER_BGR
- * - 左右镜像：改 MIRROR_X
- * - 上下翻转：改 MIRROR_Y
- * - 横竖/坐标轴不对：改 SWAP_XY
- * - 画面整体偏移/裁切：改 X_GAP / Y_GAP
- */
 #ifndef BBCLAW_ST7789_RGB_ORDER_BGR
-#define BBCLAW_ST7789_RGB_ORDER_BGR BBCLAW_ST7789_RGB_ORDER_BGR_DEFAULT
+#define BBCLAW_ST7789_RGB_ORDER_BGR 0
 #endif
 
 #ifndef BBCLAW_ST7789_SWAP_BYTES
-#define BBCLAW_ST7789_SWAP_BYTES BBCLAW_ST7789_SWAP_BYTES_DEFAULT
+#define BBCLAW_ST7789_SWAP_BYTES 1
 #endif

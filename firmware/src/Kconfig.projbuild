@@ -1,5 +1,25 @@
 menu "BBClaw"
 
+choice BBCLAW_BOARD_CHOICE
+    prompt "Board"
+    default BBCLAW_BOARD_BREADBOARD
+    help
+        Select the target hardware board. Each board defines its own pin map,
+        audio codec, display bus, and peripheral configuration.
+
+config BBCLAW_BOARD_BREADBOARD
+    bool "Breadboard (INMP441 + MAX98357A + SPI ST7789)"
+    help
+        Default development configuration using discrete modules on a breadboard.
+
+config BBCLAW_BOARD_ATK_DNESP32S3_BOX
+    bool "ATK-DNESP32S3-BOX (ES8311 + i80 ST7789 320x240)"
+    help
+        Alientek ESP32-S3 development box with ES8311 codec, XL9555 IO expander,
+        and 320x240 parallel-interface ST7789 display.
+
+endchoice
+
 menu "Transport"
 
 choice BBCLAW_TRANSPORT_PROFILE_CHOICE
@@ -60,90 +80,6 @@ config BBCLAW_WIFI_PASSWORD
     help
         Optional compile-time fallback Wi-Fi password paired with Default
         Wi-Fi SSID.
-
-endmenu
-
-menu "Status LED"
-
-config BBCLAW_STATUS_LED_ENABLE
-    bool "Enable status LED"
-    default y
-    help
-        Drive GPIO status output(s). Choose wiring below: discrete R/Y/G LEDs or a common-cathode RGB module.
-
-choice BBCLAW_STATUS_LED_KIND_CHOICE
-    prompt "Wiring"
-    default BBCLAW_STATUS_LED_KIND_RYG
-    depends on BBCLAW_STATUS_LED_ENABLE
-    help
-        Discrete R/Y/G: three separate LEDs (yellow has its own pin).
-        RGB module: single 5mm RGB LED PCB (R/G/B + GND), high level on (see docs/led-RGB.png).
-
-config BBCLAW_STATUS_LED_KIND_RYG
-    bool "Discrete R / Y / G LEDs"
-
-config BBCLAW_STATUS_LED_KIND_RGB_MODULE
-    bool "RGB module (common cathode, R/G/B + GND)"
-
-endchoice
-
-config BBCLAW_STATUS_LED_R_GPIO
-    int "Red channel GPIO"
-    depends on BBCLAW_STATUS_LED_ENABLE
-    range 0 48
-    default 2
-
-config BBCLAW_STATUS_LED_Y_GPIO
-    int "Yellow channel GPIO (RYG only)"
-    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RYG
-    range 0 48
-    default 4
-
-config BBCLAW_STATUS_LED_G_GPIO
-    int "Green channel GPIO (RYG only)"
-    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RYG
-    range 0 48
-    default 5
-
-config BBCLAW_STATUS_LED_RGB_G_GPIO
-    int "Green channel GPIO (RGB module)"
-    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RGB_MODULE
-    range 0 48
-    default 4
-
-config BBCLAW_STATUS_LED_RGB_B_GPIO
-    int "Blue channel GPIO (RGB module)"
-    depends on BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_KIND_RGB_MODULE
-    range 0 48
-    default 5
-
-config BBCLAW_STATUS_LED_GPIO_ON_LEVEL
-    int "GPIO level when LED on (0 or 1)"
-    depends on BBCLAW_STATUS_LED_ENABLE
-    range 0 1
-    default 1
-    help
-        1: high drives LED on (common-cathode + resistor to GPIO). 0: active-low hardware.
-
-endmenu
-
-menu "Display"
-
-choice BBCLAW_SCREEN_PRESET_CHOICE
-    prompt "Screen Preset"
-    default BBCLAW_SCREEN_PRESET_ST7789_147_V2
-
-config BBCLAW_SCREEN_PRESET_ST7789_147_V1
-    bool "ST7789 1.47\" 172x320 V1"
-    help
-        Original 12-pin 1.47 inch ST7789 panel preset.
-
-config BBCLAW_SCREEN_PRESET_ST7789_147_V2
-    bool "ST7789 1.47\" 172x320 V2"
-    help
-        Current default 12-pin 1.47 inch ST7789 panel preset.
-
-endchoice
 
 endmenu
 

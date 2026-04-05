@@ -32,6 +32,7 @@ static int lvgl_port_lock(int timeout_ms) {
   return 1;
 }
 static void lvgl_port_unlock(void) {}
+const char *bbclaw_session_key(void) { return "sim:preview"; }
 #else
 #include <stdio.h>
 #include <string.h>
@@ -39,14 +40,13 @@ static void lvgl_port_unlock(void) {}
 #include "bb_config.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_lvgl_assets.h"
+#include "bb_panel.h"
 #include "bb_time.h"
 #include "bb_wifi.h"
 #include "driver/gpio.h"
-#include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_disp.h"
@@ -168,9 +168,8 @@ static lv_obj_t* s_img_standby_brand_claw;
 static lv_obj_t* s_img_standby_brand_openclaw;
 static lv_obj_t* s_lbl_standby_brand_join;
 static lv_obj_t* s_lbl_standby_clock;
-static lv_obj_t* s_obj_standby_wifi;
-static lv_obj_t* s_lbl_standby_wifi_info;
-static lv_obj_t* s_bar_standby_wifi[UI_WIFI_BAR_COUNT];
+static lv_obj_t* s_lbl_standby_title;
+static lv_obj_t* s_lbl_standby_session;
 
 /* LVGL objects — active (status bar + text) */
 static lv_obj_t* s_view_active;
@@ -452,6 +451,7 @@ static lv_obj_t* create_wifi_widget(lv_obj_t* parent, int x, int y, lv_obj_t* ba
 
 #if !defined(BBCLAW_SIMULATOR)
 static void backlight_on(void) {
+#if BBCLAW_ST7789_BL_GPIO >= 0
   gpio_config_t io_conf = {
       .pin_bit_mask = 1ULL << BBCLAW_ST7789_BL_GPIO,
       .mode = GPIO_MODE_OUTPUT,
@@ -461,44 +461,11 @@ static void backlight_on(void) {
   };
   (void)gpio_config(&io_conf);
   (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, 1);
+#endif
 }
 
 static esp_err_t init_panel(void) {
-  const spi_host_device_t host = (spi_host_device_t)BBCLAW_ST7789_HOST;
-  spi_bus_config_t buscfg = {
-      .sclk_io_num = BBCLAW_ST7789_SCLK_GPIO,
-      .mosi_io_num = BBCLAW_ST7789_MOSI_GPIO,
-      .miso_io_num = -1,
-      .quadwp_io_num = -1,
-      .quadhd_io_num = -1,
-      .max_transfer_sz = DISP_W * 64 * (int)sizeof(uint16_t),
-  };
-  esp_err_t err = spi_bus_initialize(host, &buscfg, SPI_DMA_CH_AUTO);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
-
-  esp_lcd_panel_io_spi_config_t io_config = {
-      .dc_gpio_num = BBCLAW_ST7789_DC_GPIO,
-      .cs_gpio_num = BBCLAW_ST7789_CS_GPIO,
-      .pclk_hz = DISP_PCLK_HZ,
-      .spi_mode = 0,
-      .trans_queue_depth = 10,
-      .lcd_cmd_bits = 8,
-      .lcd_param_bits = 8,
-  };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)host, &io_config, &s_panel_io), TAG, "new panel io");
-
-  esp_lcd_panel_dev_config_t panel_config = {
-      .reset_gpio_num = BBCLAW_ST7789_RST_GPIO,
-      .rgb_ele_order = DISP_RGB_ORDER,
-      .bits_per_pixel = 16,
-  };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(s_panel_io, &panel_config, &s_panel), TAG, "new st7789");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "reset");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "init");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, DISP_X_GAP, DISP_Y_GAP), TAG, "gap");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, DISP_INVERT_COLOR), TAG, "invert");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "on");
-  return ESP_OK;
+  return bb_panel_init(&s_panel_io, &s_panel);
 }
 
 static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* color_map) {
@@ -603,10 +570,23 @@ static void create_ui(void) {
     lv_anim_start(&a);
   }
 
-  /* Standby WiFi (bottom-right) */
-  s_obj_standby_wifi = create_wifi_widget(s_view_standby,
-      DISP_W - UI_SAFE_RIGHT - 108, DISP_H - UI_SAFE_BOTTOM - 18,
-      s_bar_standby_wifi, &s_lbl_standby_wifi_info, 108);
+  /* Standby bottom: "BBClaw" + session info */
+  {
+    s_lbl_standby_title = lv_label_create(s_view_standby);
+    lv_obj_set_style_text_color(s_lbl_standby_title, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_standby_title, font, 0);
+    lv_label_set_text(s_lbl_standby_title, "BBClaw");
+    lv_obj_set_pos(s_lbl_standby_title, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh * 2 - 4);
+
+    s_lbl_standby_session = lv_label_create(s_view_standby);
+    lv_obj_set_width(s_lbl_standby_session, DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT - 8);
+    lv_obj_set_style_text_color(s_lbl_standby_session, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_standby_session, font, 0);
+    lv_obj_set_style_text_opa(s_lbl_standby_session, LV_OPA_60, 0);
+    lv_label_set_long_mode(s_lbl_standby_session, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_text(s_lbl_standby_session, BBCLAW_SESSION_KEY);
+    lv_obj_set_pos(s_lbl_standby_session, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh - 2);
+  }
 
   /* ── ACTIVE view: status bar + text area ── */
 
@@ -726,9 +706,8 @@ static void refresh_ui(void) {
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
 
   if (mode == UI_VIEW_STANDBY) {
-    /* Update standby clock + wifi */
+    /* Update standby clock */
     lv_label_set_text(s_lbl_standby_clock, hm);
-    apply_wifi_bars(s_bar_standby_wifi, s_lbl_standby_wifi_info, status);
   } else {
     /* Status bar */
     const char* status_text = status;

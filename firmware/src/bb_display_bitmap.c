@@ -7,12 +7,11 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_panel.h"
 #include "bb_ui_assets.h"
 #include "driver/gpio.h"
-#include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_vendor.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -89,6 +88,7 @@ static const uint16_t kColorAccentDim = RGB565(0, 76, 56);
 static const uint16_t kColorErr = RGB565(176, 42, 56);
 
 static void backlight_on(void) {
+#if BBCLAW_ST7789_BL_GPIO >= 0
   gpio_config_t io_conf = {
       .pin_bit_mask = 1ULL << BBCLAW_ST7789_BL_GPIO,
       .mode = GPIO_MODE_OUTPUT,
@@ -98,6 +98,7 @@ static void backlight_on(void) {
   };
   (void)gpio_config(&io_conf);
   (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, 1);
+#endif
 }
 
 static void copy_rows(uint8_t out[FONT_H], const uint8_t in[FONT_H]) {
@@ -825,46 +826,7 @@ static void display_task(void* arg) {
 }
 
 static esp_err_t init_panel(void) {
-  const spi_host_device_t host = (spi_host_device_t)BBCLAW_ST7789_HOST;
-  spi_bus_config_t buscfg = {
-      .sclk_io_num = BBCLAW_ST7789_SCLK_GPIO,
-      .mosi_io_num = BBCLAW_ST7789_MOSI_GPIO,
-      .miso_io_num = -1,
-      .quadwp_io_num = -1,
-      .quadhd_io_num = -1,
-      .max_transfer_sz = DISP_W * 40 * (int)sizeof(uint16_t),
-  };
-  esp_err_t err = spi_bus_initialize(host, &buscfg, SPI_DMA_CH_AUTO);
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-    return err;
-  }
-
-  esp_lcd_panel_io_spi_config_t io_config = {
-      .dc_gpio_num = BBCLAW_ST7789_DC_GPIO,
-      .cs_gpio_num = BBCLAW_ST7789_CS_GPIO,
-      .pclk_hz = DISP_PCLK_HZ,
-      .spi_mode = 0,
-      .trans_queue_depth = 10,
-      .lcd_cmd_bits = 8,
-      .lcd_param_bits = 8,
-  };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)host, &io_config, &s_panel_io), TAG,
-                      "new panel io failed");
-
-  esp_lcd_panel_dev_config_t panel_config = {
-      .reset_gpio_num = BBCLAW_ST7789_RST_GPIO,
-      .rgb_ele_order = DISP_RGB_ORDER,
-      .bits_per_pixel = 16,
-  };
-  ESP_RETURN_ON_ERROR(esp_lcd_new_panel_st7789(s_panel_io, &panel_config, &s_panel), TAG, "new st7789 panel failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(s_panel), TAG, "panel reset failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_init(s_panel), TAG, "panel init failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_swap_xy(s_panel, DISP_SWAP_XY), TAG, "panel swapxy failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(s_panel, DISP_MIRROR_X, DISP_MIRROR_Y), TAG, "panel mirror failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_set_gap(s_panel, DISP_X_GAP, DISP_Y_GAP), TAG, "panel set gap failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_invert_color(s_panel, DISP_INVERT_COLOR), TAG, "panel invert failed");
-  ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "panel on failed");
-  return ESP_OK;
+  return bb_panel_init(&s_panel_io, &s_panel);
 }
 
 esp_err_t bb_display_init(void) {

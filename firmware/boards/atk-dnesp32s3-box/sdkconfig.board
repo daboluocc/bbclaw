@@ -1,0 +1,5 @@
+# ATK-DNESP32S3-BOX board overlay
+# Usage: cp boards/atk-dnesp32s3-box/sdkconfig.board sdkconfig.defaults.board
+#        make fullclean && make init && make build
+CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX=y
+# CONFIG_BBCLAW_BOARD_BREADBOARD is not set

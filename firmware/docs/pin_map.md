@@ -9,7 +9,7 @@
 对应配置宏（`firmware/include/bb_config.h`）：
 - `BBCLAW_AUDIO_INPUT_SOURCE="inmp441"`
 - `BBCLAW_PTT_GPIO=0`
-- `BBCLAW_MOTOR_GPIO=13`
+- `BBCLAW_MOTOR_GPIO=21`
 - `BBCLAW_STATUS_LED_R_GPIO=2`
 - `BBCLAW_STATUS_LED_Y_GPIO=4`
 - `BBCLAW_STATUS_LED_G_GPIO=5`
@@ -82,7 +82,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 | 模块引脚 | 接到开发板 | 说明 |
 | --- | --- | --- |
-| `IN/SIG` | `GPIO13` | 控制信号（`BBCLAW_MOTOR_GPIO`） |
+| `IN/SIG` | `GPIO21` | 控制信号（`BBCLAW_MOTOR_GPIO`） |
 | `VCC` | `5V`（常见） | 按马达/驱动板额定电压供电 |
 | `GND` | `GND` | 共地 |
 
@@ -101,7 +101,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 | `CS` | `GPIO10` | 片选 |
 | `DC` | `GPIO9` | 数据/命令 |
 | `RST` | `GPIO14` | 复位 |
-| `BLK/BL` | `GPIO21` | 背光控制 |
+| `BLK/BL` | `GPIO13` | 背光控制 |
 
 ### 1.6 PTT 按键接线
 

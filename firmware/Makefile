@@ -15,7 +15,7 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback
+.PHONY: help idf-env init set-target reconfigure build flash erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -25,6 +25,7 @@ help:
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
+	@echo "  make set-board BOARD=atk-dnesp32s3-box  # 切换 board（breadboard | atk-dnesp32s3-box）"
 	@echo "  make gen             # 一键生成所有 LVGL 资源（字库 + SVG 位图 + 元素位图）"
 	@echo "  make lvgl-kconfig-fix  # 打开压缩字库 + LARGE 索引（屏上全方框时执行一次后 reconfigure）"
 	@echo "  make sim-build       # 构建 macOS/SDL2 本地 LVGL 预览"
@@ -44,6 +45,12 @@ set-target:
 
 reconfigure:
 	@$(IDF_SOURCE) idf.py reconfigure
+
+# Switch board: make set-board BOARD=atk-dnesp32s3-box
+# Then: make build (or make fullclean && make init && make build)
+BOARD ?= breadboard
+set-board:
+	@python3 scripts/set_board.py $(BOARD)
 
 build:
 	@$(IDF_SOURCE) idf.py build
