@@ -729,6 +729,20 @@ static void ws_handle_text_message(const char* msg) {
       emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_REPLY_DELTA, NULL,
                                s_ws.finish_result->reply_text, NULL, 0);
     }
+  } else if (strcmp(kind, "thinking") == 0) {
+    char text[128] = {0};
+    (void)json_extract_string(msg, "text", text, sizeof(text));
+    if (s_ws.finish_on_event != NULL && text[0] != '\0') {
+      emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_THINKING, NULL,
+                               text, NULL, 0);
+    }
+  } else if (strcmp(kind, "tool_call") == 0) {
+    char name[64] = {0};
+    (void)json_extract_string(msg, "name", name, sizeof(name));
+    if (s_ws.finish_on_event != NULL && name[0] != '\0') {
+      emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL,
+                               name, NULL, 0);
+    }
   } else if (strcmp(kind, "tts.chunk") == 0) {
     bb_tts_chunk_t* chunk = decode_tts_chunk_json(msg);
     if (chunk != NULL) {

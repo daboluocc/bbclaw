@@ -491,20 +491,35 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
 
   if (event->type == BB_FINISH_STREAM_EVENT_THINKING && event->text != NULL && event->text[0] != '\0') {
     ESP_LOGI(TAG, "phase=thinking text=%.80s", event->text);
-    (void)bb_display_show_status("THINKING");
+    size_t cur = strlen(ui->reply_text);
+    snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[thinking...]\n", cur > 0 ? "\n" : "");
+    (void)bb_display_upsert_chat_turn(ui->transcript[0] != '\0' ? ui->transcript : "...", ui->reply_text, 0);
     return;
   }
 
   if (event->type == BB_FINISH_STREAM_EVENT_TOOL_CALL && event->text != NULL && event->text[0] != '\0') {
     ESP_LOGI(TAG, "phase=tool_call name=%s", event->text);
-    char status_buf[48];
-    snprintf(status_buf, sizeof(status_buf), "TOOL: %s", event->text);
-    (void)bb_display_show_status(status_buf);
+    size_t cur = strlen(ui->reply_text);
+    snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[tool: %s]\n", cur > 0 ? "\n" : "", event->text);
+    (void)bb_display_upsert_chat_turn(ui->transcript[0] != '\0' ? ui->transcript : "...", ui->reply_text, 0);
     return;
   }
 
   if (event->type == BB_FINISH_STREAM_EVENT_REPLY_DELTA && event->text != NULL && event->text[0] != '\0') {
-    strncpy(ui->reply_text, event->text, sizeof(ui->reply_text) - 1);
+    /* reply delta replaces only the reply portion, keep process log prefix */
+    size_t prefix_len = 0;
+    const char* last_nl = strrchr(ui->reply_text, '\n');
+    if (last_nl != NULL && ui->reply_text[0] == '[') {
+      prefix_len = (size_t)(last_nl - ui->reply_text) + 1;
+    }
+    char prefix[BBCLAW_DISPLAY_CHAT_LINE_LEN];
+    if (prefix_len > 0 && prefix_len < sizeof(prefix)) {
+      memcpy(prefix, ui->reply_text, prefix_len);
+      prefix[prefix_len] = '\0';
+      snprintf(ui->reply_text, sizeof(ui->reply_text), "%s%s", prefix, event->text);
+    } else {
+      strncpy(ui->reply_text, event->text, sizeof(ui->reply_text) - 1);
+    }
     ui->reply_text[sizeof(ui->reply_text) - 1] = '\0';
     (void)bb_display_upsert_chat_turn(ui->transcript[0] != '\0' ? ui->transcript : "(no speech)", ui->reply_text, 0);
     return;
