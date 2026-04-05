@@ -119,6 +119,10 @@ bbclaw/
 - [协议规范](docs/protocol_specs.md)
 - [协议 V1 基线](docs/protocol_specs_v1.md)
 
+## 致谢
+
+- [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的多板子适配体系受其架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现
+
 ## License
 
 Apache License 2.0
