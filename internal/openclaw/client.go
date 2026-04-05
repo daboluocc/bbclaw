@@ -59,18 +59,20 @@ func (c *Client) sendAgentMessageWS(ctx context.Context, message, sessionKey str
 	}
 	defer conn.Close()
 
-	// agent method requires role:"control", not role:"node".
+	// agent method requires role:"operator" with write scope (not role:"node").
+	// See: firmware/docs/openclaw_gateway_ws_reference.md
 	connectReqID := "connect-" + uuid.NewString()
 	connectParams := map[string]any{
 		"minProtocol": 3,
 		"maxProtocol": 3,
 		"client": map[string]any{
-			"id":       "control-ui",
-			"name":     "bbclaw-adapter",
-			"version":  "1.0.0",
+			"id":       "gateway-client",
+			"version":  "bbclaw-adapter",
 			"platform": runtime.GOOS,
+			"mode":     "backend",
 		},
-		"role": "control",
+		"role":   "operator",
+		"scopes": []string{"write"},
 	}
 	if c.authToken != "" {
 		connectParams["auth"] = map[string]any{"token": c.authToken}
