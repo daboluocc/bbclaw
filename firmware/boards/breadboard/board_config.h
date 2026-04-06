@@ -51,7 +51,7 @@
  * Override with -DBBCLAW_ST7789_147_VARIANT=1 if using V1 panel.
  */
 #ifndef BBCLAW_ST7789_147_VARIANT
-#define BBCLAW_ST7789_147_VARIANT 1
+#define BBCLAW_ST7789_147_VARIANT 2
 #endif
 
 #define BBCLAW_ST7789_X_GAP         0

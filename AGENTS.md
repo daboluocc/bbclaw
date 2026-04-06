@@ -11,9 +11,15 @@ BBClaw 是 OpenClaw 生态中的硬件节点：ESP32-S3 固件，承载语音（
 | 路径 | 说明 |
 |------|------|
 | `firmware/` | ESP-IDF 固件（C/C++），Makefile 与 `idf.py` 均在此目录下执行 |
-| `docs/` | 架构、公网模式、协议、用户手册 |
+| `firmware/docs/` | **固件细节文档**：固件集成说明、协议细节、LVGL UI 设计、硬件引脚、音频调试等（内部/开发用） |
+| `docs/` | **对外官网文档**：用户手册、SaaS 注册指南、公网架构等（面向终端用户的确认文稿） |
 | `scripts/`、`tools/` | 烧录、调试与本地 ASR/TTS 等工具 |
 | `references/` | 公网 Cloud、Home Adapter、Web Portal 等源码与配置；**构建命令与组件关系见 [references/AGENTS.md](references/AGENTS.md)** |
+
+> **文档结构约定：**
+> - `docs/` = 对外发布的最终确认文稿（用户面向）→ 会同步到官网
+> - `firmware/docs/` = 固件/技术细节文档（开发面向）
+> - 两者互不冲突，同一项目不同受众分层
 
 修改固件时，涉及路径均相对于 **`firmware/`**（例如 `firmware/src/bb_radio_app.c`）。若任务涉及 **Cloud / Adapter / Web**，请先读 **`references/AGENTS.md`** 再打开子目录 README。
 
@@ -117,5 +123,6 @@ BBClaw 是 OpenClaw 生态中的硬件节点：ESP32-S3 固件，承载语音（
 ## 延伸阅读
 
 - [README.md](README.md) — 功能、架构图、快速开始
-- [docs/](docs/) — 用户手册、协议、公网架构
+- [docs/](docs/) — 对外官网文档（用户手册、SaaS 指南、公网架构）
+- [firmware/docs/](firmware/docs/) — 固件细节文档（集成说明、LVGL、硬件、音频调试等）
 - [references/AGENTS.md](references/AGENTS.md) — Cloud、Adapter、Web 的依赖、构建与联调入口
