@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -347,6 +348,7 @@ func (c *Client) sendVoiceTranscriptWS(
 	// chat.subscribe and voice.transcript use the same casing.
 	event.SessionKey = strings.ToLower(strings.TrimSpace(event.SessionKey))
 
+	// Node connection: sends voice.transcript via node.event
 	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
 	if err != nil {
 		return VoiceTranscriptDelivery{}, fmt.Errorf("dial openclaw ws: %w", err)
@@ -354,7 +356,6 @@ func (c *Client) sendVoiceTranscriptWS(
 	defer conn.Close()
 
 	connectReqID := "connect-" + uuid.NewString()
-	chatSubscribeReqID := "chat-subscribe-" + uuid.NewString()
 	nodeEventReqID := "node-event-" + uuid.NewString()
 	delivery := VoiceTranscriptDelivery{}
 
@@ -378,8 +379,47 @@ func (c *Client) sendVoiceTranscriptWS(
 		return delivery, fmt.Errorf("openclaw connect failed: %w", err)
 	}
 
+	// Operator connection: subscribes to session events (session.tool, session.message)
+	var opConn *websocket.Conn
 	waitChatReply := strings.TrimSpace(event.SessionKey) != ""
 	if waitChatReply {
+		oc, _, dialErr := c.dialer.DialContext(ctx, c.endpoint, nil)
+		if dialErr == nil {
+			opNonce, err := c.waitConnectChallenge(oc)
+			if err == nil {
+				opParams, err := c.buildOperatorConnectParams(opNonce)
+				if err == nil {
+					opConnID := "op-connect-" + uuid.NewString()
+					_ = c.writeJSON(ctx, oc, map[string]any{
+						"type": "req", "id": opConnID, "method": "connect", "params": opParams,
+					})
+					if c.waitResponseOK(oc, opConnID) == nil {
+						subID := "op-sub-" + uuid.NewString()
+						_ = c.writeJSON(ctx, oc, map[string]any{
+							"type": "req", "id": subID, "method": "sessions.messages.subscribe",
+							"params": map[string]any{"key": event.SessionKey},
+						})
+						_ = c.waitResponseOK(oc, subID)
+						opConn = oc
+						log.Printf("[openclaw] operator connection ready, forwarding session events for %s", event.SessionKey)
+						// Forward session.tool events in background
+						go c.forwardSessionToolEvents(ctx, opConn, event.SessionKey, onEvent)
+					}
+				}
+			}
+			if opConn == nil {
+				log.Printf("[openclaw] operator connection failed, no session.tool events")
+				oc.Close()
+			}
+		}
+	}
+	if opConn != nil {
+		defer opConn.Close()
+	}
+
+	// Subscribe to chat events on node connection
+	if waitChatReply {
+		chatSubscribeReqID := "chat-subscribe-" + uuid.NewString()
 		if err := c.writeJSON(ctx, conn, map[string]any{
 			"type":   "req",
 			"id":     chatSubscribeReqID,
@@ -481,6 +521,88 @@ func (c *Client) buildConnectParams(nonce string) (map[string]any, error) {
 		params["auth"] = auth
 	}
 	return params, nil
+}
+
+func (c *Client) buildOperatorConnectParams(nonce string) (map[string]any, error) {
+	identity, err := loadOrCreateDeviceIdentity(c.deviceIdentityPath)
+	if err != nil {
+		return nil, fmt.Errorf("load/create device identity: %w", err)
+	}
+	signedAtMs := time.Now().UnixMilli()
+	scopes := []string{"operator.read", "operator.write"}
+	payload := buildDeviceAuthPayloadV3(deviceAuthPayloadV3{
+		deviceID: identity.DeviceID, clientID: "cli", clientMode: "cli",
+		role: "operator", scopes: scopes, signedAtMs: signedAtMs,
+		token: c.authToken, nonce: nonce, platform: runtime.GOOS, deviceFamily: "bbclaw",
+	})
+	signature := signDevicePayload(identity.PrivateKey, payload)
+	params := map[string]any{
+		"minProtocol": 3, "maxProtocol": 3,
+		"client": map[string]any{
+			"id": "cli", "version": "bbclaw-adapter", "platform": runtime.GOOS,
+			"mode": "cli", "deviceFamily": "bbclaw",
+		},
+		"role": "operator", "scopes": scopes,
+		"device": map[string]any{
+			"id": identity.DeviceID, "publicKey": identity.PublicKey,
+			"signature": signature, "signedAt": signedAtMs, "nonce": nonce,
+		},
+	}
+	if c.authToken != "" {
+		params["auth"] = map[string]any{"token": c.authToken}
+	}
+	return params, nil
+}
+
+func (c *Client) forwardSessionToolEvents(ctx context.Context, conn *websocket.Conn, sessionKey string, onEvent func(VoiceTranscriptStreamEvent)) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(c.http.Timeout))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			continue
+		}
+		evtName, _ := frame["event"].(string)
+		if evtName == "session.tool" {
+			payload, _ := frame["payload"].(map[string]any)
+			toolName, _ := payload["name"].(string)
+			state, _ := payload["state"].(string)
+			log.Printf("[openclaw] session.tool name=%s state=%s (session=%s)", toolName, state, sessionKey)
+			if onEvent != nil && toolName != "" {
+				onEvent(VoiceTranscriptStreamEvent{Type: "tool." + state, Text: toolName})
+			}
+		} else if evtName == "session.message" {
+			payload, _ := frame["payload"].(map[string]any)
+			message, _ := payload["message"].(map[string]any)
+			if content, ok := message["content"].([]any); ok {
+				for _, item := range content {
+					obj, _ := item.(map[string]any)
+					itemType, _ := obj["type"].(string)
+					switch itemType {
+					case "thinking":
+						text, _ := obj["thinking"].(string)
+						if text != "" && onEvent != nil {
+							log.Printf("[openclaw] thinking: %.80s", text)
+							onEvent(VoiceTranscriptStreamEvent{Type: "thinking", Text: text})
+						}
+					case "toolCall":
+						name, _ := obj["name"].(string)
+						if name != "" && onEvent != nil {
+							args, _ := json.Marshal(obj["arguments"])
+							log.Printf("[openclaw] tool_call: %s %s", name, string(args))
+							onEvent(VoiceTranscriptStreamEvent{Type: "tool_call", Text: name})
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (c *Client) resolveNodeID() string {
@@ -606,34 +728,96 @@ func (c *Client) waitChatFinalText(
 		return "", false
 	}
 
-	deadline := time.Now().Add(resolveReplyWaitTimeout(c.http.Timeout, c.replyWaitTimeout))
+	idleTimeout := resolveReplyWaitTimeout(c.http.Timeout, c.replyWaitTimeout)
+	deadline := time.Now().Add(idleTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
 
 	replyText := ""
 	lastDeltaText := ""
+	toolActive := false
 	for {
 		if ctx.Err() != nil {
-			return "", false
+			return replyText, false
 		}
 		if err := conn.SetReadDeadline(deadline); err != nil {
-			return "", false
+			return replyText, false
 		}
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			if isTimeoutErr(err) {
+				if replyText != "" {
+					return replyText, false
+				}
 				return "", true
 			}
-			return "", false
+			return replyText, false
 		}
+		// Any message from gateway means it's still alive — extend deadline
+		deadline = time.Now().Add(idleTimeout)
+		if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+			deadline = ctxDeadline
+		}
+
 		var frame map[string]any
 		if err := json.Unmarshal(msg, &frame); err != nil {
 			continue
 		}
+		// Detect session.tool / session.message (thinking, toolCall) — agent still working
+		if evtType, _ := frame["type"].(string); evtType == "event" {
+			evtName, _ := frame["event"].(string)
+			if evtName == "session.tool" {
+				payload, _ := frame["payload"].(map[string]any)
+				toolName, _ := payload["name"].(string)
+				state, _ := payload["state"].(string)
+				log.Printf("[openclaw] ws session.tool name=%s state=%s", toolName, state)
+				if state == "running" || state == "pending" {
+					toolActive = true
+				} else {
+					toolActive = false
+				}
+				if onEvent != nil && toolName != "" {
+					onEvent(VoiceTranscriptStreamEvent{Type: "tool_call", Text: toolName})
+				}
+			} else if evtName == "session.message" {
+				payload, _ := frame["payload"].(map[string]any)
+				message, _ := payload["message"].(map[string]any)
+				if content, ok := message["content"].([]any); ok {
+					for _, item := range content {
+						obj, _ := item.(map[string]any)
+						itemType, _ := obj["type"].(string)
+						switch itemType {
+						case "thinking":
+							toolActive = true
+							if text, _ := obj["thinking"].(string); text != "" && onEvent != nil {
+								log.Printf("[openclaw] thinking: %.80s", text)
+								onEvent(VoiceTranscriptStreamEvent{Type: "thinking", Text: text})
+							}
+						case "toolCall":
+							toolActive = true
+							if name, _ := obj["name"].(string); name != "" && onEvent != nil {
+								log.Printf("[openclaw] tool_call: %s", name)
+								onEvent(VoiceTranscriptStreamEvent{Type: "tool_call", Text: name})
+							}
+						}
+					}
+				}
+			} else if evtName != "" && evtName != "chat" && evtName != "tick" && evtName != "health" {
+				raw, _ := json.Marshal(frame)
+				log.Printf("[openclaw] ws event=%s payload=%s", evtName, string(raw))
+			}
+		}
+		prevReply := replyText
 		replyText, lastDeltaText = captureChatFrame(frame, sessionKey, replyText, lastDeltaText, onEvent)
-		if replyText != "" {
-			return replyText, false
+		if replyText != "" && replyText != prevReply {
+			// Got a final — but if agent is still working (tool/thinking active),
+			// don't return yet; keep listening for subsequent messages.
+			if !toolActive {
+				return replyText, false
+			}
+			log.Printf("[openclaw] reply final received but agent still active, continuing to wait")
+			toolActive = false // reset; will be set again if more tool/thinking events arrive
 		}
 	}
 }
@@ -654,7 +838,11 @@ func captureChatFrame(
 		}
 	case "final":
 		if text != "" {
-			replyText = text
+			if replyText != "" && text != replyText && !strings.HasPrefix(text, replyText) {
+				replyText = replyText + "\n" + text
+			} else {
+				replyText = text
+			}
 			if onEvent != nil && lastDeltaText != "" && text != lastDeltaText {
 				onEvent(VoiceTranscriptStreamEvent{Type: "reply.delta", Text: text})
 				lastDeltaText = text
