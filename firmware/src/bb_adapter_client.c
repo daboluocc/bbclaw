@@ -204,6 +204,7 @@ static bb_tts_chunk_t* clone_tts_chunk(const bb_tts_chunk_t* src) {
   copy->sample_rate = src->sample_rate;
   copy->channels = src->channels;
   copy->seq = src->seq;
+  memcpy(copy->tts_text, src->tts_text, sizeof(copy->tts_text));
   return copy;
 }
 
@@ -245,6 +246,7 @@ static bb_tts_chunk_t* decode_tts_chunk_json(const char* body) {
   chunk->sample_rate = json_extract_int(body, "sampleRate", 16000);
   chunk->channels = json_extract_int(body, "channels", 1);
   chunk->seq = json_extract_int(body, "seq", 0);
+  json_extract_string(body, "text", chunk->tts_text, sizeof(chunk->tts_text));
   return chunk;
 }
 

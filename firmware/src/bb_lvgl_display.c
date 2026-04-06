@@ -192,6 +192,8 @@ static int64_t s_auto_scroll_pause_until_ms;
 
 static int s_ready;
 static int s_main_text_scroll_dirty;
+static int s_main_text_scroll_to_bottom;
+static int s_tts_playing;
 static int s_last_visible_mode = -1;
 
 static void refresh_ui(void);
@@ -379,6 +381,7 @@ static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
     case UI_AUTO_SCROLL_HOLD_BOTTOM:
       if (y < max_y) lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
       if (ctx->wait_ticks > 0) ctx->wait_ticks--;
+      else if (s_tts_playing) ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
       else auto_scroll_ctx_reset(ctx);
       break;
     case UI_AUTO_SCROLL_RUNNING:
@@ -793,8 +796,29 @@ static void refresh_ui(void) {
 
     /* Reset scroll on content change or view switch */
     if (s_main_text_scroll_dirty || (int)mode != s_last_visible_mode) {
-      auto_scroll_ctx_reset(&s_auto_scroll_text);
+      if (s_tts_playing && (int)mode == s_last_visible_mode) {
+        /* TTS playing: don't reset to top, scroll to bottom instead */
+        lv_obj_update_layout(s_scroll_text);
+        int32_t max_y = lv_obj_get_scroll_bottom(s_scroll_text);
+        if (max_y > 0) {
+          lv_obj_scroll_to_y(s_scroll_text, max_y, LV_ANIM_OFF);
+          s_auto_scroll_text.phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
+          s_auto_scroll_text.wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+        }
+      } else {
+        auto_scroll_ctx_reset(&s_auto_scroll_text);
+      }
       s_main_text_scroll_dirty = 0;
+      s_main_text_scroll_to_bottom = 0;
+    } else if (s_main_text_scroll_to_bottom) {
+      s_main_text_scroll_to_bottom = 0;
+      lv_obj_update_layout(s_scroll_text);
+      int32_t max_y = lv_obj_get_scroll_bottom(s_scroll_text);
+      if (max_y > 0) {
+        lv_obj_scroll_to_y(s_scroll_text, max_y, LV_ANIM_OFF);
+        s_auto_scroll_text.phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
+        s_auto_scroll_text.wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+      }
     }
   }
 
@@ -816,6 +840,7 @@ esp_err_t bb_display_init(void) {
   s_focus_ai = 1;
   s_auto_scroll_pause_until_ms = 0;
   s_main_text_scroll_dirty = 0;
+  s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
@@ -835,6 +860,7 @@ esp_err_t bb_display_init(void) {
   s_focus_ai = 1;
   s_auto_scroll_pause_until_ms = 0;
   s_main_text_scroll_dirty = 0;
+  s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
@@ -946,7 +972,11 @@ esp_err_t bb_display_upsert_chat_turn(const char* user_said, const char* assista
   portEXIT_CRITICAL(&s_state_lock);
 
   if (s_ready) {
-    s_main_text_scroll_dirty = 1;
+    if (finalize) {
+      s_main_text_scroll_dirty = 1;
+    } else {
+      s_main_text_scroll_to_bottom = 1;
+    }
     refresh_ui();
   }
   return ESP_OK;
@@ -1040,4 +1070,44 @@ void bb_display_chat_focus_ai(void) {
   s_focus_ai = 1;
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
+}
+
+void bb_display_set_tts_playing(int playing) {
+  s_tts_playing = playing ? 1 : 0;
+}
+
+void bb_display_set_tts_sentence(const char* sentence_text) {
+  if (sentence_text == NULL || sentence_text[0] == '\0' || !s_ready) return;
+  if (s_lbl_text == NULL || s_scroll_text == NULL) return;
+  if (!lvgl_port_lock(0)) return;
+
+  const char* full = lv_label_get_text(s_lbl_text);
+  if (full == NULL) { lvgl_port_unlock(); return; }
+  const char* pos = strstr(full, sentence_text);
+  if (pos == NULL) { lvgl_port_unlock(); return; }
+
+  /* lv_label_get_letter_pos takes a character index (not byte offset).
+   * Count UTF-8 characters from start to the match position. */
+  uint32_t char_idx = 0;
+  for (const char* p = full; p < pos; char_idx++) {
+    uint8_t c = (uint8_t)*p;
+    if (c < 0x80) p += 1;
+    else if (c < 0xE0) p += 2;
+    else if (c < 0xF0) p += 3;
+    else p += 4;
+  }
+
+  lv_obj_update_layout(s_scroll_text);
+  lv_point_t lpos = {0};
+  lv_label_get_letter_pos(s_lbl_text, char_idx, &lpos);
+
+  int32_t target_y = lpos.y > 4 ? lpos.y - 4 : 0;
+  int32_t max_y = lv_obj_get_scroll_bottom(s_scroll_text);
+  if (target_y > max_y) target_y = max_y;
+  lv_obj_scroll_to_y(s_scroll_text, target_y, LV_ANIM_ON);
+  s_auto_scroll_text.phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
+  s_auto_scroll_text.wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+  s_auto_scroll_pause_until_ms = bb_now_ms() + UI_MANUAL_SCROLL_PAUSE_MS;
+
+  lvgl_port_unlock();
 }

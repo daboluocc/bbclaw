@@ -22,6 +22,7 @@ struct bb_tts_chunk {
   int sample_rate;
   int channels;
   int seq;
+  char tts_text[256]; /* sentence text from cloud TTS, for display sync */
   bb_tts_chunk_t* next;
 };
 

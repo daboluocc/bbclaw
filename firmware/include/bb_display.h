@@ -16,3 +16,7 @@ esp_err_t bb_display_chat_scroll_down(void);
 esp_err_t bb_display_chat_scroll_up(void);
 void bb_display_chat_focus_me(void);
 void bb_display_chat_focus_ai(void);
+/** TTS 播放状态：播放期间抑制 scroll reset 和 auto-scroll 循环回顶部 */
+void bb_display_set_tts_playing(int playing);
+/** TTS 播放到新句子时，滚动到该句子在回复文本中的位置 */
+void bb_display_set_tts_sentence(const char* sentence_text);

@@ -358,6 +358,7 @@ static void tts_stream_task(void* arg) {
   bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)arg;
   int playback_started = 0;
   int playback_sample_rate = BBCLAW_AUDIO_SAMPLE_RATE;
+  char last_sentence[256] = {0};
 
   for (;;) {
     bb_tts_queue_evt_t evt = {0};
@@ -384,6 +385,7 @@ static void tts_stream_task(void* arg) {
                (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
       (void)bb_display_show_status("SPEAK");
       (void)bb_led_set_status(BB_LED_REPLY);
+      bb_display_set_tts_playing(1);
       esp_err_t start_err = bb_audio_start_playback();
       if (start_err != ESP_OK) {
         ui->tts_playback_failed = 1;
@@ -405,6 +407,11 @@ static void tts_stream_task(void* arg) {
     int64_t chunk_start_ms = bb_now_ms();
     ESP_LOGI(TAG, "phase=tts_chunk_play seq=%d pcm_bytes=%u rate=%d ch=%d expected_ms=%d", seq,
              (unsigned)chunk->pcm_len, playback_sample_rate, chunk->channels, expected_ms);
+    if (chunk->tts_text[0] != '\0' && strcmp(chunk->tts_text, last_sentence) != 0) {
+      strncpy(last_sentence, chunk->tts_text, sizeof(last_sentence) - 1);
+      last_sentence[sizeof(last_sentence) - 1] = '\0';
+      bb_display_set_tts_sentence(last_sentence);
+    }
     if (bb_audio_play_pcm_blocking(chunk->pcm_data, chunk->pcm_len) != ESP_OK) {
       ui->tts_playback_failed = 1;
       ESP_LOGE(TAG, "tts chunk play failed seq=%d", seq);
@@ -425,6 +432,7 @@ static void tts_stream_task(void* arg) {
     (void)bb_audio_stop_playback();
     (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
   }
+  bb_display_set_tts_playing(0);
   ui->tts_task_done = 1;
   ui->tts_task = NULL;
   vTaskDelete(NULL);
@@ -1110,7 +1118,8 @@ static void stream_task(void* arg) {
           {
             const char* line_you = finish->transcript[0] != '\0' ? finish->transcript : "(no speech)";
             const char* line_ai = reply_text[0] != '\0' ? reply_text : "(no reply)";
-            (void)bb_display_upsert_chat_turn(line_you, line_ai, 1);
+            int tts_active = (ui_stream != NULL && ui_stream->tts_playback_started && !ui_stream->tts_task_done);
+            (void)bb_display_upsert_chat_turn(line_you, line_ai, tts_active ? 0 : 1);
           }
 
           if (finish->transcript[0] != '\0' && reply_text[0] == '\0') {
@@ -1166,6 +1175,7 @@ static void stream_task(void* arg) {
           ESP_LOGI(TAG, "phase=tts_stream_play mono_ms=%lld (playing streamed chunks)", (long long)bb_now_ms());
           (void)bb_display_show_status("SPEAK");
           (void)bb_led_set_status(BB_LED_REPLY);
+          bb_display_set_tts_playing(1);
           esp_err_t tts_tx = bb_audio_start_playback();
           if (tts_tx == ESP_OK) {
             int chunk_idx = 0;
@@ -1204,6 +1214,7 @@ static void stream_task(void* arg) {
             ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (TTS stream playback)", esp_err_to_name(tts_tx));
             signal_error_haptic();
           }
+          bb_display_set_tts_playing(0);
         } else if (bb_transport_is_cloud_saas()) {
           ESP_LOGW(TAG, "cloud_saas expected streamed TTS over ws, skip fallback synth");
         } else {
@@ -1214,6 +1225,7 @@ static void stream_task(void* arg) {
                      (unsigned)tts.pcm_len);
             (void)bb_display_show_status("SPEAK");
             (void)bb_led_set_status(BB_LED_REPLY);
+            bb_display_set_tts_playing(1);
             esp_err_t tts_tx = bb_audio_start_playback();
             if (tts_tx == ESP_OK) {
               if (bb_audio_play_pcm_blocking(tts.pcm_data, tts.pcm_len) != ESP_OK) {
@@ -1225,6 +1237,7 @@ static void stream_task(void* arg) {
               ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (TTS playback)", esp_err_to_name(tts_tx));
               signal_error_haptic();
             }
+            bb_display_set_tts_playing(0);
           } else {
             signal_error_haptic();
           }
@@ -1243,6 +1256,12 @@ static void stream_task(void* arg) {
       }
       if (ui_stream != NULL) {
         tts_stream_ui_shutdown(ui_stream, ui_stream->tts_done_received ? 0 : 1);
+        /* Finalize chat turn now that TTS is done — clears stream_turn_active */
+        if (ui_stream->tts_playback_started && finish != NULL) {
+          const char* line_you = finish->transcript[0] != '\0' ? finish->transcript : "(no speech)";
+          const char* line_ai = finish->reply_text[0] != '\0' ? finish->reply_text : "(no reply)";
+          (void)bb_display_upsert_chat_turn(line_you, line_ai, 1);
+        }
       }
       free(finish);
       free(ui_stream);
