@@ -194,9 +194,15 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 
 	a.metrics.Inc("voice_transcript_forwarded")
-	_ = a.writeStreamEvent(conn, env, "voice.reply.status", map[string]any{
-		"phase": "processing",
-	})
+	var connMu sync.Mutex
+	writeEvent := func(kind string, payload map[string]any) {
+		connMu.Lock()
+		defer connMu.Unlock()
+		if err := a.writeStreamEvent(conn, env, kind, payload); err != nil {
+			a.log.Warnf("writeEvent failed kind=%s device=%s err=%v", kind, env.DeviceID, err)
+		}
+	}
+	writeEvent("voice.reply.status", map[string]any{"phase": "processing"})
 	a.log.Infof("phase=openclaw_request_start device=%s session=%s stream=%s elapsed_s=0.000 text_chars=%d",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 	deltaSeq := 0
@@ -207,22 +213,25 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 		Source:     strings.TrimSpace(source),
 		NodeID:     strings.TrimSpace(nodeID),
 	}, func(evt openclaw.VoiceTranscriptStreamEvent) {
-		if evt.Type != "reply.delta" || strings.TrimSpace(evt.Text) == "" {
-			return
-		}
-		deltaSeq++
-		a.log.Infof("phase=reply_delta_recv device=%s session=%s stream=%s delta_seq=%d text_chars=%d elapsed_s=%.3f text=%.80s",
-			env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), deltaSeq,
-			utf8.RuneCountInString(evt.Text), time.Since(routeStart).Seconds(), evt.Text)
-		if writeErr := a.writeStreamEvent(conn, env, "voice.reply.delta", map[string]any{
-			"text": evt.Text,
-		}); writeErr != nil {
-			a.log.Warnf("voice.reply.delta failed device=%s session=%s stream=%s err=%v",
-				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), writeErr)
-		} else {
+		switch evt.Type {
+		case "reply.delta":
+			if strings.TrimSpace(evt.Text) == "" {
+				return
+			}
+			deltaSeq++
+			a.log.Infof("phase=reply_delta_recv device=%s session=%s stream=%s delta_seq=%d text_chars=%d elapsed_s=%.3f text=%.80s",
+				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), deltaSeq,
+				utf8.RuneCountInString(evt.Text), time.Since(routeStart).Seconds(), evt.Text)
+			writeEvent("voice.reply.delta", map[string]any{"text": evt.Text})
 			a.log.Infof("phase=reply_delta_sent device=%s session=%s stream=%s delta_seq=%d elapsed_s=%.3f",
 				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), deltaSeq,
 				time.Since(routeStart).Seconds())
+		case "thinking":
+			a.log.Infof("phase=thinking_relay device=%s session=%s stream=%s", env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID))
+			writeEvent("thinking", map[string]any{"text": evt.Text})
+		case "tool_call":
+			a.log.Infof("phase=tool_call_relay device=%s session=%s stream=%s tool=%s", env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), evt.Text)
+			writeEvent("tool_call", map[string]any{"name": evt.Text})
 		}
 	})
 	if err != nil {

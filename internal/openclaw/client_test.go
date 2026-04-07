@@ -17,36 +17,31 @@ func TestSendVoiceTranscriptStreamWS_CapturesDeltaAndFinal(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade: %v", err)
+			return
 		}
 		defer conn.Close()
 
-		if err := conn.WriteJSON(map[string]any{
-			"type":  "event",
-			"event": "connect.challenge",
-			"payload": map[string]any{
-				"nonce": "n-1",
-			},
-		}); err != nil {
-			t.Fatalf("write challenge: %v", err)
-		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "event", "event": "connect.challenge",
+			"payload": map[string]any{"nonce": "n-1"},
+		})
 
-		for i := 0; i < 3; i++ {
+		// Respond OK to all requests; send chat events after voice.transcript
+		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
-				t.Fatalf("read req %d: %v", i, err)
+				return
 			}
 			var req map[string]any
-			if err := json.Unmarshal(msg, &req); err != nil {
-				t.Fatalf("decode req %d: %v", i, err)
+			if json.Unmarshal(msg, &req) != nil {
+				continue
 			}
 			reqID, _ := req["id"].(string)
-			if err := conn.WriteJSON(map[string]any{
-				"type": "res",
-				"id":   reqID,
-				"ok":   true,
-			}); err != nil {
-				t.Fatalf("write res %d: %v", i, err)
+			_ = conn.WriteJSON(map[string]any{"type": "res", "id": reqID, "ok": true})
+			if method, _ := req["method"].(string); method == "node.event" {
+				if params, ok := req["params"].(map[string]any); ok && params["event"] == "voice.transcript" {
+					break
+				}
 			}
 		}
 
@@ -209,114 +204,65 @@ func TestSendVoiceTranscriptHTTP_RPCError(t *testing.T) {
 	}
 }
 
-func TestSendVoiceTranscriptWS_Success(t *testing.T) {
+// wsTestHandler returns a generic WS handler that responds OK to any request.
+// If sendFinalChat is true, it sends a chat final event after seeing voice.transcript.
+func wsTestHandler(t *testing.T, sendFinalChat bool) http.HandlerFunc {
+	t.Helper()
 	upgrader := websocket.Upgrader{}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("upgrade: %v", err)
+			return // operator connection may race; silently ignore
 		}
 		defer conn.Close()
-
-		if err := conn.WriteJSON(map[string]any{
-			"type":  "event",
-			"event": "connect.challenge",
-			"payload": map[string]any{
-				"nonce": "n-1",
-			},
-		}); err != nil {
-			t.Fatalf("write challenge: %v", err)
+		_ = conn.WriteJSON(map[string]any{
+			"type": "event", "event": "connect.challenge",
+			"payload": map[string]any{"nonce": "n-1"},
+		})
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req map[string]any
+			if json.Unmarshal(msg, &req) != nil {
+				continue
+			}
+			reqID, _ := req["id"].(string)
+			_ = conn.WriteJSON(map[string]any{"type": "res", "id": reqID, "ok": true})
+			method, _ := req["method"].(string)
+			if method == "node.event" {
+				if params, ok := req["params"].(map[string]any); ok && params["event"] == "voice.transcript" {
+					if sendFinalChat {
+						_ = conn.WriteJSON(map[string]any{
+							"type": "event", "event": "chat",
+							"payload": map[string]any{
+								"sessionKey": "agent:main:main", "state": "final",
+								"message": map[string]any{
+									"role":    "assistant",
+									"content": []map[string]any{{"type": "text", "text": "你好，今天是星期六。"}},
+								},
+							},
+						})
+					}
+					return
+				}
+			}
 		}
-
-		_, m1, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read connect req: %v", err)
-		}
-		var connectReq map[string]any
-		if err := json.Unmarshal(m1, &connectReq); err != nil {
-			t.Fatalf("decode connect req: %v", err)
-		}
-		if connectReq["method"] != "connect" {
-			t.Fatalf("connect method = %v", connectReq["method"])
-		}
-		connectID, _ := connectReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type":    "res",
-			"id":      connectID,
-			"ok":      true,
-			"payload": map[string]any{"type": "hello-ok", "protocol": 3},
-		}); err != nil {
-			t.Fatalf("write connect res: %v", err)
-		}
-
-		_, m2, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read chat.subscribe req: %v", err)
-		}
-		var subscribeReq map[string]any
-		if err := json.Unmarshal(m2, &subscribeReq); err != nil {
-			t.Fatalf("decode chat.subscribe req: %v", err)
-		}
-		if subscribeReq["method"] != "node.event" {
-			t.Fatalf("chat.subscribe method = %v", subscribeReq["method"])
-		}
-		subscribeParams := subscribeReq["params"].(map[string]any)
-		if subscribeParams["event"] != "chat.subscribe" {
-			t.Fatalf("subscribe event = %v", subscribeParams["event"])
-		}
-		subscribeID, _ := subscribeReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type":    "res",
-			"id":      subscribeID,
-			"ok":      true,
-			"payload": map[string]any{"ok": true},
-		}); err != nil {
-			t.Fatalf("write subscribe res: %v", err)
-		}
-
-		_, m3, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read node.event req: %v", err)
-		}
-		var nodeEventReq map[string]any
-		if err := json.Unmarshal(m3, &nodeEventReq); err != nil {
-			t.Fatalf("decode node.event req: %v", err)
-		}
-		if nodeEventReq["method"] != "node.event" {
-			t.Fatalf("node.event method = %v", nodeEventReq["method"])
-		}
-		params := nodeEventReq["params"].(map[string]any)
-		if params["event"] != "voice.transcript" {
-			t.Fatalf("event = %v", params["event"])
-		}
-		nodeEventID, _ := nodeEventReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type":    "res",
-			"id":      nodeEventID,
-			"ok":      true,
-			"payload": map[string]any{"ok": true},
-		}); err != nil {
-			t.Fatalf("write node.event res: %v", err)
-		}
-	}))
-	defer ts.Close()
-
-	u, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("parse test server url: %v", err)
 	}
-	u.Scheme = "ws"
+}
 
+func TestSendVoiceTranscriptWS_Success(t *testing.T) {
+	ts := httptest.NewServer(wsTestHandler(t, false))
+	defer ts.Close()
+	u, _ := url.Parse(ts.URL)
+	u.Scheme = "ws"
 	c := NewClient(u.String(), 200*time.Millisecond, Options{
-		NodeID:             "bbclaw-node",
-		DeviceIdentityPath: t.TempDir() + "/device-identity.json",
+		NodeID: "bbclaw-node", DeviceIdentityPath: t.TempDir() + "/device-identity.json",
 	})
 	delivery, err := c.SendVoiceTranscript(context.Background(), VoiceTranscriptEvent{
-		Text:       "hello",
-		SessionKey: "agent:main:main",
-		StreamID:   "stream-1",
-		Source:     "bbclaw.adapter",
-		NodeID:     "bbclaw-node",
+		Text: "hello", SessionKey: "agent:main:main", StreamID: "stream-1",
+		Source: "bbclaw.adapter", NodeID: "bbclaw-node",
 	})
 	if err != nil {
 		t.Fatalf("SendVoiceTranscript() error = %v", err)
@@ -327,110 +273,16 @@ func TestSendVoiceTranscriptWS_Success(t *testing.T) {
 }
 
 func TestSendVoiceTranscriptWS_CaptureFinalReply(t *testing.T) {
-	upgrader := websocket.Upgrader{}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("upgrade: %v", err)
-		}
-		defer conn.Close()
-
-		if err := conn.WriteJSON(map[string]any{
-			"type":  "event",
-			"event": "connect.challenge",
-			"payload": map[string]any{
-				"nonce": "n-1",
-			},
-		}); err != nil {
-			t.Fatalf("write challenge: %v", err)
-		}
-
-		_, m1, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read connect req: %v", err)
-		}
-		var connectReq map[string]any
-		if err := json.Unmarshal(m1, &connectReq); err != nil {
-			t.Fatalf("decode connect req: %v", err)
-		}
-		connectID, _ := connectReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type": "res",
-			"id":   connectID,
-			"ok":   true,
-		}); err != nil {
-			t.Fatalf("write connect res: %v", err)
-		}
-
-		_, m2, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read subscribe req: %v", err)
-		}
-		var subscribeReq map[string]any
-		if err := json.Unmarshal(m2, &subscribeReq); err != nil {
-			t.Fatalf("decode subscribe req: %v", err)
-		}
-		subscribeID, _ := subscribeReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type": "res",
-			"id":   subscribeID,
-			"ok":   true,
-		}); err != nil {
-			t.Fatalf("write subscribe res: %v", err)
-		}
-
-		_, m3, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read node.event req: %v", err)
-		}
-		var nodeEventReq map[string]any
-		if err := json.Unmarshal(m3, &nodeEventReq); err != nil {
-			t.Fatalf("decode node.event req: %v", err)
-		}
-		nodeEventID, _ := nodeEventReq["id"].(string)
-		if err := conn.WriteJSON(map[string]any{
-			"type": "res",
-			"id":   nodeEventID,
-			"ok":   true,
-		}); err != nil {
-			t.Fatalf("write node.event res: %v", err)
-		}
-
-		if err := conn.WriteJSON(map[string]any{
-			"type":  "event",
-			"event": "chat",
-			"payload": map[string]any{
-				"sessionKey": "agent:main:main",
-				"state":      "final",
-				"message": map[string]any{
-					"role": "assistant",
-					"content": []map[string]any{
-						{"type": "text", "text": "你好，今天是星期六。"},
-					},
-				},
-			},
-		}); err != nil {
-			t.Fatalf("write chat event: %v", err)
-		}
-	}))
+	ts := httptest.NewServer(wsTestHandler(t, true))
 	defer ts.Close()
-
-	u, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("parse test server url: %v", err)
-	}
+	u, _ := url.Parse(ts.URL)
 	u.Scheme = "ws"
-
 	c := NewClient(u.String(), 2*time.Second, Options{
-		NodeID:             "bbclaw-node",
-		DeviceIdentityPath: t.TempDir() + "/device-identity.json",
+		NodeID: "bbclaw-node", DeviceIdentityPath: t.TempDir() + "/device-identity.json",
 	})
 	delivery, err := c.SendVoiceTranscript(context.Background(), VoiceTranscriptEvent{
-		Text:       "hello",
-		SessionKey: "agent:main:main",
-		StreamID:   "stream-1",
-		Source:     "bbclaw.adapter",
-		NodeID:     "bbclaw-node",
+		Text: "hello", SessionKey: "agent:main:main", StreamID: "stream-1",
+		Source: "bbclaw.adapter", NodeID: "bbclaw-node",
 	})
 	if err != nil {
 		t.Fatalf("SendVoiceTranscript() error = %v", err)

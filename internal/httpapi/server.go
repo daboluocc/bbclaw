@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -353,6 +354,7 @@ func (s *Server) handleFinish(w http.ResponseWriter, r *http.Request) {
 type finishStreamWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
+	mu      sync.Mutex
 }
 
 func newFinishStreamWriter(w http.ResponseWriter) (*finishStreamWriter, bool) {
@@ -368,6 +370,8 @@ func newFinishStreamWriter(w http.ResponseWriter) (*finishStreamWriter, bool) {
 }
 
 func (sw *finishStreamWriter) write(event map[string]any) error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	if err := json.NewEncoder(sw.w).Encode(event); err != nil {
 		return err
 	}
@@ -452,10 +456,16 @@ func (s *Server) handleFinishStream(
 		Source:     "bbclaw.adapter",
 		NodeID:     s.cfg.NodeID,
 	}, func(evt openclaw.VoiceTranscriptStreamEvent) {
-		if evt.Type != "reply.delta" || strings.TrimSpace(evt.Text) == "" {
-			return
+		switch evt.Type {
+		case "reply.delta":
+			if strings.TrimSpace(evt.Text) != "" {
+				_ = sw.write(map[string]any{"type": "reply.delta", "text": evt.Text})
+			}
+		case "thinking":
+			_ = sw.write(map[string]any{"type": "thinking", "text": evt.Text})
+		case "tool_call":
+			_ = sw.write(map[string]any{"type": "tool_call", "name": evt.Text})
 		}
-		_ = sw.write(map[string]any{"type": "reply.delta", "text": evt.Text})
 	})
 	if err != nil {
 		s.metrics.Inc("openclaw_delivery_failed")
