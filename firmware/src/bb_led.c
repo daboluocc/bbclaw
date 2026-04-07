@@ -6,6 +6,7 @@
 #include "bb_config.h"
 #include "bb_time.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,6 +14,11 @@
 static const char* TAG = "bb_led";
 
 #define BB_LED_TASK_PERIOD_MS 30
+#define BB_LED_LEDC_MODE LEDC_LOW_SPEED_MODE
+#define BB_LED_LEDC_TIMER LEDC_TIMER_0
+#define BB_LED_LEDC_DUTY_RES LEDC_TIMER_10_BIT
+#define BB_LED_LEDC_FREQ_HZ 4000
+#define BB_LED_LEDC_MAX_DUTY ((1U << 10) - 1U)
 
 typedef struct {
   bb_led_status_t base_status;
@@ -30,6 +36,8 @@ static bool s_overlay_active;
 static bool s_ready;
 static bool s_boot_anim_active;
 static int64_t s_boot_anim_start_ms;
+static uint32_t s_led_on_duty;
+static uint32_t s_led_off_duty;
 
 #if BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE && BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS > 0
 #define BB_LED_BOOT_TOTAL_MS (3U * BBCLAW_STATUS_LED_BOOT_ANIM_STEP_MS * BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS)
@@ -37,30 +45,36 @@ static int64_t s_boot_anim_start_ms;
 #define BB_LED_BOOT_TOTAL_MS 0U
 #endif
 
-static inline int led_on_level(void) {
-  return BBCLAW_STATUS_LED_GPIO_ON_LEVEL ? 1 : 0;
+static uint32_t clamp_brightness_pct(void) {
+  if (BBCLAW_STATUS_LED_BRIGHTNESS_PCT <= 0) {
+    return 0U;
+  }
+  if (BBCLAW_STATUS_LED_BRIGHTNESS_PCT >= 100) {
+    return 100U;
+  }
+  return (uint32_t)BBCLAW_STATUS_LED_BRIGHTNESS_PCT;
 }
 
-static inline int led_off_level(void) {
-  return BBCLAW_STATUS_LED_GPIO_ON_LEVEL ? 0 : 1;
+static void ledc_apply(ledc_channel_t channel, int on) {
+  uint32_t duty = on ? s_led_on_duty : s_led_off_duty;
+  (void)ledc_set_duty(BB_LED_LEDC_MODE, channel, duty);
+  (void)ledc_update_duty(BB_LED_LEDC_MODE, channel);
 }
 
-static void led_set_ryg_bits(int r, int y, int g) {
-  int on = led_on_level();
-  int off = led_off_level();
-  (void)gpio_set_level(BBCLAW_STATUS_LED_R_GPIO, r ? on : off);
-  (void)gpio_set_level(BBCLAW_STATUS_LED_Y_GPIO, y ? on : off);
-  (void)gpio_set_level(BBCLAW_STATUS_LED_G_GPIO, g ? on : off);
-}
-
+#if BBCLAW_STATUS_LED_KIND_RGB_MODULE
 /** 共阴 RGB 模块：R/G/B 三线，高电平点亮（与 led-RGB.png 一致） */
 static void led_set_rgb_bits(int r, int g, int b) {
-  int on = led_on_level();
-  int off = led_off_level();
-  (void)gpio_set_level(BBCLAW_STATUS_LED_R_GPIO, r ? on : off);
-  (void)gpio_set_level(BBCLAW_STATUS_LED_RGB_G_GPIO, g ? on : off);
-  (void)gpio_set_level(BBCLAW_STATUS_LED_RGB_B_GPIO, b ? on : off);
+  ledc_apply(LEDC_CHANNEL_0, r);
+  ledc_apply(LEDC_CHANNEL_1, g);
+  ledc_apply(LEDC_CHANNEL_2, b);
 }
+#else
+static void led_set_ryg_bits(int r, int y, int g) {
+  ledc_apply(LEDC_CHANNEL_0, r);
+  ledc_apply(LEDC_CHANNEL_1, y);
+  ledc_apply(LEDC_CHANNEL_2, g);
+}
+#endif
 
 static void led_all_off(void) {
 #if BBCLAW_STATUS_LED_KIND_RGB_MODULE
@@ -81,6 +95,55 @@ static uint32_t overlay_duration_ms(bb_led_status_t status) {
     default:
       return 0;
   }
+}
+
+static esp_err_t led_init_pwm_channels(void) {
+  const uint32_t brightness_pct = clamp_brightness_pct();
+  const uint32_t active_duty = (BB_LED_LEDC_MAX_DUTY * brightness_pct) / 100U;
+
+  if (BBCLAW_STATUS_LED_GPIO_ON_LEVEL) {
+    s_led_on_duty = active_duty;
+    s_led_off_duty = 0U;
+  } else {
+    s_led_on_duty = BB_LED_LEDC_MAX_DUTY - active_duty;
+    s_led_off_duty = BB_LED_LEDC_MAX_DUTY;
+  }
+
+  ledc_timer_config_t timer_cfg = {
+      .speed_mode = BB_LED_LEDC_MODE,
+      .duty_resolution = BB_LED_LEDC_DUTY_RES,
+      .timer_num = BB_LED_LEDC_TIMER,
+      .freq_hz = BB_LED_LEDC_FREQ_HZ,
+      .clk_cfg = LEDC_AUTO_CLK,
+  };
+  esp_err_t err = ledc_timer_config(&timer_cfg);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+#if BBCLAW_STATUS_LED_KIND_RGB_MODULE
+  const int gpios[3] = {BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_RGB_G_GPIO, BBCLAW_STATUS_LED_RGB_B_GPIO};
+#else
+  const int gpios[3] = {BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO};
+#endif
+
+  for (int i = 0; i < 3; ++i) {
+    ledc_channel_config_t ch_cfg = {
+        .gpio_num = gpios[i],
+        .speed_mode = BB_LED_LEDC_MODE,
+        .channel = (ledc_channel_t)i,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = BB_LED_LEDC_TIMER,
+        .duty = s_led_off_duty,
+        .hpoint = 0,
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
+    };
+    err = ledc_channel_config(&ch_cfg);
+    if (err != ESP_OK) {
+      return err;
+    }
+  }
+  return ESP_OK;
 }
 
 static void render_boot_marquee(uint32_t elapsed_ms) {
@@ -306,6 +369,10 @@ esp_err_t bb_led_init(void) {
   if (err != ESP_OK) {
     return err;
   }
+  err = led_init_pwm_channels();
+  if (err != ESP_OK) {
+    return err;
+  }
   led_all_off();
 
 #if BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE && BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS > 0
@@ -325,12 +392,13 @@ esp_err_t bb_led_init(void) {
 
   s_ready = true;
 #if BBCLAW_STATUS_LED_KIND_RGB_MODULE
-  ESP_LOGI(TAG, "status led rgb module r=%d g=%d b=%d gpio_on_level=%d (yellow=R+G)",
+  ESP_LOGI(TAG, "status led rgb module r=%d g=%d b=%d gpio_on_level=%d brightness_pct=%d pwm=%uHz/%ubit (yellow=R+G)",
            BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_RGB_G_GPIO, BBCLAW_STATUS_LED_RGB_B_GPIO,
-           BBCLAW_STATUS_LED_GPIO_ON_LEVEL);
+           BBCLAW_STATUS_LED_GPIO_ON_LEVEL, BBCLAW_STATUS_LED_BRIGHTNESS_PCT, BB_LED_LEDC_FREQ_HZ, 10U);
 #else
-  ESP_LOGI(TAG, "status led ryg r=%d y=%d g=%d gpio_on_level=%d (digital)", BBCLAW_STATUS_LED_R_GPIO,
-           BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO, BBCLAW_STATUS_LED_GPIO_ON_LEVEL);
+  ESP_LOGI(TAG, "status led ryg r=%d y=%d g=%d gpio_on_level=%d brightness_pct=%d pwm=%uHz/%ubit", BBCLAW_STATUS_LED_R_GPIO,
+           BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO, BBCLAW_STATUS_LED_GPIO_ON_LEVEL,
+           BBCLAW_STATUS_LED_BRIGHTNESS_PCT, BB_LED_LEDC_FREQ_HZ, 10U);
 #endif
   return ESP_OK;
 }

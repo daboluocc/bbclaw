@@ -64,7 +64,9 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 | `B` | `GPIO5` | 蓝通道 |
 | `GND` | `GND` | 公共负极 |
 
-固件为 **GPIO 数字**（非 PWM），**「黄」语义**在 RGB 模式下用 **红+绿同时点亮**（`R+G`）模拟，与独立黄灯视觉一致。
+固件现在使用 **LEDC PWM** 驱动状态灯，支持全局亮度控制；**「黄」语义**在 RGB 模式下用 **红+绿同时点亮**（`R+G`）模拟，与独立黄灯视觉一致。
+
+默认亮度由 `BBCLAW_STATUS_LED_BRIGHTNESS_PCT` 控制，定义在 [bb_config.h](/Volumes/1TB/github/bbclaw/firmware/include/bb_config.h)；若某块板子仍然偏亮，优先在对应 `boards/*/board_config.h` 中覆盖。
 
 灯语与 `rgb_led_status.md` 对齐的简化版：
 

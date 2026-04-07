@@ -319,39 +319,46 @@ static void shadow_transport_state_for_ui(bb_transport_state_t* state) {
 }
 
 static void show_status_idle(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_IDLE);
 }
 
 static void show_status_recording(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_RECORDING);
 }
 
 static void show_status_processing(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_PROCESSING);
 }
 
 #if BBCLAW_ENABLE_DISPLAY_PULL
 static void show_status_notification(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_NOTIFICATION);
 }
 #endif
 
 static void show_status_error(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_ERROR);
 }
 
 static void pulse_success_on_idle(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_IDLE);
   (void)bb_led_set_status(BB_LED_SUCCESS);
 }
 
 static void pulse_reply_on_idle(const char* status) {
+  bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_IDLE);
   (void)bb_led_set_status(BB_LED_REPLY);
@@ -869,6 +876,41 @@ static int vad_passes_thresholds(const vad_stats_t* vad, uint32_t min_dur_ms, ui
   return duration_ms >= min_dur_ms && nonzero_permille >= min_nz && mean_abs >= min_mean;
 }
 
+static void update_record_level_from_pcm(const uint8_t* pcm_buf, size_t pcm_bytes) {
+  if (pcm_buf == NULL || pcm_bytes < sizeof(int16_t)) {
+    bb_display_set_record_level(0, 0);
+    return;
+  }
+
+  const int16_t* samples = (const int16_t*)pcm_buf;
+  size_t sample_count = pcm_bytes / sizeof(int16_t);
+  uint64_t abs_sum = 0;
+  uint32_t peak_abs = 0;
+  for (size_t i = 0; i < sample_count; ++i) {
+    int32_t v = samples[i];
+    if (v < 0) {
+      v = -v;
+    }
+    abs_sum += (uint32_t)v;
+    if ((uint32_t)v > peak_abs) {
+      peak_abs = (uint32_t)v;
+    }
+  }
+
+  const uint32_t mean_abs = sample_count > 0U ? (uint32_t)(abs_sum / sample_count) : 0U;
+  const uint32_t mean_pct = (mean_abs * 100U) / 600U;
+  const uint32_t peak_pct = (peak_abs * 100U) / 6000U;
+  uint32_t level_pct = mean_pct > peak_pct ? mean_pct : peak_pct;
+  if (level_pct > 100U) {
+    level_pct = 100U;
+  } else if (level_pct == 0U && peak_abs > 0U) {
+    level_pct = 2U;
+  }
+
+  const int voiced = mean_abs >= BBCLAW_VAD_ARM_MIN_MEAN_ABS || peak_abs >= 1000U;
+  bb_display_set_record_level((uint8_t)level_pct, voiced);
+}
+
 static esp_err_t stream_ingest_pcm(bb_stream_ctx_t* stream, vad_stats_t* vad, const uint8_t* pcm_read_buf, size_t pcm_read,
                                    size_t* pending_pcm_len, int* streaming_ok) {
   if (stream == NULL || vad == NULL || pending_pcm_len == NULL || streaming_ok == NULL) {
@@ -927,6 +969,7 @@ static void capture_task(void* arg) {
       }
       continue;
     }
+    update_record_level_from_pcm(pcm_read_buf, pcm_read);
     /* Best-effort push; if ring buffer is full, drop oldest data is not supported
      * by FreeRTOS ring buffer, so we use a short timeout and log overflow. */
     if (xRingbufferSend(s_capture_rb, pcm_read_buf, pcm_read, 0) != pdTRUE) {
@@ -1370,6 +1413,7 @@ static void stream_task(void* arg) {
         continue;
       }
       if (pcm_read > 0U) {
+        update_record_level_from_pcm(s_stream_task_pcm_read_buf, pcm_read);
         vad_update_from_pcm(&vad, s_stream_task_pcm_read_buf, pcm_read);
         if (vad_passes_thresholds(&vad, BBCLAW_VAD_ARM_MIN_DURATION_MS, BBCLAW_VAD_ARM_MIN_NONZERO_PERMILLE,
                                   BBCLAW_VAD_ARM_MIN_MEAN_ABS)) {

@@ -103,6 +103,17 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_WIFI_BAR_GAP    2
 #define UI_WIFI_BAR_H_STEP 4
 
+/* Recording speaking view */
+#define UI_RECORD_UPDATE_MS       48
+#define UI_RECORD_BAR_COUNT       10
+#define UI_RECORD_BAR_W           10
+#define UI_RECORD_BAR_GAP         4
+#define UI_RECORD_BAR_MIN_H       6
+#define UI_RECORD_BAR_MAX_H       38
+#define UI_RECORD_HALO_BASE_PX    54
+#define UI_RECORD_HALO_SPAN_PX    18
+#define UI_RECORD_LEVEL_STALE_MS  280
+
 /* Panel config */
 #define DISP_X_GAP         BBCLAW_ST7789_X_GAP
 #define DISP_Y_GAP         BBCLAW_ST7789_Y_GAP
@@ -179,12 +190,23 @@ static lv_obj_t* s_lbl_status_clock;
 static lv_obj_t* s_obj_status_wifi;
 static lv_obj_t* s_lbl_status_wifi_info;
 static lv_obj_t* s_bar_status_wifi[UI_WIFI_BAR_COUNT];
+static lv_obj_t* s_view_speaking;
+static lv_obj_t* s_obj_record_halo_outer;
+static lv_obj_t* s_obj_record_halo_inner;
+static lv_obj_t* s_obj_record_badge;
+static lv_obj_t* s_img_record_badge;
+static lv_obj_t* s_lbl_record_title;
+static lv_obj_t* s_lbl_record_state;
+static lv_obj_t* s_lbl_record_hint;
+static lv_obj_t* s_obj_record_meter;
+static lv_obj_t* s_obj_record_bar[UI_RECORD_BAR_COUNT];
 static lv_obj_t* s_scroll_text;
 static lv_obj_t* s_lbl_text;
 
 /* Timers */
 static lv_timer_t* s_clock_timer;
 static lv_timer_t* s_auto_scroll_timer;
+static lv_timer_t* s_record_timer;
 
 /* Scroll state */
 static ui_auto_scroll_ctx_t s_auto_scroll_text;
@@ -195,6 +217,12 @@ static int s_main_text_scroll_dirty;
 static int s_main_text_scroll_to_bottom;
 static int s_tts_playing;
 static int s_last_visible_mode = -1;
+static uint8_t s_record_level_pct;
+static int s_record_voiced;
+static int64_t s_record_level_updated_ms;
+static uint8_t s_record_bar_visual[UI_RECORD_BAR_COUNT];
+static uint32_t s_record_anim_tick;
+static int s_record_view_visible;
 
 static void refresh_ui(void);
 
@@ -290,6 +318,21 @@ static void apply_status_icon(const char* status) {
   lv_image_set_src(s_img_status, src);
 }
 
+static int is_recording_status(const char* status) {
+  return status != NULL && strcmp(status, "TX") == 0;
+}
+
+static const lv_image_dsc_t* record_anim_icon(uint32_t tick) {
+  switch (tick % 3U) {
+    case 0:
+      return &bb_img_rec_1;
+    case 1:
+      return &bb_img_rec_2;
+    default:
+      return &bb_img_rec_3;
+  }
+}
+
 /* ── View mode ── */
 
 static int is_standby_status(const char* status) {
@@ -363,6 +406,121 @@ static int scroll_cont_chain_visible(const lv_obj_t* cont) {
   return 1;
 }
 
+static void set_record_bar_height(lv_obj_t* bar, int height) {
+  if (bar == NULL) return;
+  if (height < UI_RECORD_BAR_MIN_H) {
+    height = UI_RECORD_BAR_MIN_H;
+  } else if (height > UI_RECORD_BAR_MAX_H) {
+    height = UI_RECORD_BAR_MAX_H;
+  }
+  lv_obj_set_size(bar, UI_RECORD_BAR_W, height);
+  lv_obj_set_y(bar, UI_RECORD_BAR_MAX_H - height);
+}
+
+static void reset_recording_meter_visuals(void) {
+  s_record_anim_tick = 0;
+  for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
+    s_record_bar_visual[i] = UI_RECORD_BAR_MIN_H;
+    set_record_bar_height(s_obj_record_bar[i], UI_RECORD_BAR_MIN_H);
+  }
+  if (s_obj_record_halo_outer != NULL) {
+    lv_obj_set_size(s_obj_record_halo_outer, UI_RECORD_HALO_BASE_PX + 14, UI_RECORD_HALO_BASE_PX + 14);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_outer, LV_OPA_0, 0);
+  }
+  if (s_obj_record_halo_inner != NULL) {
+    lv_obj_set_size(s_obj_record_halo_inner, UI_RECORD_HALO_BASE_PX, UI_RECORD_HALO_BASE_PX);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_inner, LV_OPA_0, 0);
+  }
+  if (s_obj_record_badge != NULL) {
+    lv_obj_set_style_bg_color(s_obj_record_badge, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_opa(s_obj_record_badge, LV_OPA_20, 0);
+    lv_obj_set_style_border_color(s_obj_record_badge, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_border_opa(s_obj_record_badge, LV_OPA_40, 0);
+  }
+  if (s_img_record_badge != NULL) {
+    lv_image_set_src(s_img_record_badge, &bb_img_tx);
+  }
+  if (s_lbl_record_state != NULL) {
+    lv_label_set_text(s_lbl_record_state, "请靠近麦克风说话");
+  }
+}
+
+static void refresh_recording_meter(void) {
+  if (s_view_speaking == NULL || !scroll_cont_chain_visible(s_view_speaking)) {
+    return;
+  }
+
+  static const uint8_t kProfiles[UI_RECORD_BAR_COUNT] = {32, 46, 64, 82, 100, 100, 82, 64, 46, 32};
+
+  uint8_t level_pct = 0;
+  int voiced = 0;
+  int64_t updated_ms = 0;
+  portENTER_CRITICAL(&s_state_lock);
+  level_pct = s_record_level_pct;
+  voiced = s_record_voiced;
+  updated_ms = s_record_level_updated_ms;
+  portEXIT_CRITICAL(&s_state_lock);
+
+  const int64_t now_ms = bb_now_ms();
+  if (updated_ms == 0 || (now_ms - updated_ms) > UI_RECORD_LEVEL_STALE_MS) {
+    level_pct = 0;
+    voiced = 0;
+  }
+
+  s_record_anim_tick++;
+  for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
+    int wobble = 0;
+    if (level_pct > 3U) {
+      wobble = (int)((s_record_anim_tick + (uint32_t)(i * 3)) % 7U) - 3;
+    }
+    int target_h = UI_RECORD_BAR_MIN_H + (int)((level_pct * (uint32_t)kProfiles[i] *
+                                                (UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H)) /
+                                               10000U);
+    target_h += wobble;
+    if (target_h < UI_RECORD_BAR_MIN_H) {
+      target_h = UI_RECORD_BAR_MIN_H;
+    } else if (target_h > UI_RECORD_BAR_MAX_H) {
+      target_h = UI_RECORD_BAR_MAX_H;
+    }
+
+    int current_h = (int)s_record_bar_visual[i];
+    if (target_h > current_h) {
+      current_h += (target_h - current_h + 1) / 2;
+    } else if (target_h < current_h) {
+      current_h -= (current_h - target_h + 2) / 3;
+    }
+    s_record_bar_visual[i] = (uint8_t)current_h;
+    set_record_bar_height(s_obj_record_bar[i], current_h);
+    lv_obj_set_style_bg_opa(s_obj_record_bar[i], voiced ? LV_OPA_COVER : LV_OPA_70, 0);
+  }
+
+  if (s_obj_record_halo_outer != NULL) {
+    int outer_size = UI_RECORD_HALO_BASE_PX + 14 + (int)((level_pct * (UI_RECORD_HALO_SPAN_PX + 6)) / 100U);
+    lv_obj_set_size(s_obj_record_halo_outer, outer_size, outer_size);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_outer, voiced ? (lv_opa_t)(10 + (level_pct * 28U) / 100U) : (lv_opa_t)6, 0);
+  }
+  if (s_obj_record_halo_inner != NULL) {
+    int inner_size = UI_RECORD_HALO_BASE_PX + (int)((level_pct * UI_RECORD_HALO_SPAN_PX) / 100U);
+    lv_obj_set_size(s_obj_record_halo_inner, inner_size, inner_size);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_inner, voiced ? (lv_opa_t)(16 + (level_pct * 40U) / 100U) : LV_OPA_10, 0);
+  }
+  if (s_obj_record_badge != NULL) {
+    lv_obj_set_style_bg_color(s_obj_record_badge, lv_color_hex(voiced ? UI_ME_ACCENT : UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_opa(s_obj_record_badge, voiced ? (lv_opa_t)(48 + (level_pct * 52U) / 100U) : LV_OPA_20, 0);
+    lv_obj_set_style_border_color(s_obj_record_badge, lv_color_hex(voiced ? UI_ME_ACCENT : UI_TEXT_DIM), 0);
+    lv_obj_set_style_border_opa(s_obj_record_badge, voiced ? LV_OPA_COVER : LV_OPA_40, 0);
+  }
+  if (s_img_record_badge != NULL) {
+    lv_image_set_src(s_img_record_badge, voiced ? record_anim_icon(s_record_anim_tick) : &bb_img_tx);
+  }
+  if (s_img_status != NULL) {
+    lv_image_set_src(s_img_status, voiced ? record_anim_icon(s_record_anim_tick) : &bb_img_tx);
+  }
+  if (s_lbl_record_state != NULL) {
+    lv_label_set_text(s_lbl_record_state, voiced ? "已检测到声音" : "请靠近麦克风说话");
+  }
+}
+
 static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
   if (ctx == NULL || ctx->cont == NULL || !scroll_cont_chain_visible(ctx->cont)) return;
   lv_obj_update_layout(ctx->cont);
@@ -402,6 +560,14 @@ static void auto_scroll_text_cb(lv_timer_t* t) {
   if (!s_ready) return;
   if (bb_now_ms() < s_auto_scroll_pause_until_ms) return;
   auto_scroll_step_ctx(&s_auto_scroll_text);
+}
+
+static void record_timer_cb(lv_timer_t* t) {
+  (void)t;
+  if (!s_ready) return;
+  if (!lvgl_port_lock(0)) return;
+  refresh_recording_meter();
+  lvgl_port_unlock();
 }
 
 static void clock_timer_cb(lv_timer_t* t) {
@@ -639,6 +805,100 @@ static void create_ui(void) {
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
 
+  /* Speaking area — shown only while TX is active */
+  s_view_speaking = lv_obj_create(s_view_active);
+  lv_obj_remove_style_all(s_view_speaking);
+  lv_obj_set_size(s_view_speaking, body_w, content_h);
+  lv_obj_set_pos(s_view_speaking, UI_SAFE_LEFT, content_y);
+  lv_obj_clear_flag(s_view_speaking, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(s_view_speaking, LV_SCROLLBAR_MODE_OFF);
+
+  {
+    const int center_x = body_w / 2;
+    const int badge_size = 42;
+    const int halo_outer = UI_RECORD_HALO_BASE_PX + 14;
+    const int halo_inner = UI_RECORD_HALO_BASE_PX;
+    const int badge_x = center_x - badge_size / 2;
+    const int badge_y = 10;
+    const int halo_outer_x = center_x - halo_outer / 2;
+    const int halo_inner_x = center_x - halo_inner / 2;
+
+    s_obj_record_halo_outer = lv_obj_create(s_view_speaking);
+    lv_obj_remove_style_all(s_obj_record_halo_outer);
+    lv_obj_set_size(s_obj_record_halo_outer, halo_outer, halo_outer);
+    lv_obj_set_pos(s_obj_record_halo_outer, halo_outer_x, badge_y - 6);
+    lv_obj_set_style_radius(s_obj_record_halo_outer, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_obj_record_halo_outer, lv_color_hex(UI_ME_ACCENT), 0);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_outer, LV_OPA_0, 0);
+
+    s_obj_record_halo_inner = lv_obj_create(s_view_speaking);
+    lv_obj_remove_style_all(s_obj_record_halo_inner);
+    lv_obj_set_size(s_obj_record_halo_inner, halo_inner, halo_inner);
+    lv_obj_set_pos(s_obj_record_halo_inner, halo_inner_x, badge_y + 1);
+    lv_obj_set_style_radius(s_obj_record_halo_inner, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_obj_record_halo_inner, lv_color_hex(UI_ME_ACCENT), 0);
+    lv_obj_set_style_bg_opa(s_obj_record_halo_inner, LV_OPA_0, 0);
+
+    s_obj_record_badge = lv_obj_create(s_view_speaking);
+    lv_obj_remove_style_all(s_obj_record_badge);
+    lv_obj_set_size(s_obj_record_badge, badge_size, badge_size);
+    lv_obj_set_pos(s_obj_record_badge, badge_x, badge_y + 10);
+    lv_obj_set_style_radius(s_obj_record_badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_obj_record_badge, 1, 0);
+    lv_obj_set_style_border_color(s_obj_record_badge, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_color(s_obj_record_badge, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_opa(s_obj_record_badge, LV_OPA_20, 0);
+
+    s_img_record_badge = lv_image_create(s_obj_record_badge);
+    lv_image_set_src(s_img_record_badge, &bb_img_tx);
+    lv_obj_center(s_img_record_badge);
+
+    s_lbl_record_title = lv_label_create(s_view_speaking);
+    lv_obj_set_width(s_lbl_record_title, body_w);
+    lv_obj_set_style_text_color(s_lbl_record_title, lv_color_hex(UI_TEXT_MAIN), 0);
+    lv_obj_set_style_text_font(s_lbl_record_title, font, 0);
+    lv_obj_set_style_text_align(s_lbl_record_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_lbl_record_title, "正在聆听");
+    lv_obj_set_pos(s_lbl_record_title, 0, 70);
+
+    s_lbl_record_state = lv_label_create(s_view_speaking);
+    lv_obj_set_width(s_lbl_record_state, body_w);
+    lv_obj_set_style_text_color(s_lbl_record_state, lv_color_hex(UI_ME_ACCENT), 0);
+    lv_obj_set_style_text_font(s_lbl_record_state, font, 0);
+    lv_obj_set_style_text_align(s_lbl_record_state, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_lbl_record_state, "请靠近麦克风说话");
+    lv_obj_set_pos(s_lbl_record_state, 0, 88);
+
+    s_lbl_record_hint = lv_label_create(s_view_speaking);
+    lv_obj_set_width(s_lbl_record_hint, body_w);
+    lv_obj_set_style_text_color(s_lbl_record_hint, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_record_hint, font, 0);
+    lv_obj_set_style_text_align(s_lbl_record_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_lbl_record_hint, "松开发送");
+    lv_obj_set_pos(s_lbl_record_hint, 0, content_h - 16);
+
+    s_obj_record_meter = lv_obj_create(s_view_speaking);
+    lv_obj_remove_style_all(s_obj_record_meter);
+    lv_obj_set_size(s_obj_record_meter,
+                    UI_RECORD_BAR_COUNT * UI_RECORD_BAR_W + (UI_RECORD_BAR_COUNT - 1) * UI_RECORD_BAR_GAP,
+                    UI_RECORD_BAR_MAX_H);
+    lv_obj_set_pos(s_obj_record_meter,
+                   (body_w - (UI_RECORD_BAR_COUNT * UI_RECORD_BAR_W + (UI_RECORD_BAR_COUNT - 1) * UI_RECORD_BAR_GAP)) / 2,
+                   content_h - UI_RECORD_BAR_MAX_H - 26);
+    lv_obj_clear_flag(s_obj_record_meter, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
+      s_obj_record_bar[i] = lv_obj_create(s_obj_record_meter);
+      lv_obj_remove_style_all(s_obj_record_bar[i]);
+      lv_obj_set_pos(s_obj_record_bar[i], i * (UI_RECORD_BAR_W + UI_RECORD_BAR_GAP),
+                     UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H);
+      lv_obj_set_style_radius(s_obj_record_bar[i], 3, 0);
+      lv_obj_set_style_bg_color(s_obj_record_bar[i], lv_color_hex(UI_ME_ACCENT), 0);
+      lv_obj_set_style_bg_opa(s_obj_record_bar[i], LV_OPA_70, 0);
+      set_record_bar_height(s_obj_record_bar[i], UI_RECORD_BAR_MIN_H);
+    }
+  }
+
   /* Text area — full remaining space, pure text only */
   s_scroll_text = lv_obj_create(s_view_active);
   lv_obj_remove_style_all(s_scroll_text);
@@ -659,10 +919,13 @@ static void create_ui(void) {
   /* Initial visibility */
   set_view_visible(s_view_standby, 1);
   set_view_visible(s_view_active, 0);
+  set_view_visible(s_view_speaking, 0);
 
   auto_scroll_ctx_attach(&s_auto_scroll_text, s_scroll_text);
   s_clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
   s_auto_scroll_timer = lv_timer_create(auto_scroll_text_cb, UI_AUTO_SCROLL_PERIOD_MS, NULL);
+  s_record_timer = lv_timer_create(record_timer_cb, UI_RECORD_UPDATE_MS, NULL);
+  reset_recording_meter_visuals();
 }
 
 /* ── refresh_ui ── */
@@ -704,6 +967,7 @@ static void refresh_ui(void) {
   format_clock(hm, sizeof(hm), now_ms);
 
   ui_view_mode_t mode = resolve_view_mode(status, turn_den);
+  const int recording = is_recording_status(status);
 
   set_view_visible(s_view_standby, mode == UI_VIEW_STANDBY);
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
@@ -711,6 +975,7 @@ static void refresh_ui(void) {
   if (mode == UI_VIEW_STANDBY) {
     /* Update standby clock */
     lv_label_set_text(s_lbl_standby_clock, hm);
+    s_record_view_visible = 0;
   } else {
     /* Status bar */
     const char* status_text = status;
@@ -721,11 +986,24 @@ static void refresh_ui(void) {
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
     lv_label_set_text(s_lbl_status_clock, hm);
 
+    set_view_visible(s_view_speaking, recording);
+    set_view_visible(s_scroll_text, !recording);
+    if (recording) {
+      if (!s_record_view_visible) {
+        reset_recording_meter_visuals();
+      }
+      s_record_view_visible = 1;
+      refresh_recording_meter();
+    } else {
+      s_record_view_visible = 0;
+    }
+
     /* Text area content */
     char buf[BBCLAW_DISPLAY_CHAT_LINE_LEN * 2 + 64];
 
-    if (strcmp(status, "TX") == 0) {
-      lv_label_set_text(s_lbl_text, "正在聆听...");
+    if (recording) {
+      lv_label_set_text(s_lbl_record_title, "正在聆听");
+      lv_label_set_text(s_lbl_record_hint, "松开发送");
     } else if (strcmp(status, "RX") == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) {
       if (you[0] != '\0' && reply[0] != '\0') {
         snprintf(buf, sizeof(buf), "我: %s\n答: %s", you, reply);
@@ -795,7 +1073,7 @@ static void refresh_ui(void) {
     }
 
     /* Reset scroll on content change or view switch */
-    if (s_main_text_scroll_dirty || (int)mode != s_last_visible_mode) {
+    if (!recording && (s_main_text_scroll_dirty || (int)mode != s_last_visible_mode)) {
       if (s_tts_playing && (int)mode == s_last_visible_mode) {
         /* TTS playing: don't reset to top, scroll to bottom instead */
         lv_obj_update_layout(s_scroll_text);
@@ -810,7 +1088,7 @@ static void refresh_ui(void) {
       }
       s_main_text_scroll_dirty = 0;
       s_main_text_scroll_to_bottom = 0;
-    } else if (s_main_text_scroll_to_bottom) {
+    } else if (!recording && s_main_text_scroll_to_bottom) {
       s_main_text_scroll_to_bottom = 0;
       lv_obj_update_layout(s_scroll_text);
       int32_t max_y = lv_obj_get_scroll_bottom(s_scroll_text);
@@ -842,6 +1120,12 @@ esp_err_t bb_display_init(void) {
   s_main_text_scroll_dirty = 0;
   s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
+  s_record_level_pct = 0;
+  s_record_voiced = 0;
+  s_record_level_updated_ms = 0;
+  memset(s_record_bar_visual, 0, sizeof(s_record_bar_visual));
+  s_record_anim_tick = 0;
+  s_record_view_visible = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   create_ui();
@@ -862,6 +1146,12 @@ esp_err_t bb_display_init(void) {
   s_main_text_scroll_dirty = 0;
   s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
+  s_record_level_pct = 0;
+  s_record_voiced = 0;
+  s_record_level_updated_ms = 0;
+  memset(s_record_bar_visual, 0, sizeof(s_record_bar_visual));
+  s_record_anim_tick = 0;
+  s_record_view_visible = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   ESP_RETURN_ON_ERROR(init_panel(), TAG, "panel init failed");
@@ -1070,6 +1360,17 @@ void bb_display_chat_focus_ai(void) {
   s_focus_ai = 1;
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
+}
+
+void bb_display_set_record_level(uint8_t level_pct, int voiced) {
+  if (level_pct > 100U) {
+    level_pct = 100U;
+  }
+  portENTER_CRITICAL(&s_state_lock);
+  s_record_level_pct = level_pct;
+  s_record_voiced = voiced ? 1 : 0;
+  s_record_level_updated_ms = bb_now_ms();
+  portEXIT_CRITICAL(&s_state_lock);
 }
 
 void bb_display_set_tts_playing(int playing) {

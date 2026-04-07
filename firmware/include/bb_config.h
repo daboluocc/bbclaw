@@ -295,6 +295,10 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_STATUS_LED_GPIO_ON_LEVEL 1
 #endif
 
+#ifndef BBCLAW_STATUS_LED_BRIGHTNESS_PCT
+#define BBCLAW_STATUS_LED_BRIGHTNESS_PCT 12
+#endif
+
 /** 开机 RYG 跑马灯：依次点亮 R→Y→G，每色停留步长；整段时长 = 3 × 步长 × 圈数 */
 #ifndef BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE
 #define BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE 1

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "esp_err.h"
 
 esp_err_t bb_display_init(void);
@@ -20,3 +22,5 @@ void bb_display_chat_focus_ai(void);
 void bb_display_set_tts_playing(int playing);
 /** TTS 播放到新句子时，滚动到该句子在回复文本中的位置 */
 void bb_display_set_tts_sentence(const char* sentence_text);
+/** PTT 录音阶段的实时输入电平（0-100）与是否检测到有效声音 */
+void bb_display_set_record_level(uint8_t level_pct, int voiced);
