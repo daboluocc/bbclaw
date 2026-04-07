@@ -11,6 +11,9 @@ import (
 )
 
 type Config struct {
+	// AdapterMode: "local" (default, HTTP server + ASR/TTS) or "cloud" (WS client to Cloud)
+	AdapterMode string
+
 	Addr                 string
 	AuthToken            string
 	SaveAudio            bool
@@ -49,6 +52,17 @@ type Config struct {
 	ASRTranscribeTimeout time.Duration
 	ASRReadinessProbe    bool
 	ASRReadinessTimeout  time.Duration
+
+	// Cloud mode fields (used when AdapterMode == "cloud")
+	CloudWSURL       string
+	CloudAuthToken   string
+	HomeSiteID       string
+	ReconnectDelay   time.Duration
+}
+
+// IsCloudMode returns true when the adapter should run as a Cloud relay.
+func (c Config) IsCloudMode() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AdapterMode), "cloud")
 }
 
 func LoadFromEnv() (Config, error) {
@@ -59,7 +73,16 @@ func LoadFromEnv() (Config, error) {
 	if openclawURL == "" {
 		openclawURL = "ws://127.0.0.1:18789"
 	}
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("ADAPTER_MODE")))
+	if mode == "" {
+		mode = "local"
+	}
+	nodeIDDefault := "bbclaw-adapter"
+	if mode == "cloud" {
+		nodeIDDefault = "bbclaw-home-adapter"
+	}
 	cfg := Config{
+		AdapterMode:          mode,
 		Addr:                 getEnvOrDefault("ADAPTER_ADDR", ":18080"),
 		AuthToken:            strings.TrimSpace(os.Getenv("ADAPTER_AUTH_TOKEN")),
 		SaveAudio:            getEnvBool("SAVE_AUDIO", false),
@@ -89,7 +112,7 @@ func LoadFromEnv() (Config, error) {
 		OpenClawURL:          openclawURL,
 		OpenClawAuthToken:    strings.TrimSpace(os.Getenv("OPENCLAW_AUTH_TOKEN")),
 		OpenClawIdentityPath: strings.TrimSpace(os.Getenv("OPENCLAW_DEVICE_IDENTITY_PATH")),
-		OpenClawNodeID:       getEnvOrDefault("OPENCLAW_NODE_ID", "bbclaw-adapter"),
+		OpenClawNodeID:       getEnvOrDefault("OPENCLAW_NODE_ID", nodeIDDefault),
 		OpenClawReplyWait:    time.Duration(getEnvInt("OPENCLAW_REPLY_WAIT_SECONDS", 25)) * time.Second,
 		MaxStreamSeconds:     getEnvInt("MAX_STREAM_SECONDS", 90),
 		MaxAudioBytes:        getEnvInt("MAX_AUDIO_BYTES", 4*1024*1024),
@@ -98,6 +121,10 @@ func LoadFromEnv() (Config, error) {
 		ASRTranscribeTimeout: time.Duration(getEnvInt("ASR_TRANSCRIBE_TIMEOUT_SECONDS", 10)) * time.Second,
 		ASRReadinessProbe:    getEnvBool("ASR_READINESS_PROBE", true),
 		ASRReadinessTimeout:  time.Duration(getEnvInt("ASR_READINESS_TIMEOUT_SECONDS", 8)) * time.Second,
+		CloudWSURL:           strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
+		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
+		HomeSiteID:           strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
+		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -107,6 +134,52 @@ func LoadFromEnv() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.AdapterMode)) {
+	case "local", "cloud":
+	default:
+		return fmt.Errorf("ADAPTER_MODE must be 'local' or 'cloud', got: %s", c.AdapterMode)
+	}
+
+	// Common validation
+	if strings.TrimSpace(c.OpenClawURL) == "" {
+		return errors.New("OPENCLAW_WS_URL or OPENCLAW_RPC_URL is required")
+	}
+	if strings.TrimSpace(c.OpenClawNodeID) == "" {
+		return errors.New("OPENCLAW_NODE_ID is required")
+	}
+	if c.OpenClawReplyWait <= 0 {
+		return errors.New("OPENCLAW_REPLY_WAIT_SECONDS must be > 0")
+	}
+	if c.HTTPTimeout <= 0 {
+		return errors.New("HTTP_TIMEOUT_SECONDS must be > 0")
+	}
+	openclawEndpoint, err := url.ParseRequestURI(c.OpenClawURL)
+	if err != nil {
+		return fmt.Errorf("OPENCLAW endpoint is invalid: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(openclawEndpoint.Scheme)) {
+	case "http", "https", "ws", "wss":
+	default:
+		return fmt.Errorf("OPENCLAW endpoint scheme must be one of http/https/ws/wss, got: %s", openclawEndpoint.Scheme)
+	}
+
+	if c.IsCloudMode() {
+		return c.validateCloud()
+	}
+	return c.validateLocal()
+}
+
+func (c Config) validateCloud() error {
+	if strings.TrimSpace(c.CloudWSURL) == "" {
+		return errors.New("CLOUD_WS_URL is required for ADAPTER_MODE=cloud")
+	}
+	if c.ReconnectDelay <= 0 {
+		return errors.New("CLOUD_RECONNECT_DELAY_SECONDS must be > 0")
+	}
+	return nil
+}
+
+func (c Config) validateLocal() error {
 	if strings.TrimSpace(c.Addr) == "" {
 		return errors.New("ADAPTER_ADDR is required")
 	}
@@ -157,15 +230,6 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("ASR_PROVIDER is unsupported: %s", c.ASRProvider)
 	}
-	if strings.TrimSpace(c.OpenClawURL) == "" {
-		return errors.New("OPENCLAW_WS_URL or OPENCLAW_RPC_URL is required")
-	}
-	if strings.TrimSpace(c.OpenClawNodeID) == "" {
-		return errors.New("OPENCLAW_NODE_ID is required")
-	}
-	if c.OpenClawReplyWait <= 0 {
-		return errors.New("OPENCLAW_REPLY_WAIT_SECONDS must be > 0")
-	}
 	if c.MaxStreamSeconds <= 0 {
 		return errors.New("MAX_STREAM_SECONDS must be > 0")
 	}
@@ -175,27 +239,14 @@ func (c Config) Validate() error {
 	if c.MaxConcurrentStreams <= 0 {
 		return errors.New("MAX_CONCURRENT_STREAMS must be > 0")
 	}
-	if c.HTTPTimeout <= 0 {
-		return errors.New("HTTP_TIMEOUT_SECONDS must be > 0")
-	}
 	if c.ASRTranscribeTimeout <= 0 {
 		return errors.New("ASR_TRANSCRIBE_TIMEOUT_SECONDS must be > 0")
 	}
 	if c.ASRReadinessProbe && c.ASRReadinessTimeout <= 0 {
 		return errors.New("ASR_READINESS_TIMEOUT_SECONDS must be > 0 when ASR_READINESS_PROBE is enabled")
 	}
-	openclawEndpoint, err := url.ParseRequestURI(c.OpenClawURL)
-	if err != nil {
-		return fmt.Errorf("OPENCLAW endpoint is invalid: %w", err)
-	}
-	switch strings.ToLower(strings.TrimSpace(openclawEndpoint.Scheme)) {
-	case "http", "https", "ws", "wss":
-	default:
-		return fmt.Errorf("OPENCLAW endpoint scheme must be one of http/https/ws/wss, got: %s", openclawEndpoint.Scheme)
-	}
 	switch strings.ToLower(strings.TrimSpace(c.TTSProvider)) {
 	case "mock":
-		// No external credentials needed in mock mode.
 	case "local_command":
 		if strings.TrimSpace(c.TTSLocalBin) == "" {
 			return errors.New("TTS_LOCAL_BIN is required for TTS_PROVIDER=local_command")

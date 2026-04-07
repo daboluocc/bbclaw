@@ -24,30 +24,24 @@ LOG_HOME    ?= $(LOG_DIR)/home-adapter-runtime.log
 ENV_ADAPTER ?= $(CURDIR)/.env
 ENV_HOME    ?= $(CURDIR)/.env.home
 
-.PHONY: help build build-adapter build-home test run run-adapter run-home dev dev-adapter dev-home log log-adapter log-home
+.PHONY: help build test run run-adapter run-home dev dev-adapter dev-home log log-adapter log-home
 
 help:
-	@echo "BBClaw adapter — 两种模式（配置来自文件，由 make 在启动前 export 到环境）"
+	@echo "BBClaw adapter — 单二进制，通过 ADAPTER_MODE 环境变量区分模式"
 	@echo ""
-	@echo "  make run-adapter   # go run bbclaw-adapter，默认配置: $(ENV_ADAPTER)"
-	@echo "  make run-home      # go run bbclaw-home-adapter，默认配置: $(ENV_HOME)"
+	@echo "  make run-adapter   # ADAPTER_MODE=local（默认），配置: $(ENV_ADAPTER)"
+	@echo "  make run-home      # ADAPTER_MODE=cloud，配置: $(ENV_HOME)"
 	@echo "  make dev-adapter / dev-home  # 与 run-* 相同（别名）"
 	@echo "  make log-home / log-adapter  # tail -f 运行日志"
-	@echo "  make build         # 两个二进制都构建到 $(BIN_DIR)/（launchd / 部署用）"
+	@echo "  make build         # 构建到 $(BIN_DIR)/bbclaw-adapter"
 	@echo "  make test          # go test ./..."
 	@echo ""
 	@echo "覆盖配置文件: make run-home ENV_FILE=/path/to/x.env"
 	@echo "示例文件: .env.example / .env.home.example"
 
-build: build-adapter build-home
-
-build-adapter:
+build:
 	@mkdir -p "$(BIN_DIR)"
 	cd "$(CURDIR)" && $(GO) build -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/bbclaw-adapter" ./cmd/bbclaw-adapter
-
-build-home:
-	@mkdir -p "$(BIN_DIR)"
-	cd "$(CURDIR)" && $(GO) build -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/bbclaw-home-adapter" ./cmd/bbclaw-home-adapter
 
 test:
 	cd "$(CURDIR)" && $(GO) test ./...
@@ -73,9 +67,10 @@ run-home:
 	set -a; \
 	. "$$CFG"; \
 	set +a; \
+	export ADAPTER_MODE=cloud; \
 	echo "=== home-adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$(LOG_HOME)"; \
 	echo "log: $(LOG_HOME)"; \
-	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-home-adapter 2>&1 | tee -a "$(LOG_HOME)"
+	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter 2>&1 | tee -a "$(LOG_HOME)"
 
 dev-adapter: run-adapter
 dev-home: run-home

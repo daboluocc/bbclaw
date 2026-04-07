@@ -62,8 +62,8 @@ func derivedHomeSiteID() (string, error) {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fp)).String(), nil
 }
 
-// ensureHomeSiteID returns HOME_SITE_ID if set; otherwise a deterministic UUID derived from this host.
-func ensureHomeSiteID() (string, error) {
+// EnsureHomeSiteID returns HOME_SITE_ID if set; otherwise a deterministic UUID derived from this host.
+func EnsureHomeSiteID() (string, error) {
 	if id := strings.TrimSpace(os.Getenv("HOME_SITE_ID")); id != "" {
 		return id, nil
 	}
@@ -76,7 +76,7 @@ func LoadFromEnv() (Config, error) {
 		openclawURL = "ws://127.0.0.1:18789"
 	}
 
-	homeSiteID, err := ensureHomeSiteID()
+	homeSiteID, err := EnsureHomeSiteID()
 	if err != nil {
 		return Config{}, err
 	}
@@ -104,7 +104,7 @@ func (c Config) Validate() error {
 		return errors.New("CLOUD_WS_URL is required")
 	}
 	if strings.TrimSpace(c.HomeSiteID) == "" {
-		return errors.New("HOME_SITE_ID is empty (unexpected after ensureHomeSiteID)")
+		return errors.New("HOME_SITE_ID is empty (unexpected after EnsureHomeSiteID)")
 	}
 	if strings.EqualFold(strings.TrimSpace(c.HomeSiteID), "home-main") {
 		return errors.New("HOME_SITE_ID must be your portal home-site UUID, not the legacy placeholder home-main")
