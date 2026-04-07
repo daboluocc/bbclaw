@@ -23,10 +23,8 @@ out/
 
 # 参考与本地运行时，不纳入版本控制
 references/
+bbclaw-reference/
 
-# Adapter 二进制构建产物
-references/adapter/releases/
-references/adapter/bin/
 
 # Logs & temp
 *.log
