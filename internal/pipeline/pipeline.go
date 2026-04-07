@@ -7,9 +7,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/voicecmd"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/voicecmd"
 )
 
 // Sink is the interface both adapter entry points already depend on.

@@ -1,4 +1,4 @@
-module github.com/zhoushoujianwork/bbclaw/adapter
+module github.com/daboluocc/bbclaw/adapter
 
 go 1.22
 

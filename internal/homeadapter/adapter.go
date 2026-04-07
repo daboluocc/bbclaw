@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 )
 
 type CloudEnvelope struct {

@@ -10,16 +10,16 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/asr"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/audio"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/config"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/homeadapter"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/httpapi"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/pipeline"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/tts"
+	"github.com/daboluocc/bbclaw/adapter/internal/asr"
+	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/config"
+	"github.com/daboluocc/bbclaw/adapter/internal/homeadapter"
+	"github.com/daboluocc/bbclaw/adapter/internal/httpapi"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/pipeline"
+	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 )
 
 func main() {

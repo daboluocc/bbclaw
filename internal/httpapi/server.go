@@ -15,10 +15,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/asr"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/audio"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/obs"
-	"github.com/zhoushoujianwork/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/asr"
+	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 )
 
 type AppConfig struct {
