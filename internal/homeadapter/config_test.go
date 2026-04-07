@@ -43,11 +43,11 @@ func TestEnsureHomeSiteIDDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("HOME_SITE_ID", "")
-	a, err := ensureHomeSiteID()
+	a, err := EnsureHomeSiteID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := ensureHomeSiteID()
+	b, err := EnsureHomeSiteID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +64,12 @@ func TestEnsureHomeSiteIDDifferentHOME(t *testing.T) {
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
 	t.Setenv("HOME", dir1)
-	id1, err := ensureHomeSiteID()
+	id1, err := EnsureHomeSiteID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", dir2)
-	id2, err := ensureHomeSiteID()
+	id2, err := EnsureHomeSiteID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,12 +82,12 @@ func TestEnsureHomeSiteIDPrefersEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("HOME_SITE_ID", "from-env")
-	got, err := ensureHomeSiteID()
+	got, err := EnsureHomeSiteID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "from-env" {
-		t.Fatalf("ensureHomeSiteID() = %q", got)
+		t.Fatalf("EnsureHomeSiteID() = %q", got)
 	}
 }
 
