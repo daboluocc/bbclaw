@@ -549,6 +549,14 @@ const char *bbclaw_session_key(void);
 #endif
 
 /**
+ * 屏幕旋转角（度）：0 / 90 / 180 / 270。由板级 board_config.h 映射到 ST7789 swap/mirror。
+ * 未在板级定义时默认为 0（与仅写死 SWAP/MIRROR 的旧板卡行为一致）。
+ */
+#ifndef BBCLAW_DISPLAY_ROTATION_DEG
+#define BBCLAW_DISPLAY_ROTATION_DEG 0
+#endif
+
+/**
  * Display orientation defaults — boards define these in board_config.h.
  * These are fallbacks only.
  */

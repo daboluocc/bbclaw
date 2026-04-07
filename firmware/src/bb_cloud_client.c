@@ -409,12 +409,26 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   } else {
     out_pairing->status = BB_CLOUD_PAIR_STATUS_PENDING;
   }
-  ESP_LOGI(TAG,
-           "pair request device=%s api_status=%s pair_state=%s home_site=%s code=%s expires=%s",
-           BBCLAW_DEVICE_ID, out_pairing->detail, bb_cloud_pair_status_name(out_pairing->status),
-           out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : "(n/a)",
-           out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-",
-           out_pairing->registration_expires_at[0] != '\0' ? out_pairing->registration_expires_at : "-");
+  static char s_pair_poll_code[16];
+  static char s_pair_poll_detail[64];
+  static char s_pair_poll_exp[40];
+  int pair_poll_unchanged =
+      (strcmp(s_pair_poll_code, out_pairing->registration_code) == 0 &&
+       strcmp(s_pair_poll_detail, out_pairing->detail) == 0 && strcmp(s_pair_poll_exp, out_pairing->registration_expires_at) == 0);
+  if (!pair_poll_unchanged) {
+    snprintf(s_pair_poll_code, sizeof(s_pair_poll_code), "%s", out_pairing->registration_code);
+    snprintf(s_pair_poll_detail, sizeof(s_pair_poll_detail), "%s", out_pairing->detail);
+    snprintf(s_pair_poll_exp, sizeof(s_pair_poll_exp), "%s", out_pairing->registration_expires_at);
+    ESP_LOGI(TAG,
+             "pair request device=%s api_status=%s pair_state=%s home_site=%s code=%s expires=%s",
+             BBCLAW_DEVICE_ID, out_pairing->detail, bb_cloud_pair_status_name(out_pairing->status),
+             out_pairing->home_site_id[0] != '\0' ? out_pairing->home_site_id : "(n/a)",
+             out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-",
+             out_pairing->registration_expires_at[0] != '\0' ? out_pairing->registration_expires_at : "-");
+  } else {
+    ESP_LOGD(TAG, "pair poll unchanged status=%s code=%s", out_pairing->detail,
+             out_pairing->registration_code[0] != '\0' ? out_pairing->registration_code : "-");
+  }
   out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
   out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
   /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */
@@ -455,7 +469,12 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
     }
   }
   if (out_pairing->volume_pct >= 0 || out_pairing->speed_ratio_x10 > 0) {
-    ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
+    if (!pair_poll_unchanged) {
+      ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
+    } else {
+      ESP_LOGD(TAG, "pair config unchanged volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct,
+               out_pairing->speed_ratio_x10);
+    }
   }
   free(data_scope);
   return ESP_OK;

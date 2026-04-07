@@ -272,6 +272,52 @@ static void signal_error_haptic(void) {
   (void)bb_motor_trigger(BB_MOTOR_PATTERN_ERROR_ALERT);
 }
 
+/**
+ * Cloud SaaS：当前不应发上行流、但属于「等门户 / 等云端 ASR 就绪」而非设备故障。
+ * - 配对中（pending / binding_required）
+ * - 已 approved 但 health 仍报 supports_audio_streaming=0
+ * 此时长按 PTT 不得打 ERROR 长震，PTT 边沿也不做触觉（避免像报错一样狂震）。
+ * 鉴权失败、云不可达等仍返回 0，走正常错误触觉。
+ */
+static int cloud_saas_tx_wait_is_benign(void) {
+  if (!bb_transport_is_cloud_saas()) {
+    return 0;
+  }
+  if (strcmp(s_transport_detail, "unauthorized") == 0 || s_transport_http_status == 401 ||
+      s_transport_http_status == 403) {
+    return 0;
+  }
+  if (strcmp(s_transport_detail, "cloud_unavailable") == 0 || strcmp(s_transport_detail, "request_failed") == 0) {
+    return 0;
+  }
+  if (s_transport_pairing_status == BB_TRANSPORT_PAIRING_PENDING ||
+      s_transport_pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
+    return 1;
+  }
+  if (s_transport_ready && !s_transport_audio_streaming_ready) {
+    return 1;
+  }
+  return 0;
+}
+
+static void shadow_transport_state_for_ui(bb_transport_state_t* state) {
+  if (state == NULL) {
+    return;
+  }
+  memset(state, 0, sizeof(*state));
+  state->ready = s_transport_ready;
+  state->supports_audio_streaming = s_transport_audio_streaming_ready;
+  state->supports_tts = s_transport_tts_ready;
+  state->supports_display = s_transport_display_ready;
+  state->http_status = s_transport_http_status;
+  state->pairing_status = s_transport_pairing_status;
+  snprintf(state->detail, sizeof(state->detail), "%s", s_transport_detail);
+  snprintf(state->cloud_registration_code, sizeof(state->cloud_registration_code), "%s",
+           s_transport_registration_code);
+  snprintf(state->cloud_registration_expires_at, sizeof(state->cloud_registration_expires_at), "%s",
+           s_transport_registration_expires_at);
+}
+
 static void show_status_idle(const char* status) {
   (void)bb_display_show_status(status);
   (void)bb_led_set_status(BB_LED_IDLE);
@@ -669,8 +715,15 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
       snprintf(line1, sizeof(line1), "Enter 6-digit code in portal");
       snprintf(line2, sizeof(line2), "%s", state->cloud_registration_code);
       (void)bb_display_show_chat_turn(line1, line2);
-      ESP_LOGI(TAG, "pairing claim_required code=%s detail=%s expires=%s", state->cloud_registration_code,
-               state->detail, state->cloud_registration_expires_at);
+      static char s_pairing_log_code[16];
+      static char s_pairing_log_exp[40];
+      if (strcmp(s_pairing_log_code, state->cloud_registration_code) != 0 ||
+          strcmp(s_pairing_log_exp, state->cloud_registration_expires_at) != 0) {
+        ESP_LOGI(TAG, "pairing claim_required code=%s detail=%s expires=%s", state->cloud_registration_code,
+                 state->detail, state->cloud_registration_expires_at);
+        snprintf(s_pairing_log_code, sizeof(s_pairing_log_code), "%s", state->cloud_registration_code);
+        snprintf(s_pairing_log_exp, sizeof(s_pairing_log_exp), "%s", state->cloud_registration_expires_at);
+      }
       maybe_speak_pairing_code(state);
     } else if (state->pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
       snprintf(line1, sizeof(line1), "Create binding in portal");
@@ -685,8 +738,14 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
   }
 
   if (!state->supports_audio_streaming) {
-    show_status_error("CLOUD");
-    (void)bb_display_show_chat_turn("Cloud ASR unavailable", "Check Cloud ASR or Home relay");
+    if (state->ready) {
+      /* 已通过配对但 health 仍报 ASR/WebSocket 未就绪 — 与 claim 阶段同属「稍等」 */
+      show_status_processing("LINK");
+      (void)bb_display_show_chat_turn("Cloud ASR starting", "Please wait");
+    } else {
+      show_status_error("CLOUD");
+      (void)bb_display_show_chat_turn("Cloud ASR unavailable", "Check Cloud ASR or Home relay");
+    }
     return;
   }
 
@@ -897,6 +956,8 @@ static void stream_task(void* arg) {
       BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD > 0 ? BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD : 2;
   int adapter_health_is_up = s_transport_health_ok ? 1 : 0;
   int adapter_health_fail_streak = 0;
+  /** 按住 PTT 且处于门户配对门闸时，降低 UI/日志刷新频率 */
+  int64_t pairing_ptt_ui_last_ms = 0;
 
   ESP_LOGI(TAG, "stream task ready stack_hw=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
@@ -911,6 +972,9 @@ static void stream_task(void* arg) {
         } else if (session_busy) {
           signal_error_haptic();
           (void)bb_display_show_status("BUSY");
+        } else if (cloud_saas_tx_wait_is_benign()) {
+          show_status_processing("PAIR");
+          /* 配对 / ASR 未就绪：不按 TX 成功震动，避免用户以为在报错 */
         } else {
           show_status_recording("TX");
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
@@ -919,7 +983,10 @@ static void stream_task(void* arg) {
         if (bb_wifi_is_connected()) {
           show_status_processing("RX");
         }
-        (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_RELEASE);
+        pairing_ptt_ui_last_ms = 0;
+        if (!cloud_saas_tx_wait_is_benign()) {
+          (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_RELEASE);
+        }
       }
       (void)bb_gateway_node_send_ptt_state(s_ptt_pressed);
     }
@@ -943,38 +1010,38 @@ static void stream_task(void* arg) {
       }
       if (bb_transport_is_cloud_saas()) {
         if (!s_transport_ready) {
-          bb_transport_state_t state = {
-              .ready = s_transport_ready,
-              .supports_audio_streaming = s_transport_audio_streaming_ready,
-              .supports_tts = s_transport_tts_ready,
-              .supports_display = s_transport_display_ready,
-              .http_status = s_transport_http_status,
-              .pairing_status = s_transport_pairing_status,
-          };
-          snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
-          snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
-                   s_transport_registration_code);
-          snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
-                   s_transport_registration_expires_at);
+          if (cloud_saas_tx_wait_is_benign()) {
+            int64_t now_ms = bb_now_ms();
+            if (pairing_ptt_ui_last_ms == 0 || (now_ms - pairing_ptt_ui_last_ms) >= 2000) {
+              pairing_ptt_ui_last_ms = now_ms;
+              bb_transport_state_t state = {0};
+              shadow_transport_state_for_ui(&state);
+              show_cloud_transport_message(&state);
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+          }
+          bb_transport_state_t state = {0};
+          shadow_transport_state_for_ui(&state);
           show_cloud_transport_message(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
           continue;
         }
         if (!s_transport_audio_streaming_ready) {
-          bb_transport_state_t state = {
-              .ready = s_transport_ready,
-              .supports_audio_streaming = s_transport_audio_streaming_ready,
-              .supports_tts = s_transport_tts_ready,
-              .supports_display = s_transport_display_ready,
-              .http_status = s_transport_http_status,
-              .pairing_status = s_transport_pairing_status,
-          };
-          snprintf(state.detail, sizeof(state.detail), "%s", s_transport_detail);
-          snprintf(state.cloud_registration_code, sizeof(state.cloud_registration_code), "%s",
-                   s_transport_registration_code);
-          snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
-                   s_transport_registration_expires_at);
+          if (cloud_saas_tx_wait_is_benign()) {
+            int64_t now_ms = bb_now_ms();
+            if (pairing_ptt_ui_last_ms == 0 || (now_ms - pairing_ptt_ui_last_ms) >= 2000) {
+              pairing_ptt_ui_last_ms = now_ms;
+              bb_transport_state_t state = {0};
+              shadow_transport_state_for_ui(&state);
+              show_cloud_transport_message(&state);
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+          }
+          bb_transport_state_t state = {0};
+          shadow_transport_state_for_ui(&state);
           show_cloud_transport_message(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
@@ -1397,7 +1464,9 @@ static void stream_task(void* arg) {
         } else if (bb_adapter_display_pull(&task) == ESP_OK && task.has_task) {
           show_status_notification("TASK");
           (void)bb_display_show_chat_turn("Task", task.display_text[0] != '\0' ? task.display_text : "(empty)");
-          (void)bb_motor_trigger(BB_MOTOR_PATTERN_TASK_NOTIFY);
+          if (!cloud_saas_tx_wait_is_benign()) {
+            (void)bb_motor_trigger(BB_MOTOR_PATTERN_TASK_NOTIFY);
+          }
           (void)bb_adapter_display_ack(task.task_id, "shown");
         }
       }
@@ -1442,7 +1511,11 @@ static void stream_task(void* arg) {
         remember_transport_state(&state);
         if (health_err == ESP_OK && bb_transport_is_cloud_saas()) {
           if (state.cloud_volume_pct >= 0) {
-            bb_audio_set_volume_pct(state.cloud_volume_pct);
+            static int s_applied_cloud_volume_pct = -1;
+            if (state.cloud_volume_pct != s_applied_cloud_volume_pct) {
+              s_applied_cloud_volume_pct = state.cloud_volume_pct;
+              bb_audio_set_volume_pct(state.cloud_volume_pct);
+            }
           }
         }
         if (health_err == ESP_OK) {
