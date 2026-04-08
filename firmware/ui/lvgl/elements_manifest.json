@@ -2,5 +2,17 @@
   { "file": "battery_frame_26x12.png", "symbol": "bb_el_battery_frame_26x12" },
   { "file": "claw_mark_88.png", "symbol": "bb_el_claw_mark_88" },
   { "file": "avatar_plate_64.png", "symbol": "bb_el_avatar_plate_64" },
-  { "file": "mic_plate_88.png", "symbol": "bb_el_mic_plate_88" }
+  { "file": "mic_plate_88.png", "symbol": "bb_el_mic_plate_88" },
+  { "file": "red_idle_0.png", "symbol": "bb_el_red_idle_0" },
+  { "file": "red_idle_1.png", "symbol": "bb_el_red_idle_1" },
+  { "file": "red_idle_2.png", "symbol": "bb_el_red_idle_2" },
+  { "file": "red_idle_3.png", "symbol": "bb_el_red_idle_3" },
+  { "file": "blue_idle_0.png", "symbol": "bb_el_blue_idle_0" },
+  { "file": "blue_idle_1.png", "symbol": "bb_el_blue_idle_1" },
+  { "file": "blue_idle_2.png", "symbol": "bb_el_blue_idle_2" },
+  { "file": "blue_idle_3.png", "symbol": "bb_el_blue_idle_3" },
+  { "file": "green_idle_0.png", "symbol": "bb_el_green_idle_0" },
+  { "file": "green_idle_1.png", "symbol": "bb_el_green_idle_1" },
+  { "file": "green_idle_2.png", "symbol": "bb_el_green_idle_2" },
+  { "file": "green_idle_3.png", "symbol": "bb_el_green_idle_3" }
 ]

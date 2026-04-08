@@ -114,6 +114,10 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_RECORD_HALO_SPAN_PX    18
 #define UI_RECORD_LEVEL_STALE_MS  280
 
+/* Standby mascot (LimeZu idle — green shown; red/blue frames in bb_lvgl_element_assets for future use) */
+#define UI_MASCOT_FRAME_MS        220
+#define UI_MASCOT_PX              32
+
 /* Panel config */
 #define DISP_X_GAP         BBCLAW_ST7789_X_GAP
 #define DISP_Y_GAP         BBCLAW_ST7789_Y_GAP
@@ -181,6 +185,7 @@ static lv_obj_t* s_lbl_standby_brand_join;
 static lv_obj_t* s_lbl_standby_clock;
 static lv_obj_t* s_lbl_standby_title;
 static lv_obj_t* s_lbl_standby_session;
+static lv_obj_t* s_img_standby_mascot;
 
 /* LVGL objects — active (status bar + text) */
 static lv_obj_t* s_view_active;
@@ -207,6 +212,7 @@ static lv_obj_t* s_lbl_text;
 static lv_timer_t* s_clock_timer;
 static lv_timer_t* s_auto_scroll_timer;
 static lv_timer_t* s_record_timer;
+static lv_timer_t* s_mascot_timer;
 
 /* Scroll state */
 static ui_auto_scroll_ctx_t s_auto_scroll_text;
@@ -223,6 +229,7 @@ static int64_t s_record_level_updated_ms;
 static uint8_t s_record_bar_visual[UI_RECORD_BAR_COUNT];
 static uint32_t s_record_anim_tick;
 static int s_record_view_visible;
+static uint32_t s_mascot_frame;
 
 static void refresh_ui(void);
 
@@ -330,6 +337,19 @@ static const lv_image_dsc_t* record_anim_icon(uint32_t tick) {
       return &bb_img_rec_2;
     default:
       return &bb_img_rec_3;
+  }
+}
+
+static const lv_image_dsc_t* standby_mascot_green_frame(uint32_t tick) {
+  switch (tick % 4U) {
+    case 0:
+      return &bb_el_green_idle_0;
+    case 1:
+      return &bb_el_green_idle_1;
+    case 2:
+      return &bb_el_green_idle_2;
+    default:
+      return &bb_el_green_idle_3;
   }
 }
 
@@ -570,6 +590,17 @@ static void record_timer_cb(lv_timer_t* t) {
   lvgl_port_unlock();
 }
 
+static void mascot_timer_cb(lv_timer_t* t) {
+  (void)t;
+  if (!s_ready) return;
+  if (s_img_standby_mascot == NULL || s_view_standby == NULL) return;
+  if (lv_obj_has_flag(s_view_standby, LV_OBJ_FLAG_HIDDEN)) return;
+  if (!lvgl_port_lock(0)) return;
+  s_mascot_frame++;
+  lv_image_set_src(s_img_standby_mascot, standby_mascot_green_frame(s_mascot_frame));
+  lvgl_port_unlock();
+}
+
 static void clock_timer_cb(lv_timer_t* t) {
   (void)t;
   if (s_ready) refresh_ui();
@@ -757,6 +788,17 @@ static void create_ui(void) {
     lv_obj_set_pos(s_lbl_standby_session, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh - 2);
   }
 
+  /* Standby corner mascot (LimeZu green idle loop; red/blue: bb_el_red_idle_* / bb_el_blue_idle_*) */
+  {
+    s_mascot_frame = 0;
+    s_img_standby_mascot = lv_image_create(s_view_standby);
+    lv_image_set_src(s_img_standby_mascot, standby_mascot_green_frame(0));
+    lv_obj_set_size(s_img_standby_mascot, UI_MASCOT_PX, UI_MASCOT_PX);
+    lv_obj_set_pos(s_img_standby_mascot, DISP_W - UI_SAFE_RIGHT - UI_MASCOT_PX,
+                   DISP_H - UI_SAFE_BOTTOM - UI_MASCOT_PX - 2);
+    lv_obj_set_style_opa(s_img_standby_mascot, LV_OPA_COVER, 0);
+  }
+
   /* ── ACTIVE view: status bar + text area ── */
 
   s_view_active = lv_obj_create(scr);
@@ -925,6 +967,7 @@ static void create_ui(void) {
   s_clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
   s_auto_scroll_timer = lv_timer_create(auto_scroll_text_cb, UI_AUTO_SCROLL_PERIOD_MS, NULL);
   s_record_timer = lv_timer_create(record_timer_cb, UI_RECORD_UPDATE_MS, NULL);
+  s_mascot_timer = lv_timer_create(mascot_timer_cb, UI_MASCOT_FRAME_MS, NULL);
   reset_recording_meter_visuals();
 }
 

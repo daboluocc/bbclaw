@@ -25,7 +25,7 @@
 - `ui/lvgl/screens_manifest.json`
 
 3. Figma 导出的可复用 PNG 元素：
-- `ui/lvgl/elements/`
+- `ui/lvgl/elements/`（含第三方切片如 LimeZu 待机吉祥物，见 [lvgl_limezu_mascots.md](lvgl_limezu_mascots.md)）
 
 4. element PNG 与 LVGL 符号映射：
 - `ui/lvgl/elements_manifest.json`
