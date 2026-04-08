@@ -111,6 +111,7 @@ bbclaw/
 
 ## 文档
 
+- [Adapter 外部安装 Skill（供复制到各 Agent 技能目录）](docs/skills/bbclaw-adapter-external-install.md)
 - [使用手册](docs/user_guide.md) — 从零开始配置和使用
 - [架构](docs/architecture.md)
 - [公网模式](docs/cloud_saas_architecture.md)
