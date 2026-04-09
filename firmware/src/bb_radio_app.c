@@ -200,6 +200,11 @@ static uint8_t s_stream_encoded_chunk_buf[sizeof(s_stream_pcm_chunk_buf) + 64];
 static RingbufHandle_t s_capture_rb;
 static volatile int s_capture_active;  /* 1 = capture_task should read I2S and push to ring buffer */
 static volatile int s_capture_stopped; /* 1 = capture_task has acknowledged stop */
+static volatile bb_radio_app_state_t s_app_state = BBCLAW_STATE_UNLOCKED;
+static uint8_t* s_voice_verify_pcm_buf;
+static size_t s_voice_verify_pcm_len;
+static size_t s_voice_verify_pcm_cap;
+static int s_voice_verify_truncated;
 
 /* VAD 触发后首帧原经 xRingbufferSend 进环；与 LVGL/SPI 异核时易在环缓冲自旋锁上触发 INT WDT，改为先内存再 ingest */
 static volatile int s_capture_seed_pending;
@@ -220,6 +225,65 @@ static void log_heap_snapshot(const char* phase) {
 static void capture_seed_clear(void) {
   s_capture_seed_pending = 0;
   s_capture_seed_len = 0;
+}
+
+static int voiceprint_unlock_enabled(void) {
+  return bb_transport_is_cloud_saas();
+}
+
+static int radio_app_is_locked(void) {
+  return voiceprint_unlock_enabled() && s_app_state == BBCLAW_STATE_LOCKED;
+}
+
+static void refresh_lock_screen_visibility(void) {
+  bb_display_set_locked(radio_app_is_locked());
+}
+
+static void set_radio_app_state(bb_radio_app_state_t state) {
+  s_app_state = state;
+  refresh_lock_screen_visibility();
+}
+
+static size_t voice_verify_max_pcm_bytes(void) {
+  return (size_t)((BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_VOICE_VERIFY_MAX_MS / 1000) * sizeof(int16_t) *
+                  BBCLAW_AUDIO_CHANNELS);
+}
+
+static void voice_verify_capture_reset(void) {
+  s_voice_verify_pcm_len = 0;
+  s_voice_verify_truncated = 0;
+}
+
+static esp_err_t voice_verify_capture_append(const uint8_t* pcm, size_t pcm_len) {
+  if (pcm == NULL || pcm_len == 0U) {
+    return ESP_OK;
+  }
+  size_t cap = voice_verify_max_pcm_bytes();
+  if (cap == 0U) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  if (s_voice_verify_pcm_buf == NULL || s_voice_verify_pcm_cap != cap) {
+    uint8_t* new_buf =
+        (uint8_t*)heap_caps_realloc(s_voice_verify_pcm_buf, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (new_buf == NULL) {
+      return ESP_ERR_NO_MEM;
+    }
+    s_voice_verify_pcm_buf = new_buf;
+    s_voice_verify_pcm_cap = cap;
+  }
+  if (s_voice_verify_pcm_len >= s_voice_verify_pcm_cap) {
+    s_voice_verify_truncated = 1;
+    return ESP_OK;
+  }
+  size_t remain = s_voice_verify_pcm_cap - s_voice_verify_pcm_len;
+  size_t copy_len = pcm_len;
+  if (copy_len > remain) {
+    copy_len = remain;
+    s_voice_verify_truncated = 1;
+  }
+  memcpy(s_voice_verify_pcm_buf + s_voice_verify_pcm_len, pcm, copy_len);
+  s_voice_verify_pcm_len += copy_len;
+  return ESP_OK;
 }
 
 static int using_es8311_input(void) {
@@ -357,11 +421,12 @@ static void pulse_success_on_idle(const char* status) {
   (void)bb_led_set_status(BB_LED_SUCCESS);
 }
 
-static void pulse_reply_on_idle(const char* status) {
-  bb_display_set_record_level(0, 0);
-  (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_IDLE);
-  (void)bb_led_set_status(BB_LED_REPLY);
+static void show_idle_ready_or_locked(void) {
+  if (radio_app_is_locked()) {
+    show_status_idle("LOCKED");
+  } else {
+    show_status_idle("READY");
+  }
 }
 
 typedef struct {
@@ -786,6 +851,16 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
   }
 }
 
+static void show_cloud_transport_or_locked(const bb_transport_state_t* state) {
+  if (state != NULL && radio_app_is_locked() && state->ready && state->supports_audio_streaming) {
+    show_status_idle("LOCKED");
+    refresh_lock_screen_visibility();
+    return;
+  }
+  show_cloud_transport_message(state);
+  refresh_lock_screen_visibility();
+}
+
 static esp_err_t wait_for_transport_health(int* out_status) {
   int status = 0;
   esp_err_t last_err = ESP_FAIL;
@@ -983,11 +1058,13 @@ static void stream_task(void* arg) {
   bb_stream_ctx_t stream = {0};
   int streaming = 0;
   int arming = 0;
+  int verifying = 0;
   int session_busy = 0;
   int64_t stream_start_ms = 0;
   int64_t arm_started_ms = 0;
   unsigned ptt_handled_version = s_ptt_change_version;
   vad_stats_t vad = {0};
+  vad_stats_t verify_vad = {0};
   size_t pending_pcm_len = 0;
 #if BBCLAW_ENABLE_DISPLAY_PULL
   int64_t last_display_poll_ms = 0;
@@ -1015,6 +1092,9 @@ static void stream_task(void* arg) {
         } else if (session_busy) {
           signal_error_haptic();
           (void)bb_display_show_status("BUSY");
+        } else if (radio_app_is_locked()) {
+          show_status_recording("VERIFY TX");
+          (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
         } else if (cloud_saas_tx_wait_is_benign()) {
           show_status_processing("PAIR");
           /* 配对 / ASR 未就绪：不按 TX 成功震动，避免用户以为在报错 */
@@ -1024,10 +1104,14 @@ static void stream_task(void* arg) {
         }
       } else {
         if (bb_wifi_is_connected()) {
-          show_status_processing("RX");
+          if (verifying || radio_app_is_locked()) {
+            show_status_processing(verifying ? "VERIFY" : "LOCKED");
+          } else {
+            show_status_processing("RX");
+          }
         }
         pairing_ptt_ui_last_ms = 0;
-        if (!cloud_saas_tx_wait_is_benign()) {
+        if (!radio_app_is_locked() && !cloud_saas_tx_wait_is_benign()) {
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_RELEASE);
         }
       }
@@ -1039,7 +1123,11 @@ static void stream_task(void* arg) {
       arming = 0;
       memset(&vad, 0, sizeof(vad));
       pending_pcm_len = 0;
-      show_status_idle(bb_wifi_is_connected() ? "READY" : "NO WIFI");
+      if (bb_wifi_is_connected()) {
+        show_idle_ready_or_locked();
+      } else {
+        show_status_idle("NO WIFI");
+      }
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
@@ -1051,6 +1139,55 @@ static void stream_task(void* arg) {
         vTaskDelay(pdMS_TO_TICKS(250));
         continue;
       }
+      if (radio_app_is_locked()) {
+        if (!bb_transport_is_cloud_saas()) {
+          show_status_error("VERIFY ERR");
+          (void)bb_display_show_chat_turn("Voice unlock unavailable", "cloud_saas transport required");
+          signal_error_haptic();
+          vTaskDelay(pdMS_TO_TICKS(250));
+          continue;
+        }
+        if (!s_transport_ready || !s_transport_audio_streaming_ready) {
+          bb_transport_state_t state = {0};
+          shadow_transport_state_for_ui(&state);
+          if (cloud_saas_tx_wait_is_benign()) {
+            int64_t now_ms = bb_now_ms();
+            if (pairing_ptt_ui_last_ms == 0 || (now_ms - pairing_ptt_ui_last_ms) >= 2000) {
+              pairing_ptt_ui_last_ms = now_ms;
+              show_cloud_transport_or_locked(&state);
+            }
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+          }
+          show_cloud_transport_or_locked(&state);
+          signal_error_haptic();
+          vTaskDelay(pdMS_TO_TICKS(250));
+          continue;
+        }
+        voice_verify_capture_reset();
+        memset(&verify_vad, 0, sizeof(verify_vad));
+        {
+          size_t rb_item_size = 0;
+          void* rb_item;
+          while ((rb_item = xRingbufferReceive(s_capture_rb, &rb_item_size, 0)) != NULL) {
+            vRingbufferReturnItem(s_capture_rb, rb_item);
+          }
+        }
+        esp_err_t tx_err = bb_audio_start_tx();
+        if (tx_err == ESP_OK) {
+          verifying = 1;
+          session_busy = 1;
+          s_capture_active = 1;
+          show_status_recording("VERIFY TX");
+          ESP_LOGI(TAG, "phase=voice_verify_capture_start mono_ms=%lld", (long long)bb_now_ms());
+        } else {
+          ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (voice verify)", esp_err_to_name(tx_err));
+          show_status_error("VERIFY ERR");
+          signal_error_haptic();
+          vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        continue;
+      }
       if (bb_transport_is_cloud_saas()) {
         if (!s_transport_ready) {
           if (cloud_saas_tx_wait_is_benign()) {
@@ -1059,14 +1196,14 @@ static void stream_task(void* arg) {
               pairing_ptt_ui_last_ms = now_ms;
               bb_transport_state_t state = {0};
               shadow_transport_state_for_ui(&state);
-              show_cloud_transport_message(&state);
+              show_cloud_transport_or_locked(&state);
             }
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
           }
           bb_transport_state_t state = {0};
           shadow_transport_state_for_ui(&state);
-          show_cloud_transport_message(&state);
+          show_cloud_transport_or_locked(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
           continue;
@@ -1078,14 +1215,14 @@ static void stream_task(void* arg) {
               pairing_ptt_ui_last_ms = now_ms;
               bb_transport_state_t state = {0};
               shadow_transport_state_for_ui(&state);
-              show_cloud_transport_message(&state);
+              show_cloud_transport_or_locked(&state);
             }
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
           }
           bb_transport_state_t state = {0};
           shadow_transport_state_for_ui(&state);
-          show_cloud_transport_message(&state);
+          show_cloud_transport_or_locked(&state);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
           continue;
@@ -1112,6 +1249,87 @@ static void stream_task(void* arg) {
           vTaskDelay(pdMS_TO_TICKS(200));
         }
       }
+    }
+
+    if (!s_ptt_pressed && verifying) {
+      s_capture_active = 0;
+      (void)bb_audio_stop_tx();
+      while (!s_capture_stopped) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+      {
+        size_t rb_item_size = 0;
+        void* rb_item;
+        while ((rb_item = xRingbufferReceive(s_capture_rb, &rb_item_size, 0)) != NULL) {
+          vad_update_from_pcm(&verify_vad, (const uint8_t*)rb_item, rb_item_size);
+          if (voice_verify_capture_append((const uint8_t*)rb_item, rb_item_size) != ESP_OK) {
+            ESP_LOGE(TAG, "voice verify capture append failed");
+          }
+          vRingbufferReturnItem(s_capture_rb, rb_item);
+        }
+      }
+
+      show_status_processing("VERIFY");
+      {
+        uint64_t duration_ms = (verify_vad.total_samples * 1000ULL) / BBCLAW_AUDIO_SAMPLE_RATE;
+        uint32_t nonzero_permille = 0;
+        uint32_t mean_abs = 0;
+        if (verify_vad.total_samples > 0U) {
+          nonzero_permille = (uint32_t)((verify_vad.nonzero_samples * 1000ULL) / verify_vad.total_samples);
+          mean_abs = (uint32_t)(verify_vad.abs_sum / verify_vad.total_samples);
+        }
+        ESP_LOGI(TAG,
+                 "phase=voice_verify_capture_done mono_ms=%lld pcm_bytes=%u truncated=%d dur_ms=%u nonzero_permille=%u "
+                 "mean_abs=%u",
+                 (long long)bb_now_ms(), (unsigned)s_voice_verify_pcm_len, s_voice_verify_truncated,
+                 (unsigned)duration_ms, (unsigned)nonzero_permille, (unsigned)mean_abs);
+        if (duration_ms < BBCLAW_VAD_ARM_MIN_DURATION_MS || nonzero_permille < BBCLAW_VAD_ARM_MIN_NONZERO_PERMILLE ||
+            mean_abs < BBCLAW_VAD_ARM_MIN_MEAN_ABS || s_voice_verify_pcm_len == 0U) {
+          show_status_error("VERIFY ERR");
+          (void)bb_display_show_chat_turn("未检测到有效声音", "请重试");
+          signal_error_haptic();
+          verifying = 0;
+          session_busy = 0;
+          voice_verify_capture_reset();
+          vTaskDelay(pdMS_TO_TICKS(1200));
+          show_status_idle("LOCKED");
+          continue;
+        }
+      }
+
+      bb_voice_verify_result_t verify_result = {0};
+      esp_err_t verify_err = bb_adapter_voice_verify_pcm16(s_voice_verify_pcm_buf, s_voice_verify_pcm_len, &verify_result);
+      verifying = 0;
+      session_busy = 0;
+      voice_verify_capture_reset();
+      if (verify_err != ESP_OK) {
+        ESP_LOGE(TAG, "voice verify failed err=%s", esp_err_to_name(verify_err));
+        show_status_error("VERIFY ERR");
+        (void)bb_display_show_chat_turn("声纹验证失败",
+                                        verify_result.message[0] != '\0' ? verify_result.message : "cloud verify error");
+        signal_error_haptic();
+        vTaskDelay(pdMS_TO_TICKS(1200));
+        show_status_idle("LOCKED");
+        continue;
+      }
+
+      if (verify_result.match) {
+        ESP_LOGI(TAG, "phase=voice_verify_unlock confidence=%.3f", (double)verify_result.confidence);
+        set_radio_app_state(BBCLAW_STATE_UNLOCKED);
+        pulse_success_on_idle("READY");
+        (void)bb_display_show_chat_turn("声纹验证通过",
+                                        verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
+      } else {
+        ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
+                 verify_result.message);
+        show_status_error("VERIFY ERR");
+        (void)bb_display_show_chat_turn("声纹未匹配",
+                                        verify_result.message[0] != '\0' ? verify_result.message : "请重试");
+        signal_error_haptic();
+        vTaskDelay(pdMS_TO_TICKS(1200));
+        show_status_idle("LOCKED");
+      }
+      continue;
     }
 
     if (!s_ptt_pressed && streaming) {
@@ -1253,7 +1471,7 @@ static void stream_task(void* arg) {
           signal_error_haptic();
         }
       } else {
-        show_status_idle("READY");
+        show_idle_ready_or_locked();
         (void)bb_display_show_chat_turn("(no voice)", "(no reply)");
       }
 #if BBCLAW_ENABLE_TTS_PLAYBACK
@@ -1380,7 +1598,7 @@ static void stream_task(void* arg) {
         (void)bb_display_show_status("RESULT");
         vTaskDelay(pdMS_TO_TICKS(2000));
       }
-      show_status_idle("READY");
+      show_idle_ready_or_locked();
       streaming = 0;
       session_busy = 0;
       capture_seed_clear();
@@ -1395,7 +1613,7 @@ static void stream_task(void* arg) {
         (void)bb_audio_stop_tx();
         memset(&vad, 0, sizeof(vad));
         pending_pcm_len = 0;
-        show_status_idle("READY");
+        show_idle_ready_or_locked();
         (void)bb_display_show_chat_turn("(arm timeout)", "");
         continue;
       }
@@ -1450,6 +1668,24 @@ static void stream_task(void* arg) {
           }
           s_capture_active = 1;
         }
+      }
+    }
+
+    if (verifying && s_ptt_pressed) {
+      size_t rb_item_size = 0;
+      void* rb_item = xRingbufferReceive(s_capture_rb, &rb_item_size, pdMS_TO_TICKS(50));
+      if (rb_item != NULL && rb_item_size > 0U) {
+        vad_update_from_pcm(&verify_vad, (const uint8_t*)rb_item, rb_item_size);
+        if (voice_verify_capture_append((const uint8_t*)rb_item, rb_item_size) != ESP_OK) {
+          ESP_LOGE(TAG, "voice verify capture append failed");
+          show_status_error("VERIFY ERR");
+          signal_error_haptic();
+          s_capture_active = 0;
+          verifying = 0;
+          session_busy = 0;
+          (void)bb_audio_stop_tx();
+        }
+        vRingbufferReturnItem(s_capture_rb, rb_item);
       }
     }
 
@@ -1577,7 +1813,7 @@ static void stream_task(void* arg) {
             ESP_LOGI(TAG, "transport heartbeat recovered profile=%s status=%d", bb_transport_profile_name(),
                      health_status);
             if (bb_transport_is_cloud_saas()) {
-              show_cloud_transport_message(&state);
+              show_cloud_transport_or_locked(&state);
             } else {
               pulse_success_on_idle("READY");
             }
@@ -1589,7 +1825,7 @@ static void stream_task(void* arg) {
             ESP_LOGI(TAG, "cloud transport state updated status=%d ready=%d audio=%d tts=%d display=%d detail=%s",
                      health_status, state.ready, state.supports_audio_streaming, state.supports_tts,
                      state.supports_display, state.detail);
-            show_cloud_transport_message(&state);
+            show_cloud_transport_or_locked(&state);
           }
         } else {
           adapter_health_fail_streak++;
@@ -1602,7 +1838,7 @@ static void stream_task(void* arg) {
             adapter_health_is_up = 0;
             s_transport_health_ok = 0;
             if (bb_transport_is_cloud_saas()) {
-              show_cloud_transport_message(&state);
+              show_cloud_transport_or_locked(&state);
             } else {
               show_status_error("LINK ERR");
             }
@@ -1632,6 +1868,7 @@ esp_err_t bb_radio_app_start(void) {
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
+  set_radio_app_state(voiceprint_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
   esp_err_t led_err = bb_led_init();
   if (led_err != ESP_OK) {
     ESP_LOGW(TAG, "status led init failed err=%s (continue without led)", esp_err_to_name(led_err));
@@ -1730,7 +1967,7 @@ esp_err_t bb_radio_app_start(void) {
         ESP_LOGI(TAG, "cloud pairing requested and pending approval status=%d detail=%s", health_status,
                  state.detail);
       }
-      show_cloud_transport_message(&state);
+      show_cloud_transport_or_locked(&state);
     } else {
       ESP_LOGI(TAG, "transport health ok status=%d", health_status);
       pulse_success_on_idle("READY");
@@ -1754,7 +1991,7 @@ esp_err_t bb_radio_app_start(void) {
                s_transport_registration_code);
       snprintf(state.cloud_registration_expires_at, sizeof(state.cloud_registration_expires_at), "%s",
                s_transport_registration_expires_at);
-      show_cloud_transport_message(&state);
+      show_cloud_transport_or_locked(&state);
     } else {
       show_status_error("LINK ERR");
       (void)bb_display_show_chat_turn("", "");

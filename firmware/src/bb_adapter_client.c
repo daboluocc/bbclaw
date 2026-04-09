@@ -107,6 +107,9 @@ typedef struct {
   int finish_saw_done;
   int finish_saw_error;
   char finish_stream_id[64];
+  bb_voice_verify_result_t* verify_result;
+  int verify_waiting;
+  char verify_message_id[64];
   uint8_t* text_buf;
   size_t text_len;
   size_t text_cap;
@@ -123,15 +126,19 @@ static bb_ws_state_t s_ws;
 #define BB_WS_EVENT_DONE BIT1
 #define BB_WS_EVENT_ERROR BIT2
 #define BB_WS_EVENT_DISCONNECTED BIT3
+#define BB_WS_EVENT_VERIFY_DONE BIT4
 
 static int body_contains_ok_true(const char* body);
 static int json_extract_string(const char* body, const char* key, char* out, size_t out_len);
 static int json_extract_bool(const char* body, const char* key, int fallback);
+static float json_extract_float(const char* body, const char* key, float fallback);
 static int json_extract_alloc_string(const char* body, const char* key, char** out_ptr, size_t* out_len);
 static char* json_escape_alloc(const char* src);
 static void parse_finish_result(const char* body, bb_finish_result_t* out_result);
+static void parse_voice_verify_result(const char* body, bb_voice_verify_result_t* out_result);
 static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t* accum);
 static void ws_finish_reset_locked(void);
+static void ws_verify_reset_locked(void);
 static void ws_reset_client_locked(void);
 static esp_err_t ws_client_ensure_connected(void);
 static esp_err_t ws_send_text_message(const char* payload);
@@ -531,6 +538,12 @@ static void ws_finish_reset_locked(void) {
   s_ws.tts_audio_len = 0;
 }
 
+static void ws_verify_reset_locked(void) {
+  s_ws.verify_result = NULL;
+  s_ws.verify_waiting = 0;
+  s_ws.verify_message_id[0] = '\0';
+}
+
 static void ws_reset_client_locked(void) {
   if (s_ws.client != NULL) {
     esp_websocket_client_destroy(s_ws.client);
@@ -692,6 +705,14 @@ static void ws_handle_text_message(const char* msg) {
       emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_ERROR, NULL,
                                s_ws.finish_result->error_code, NULL, 0);
     }
+    if (s_ws.verify_result != NULL) {
+      s_ws.verify_result->match = 0;
+      s_ws.verify_result->confidence = 0.0f;
+      if (!json_extract_string(msg, "error", s_ws.verify_result->message, sizeof(s_ws.verify_result->message))) {
+        snprintf(s_ws.verify_result->message, sizeof(s_ws.verify_result->message), "voice.verify failed");
+      }
+      s_ws.verify_waiting = 0;
+    }
     xSemaphoreGive(s_ws.lock);
     xEventGroupSetBits(s_ws.events, BB_WS_EVENT_ERROR);
     return;
@@ -704,6 +725,13 @@ static void ws_handle_text_message(const char* msg) {
   (void)json_extract_string(msg, "streamId", stream_id, sizeof(stream_id));
 
   xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  if (strcmp(kind, "voice.verify.result") == 0 && s_ws.verify_result != NULL) {
+    parse_voice_verify_result(msg, s_ws.verify_result);
+    s_ws.verify_waiting = 0;
+    xSemaphoreGive(s_ws.lock);
+    xEventGroupSetBits(s_ws.events, BB_WS_EVENT_VERIFY_DONE);
+    return;
+  }
   if (s_ws.finish_result == NULL) {
     xSemaphoreGive(s_ws.lock);
     return;
@@ -969,6 +997,23 @@ static int json_extract_bool(const char* body, const char* key, int fallback) {
   return fallback;
 }
 
+static float json_extract_float(const char* body, const char* key, float fallback) {
+  if (body == NULL || key == NULL || key[0] == '\0') {
+    return fallback;
+  }
+  char pattern[48] = {0};
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  const char* p = strstr(body, pattern);
+  if (p == NULL) {
+    return fallback;
+  }
+  p += strlen(pattern);
+  while (*p == ' ' || *p == '\t') {
+    p++;
+  }
+  return (float)strtod(p, NULL);
+}
+
 static int json_extract_alloc_string(const char* body, const char* key, char** out_ptr, size_t* out_len) {
   if (body == NULL || key == NULL || out_ptr == NULL || out_len == NULL) {
     return 0;
@@ -1061,6 +1106,16 @@ static void parse_finish_result(const char* body, bb_finish_result_t* out_result
   (void)json_extract_string(body, "savedInputPath", out_result->saved_input_path, sizeof(out_result->saved_input_path));
   out_result->reply_wait_timed_out = json_extract_bool(body, "replyWaitTimedOut", 0);
   (void)json_extract_string(body, "error", out_result->error_code, sizeof(out_result->error_code));
+}
+
+static void parse_voice_verify_result(const char* body, bb_voice_verify_result_t* out_result) {
+  if (out_result == NULL) {
+    return;
+  }
+  out_result->match = json_extract_bool(body, "match", 0);
+  out_result->confidence = json_extract_float(body, "confidence", 0.0f);
+  out_result->message[0] = '\0';
+  (void)json_extract_string(body, "message", out_result->message, sizeof(out_result->message));
 }
 
 static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t* accum) {
@@ -1597,6 +1652,85 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
   }
 
   ESP_LOGI(TAG, "stream finish stream ok stream=%s", ctx->stream_id);
+  return ESP_OK;
+}
+
+esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result) {
+  if (pcm == NULL || pcm_len == 0U || out_result == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  ESP_RETURN_ON_ERROR(ws_client_ensure_connected(), TAG, "ws connect failed");
+
+  memset(out_result, 0, sizeof(*out_result));
+
+  size_t base64_len = 0;
+  int ret = mbedtls_base64_encode(NULL, 0, &base64_len, pcm, pcm_len);
+  if (ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || base64_len == 0U) {
+    return ESP_FAIL;
+  }
+
+  char* base64_buf = (char*)malloc(base64_len + 1U);
+  if (base64_buf == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+  ret = mbedtls_base64_encode((unsigned char*)base64_buf, base64_len, &base64_len, pcm, pcm_len);
+  if (ret != 0) {
+    free(base64_buf);
+    return ESP_FAIL;
+  }
+  base64_buf[base64_len] = '\0';
+
+  size_t body_cap = base64_len + 320U;
+  char* body = (char*)malloc(body_cap);
+  if (body == NULL) {
+    free(base64_buf);
+    return ESP_ERR_NO_MEM;
+  }
+
+  char message_id[64] = {0};
+  snprintf(message_id, sizeof(message_id), "verify-%lld", (long long)bb_now_ms());
+  snprintf(body, body_cap,
+           "{\"type\":\"request\",\"messageId\":\"%s\",\"deviceId\":\"%s\",\"kind\":\"voice.verify\","
+           "\"sessionKey\":\"%s\",\"sampleRate\":%d,\"channels\":1,\"audioBase64\":\"%s\"}",
+           message_id, BBCLAW_DEVICE_ID, BBCLAW_SESSION_KEY, BBCLAW_AUDIO_SAMPLE_RATE, base64_buf);
+  free(base64_buf);
+
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  ws_verify_reset_locked();
+  s_ws.verify_result = out_result;
+  s_ws.verify_waiting = 1;
+  snprintf(s_ws.verify_message_id, sizeof(s_ws.verify_message_id), "%s", message_id);
+  xSemaphoreGive(s_ws.lock);
+  xEventGroupClearBits(s_ws.events, BB_WS_EVENT_VERIFY_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED);
+
+  esp_err_t send_err = ws_send_text_message(body);
+  free(body);
+  if (send_err != ESP_OK) {
+    xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+    ws_verify_reset_locked();
+    xSemaphoreGive(s_ws.lock);
+    return send_err;
+  }
+
+  EventBits_t bits = xEventGroupWaitBits(s_ws.events, BB_WS_EVENT_VERIFY_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED,
+                                         pdFALSE, pdFALSE, pdMS_TO_TICKS(BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS));
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  s_ws.verify_waiting = 0;
+  if ((bits & BB_WS_EVENT_VERIFY_DONE) == 0U) {
+    if (out_result->message[0] == '\0') {
+      snprintf(out_result->message, sizeof(out_result->message), "%s",
+               (bits & BB_WS_EVENT_DISCONNECTED) != 0U ? "voice.verify disconnected" : "voice.verify timeout");
+    }
+    ws_verify_reset_locked();
+    xSemaphoreGive(s_ws.lock);
+    return ESP_FAIL;
+  }
+  ws_verify_reset_locked();
+  xSemaphoreGive(s_ws.lock);
+  ESP_LOGI(TAG, "ws voice.verify ok match=%d confidence=%.3f", out_result->match, (double)out_result->confidence);
   return ESP_OK;
 }
 
