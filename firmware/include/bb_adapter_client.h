@@ -72,6 +72,12 @@ typedef struct {
   int channels;
 } bb_tts_audio_t;
 
+typedef struct {
+  int match;
+  float confidence;
+  char message[128];
+} bb_voice_verify_result_t;
+
 esp_err_t bb_adapter_healthz(int* http_status);
 esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx);
 esp_err_t bb_adapter_stream_chunk(bb_stream_ctx_t* ctx, const uint8_t* data, size_t len, int64_t ts_ms);
@@ -79,6 +85,7 @@ esp_err_t bb_adapter_stream_chunk_pcm(bb_stream_ctx_t* ctx, const uint8_t* pcm, 
 esp_err_t bb_adapter_stream_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result);
 esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result,
                                           bb_finish_stream_event_cb_t on_event, void* user_ctx);
+esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result);
 esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio);
 void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);
 void bb_adapter_tts_chunks_free(bb_tts_chunk_t* head);

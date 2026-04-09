@@ -147,6 +147,7 @@ typedef struct {
 
 typedef enum {
   UI_VIEW_STANDBY = 0,
+  UI_VIEW_LOCKED,
   UI_VIEW_ACTIVE,
 } ui_view_mode_t;
 
@@ -189,6 +190,14 @@ static lv_obj_t* s_lbl_standby_title;
 static lv_obj_t* s_lbl_standby_session;
 static lv_obj_t* s_img_standby_mascot;
 
+/* LVGL objects — locked */
+static lv_obj_t* s_view_locked;
+static lv_obj_t* s_obj_locked_shackle;
+static lv_obj_t* s_obj_locked_body;
+static lv_obj_t* s_obj_locked_slot;
+static lv_obj_t* s_lbl_locked_title;
+static lv_obj_t* s_lbl_locked_hint;
+
 /* LVGL objects — active (status bar + text) */
 static lv_obj_t* s_view_active;
 static lv_obj_t* s_img_status;
@@ -221,6 +230,7 @@ static ui_auto_scroll_ctx_t s_auto_scroll_text;
 static int64_t s_auto_scroll_pause_until_ms;
 
 static int s_ready;
+static int s_locked;
 static int s_main_text_scroll_dirty;
 static int s_main_text_scroll_to_bottom;
 static int s_tts_playing;
@@ -257,10 +267,6 @@ static const lv_font_t* ui_font_clock(void) {
 
 static int line_px(void) {
   return (int)lv_font_get_line_height(ui_font()) + 1;
-}
-
-static int scaled_px(int px, int scale) {
-  return (px * scale + 255) / 256;
 }
 
 static lv_coord_t text_width_px(const char* text, const lv_font_t* font) {
@@ -361,7 +367,16 @@ static int is_standby_status(const char* status) {
   return status == NULL || status[0] == '\0' || strcmp(status, "READY") == 0;
 }
 
-static ui_view_mode_t resolve_view_mode(const char* status, int turn_den) {
+static int should_show_locked_view(int locked, const char* status) {
+  if (!locked) return 0;
+  if (status == NULL || status[0] == '\0') return 1;
+  if (strcmp(status, "LOCKED") == 0 || strcmp(status, "READY") == 0) return 1;
+  if (strncmp(status, "VERIFY", 6) == 0) return 1;
+  return 0;
+}
+
+static ui_view_mode_t resolve_view_mode(const char* status, int turn_den, int locked) {
+  if (should_show_locked_view(locked, status)) return UI_VIEW_LOCKED;
   /* If there are chat turns to show, or status is not idle, go active */
   if (!is_standby_status(status)) return UI_VIEW_ACTIVE;
   if (turn_den > 0) return UI_VIEW_ACTIVE;
@@ -801,6 +816,59 @@ static void create_ui(void) {
     lv_obj_set_style_opa(s_img_standby_mascot, LV_OPA_COVER, 0);
   }
 
+  /* ── LOCKED view: padlock + unlock prompt ── */
+
+  s_view_locked = lv_obj_create(scr);
+  lv_obj_remove_style_all(s_view_locked);
+  lv_obj_set_size(s_view_locked, DISP_W, DISP_H);
+  lv_obj_set_pos(s_view_locked, 0, 0);
+  lv_obj_clear_flag(s_view_locked, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scrollbar_mode(s_view_locked, LV_SCROLLBAR_MODE_OFF);
+
+  s_obj_locked_shackle = lv_obj_create(s_view_locked);
+  lv_obj_remove_style_all(s_obj_locked_shackle);
+  lv_obj_set_size(s_obj_locked_shackle, 42, 30);
+  lv_obj_set_pos(s_obj_locked_shackle, (DISP_W - 42) / 2, 28);
+  lv_obj_set_style_radius(s_obj_locked_shackle, 18, 0);
+  lv_obj_set_style_border_width(s_obj_locked_shackle, 3, 0);
+  lv_obj_set_style_border_color(s_obj_locked_shackle, lv_color_hex(UI_ME_ACCENT), 0);
+  lv_obj_set_style_bg_opa(s_obj_locked_shackle, LV_OPA_0, 0);
+
+  s_obj_locked_body = lv_obj_create(s_view_locked);
+  lv_obj_remove_style_all(s_obj_locked_body);
+  lv_obj_set_size(s_obj_locked_body, 60, 52);
+  lv_obj_set_pos(s_obj_locked_body, (DISP_W - 60) / 2, 52);
+  lv_obj_set_style_radius(s_obj_locked_body, 12, 0);
+  lv_obj_set_style_bg_color(s_obj_locked_body, lv_color_hex(0x163128), 0);
+  lv_obj_set_style_bg_opa(s_obj_locked_body, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(s_obj_locked_body, 1, 0);
+  lv_obj_set_style_border_color(s_obj_locked_body, lv_color_hex(UI_ME_ACCENT), 0);
+  lv_obj_set_style_border_opa(s_obj_locked_body, LV_OPA_70, 0);
+
+  s_obj_locked_slot = lv_obj_create(s_obj_locked_body);
+  lv_obj_remove_style_all(s_obj_locked_slot);
+  lv_obj_set_size(s_obj_locked_slot, 10, 20);
+  lv_obj_set_pos(s_obj_locked_slot, 25, 14);
+  lv_obj_set_style_radius(s_obj_locked_slot, 5, 0);
+  lv_obj_set_style_bg_color(s_obj_locked_slot, lv_color_hex(UI_ME_ACCENT), 0);
+  lv_obj_set_style_bg_opa(s_obj_locked_slot, LV_OPA_90, 0);
+
+  s_lbl_locked_title = lv_label_create(s_view_locked);
+  lv_obj_set_width(s_lbl_locked_title, body_w);
+  lv_obj_set_style_text_color(s_lbl_locked_title, lv_color_hex(UI_TEXT_MAIN), 0);
+  lv_obj_set_style_text_font(s_lbl_locked_title, font, 0);
+  lv_obj_set_style_text_align(s_lbl_locked_title, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(s_lbl_locked_title, "设备已锁定");
+  lv_obj_set_pos(s_lbl_locked_title, UI_SAFE_LEFT, 118);
+
+  s_lbl_locked_hint = lv_label_create(s_view_locked);
+  lv_obj_set_width(s_lbl_locked_hint, body_w);
+  lv_obj_set_style_text_color(s_lbl_locked_hint, lv_color_hex(UI_TEXT_DIM), 0);
+  lv_obj_set_style_text_font(s_lbl_locked_hint, font, 0);
+  lv_obj_set_style_text_align(s_lbl_locked_hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(s_lbl_locked_hint, "请按住说话键后说出密语");
+  lv_obj_set_pos(s_lbl_locked_hint, UI_SAFE_LEFT, 140);
+
   /* ── ACTIVE view: status bar + text area ── */
 
   s_view_active = lv_obj_create(scr);
@@ -962,6 +1030,7 @@ static void create_ui(void) {
 
   /* Initial visibility */
   set_view_visible(s_view_standby, 1);
+  set_view_visible(s_view_locked, 0);
   set_view_visible(s_view_active, 0);
   set_view_visible(s_view_speaking, 0);
 
@@ -980,9 +1049,11 @@ static void refresh_ui(void) {
   char you[BBCLAW_DISPLAY_CHAT_LINE_LEN];
   char reply[BBCLAW_DISPLAY_CHAT_LINE_LEN];
   int turn_den = 0;
+  int locked = 0;
 
   portENTER_CRITICAL(&s_state_lock);
   memcpy(status, s_status, sizeof(status));
+  locked = s_locked;
   /* Auto-clear history after idle timeout to return to standby */
   if (BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS > 0 && s_history_count > 0 && is_standby_status(s_status) &&
       s_last_active_ms > 0 && (bb_now_ms() - s_last_active_ms) >= BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS) {
@@ -1011,15 +1082,31 @@ static void refresh_ui(void) {
   char hm[8];
   format_clock(hm, sizeof(hm), now_ms);
 
-  ui_view_mode_t mode = resolve_view_mode(status, turn_den);
+  ui_view_mode_t mode = resolve_view_mode(status, turn_den, locked);
   const int recording = is_recording_status(status);
 
   set_view_visible(s_view_standby, mode == UI_VIEW_STANDBY);
+  set_view_visible(s_view_locked, mode == UI_VIEW_LOCKED);
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
 
   if (mode == UI_VIEW_STANDBY) {
     /* Update standby clock */
     lv_label_set_text(s_lbl_standby_clock, hm);
+    s_record_view_visible = 0;
+  } else if (mode == UI_VIEW_LOCKED) {
+    if (strcmp(status, "VERIFY TX") == 0) {
+      lv_label_set_text(s_lbl_locked_title, "正在聆听密语");
+      lv_label_set_text(s_lbl_locked_hint, "松开按键后开始验证");
+    } else if (strcmp(status, "VERIFY") == 0) {
+      lv_label_set_text(s_lbl_locked_title, "正在验证声纹");
+      lv_label_set_text(s_lbl_locked_hint, "请稍候");
+    } else if (strcmp(status, "VERIFY ERR") == 0) {
+      lv_label_set_text(s_lbl_locked_title, "解锁失败");
+      lv_label_set_text(s_lbl_locked_hint, "请重新说出密语");
+    } else {
+      lv_label_set_text(s_lbl_locked_title, "设备已锁定");
+      lv_label_set_text(s_lbl_locked_hint, "请按住说话键后说出密语");
+    }
     s_record_view_visible = 0;
   } else {
     /* Status bar */
@@ -1162,6 +1249,7 @@ esp_err_t bb_display_init(void) {
   s_scroll_ai = 0;
   s_focus_ai = 1;
   s_auto_scroll_pause_until_ms = 0;
+  s_locked = 0;
   s_main_text_scroll_dirty = 0;
   s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
@@ -1188,6 +1276,7 @@ esp_err_t bb_display_init(void) {
   s_scroll_ai = 0;
   s_focus_ai = 1;
   s_auto_scroll_pause_until_ms = 0;
+  s_locked = 0;
   s_main_text_scroll_dirty = 0;
   s_main_text_scroll_to_bottom = 0;
   s_last_visible_mode = -1;
@@ -1403,6 +1492,13 @@ void bb_display_chat_focus_me(void) {
 void bb_display_chat_focus_ai(void) {
   portENTER_CRITICAL(&s_state_lock);
   s_focus_ai = 1;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
+}
+
+void bb_display_set_locked(int locked) {
+  portENTER_CRITICAL(&s_state_lock);
+  s_locked = locked ? 1 : 0;
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
 }
