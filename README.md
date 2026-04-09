@@ -121,6 +121,7 @@ bbclaw/
 ## 致谢
 
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的多板子适配体系受其架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现
+- [LimeZu — Animated mini characters](https://limezu.itch.io/animated-mini-characters) — 待机界面像素小精灵素材（免费包 Red / Blue / Green Idle 切帧）。作者允许在免费与商业项目中使用并可修改；**请勿再分发或转卖原始素材包**。仓库内说明见 [firmware/assets/third_party/limezu/README.md](firmware/assets/third_party/limezu/README.md)。
 
 ## License
 
