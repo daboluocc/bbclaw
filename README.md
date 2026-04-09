@@ -111,6 +111,7 @@ bbclaw/
 
 ## 文档
 
+- [OpenClaw 自动化 Issue 执行策略](docs/automated_issue_agent.md) — 维护者标签 `ready-for-agent` 与代理拉取规则
 - [Adapter 外部安装 Skill（供复制到各 Agent 技能目录）](docs/skills/bbclaw-adapter-external-install.md)
 - [使用手册](docs/user_guide.md) — 从零开始配置和使用
 - [架构](docs/architecture.md)

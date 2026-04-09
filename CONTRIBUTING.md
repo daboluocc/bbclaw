@@ -31,6 +31,15 @@
 
 若有边界或路线上的建议，请通过 **Issue** 讨论。
 
+## OpenClaw 自动化 Issue 执行
+
+本仓库支持与 **OpenClaw** 等工具按标签拉取 Issue 并自动开 PR，但**默认不会**因开 Issue 而自动跑代理。
+
+- **谁可以触发**：仅**维护者**可为 Issue 添加 **`ready-for-agent`**。
+- **完整策略、执行命令、非目标与配套标签**：见 [OpenClaw 自动化 Issue 执行策略](docs/automated_issue_agent.md)。
+
+若你希望由代理尝试修复，请把 Issue 写清楚（复现步骤、期望行为、涉及路径或模块）；是否打 `ready-for-agent` 由维护者决定。
+
 ## 贡献流程
 
 1. Fork 本仓库

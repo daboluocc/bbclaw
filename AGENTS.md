@@ -102,6 +102,19 @@ BBClaw 是 OpenClaw 生态中的硬件节点：ESP32-S3 固件，承载语音（
 - `firmware/include/bb_transport.h`、`firmware/src/bb_transport.c` — `bb_transport_report_device_info()`（cloud_saas 转发，local_home 为 no-op）
 - `firmware/src/bb_radio_app.c` — 启动流程中调用
 
+## OpenClaw：自动化 Issue 执行（维护者触发）
+
+本仓库**不会**在普通 Issue 创建时自动执行代理。仅当 Issue 为 **open** 且带有维护者添加的标签 **`ready-for-agent`** 时，才应由 OpenClaw 等工具处理。
+
+- **策略、工作流、非目标、建议标签**：见 [docs/automated_issue_agent.md](docs/automated_issue_agent.md)。
+- **批处理示例命令**（运行环境需已配置对应 CLI 与权限）：
+
+```bash
+/gh-issues daboluocc/bbclaw --label ready-for-agent --limit 1 --cron
+```
+
+代理产出 PR 后仍需人工 review / 合并；安全、基础设施、大范围重构等勿打 `ready-for-agent`。
+
 ## 特性开发流程
 
 新特性采用「先讨论、再验证、最后实现」的三阶段流程：
@@ -123,6 +136,7 @@ BBClaw 是 OpenClaw 生态中的硬件节点：ESP32-S3 固件，承载语音（
 ## 延伸阅读
 
 - [README.md](README.md) — 功能、架构图、快速开始
+- [docs/automated_issue_agent.md](docs/automated_issue_agent.md) — OpenClaw 等工具的 Issue 标签触发策略与执行命令
 - [docs/](docs/) — 对外官网文档（用户手册、SaaS 指南、公网架构）
 - [firmware/docs/](firmware/docs/) — 固件细节文档（集成说明、LVGL、硬件、音频调试等）
 - [references/AGENTS.md](references/AGENTS.md) — Cloud、Adapter、Web 的依赖、构建与联调入口

@@ -40,3 +40,5 @@ assignees: ''
 ## 补充信息
 
 其他有助于定位问题的信息（截图、接线照片等）。
+
+> **自动化代理**：开 Issue **不会**自动触发机器人修复。若维护者认为适合交给 OpenClaw 处理，会添加标签 `ready-for-agent`。说明见 [自动化 Issue 策略](https://github.com/daboluocc/bbclaw/blob/main/docs/automated_issue_agent.md)。
