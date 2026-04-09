@@ -28,6 +28,7 @@ static int s_tx_active;
 static int s_audio_ready;
 static int s_volume_pct = BBCLAW_TTS_VOLUME_PCT;
 static int s_speaker_enabled = 1; /* 1=enabled, 0=disabled; default enabled */
+static int s_speaker_sw_enabled = 1; /* hardware switch state: 1=enabled, 0=disabled */
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_codec_dev;
 static i2s_chan_handle_t s_tx_chan;
@@ -463,6 +464,31 @@ static esp_err_t init_pa_enable(void) {
 #endif
 }
 
+static esp_err_t init_speaker_sw(void) {
+#if BBCLAW_SPEAKER_SW_GPIO >= 0
+  gpio_config_t cfg = {
+      .pin_bit_mask = 1ULL << BBCLAW_SPEAKER_SW_GPIO,
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "speaker sw gpio config failed");
+  int level = gpio_get_level(BBCLAW_SPEAKER_SW_GPIO);
+  s_speaker_sw_enabled = (level == BBCLAW_SPEAKER_SW_ACTIVE_LEVEL) ? 1 : 0;
+  ESP_LOGI(TAG, "speaker sw gpio=%d level=%d enabled=%d", BBCLAW_SPEAKER_SW_GPIO, level, s_speaker_sw_enabled);
+  return ESP_OK;
+#else
+  ESP_LOGI(TAG, "speaker sw disabled (gpio not configured)");
+  s_speaker_sw_enabled = 1;
+  return ESP_OK;
+#endif
+}
+
+int bb_audio_get_speaker_sw_enabled(void) {
+  return s_speaker_sw_enabled;
+}
+
 static int16_t clamp_i16(int32_t v) {
   if (v > INT16_MAX) {
     return INT16_MAX;
@@ -618,6 +644,7 @@ esp_err_t bb_audio_init(void) {
 
   ESP_RETURN_ON_ERROR(init_i2s_channels(false), TAG, "i2s init failed");
   ESP_RETURN_ON_ERROR(init_pa_enable(), TAG, "pa enable init failed");
+  ESP_RETURN_ON_ERROR(init_speaker_sw(), TAG, "speaker sw init failed");
 
   s_audio_ready = 1;
   ESP_LOGI(TAG, "audio init done");

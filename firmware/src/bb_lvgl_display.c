@@ -41,6 +41,7 @@ const char *bbclaw_session_key(void) { return "sim:preview"; }
 #include "bb_config.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_lvgl_assets.h"
+#include "bb_lvgl_img_elements.h"
 #include "bb_panel.h"
 #include "bb_time.h"
 #include "bb_wifi.h"

@@ -171,7 +171,7 @@ const char *bbclaw_session_key(void);
 
 /** TTS 播放音量百分比（0-100），100=原始音量，50=减半 */
 #ifndef BBCLAW_TTS_VOLUME_PCT
-#define BBCLAW_TTS_VOLUME_PCT 80
+#define BBCLAW_TTS_VOLUME_PCT 50
 #endif
 
 #ifndef BBCLAW_SPK_TEST_ON_BOOT
@@ -184,6 +184,14 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_PA_EN_ACTIVE_LEVEL
 #define BBCLAW_PA_EN_ACTIVE_LEVEL 1
+#endif
+
+#ifndef BBCLAW_SPEAKER_SW_GPIO
+#define BBCLAW_SPEAKER_SW_GPIO 1
+#endif
+
+#ifndef BBCLAW_SPEAKER_SW_ACTIVE_LEVEL
+#define BBCLAW_SPEAKER_SW_ACTIVE_LEVEL 0
 #endif
 
 #ifndef BBCLAW_PA_EN_PROBE_ON_BOOT

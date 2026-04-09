@@ -1,5 +1,6 @@
 #include "bb_cloud_client.h"
 
+#include "bb_audio.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -501,7 +502,8 @@ esp_err_t bb_cloud_report_device_info(void) {
            "\"sampleRate\":%d,"
            "\"codec\":\"%s\","
            "\"screenWidth\":%d,"
-           "\"screenHeight\":%d"
+           "\"screenHeight\":%d,"
+           "\"speakerHardwareEnabled\":%s"
            "}}",
            BBCLAW_DEVICE_ID, fw_ver,
            BBCLAW_CLOUD_AUDIO_STREAMING_READY ? "true" : "false",
@@ -512,7 +514,8 @@ esp_err_t bb_cloud_report_device_info(void) {
            BBCLAW_AUDIO_SAMPLE_RATE,
            BBCLAW_STREAM_CODEC,
            BBCLAW_ST7789_WIDTH,
-           BBCLAW_ST7789_HEIGHT);
+           BBCLAW_ST7789_HEIGHT,
+           bb_audio_get_speaker_sw_enabled() ? "true" : "false");
 
   bb_http_resp_t resp = {0};
   ESP_RETURN_ON_ERROR(http_perform_json("POST", "/v1/devices/info", body, &resp), TAG, "device info report failed");
