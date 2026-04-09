@@ -21,6 +21,7 @@ typedef struct {
   char cloud_registration_expires_at[40];
   int cloud_volume_pct;      /* -1 = not present */
   int cloud_speed_ratio_x10; /* -1 = not present */
+  int cloud_speaker_enabled;  /* 0=disabled, 1=enabled, -1=not present */
 } bb_transport_state_t;
 
 const char* bb_transport_profile_name(void);

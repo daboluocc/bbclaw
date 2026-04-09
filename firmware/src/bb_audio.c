@@ -27,6 +27,7 @@ static const char* TAG = "bb_audio";
 static int s_tx_active;
 static int s_audio_ready;
 static int s_volume_pct = BBCLAW_TTS_VOLUME_PCT;
+static int s_speaker_enabled = 1; /* 1=enabled, 0=disabled; default enabled */
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_codec_dev;
 static i2s_chan_handle_t s_tx_chan;
@@ -909,6 +910,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
   if (pcm == NULL || pcm_len == 0U) {
     return ESP_ERR_INVALID_ARG;
   }
+  if (!s_speaker_enabled) {
+    /* Speaker disabled; silently skip playback but return OK to avoid caller errors. */
+    return ESP_OK;
+  }
   /* STEREO 32-bit path for INMP441+MAX98357A.
    * TX is initialized as STEREO 32-bit (slot_mode=STEREO, slot_bit_width=32).
    * App-layer mono→stereo: convert mono PCM to [v,v] stereo pairs (same value L=R).
@@ -1156,4 +1161,9 @@ void bb_audio_set_volume_pct(int pct) {
   if (pct > 100) { pct = 100; }
   s_volume_pct = pct;
   ESP_LOGI(TAG, "volume set to %d%%", pct);
+}
+
+void bb_audio_set_speaker_enabled(int enabled) {
+  s_speaker_enabled = enabled ? 1 : 0;
+  ESP_LOGI(TAG, "speaker %s", s_speaker_enabled ? "enabled" : "disabled");
 }

@@ -1561,6 +1561,13 @@ static void stream_task(void* arg) {
               bb_audio_set_volume_pct(state.cloud_volume_pct);
             }
           }
+          if (state.cloud_speaker_enabled >= 0) {
+            static int s_applied_cloud_speaker_enabled = -1;
+            if (state.cloud_speaker_enabled != s_applied_cloud_speaker_enabled) {
+              s_applied_cloud_speaker_enabled = state.cloud_speaker_enabled;
+              bb_audio_set_speaker_enabled(state.cloud_speaker_enabled);
+            }
+          }
         }
         if (health_err == ESP_OK) {
           adapter_health_fail_streak = 0;

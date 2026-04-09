@@ -431,6 +431,7 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   }
   out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
   out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
+  out_pairing->speaker_enabled = json_object_extract_int(resp.body, "config", "speakerEnabled", -1);
   /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */
   {
     char sr_buf[16] = {0};
@@ -468,12 +469,13 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
       }
     }
   }
-  if (out_pairing->volume_pct >= 0 || out_pairing->speed_ratio_x10 > 0) {
+  if (out_pairing->volume_pct >= 0 || out_pairing->speed_ratio_x10 > 0 || out_pairing->speaker_enabled >= 0) {
     if (!pair_poll_unchanged) {
-      ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct, out_pairing->speed_ratio_x10);
+      ESP_LOGI(TAG, "pair config volume_pct=%d speed_ratio_x10=%d speaker_enabled=%d", out_pairing->volume_pct,
+               out_pairing->speed_ratio_x10, out_pairing->speaker_enabled);
     } else {
-      ESP_LOGD(TAG, "pair config unchanged volume_pct=%d speed_ratio_x10=%d", out_pairing->volume_pct,
-               out_pairing->speed_ratio_x10);
+      ESP_LOGD(TAG, "pair config unchanged volume_pct=%d speed_ratio_x10=%d speaker_enabled=%d", out_pairing->volume_pct,
+               out_pairing->speed_ratio_x10, out_pairing->speaker_enabled);
     }
   }
   free(data_scope);

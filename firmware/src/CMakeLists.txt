@@ -32,6 +32,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c")
   list(APPEND _bb_srcs "../generated/bb_lvgl_element_assets.c")
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bb_lvgl_img_elements.c")
+  list(APPEND _bb_srcs "bb_lvgl_img_elements.c")
+endif()
+
 idf_component_register(
     SRCS ${_bb_srcs}
     INCLUDE_DIRS "../include" "../generated" "../boards"

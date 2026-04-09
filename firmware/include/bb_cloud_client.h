@@ -18,6 +18,7 @@ typedef struct {
   char registration_expires_at[40];
   int volume_pct;      /* 0-100, from cloud config; -1 = not present */
   int speed_ratio_x10; /* e.g. 12 = 1.2x; -1 = not present */
+  int speaker_enabled; /* 0=disabled, 1=enabled, -1=not present */
 } bb_cloud_pairing_t;
 
 typedef struct {

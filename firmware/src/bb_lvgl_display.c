@@ -14,6 +14,7 @@
 #include "bb_config.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_lvgl_assets.h"
+#include "bb_lvgl_img_elements.h"
 #include "bb_time.h"
 #include "bb_wifi.h"
 #include "lvgl.h"
