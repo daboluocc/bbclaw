@@ -23,8 +23,9 @@ GO_LDFLAGS := -X github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo.T
 LOG_DIR  ?= $(CURDIR)/tmp
 LOG_FILE ?= $(LOG_DIR)/adapter-runtime.log
 ENV_FILE ?= $(CURDIR)/.env
+ADAPTER_RUN_MATCH ?= go run .*./cmd/bbclaw-adapter|/bbclaw-adapter($$| )
 
-.PHONY: help build test run dev log
+.PHONY: help build test clean-run-procs run dev log
 
 help:
 	@echo "BBClaw adapter"
@@ -44,7 +45,22 @@ build:
 test:
 	cd "$(CURDIR)" && $(GO) test ./...
 
-run:
+clean-run-procs:
+	@user_id="$$(id -u)"; \
+	pids="$$(pgrep -u "$$user_id" -f '$(ADAPTER_RUN_MATCH)' || true)"; \
+	if [ -z "$$pids" ]; then \
+		exit 0; \
+	fi; \
+	echo "stopping existing adapter processes: $$pids"; \
+	pkill -TERM -u "$$user_id" -f '$(ADAPTER_RUN_MATCH)' || true; \
+	sleep 1; \
+	leftover="$$(pgrep -u "$$user_id" -f '$(ADAPTER_RUN_MATCH)' || true)"; \
+	if [ -n "$$leftover" ]; then \
+		echo "force stopping adapter processes: $$leftover"; \
+		pkill -KILL -u "$$user_id" -f '$(ADAPTER_RUN_MATCH)' || true; \
+	fi
+
+run: clean-run-procs
 	@test -f "$(ENV_FILE)" || { echo "missing $(ENV_FILE) — copy from .env.example"; exit 1; }; \
 	mkdir -p "$(LOG_DIR)"; \
 	set -a; \
