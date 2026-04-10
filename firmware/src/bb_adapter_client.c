@@ -1694,7 +1694,7 @@ esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_v
   snprintf(message_id, sizeof(message_id), "verify-%lld", (long long)bb_now_ms());
   snprintf(body, body_cap,
            "{\"type\":\"request\",\"messageId\":\"%s\",\"deviceId\":\"%s\",\"kind\":\"voice.verify\","
-           "\"sessionKey\":\"%s\",\"sampleRate\":%d,\"channels\":1,\"audioBase64\":\"%s\"}",
+           "\"sessionKey\":\"%s\",\"codec\":\"pcm16\",\"sampleRate\":%d,\"channels\":1,\"audioBase64\":\"%s\"}",
            message_id, BBCLAW_DEVICE_ID, BBCLAW_SESSION_KEY, BBCLAW_AUDIO_SAMPLE_RATE, base64_buf);
   free(base64_buf);
 
