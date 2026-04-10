@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BBClaw 语音节点｜OpenClaw 硬件｜已烧录固件</title>
+  <style>
+    :root {
+      --bili: #fb7299;
+      --bili-dark: #e06287;
+      --bg: #f4f4f5;
+      --card: #ffffff;
+      --ink: #18191c;
+      --muted: #61666d;
+      --border: #e3e5e7;
+      --warn-bg: #fff8f5;
+      --warn-border: #ffd8c8;
+      --code-bg: #f1f2f3;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    a { color: var(--bili-dark); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+    }
+
+    /* 首屏：主图 + 右侧摘要（大屏并排） */
+    .hero {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1rem 1rem 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+    }
+    @media (min-width: 768px) {
+      .hero {
+        grid-template-columns: minmax(280px, 420px) 1fr;
+        align-items: start;
+        padding: 1.25rem 1.25rem 0;
+      }
+    }
+
+    .gallery {
+      aspect-ratio: 1;
+      max-height: 420px;
+      margin: 0 auto;
+      width: 100%;
+      border-radius: 8px;
+      background:
+        linear-gradient(145deg, #2a2a32 0%, #1a1a20 50%, #25252d 100%);
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .summary {
+      padding: 0.25rem 0 0.5rem;
+    }
+    .summary h1 {
+      margin: 0 0 0.5rem;
+      font-size: clamp(1.15rem, 2.8vw, 1.45rem);
+      font-weight: 700;
+      line-height: 1.35;
+      letter-spacing: 0.02em;
+    }
+    .summary .sub {
+      margin: 0 0 0.85rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 1rem;
+    }
+    .tag {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      font-size: 12px;
+      border-radius: 4px;
+      background: #fff0f5;
+      color: var(--bili-dark);
+      border: 1px solid #ffd0e3;
+    }
+
+    .highlights {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 0.45rem;
+    }
+    .highlights li {
+      position: relative;
+      padding-left: 1.1rem;
+      font-size: 0.92rem;
+      color: var(--ink);
+    }
+    .highlights li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--bili);
+    }
+
+    /* 内容区 */
+    .detail-body {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.25rem 1rem 3rem;
+    }
+
+    .section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem 1.15rem 1.35rem;
+      margin-bottom: 1rem;
+    }
+    .section-title {
+      margin: 0 0 1rem;
+      padding-bottom: 0.65rem;
+      border-bottom: 2px solid var(--bili);
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: inline-block;
+      width: 100%;
+    }
+    .section p { margin: 0.5rem 0 0.85rem; color: var(--ink); }
+    .section p:last-child { margin-bottom: 0; }
+
+    /* 双 SKU 卡片 */
+    .sku-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    @media (min-width: 640px) {
+      .sku-grid { grid-template-columns: 1fr 1fr; }
+    }
+    .sku-card {
+      border: 2px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1rem 0.85rem;
+      background: #fafafa;
+    }
+    .sku-card.featured {
+      border-color: #ffb7d0;
+      background: #fffafc;
+    }
+    .sku-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: var(--bili);
+      color: #fff;
+      margin-bottom: 0.5rem;
+    }
+    .sku-card h3 {
+      margin: 0 0 0.5rem;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    .sku-card .sku-desc {
+      font-size: 0.88rem;
+      color: var(--muted);
+      margin: 0 0 0.65rem;
+      line-height: 1.55;
+    }
+    .sku-card ul {
+      margin: 0;
+      padding-left: 1.1rem;
+      font-size: 0.88rem;
+      color: var(--ink);
+    }
+    .sku-card li { margin: 0.3rem 0; }
+    .sku-title-line {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      word-break: break-all;
+      margin-top: 0.65rem;
+      padding-top: 0.65rem;
+      border-top: 1px dashed var(--border);
+    }
+
+    /* 长文区块 */
+    .prose h4 {
+      margin: 1.1rem 0 0.4rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .prose h4:first-child { margin-top: 0; }
+    .prose ul { margin: 0.35rem 0 0.85rem; padding-left: 1.25rem; }
+    .prose li { margin: 0.25rem 0; }
+
+    /* 规格：键值表 */
+    .spec-dl {
+      margin: 0;
+      display: grid;
+      gap: 0;
+      font-size: 0.92rem;
+    }
+    .spec-dl > div {
+      display: grid;
+      grid-template-columns: 7.5rem 1fr;
+      gap: 0.75rem;
+      padding: 0.65rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .spec-dl > div:last-child { border-bottom: none; }
+    .spec-dl dt {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .spec-dl dd { margin: 0; color: var(--ink); }
+
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    table.data th,
+    table.data td {
+      border: 1px solid var(--border);
+      padding: 0.5rem 0.55rem;
+      text-align: left;
+    }
+    table.data th { background: #f7f8f9; font-weight: 600; }
+
+    .warn-box {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      border-radius: 8px;
+      padding: 1rem 1.05rem;
+    }
+    .warn-box ol { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+    .warn-box li { margin: 0.45rem 0; color: var(--ink); }
+
+    .script-box {
+      margin: 0;
+      padding: 1rem;
+      background: #f7f8f9;
+      border-radius: 6px;
+      border-left: 4px solid #9499a0;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+
+    @media print {
+      body { background: #fff; }
+      .section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+  <main class="detail-body">
+
+    <section class="section" id="intro">
+      <h2 class="section-title">品牌介绍</h2>
+      <p><strong>BBClaw</strong> 是 OpenClaw 生态中的第三方硬件节点：ESP32-S3 驱动，带麦克风与扬声器、约 1.47 英寸彩屏与按键，通过 WiFi 与家中 <strong>Adapter</strong> 配对，实现本地优先的低延迟语音与状态展示。体验灵感来自对讲机与「消息感」，由同一套固件统一承载。</p>
+      <p style="font-size:0.9rem;color:var(--muted);">BBClaw 语音节点｜ESP32-S3｜已烧录固件｜OpenClaw 生态｜小屏语音硬件｜LVGL｜WiFi 配网｜Adapter 联调</p>
+    </section>
+
+    <section class="section" id="sku">
+      <h2 class="section-title">规格款式</h2>
+      <p style="margin-top:0;color:var(--muted);font-size:0.92rem;">两种规格可选：配件包（自行组装）与整机（到手即用）。</p>
+      <div class="sku-grid">
+        <article class="sku-card featured" id="detail-a">
+          <span class="sku-badge">配件包</span>
+          <h3>配件包｜全外设 + 3D 打印外壳</h3>
+          <p class="sku-desc">主板、屏、音频与按键相关物料、3D 打印外壳及组装附件齐全；<strong>主板已烧录官方固件</strong>，自行组装后即可配网联调。适合喜欢动手、复刻与改装的用户。</p>
+          <ul>
+            <li>完整外设 + 3D 壳，需自行组装</li>
+            <li>出厂已烧录稳定版固件（版本见包装）</li>
+            <li>另需：可运行 Adapter 的同网设备与文档配置</li>
+          </ul>
+          <p class="sku-title-line">【配件包】BBClaw 语音节点 全外设套件 3D 打印外壳 ESP32-S3 已烧录固件 OpenClaw</p>
+        </article>
+        <article class="sku-card" id="detail-b">
+          <span class="sku-badge">整机</span>
+          <h3>整机｜组装成品</h3>
+          <p class="sku-desc">完成整机组装与基本检测，<strong>出厂已烧录官方固件</strong>，到手按文档连 WiFi、配置 Adapter 即可。适合希望少动手、尽快联调的用户。</p>
+          <ul>
+            <li>屏、音频、按键、马达已装配，含 3D 壳</li>
+            <li>已烧录固件，开箱可进配网流程</li>
+            <li>运输注意防震与屏幕保护，建议录像开箱</li>
+          </ul>
+          <p class="sku-title-line">【整机】BBClaw 语音节点 组装成品 已烧录固件 ESP32-S3 OpenClaw 小屏语音</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section prose" id="long-a">
+      <h2 class="section-title">配件包｜图文详情</h2>
+      <p><strong>这是什么</strong> BBClaw 面向 OpenClaw 链路：ASR / VAD、横屏 LVGL、PTT 与振动反馈，WiFi 连局域网 Adapter（或按文档使用公网）。本规格为 <strong>配件包</strong>，含完整外设与 3D 打印外壳，<strong>由你组装</strong>；固件发货前已烧录，无需自行编译即可配网联调。</p>
+      <h4>本包包含（以实际发货清单为准）</h4>
+      <ul>
+        <li>主板 / 核心板及配套连接件</li>
+        <li>显示屏、音频链路器件（如 ES8311 方案相关）</li>
+        <li>PTT、马达等交互件</li>
+        <li><strong>3D 打印外壳</strong>（颜色 / 批次以实物为准，轻微层纹或色差属工艺范围）</li>
+        <li>螺丝、排线等附件</li>
+        <li><strong>已烧录当前稳定版官方固件</strong></li>
+      </ul>
+      <h4>另需自备</h4>
+      <ul>
+        <li>可运行 <strong>Adapter</strong> 的同网段设备，配置 <code>adapter.yaml</code>（局域网为典型用法）</li>
+        <li>公网模式：按官方文档完成账号、设备绑定与 Home Adapter 等</li>
+        <li>USB 线（若未随包）、螺丝刀等工具</li>
+      </ul>
+      <h4>特别声明</h4>
+      <ul>
+        <li>需 <strong>用户自行组装</strong>；组装不当导致损坏一般不在质保内，以店铺规则为准。</li>
+        <li>3D 件为增材制造，公差与表面纹理属正常。</li>
+        <li>自行改 <code>menuconfig</code>、换分区或刷机，风险自担。</li>
+      </ul>
+
+      <h4 style="margin-top:1.25rem">包装清单（示例）</h4>
+      <table class="data">
+        <thead><tr><th>类别</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>主板/套件</td><td>主控与外设焊接完成的板卡或套件</td></tr>
+          <tr><td>显示</td><td>1.47″ ST7789 屏及连接说明</td></tr>
+          <tr><td>音频</td><td>ES8311 相关外设（按套装）</td></tr>
+          <tr><td>结构</td><td>3D 打印外壳上下盖/按键结构件</td></tr>
+          <tr><td>紧固/线材</td><td>螺丝、排线等</td></tr>
+          <tr><td>固件</td><td>已烧录，上电可配网</td></tr>
+          <tr><td>文档</td><td>纸质或二维码至使用手册 / GitHub</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section prose" id="long-b">
+      <h2 class="section-title">整机｜图文详情</h2>
+      <p><strong>这是什么</strong> 与配件包为同一硬件与固件体系；本规格为 <strong>已组装整机</strong>，含 3D 打印外壳（或店铺注明的壳体方案），上电与功能抽检后发货，<strong>固件已烧录</strong>。</p>
+      <h4>本机包含（以实际清单为准）</h4>
+      <ul>
+        <li>BBClaw 整机一台（屏、音频、按键、马达已装配）</li>
+        <li>3D 打印外壳</li>
+        <li>已烧录稳定版官方固件</li>
+        <li>附件：USB 线（若赠送请写入清单）、快速说明或二维码</li>
+      </ul>
+      <h4>另需自备</h4>
+      <ul>
+        <li>局域网：<strong>Adapter</strong> 与正确配置；公网按官方文档</li>
+        <li>供电方式以商品属性为准（如仅 USB / 是否含电池）</li>
+      </ul>
+      <h4>特别声明</h4>
+      <ul>
+        <li>签收建议当面或录像开箱，注意防震与屏幕保护。</li>
+        <li>后续 OTA 或自编译刷机，失败风险一般不在常规质保内（按店铺政策）。</li>
+        <li>行为以官方文档与开源仓库为准。</li>
+      </ul>
+
+      <h4 style="margin-top:1.25rem">包装清单（示例）</h4>
+      <table class="data">
+        <thead><tr><th>类别</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>整机</td><td>已组装、已烧录固件</td></tr>
+          <tr><td>外壳</td><td>3D 打印外壳（颜色以实物为准）</td></tr>
+          <tr><td>线材</td><td>USB 线等（若含则列出）</td></tr>
+          <tr><td>文档</td><td>快速开始 / 二维码至使用手册</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section" id="specs">
+      <h2 class="section-title">参数</h2>
+      <div class="spec-dl">
+        <div><dt>音频</dt><dd>ASR 接入、VAD；ES8311 CODEC（麦克风 / 扬声器）</dd></div>
+        <div><dt>显示</dt><dd>约 1.47″ ST7789，横屏约 320×172，LVGL</dd></div>
+        <div><dt>交互</dt><dd>PTT 按键、振动马达</dd></div>
+        <div><dt>连接</dt><dd>WiFi；与 Adapter / Gateway 按 OpenClaw 文档配对</dd></div>
+        <div><dt>模式</dt><dd>局域网直连（低延迟）；公网见官方文档</dd></div>
+        <div><dt>主控</dt><dd>ESP32-S3</dd></div>
+        <div><dt>固件</dt><dd>Apache 2.0 开源；本店发货版本以包装或说明标注为准</dd></div>
+      </div>
+    </section>
+
+    <section class="section" id="compare">
+      <h2 class="section-title">版本对比</h2>
+      <table class="data">
+        <thead>
+          <tr><th>对比项</th><th>配件包</th><th>整机</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>组装</td><td>需自行组装</td><td>已组装</td></tr>
+          <tr><td>3D 外壳</td><td>含</td><td>含</td></tr>
+          <tr><td>固件</td><td>已烧录</td><td>已烧录</td></tr>
+          <tr><td>适合</td><td>折腾、复刻、改装</td><td>省时间、快速联调</td></tr>
+          <tr><td>定价</td><td>通常低于整机</td><td>含组装与检测</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section" id="notice">
+      <h2 class="section-title">购买须知</h2>
+      <div class="warn-box">
+        <ol>
+          <li><strong>非插电即聊的消费级音箱</strong>：需在同网设备运行 <strong>Adapter</strong>，并完成 WiFi、<code>auth_token</code> 等配置，请接受一定动手与阅读文档成本。</li>
+          <li><strong>局域网与公网</strong>：同 WiFi IP 直连延迟更低；公网需账号、绑定与 Home Adapter 等，见官方公网说明。</li>
+          <li><strong>固件</strong>：两版本均烧录官方固件；自行刷第三方固件导致故障，一般不保。</li>
+          <li><strong>3D 外壳</strong>：可能有层纹、色差与微小公差；能正常装配即视为合格。</li>
+          <li><strong>售后</strong>：请与 B 站工坊规则对齐，写明签收、质保与退换条件。</li>
+          <li><strong>素材与品牌</strong>：第三方美术素材勿单独转售；OpenClaw / BBClaw 等使用须符合约定。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" id="script">
+      <h2 class="section-title">短视频口播参考（可选）</h2>
+      <blockquote class="script-box">
+        BBClaw，OpenClaw 生态里的小屏语音节点，ESP32-S3，带麦带喇叭，320 宽屏 LVGL。两种买法：要自己动手，选配件包，外设和 3D 壳都齐，固件已经帮你烧好；要省心，选整机，到手连 WiFi、把 Adapter 配好就能玩。极客向，不是普通智能音箱，文档在 GitHub，Adapter 要自己跑——能接受再上。
+      </blockquote>
+    </section>
+
+  </main>
+
+</body>
+</html>
