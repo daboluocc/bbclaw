@@ -1098,7 +1098,7 @@ static void refresh_ui(void) {
       lv_label_set_text(s_lbl_locked_title, "正在聆听密语");
       lv_label_set_text(s_lbl_locked_hint, "松开按键后开始验证");
     } else if (strcmp(status, "VERIFY") == 0) {
-      lv_label_set_text(s_lbl_locked_title, "正在验证声纹");
+      lv_label_set_text(s_lbl_locked_title, "正在验证密语");
       lv_label_set_text(s_lbl_locked_hint, "请稍候");
     } else if (strcmp(status, "VERIFY ERR") == 0) {
       lv_label_set_text(s_lbl_locked_title, "解锁失败");

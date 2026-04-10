@@ -39,7 +39,7 @@ Fields:
 
 Fields:
 
-- `match`: whether the speaker matches the enrolled voiceprint
+- `match`: whether the passphrase check succeeded (ASR transcript vs expected phrase; not biometric voiceprint)
 - `confidence`: float confidence score from the verifier
 - `message`: human-readable status or failure reason
 
@@ -49,10 +49,7 @@ Fields:
 - `UNLOCKED`: entered only after `voice.verify.result.match == true`. PTT resumes the existing `voice.stream.start` / `voice.stream.finish` flow.
 - Pairing, auth, WiFi, and cloud-link states still take precedence on screen so the user can finish setup before unlock becomes usable.
 
-## Cloud TODO
+## Cloud
 
-The cloud service source referenced by the original issue is not present in this repository. The expected external implementation is:
-
-- HTTP stub endpoint: `POST /api/voiceprint/verify`
-- WebSocket handler: consume `kind="voice.verify"` and emit `kind="voice.verify.result"`
-- Future integration target: 火山引擎 Speaker Verification API when credentials are available
+- WebSocket: consume `kind="voice.verify"` and emit `kind="voice.verify.result"` (see `bbclaw-reference` cloud).
+- HTTP (optional / same semantics): `POST /v1/voiceprint/verify` — path name is legacy; verification is **passphrase via ASR**, not speaker biometrics.

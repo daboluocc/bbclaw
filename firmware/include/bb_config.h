@@ -441,7 +441,7 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_VAD_ARM_MAX_WAIT_MS 15000
 #endif
 
-/** 锁屏声纹采集最长缓存时长（毫秒），超出部分丢弃并标记 truncated */
+/** 锁屏密语验证：采集的最长 PCM 时长（毫秒），超出部分丢弃并标记 truncated */
 #ifndef BBCLAW_VOICE_VERIFY_MAX_MS
 #define BBCLAW_VOICE_VERIFY_MAX_MS 4000
 #endif

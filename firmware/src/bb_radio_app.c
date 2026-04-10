@@ -227,12 +227,13 @@ static void capture_seed_clear(void) {
   s_capture_seed_len = 0;
 }
 
-static int voiceprint_unlock_enabled(void) {
+/** 公网 Cloud SaaS 模式下启用「密语」锁屏（ASR 比对），与声纹/生物特征无关。 */
+static int passphrase_unlock_enabled(void) {
   return bb_transport_is_cloud_saas();
 }
 
 static int radio_app_is_locked(void) {
-  return voiceprint_unlock_enabled() && s_app_state == BBCLAW_STATE_LOCKED;
+  return passphrase_unlock_enabled() && s_app_state == BBCLAW_STATE_LOCKED;
 }
 
 static void refresh_lock_screen_visibility(void) {
@@ -1305,7 +1306,7 @@ static void stream_task(void* arg) {
       if (verify_err != ESP_OK) {
         ESP_LOGE(TAG, "voice verify failed err=%s", esp_err_to_name(verify_err));
         show_status_error("VERIFY ERR");
-        (void)bb_display_show_chat_turn("声纹验证失败",
+        (void)bb_display_show_chat_turn("密语验证失败",
                                         verify_result.message[0] != '\0' ? verify_result.message : "cloud verify error");
         signal_error_haptic();
         vTaskDelay(pdMS_TO_TICKS(1200));
@@ -1317,13 +1318,13 @@ static void stream_task(void* arg) {
         ESP_LOGI(TAG, "phase=voice_verify_unlock confidence=%.3f", (double)verify_result.confidence);
         set_radio_app_state(BBCLAW_STATE_UNLOCKED);
         pulse_success_on_idle("READY");
-        (void)bb_display_show_chat_turn("声纹验证通过",
+        (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
       } else {
         ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
                  verify_result.message);
         show_status_error("VERIFY ERR");
-        (void)bb_display_show_chat_turn("声纹未匹配",
+        (void)bb_display_show_chat_turn("密语未匹配",
                                         verify_result.message[0] != '\0' ? verify_result.message : "请重试");
         signal_error_haptic();
         vTaskDelay(pdMS_TO_TICKS(1200));
@@ -1868,7 +1869,7 @@ esp_err_t bb_radio_app_start(void) {
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
-  set_radio_app_state(voiceprint_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
+  set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
   esp_err_t led_err = bb_led_init();
   if (led_err != ESP_OK) {
     ESP_LOGW(TAG, "status led init failed err=%s (continue without led)", esp_err_to_name(led_err));
