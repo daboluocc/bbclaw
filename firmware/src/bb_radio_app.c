@@ -13,6 +13,7 @@
 #include "bb_button_test.h"
 #include "bb_led.h"
 #include "bb_motor.h"
+#include "bb_nav_input.h"
 #include "bb_ogg_opus.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
@@ -167,6 +168,7 @@ static void log_phase_text_chunks(const char* phase, const char* text) {
 }
 static volatile int s_ptt_pressed;
 static volatile unsigned s_ptt_change_version;
+static volatile unsigned s_nav_event_versions[BB_NAV_EVENT_COUNT];
 static volatile int s_transport_health_ok;
 static volatile int s_transport_ready;
 static volatile int s_transport_audio_streaming_ready;
@@ -324,21 +326,32 @@ static void log_pin_summary(void) {
   ESP_LOGI(TAG,
            "feature tts_playback=%d spk_test_on_boot=%d pa_en_gpio=%d pa_en_level=%d pa_probe=%d probe_gpio={%d,%d,%d} "
            "loopback_only=%d display_pull=%d motor_enable=%d motor_gpio=%d motor_level=%d power_enable=%d power_adc=%d "
-           "led_enable=%d led_ryg={%d,%d,%d}",
+           "nav_enable=%d nav={a:%d,b:%d,key:%d} led_enable=%d led_ryg={%d,%d,%d}",
            BBCLAW_ENABLE_TTS_PLAYBACK, BBCLAW_SPK_TEST_ON_BOOT, BBCLAW_PA_EN_GPIO, BBCLAW_PA_EN_ACTIVE_LEVEL,
            BBCLAW_PA_EN_PROBE_ON_BOOT, BBCLAW_PA_EN_PROBE_GPIO1, BBCLAW_PA_EN_PROBE_GPIO2, BBCLAW_PA_EN_PROBE_GPIO3,
            BBCLAW_LOCAL_LOOPBACK_ONLY, BBCLAW_ENABLE_DISPLAY_PULL, BBCLAW_MOTOR_ENABLE, BBCLAW_MOTOR_GPIO,
-           BBCLAW_MOTOR_ACTIVE_LEVEL, BBCLAW_POWER_ENABLE, BBCLAW_POWER_ADC_GPIO, BBCLAW_STATUS_LED_ENABLE,
+           BBCLAW_MOTOR_ACTIVE_LEVEL, BBCLAW_POWER_ENABLE, BBCLAW_POWER_ADC_GPIO, BBCLAW_NAV_ENABLE,
+           BBCLAW_NAV_ENC_A_GPIO, BBCLAW_NAV_ENC_B_GPIO, BBCLAW_NAV_KEY_GPIO, BBCLAW_STATUS_LED_ENABLE,
            BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO);
   if (using_es8311_input() && BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_R_GPIO == BBCLAW_ES8311_I2S_MCK_GPIO) {
     ESP_LOGW(TAG, "status led red gpio=%d conflicts with es8311 mck; remap one side before enabling both",
              BBCLAW_STATUS_LED_R_GPIO);
+  }
+  if (using_es8311_input() && BBCLAW_NAV_ENABLE &&
+      (BBCLAW_NAV_ENC_A_GPIO == BBCLAW_ES8311_I2C_SCL_GPIO || BBCLAW_NAV_ENC_B_GPIO == BBCLAW_ES8311_I2C_SDA_GPIO)) {
+    ESP_LOGW(TAG, "nav gpio conflicts with es8311 i2c; remap encoder or disable es8311 mode on breadboard");
   }
 }
 
 static void on_ptt_changed(int pressed) {
   s_ptt_pressed = pressed > 0 ? 1 : 0;
   s_ptt_change_version++;
+}
+
+static void on_nav_event(bb_nav_event_t event) {
+  if ((int)event >= 0 && event < BB_NAV_EVENT_COUNT) {
+    s_nav_event_versions[event]++;
+  }
 }
 
 static void signal_error_haptic(void) {
@@ -1088,10 +1101,54 @@ static void stream_task(void* arg) {
   int adapter_health_fail_streak = 0;
   /** 按住 PTT 且处于门户配对门闸时，降低 UI/日志刷新频率 */
   int64_t pairing_ptt_ui_last_ms = 0;
+  int nav_focus_ai = 1;
+  int nav_history_mode = 0;
+  unsigned nav_handled_versions[BB_NAV_EVENT_COUNT] = {0};
 
   ESP_LOGI(TAG, "stream task ready stack_hw=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  for (int i = 0; i < BB_NAV_EVENT_COUNT; ++i) {
+    nav_handled_versions[i] = s_nav_event_versions[i];
+  }
 
   while (1) {
+    for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
+      while (nav_handled_versions[event] != s_nav_event_versions[event]) {
+        nav_handled_versions[event]++;
+        switch ((bb_nav_event_t)event) {
+          case BB_NAV_EVENT_ROTATE_CCW:
+            if (nav_history_mode) {
+              (void)bb_display_chat_prev_turn();
+            } else {
+              (void)bb_display_chat_scroll_up();
+            }
+            break;
+          case BB_NAV_EVENT_ROTATE_CW:
+            if (nav_history_mode) {
+              (void)bb_display_chat_next_turn();
+            } else {
+              (void)bb_display_chat_scroll_down();
+            }
+            break;
+          case BB_NAV_EVENT_CLICK:
+            nav_focus_ai = !nav_focus_ai;
+            if (nav_focus_ai) {
+              bb_display_chat_focus_ai();
+            } else {
+              bb_display_chat_focus_me();
+            }
+            ESP_LOGI(TAG, "nav click focus=%s", nav_focus_ai ? "ai" : "me");
+            break;
+          case BB_NAV_EVENT_LONG_PRESS:
+            nav_history_mode = !nav_history_mode;
+            ESP_LOGI(TAG, "nav long_press mode=%s", nav_history_mode ? "history" : "scroll");
+            break;
+          case BB_NAV_EVENT_COUNT:
+          default:
+            break;
+        }
+      }
+    }
+
     unsigned ptt_version = s_ptt_change_version;
     if (ptt_version != ptt_handled_version) {
       ptt_handled_version = ptt_version;
@@ -1940,6 +1997,7 @@ esp_err_t bb_radio_app_start(void) {
   }
 #endif
   ESP_ERROR_CHECK(bb_ptt_init(BBCLAW_PTT_GPIO, on_ptt_changed));
+  ESP_ERROR_CHECK(bb_nav_input_init(on_nav_event));
   if (bb_button_test_start() != ESP_OK) {
     ESP_LOGW(TAG, "button test start failed (optional)");
   }

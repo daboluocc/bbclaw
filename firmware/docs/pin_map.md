@@ -4,13 +4,12 @@
 
 本文档是固件接线的单一基线，包含信号线与供电线（`3V3` / `5V`）建议。
 
-## 1. 当前默认配置（v0：INMP441 + MAX98357A）
+## 1. Breadboard 默认配置（v0：INMP441 + MAX98357A）
 
 对应配置宏（`firmware/include/bb_config.h`）：
 - `BBCLAW_AUDIO_INPUT_SOURCE="inmp441"`
 - `BBCLAW_PTT_GPIO=7`
 - `BBCLAW_MOTOR_GPIO=21`
-- `BBCLAW_POWER_ADC_GPIO=3`
 - `BBCLAW_STATUS_LED_R_GPIO=2`
 - `BBCLAW_STATUS_LED_Y_GPIO=4`
 - `BBCLAW_STATUS_LED_G_GPIO=5`
@@ -117,7 +116,20 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 - 当前 breadboard 默认编译配置为 `GPIO7`。
 - 若你的板子把 PTT 接到了别的脚，需要同步改 `BBCLAW_PTT_GPIO`。
 
-### 1.7 电池电压采样（GPIO3 / ADC1_CH2）
+## 2. BBClaw 自研 PCB 扩展配置
+
+在 `bbclaw` 板型上，保留 breadboard 的音频 / 屏幕 / PTT / 马达基础接线，并增加电池采样与拨轮开关。
+
+对应配置宏（`firmware/boards/bbclaw/board_config.h`）：
+
+- `BBCLAW_POWER_ENABLE=1`
+- `BBCLAW_POWER_ADC_GPIO=3`
+- `BBCLAW_NAV_ENABLE=1`
+- `BBCLAW_NAV_ENC_A_GPIO=6`
+- `BBCLAW_NAV_ENC_B_GPIO=8`
+- `BBCLAW_NAV_KEY_GPIO=1`
+
+### 2.1 电池电压采样（GPIO3 / ADC1_CH2）
 
 | 节点 | 接到开发板 | 说明 |
 | --- | --- | --- |
@@ -144,7 +156,41 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 - 当前固件第一版仅做电压采样、电量换算与状态栏显示。
 - 后续版本再叠加充电状态、低功耗策略与休眠逻辑。
 
-## 2. ES8311 兼容模式（可选）
+### 2.2 拨轮开关 / 导航编码器接线（WS-003 类）
+
+默认 `bbclaw` PCB 接入采用 `旋转编码器 + 按压` 方式，供后续的上翻 / 下翻 / 确认 / 长按扩展使用。
+
+| 器件功能脚 | 接到开发板 | 说明 |
+| --- | --- | --- |
+| `A` | `GPIO6` | `BBCLAW_NAV_ENC_A_GPIO`，编码器 A 相 |
+| `B` | `GPIO8` | `BBCLAW_NAV_ENC_B_GPIO`，编码器 B 相 |
+| `KEY` | `GPIO1` | `BBCLAW_NAV_KEY_GPIO`，按压键输入 |
+| `C / COM` | `GND` | 编码器公共端 |
+| `KEY_COM / T` | `GND` | 按键公共端 |
+
+默认参数（`board_config.h`）：
+
+- `BBCLAW_NAV_ENABLE=1`
+- `BBCLAW_NAV_ENC_A_GPIO=6`
+- `BBCLAW_NAV_ENC_B_GPIO=8`
+- `BBCLAW_NAV_KEY_GPIO=1`
+- `BBCLAW_NAV_PULL_UP=1`
+- `BBCLAW_NAV_KEY_ACTIVE_LEVEL=0`
+
+软件默认交互设计：
+
+- 旋转：当前模式下执行上翻 / 下翻
+- 短按：确认 / 选中当前滚动目标（当前实现为切换 `ME` / `AI` 焦点）
+- 长按：切换导航模式（当前实现为 `scroll` / `history` 两种模式）
+
+硬件说明：
+
+- `A/B/KEY` 三路默认都使用内部上拉，外部可不再加上拉电阻。
+- 若旋转方向与预期相反，互换 `A/B` 两根线即可。
+- `GPIO1` 被保留给编码器按键，因此 `bbclaw` 板型默认关闭 `BBCLAW_SPEAKER_SW_GPIO`。
+- 若切到 `ES8311` 模式，`GPIO6/8` 会与 `I2C SCL/SDA` 冲突，需要重新分配编码器引脚。
+
+## 3. ES8311 兼容模式（可选）
 
 对应配置宏：
 - `BBCLAW_AUDIO_INPUT_SOURCE="es8311"`
@@ -164,19 +210,19 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 | `VCC` | `5V`（待模块铭牌确认） | 功放域常用 5V |
 | `GND` | `GND` | 共地 |
 
-## 3. 供电与接线注意事项
+## 4. 供电与接线注意事项
 
 - 所有模块必须共地（`GND` 共地）。
 - 功放/马达优先走 `5V` 供电（按模块额定电压确认）。
 - 麦克风数字模块（如 INMP441）使用 `3V3` 供电。
-- 电池采样默认使用 `GPIO3 (ADC1_CH2)`，避免占用 `ADC2`。
+- 只有 `bbclaw` 板型默认启用电池采样，使用 `GPIO3 (ADC1_CH2)`，避免占用 `ADC2`。
 - `GPIO45/GPIO46` 避免作为外设上拉输入使用。
 - Wi-Fi/BLE 同时启用时，`ADC2` 不用于 ADC 采样功能。
 - RYG 状态灯默认占用 `GPIO2/4/5`；若切到 `ES8311` 模式，默认 `MCK=GPIO2` 会与红灯冲突，需要二选一重映射。
 - `BBCLAW_PA_EN_PROBE_GPIO1` 当前默认也是 `GPIO13`，但 `BBCLAW_PA_EN_PROBE_ON_BOOT=0` 默认关闭；若启用开机功放探测，需要避免和马达脚复用。
 - `INMP441` 默认开启 `BBCLAW_AUDIO_RX_AUTO_CHANNEL_LOCK=1`，`L/R` 接 `GND` 或 `3V3` 都能自动选择非零声道。
 
-## 4. 相关资料
+## 5. 相关资料
 
 - [硬件选型与资料缺口](./hardware_selection.md)
 - [Adapter 对接说明](./bbclaw_adapter_integration.md)

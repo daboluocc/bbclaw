@@ -25,7 +25,7 @@ help:
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
-	@echo "  make set-board BOARD=atk-dnesp32s3-box  # 切换 board（breadboard | atk-dnesp32s3-box）"
+	@echo "  make set-board BOARD=bbclaw             # 切换 board（breadboard | bbclaw | atk-dnesp32s3-box）"
 	@echo "  make gen             # 一键生成所有 LVGL 资源（字库 + SVG 位图 + 元素位图）"
 	@echo "  make lvgl-kconfig-fix  # 打开压缩字库 + LARGE 索引（屏上全方框时执行一次后 reconfigure）"
 	@echo "  make sim-build       # 构建 macOS/SDL2 本地 LVGL 预览"
@@ -46,7 +46,7 @@ set-target:
 reconfigure:
 	@$(IDF_SOURCE) idf.py reconfigure
 
-# Switch board: make set-board BOARD=atk-dnesp32s3-box
+# Switch board: make set-board BOARD=bbclaw
 # Then: make build (or make fullclean && make init && make build)
 BOARD ?= breadboard
 set-board:

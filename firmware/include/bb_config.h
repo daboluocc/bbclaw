@@ -5,6 +5,8 @@
 /* ── Board selection: include board-specific pin map and hardware config ── */
 #if defined(CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX)
 #include "../boards/atk-dnesp32s3-box/board_config.h"
+#elif defined(CONFIG_BBCLAW_BOARD_BBCLAW)
+#include "../boards/bbclaw/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BREADBOARD) || !defined(BBCLAW_DISPLAY_BUS_SPI)
 #include "../boards/breadboard/board_config.h"
 #endif
@@ -228,6 +230,42 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_PTT_DEBOUNCE_MS
 #define BBCLAW_PTT_DEBOUNCE_MS 30
+#endif
+
+#ifndef BBCLAW_NAV_ENABLE
+#define BBCLAW_NAV_ENABLE 0
+#endif
+
+#ifndef BBCLAW_NAV_ENC_A_GPIO
+#define BBCLAW_NAV_ENC_A_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_ENC_B_GPIO
+#define BBCLAW_NAV_ENC_B_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_KEY_GPIO
+#define BBCLAW_NAV_KEY_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_PULL_UP
+#define BBCLAW_NAV_PULL_UP 1
+#endif
+
+#ifndef BBCLAW_NAV_KEY_ACTIVE_LEVEL
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL 0
+#endif
+
+#ifndef BBCLAW_NAV_POLL_MS
+#define BBCLAW_NAV_POLL_MS 2
+#endif
+
+#ifndef BBCLAW_NAV_KEY_DEBOUNCE_MS
+#define BBCLAW_NAV_KEY_DEBOUNCE_MS 20
+#endif
+
+#ifndef BBCLAW_NAV_LONG_PRESS_MS
+#define BBCLAW_NAV_LONG_PRESS_MS 700
 #endif
 
 /** 外接按键测试（仅调试用）：设为 -1 关闭；与 PTT 同脚时不要开，避免重复配置 GPIO */

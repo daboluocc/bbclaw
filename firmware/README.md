@@ -225,13 +225,14 @@ make menuconfig
 
 | Board | 说明 |
 | --- | --- |
-| `breadboard` | 默认开发配置（INMP441 + MAX98357A + SPI ST7789 1.47"） |
+| `breadboard` | 面包板开发基线（INMP441 + MAX98357A + SPI ST7789 1.47"，无电池采样、无旋钮） |
+| `bbclaw` | BBClaw 自研 PCB（在 breadboard 基础上增加电池采样与旋钮导航） |
 | `atk-dnesp32s3-box` | 正点原子 ESP32-S3 开发盒（ES8311 / NS4168 + i80 并口 ST7789 320×240） |
 
 切换方式：
 
 ```bash
-make set-board BOARD=atk-dnesp32s3-box
+make set-board BOARD=bbclaw
 make reconfigure
 make build
 ```

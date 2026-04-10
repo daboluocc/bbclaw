@@ -7,6 +7,7 @@ import pathlib, re, sys
 
 BOARD_MAP = {
     "breadboard": "BREADBOARD",
+    "bbclaw": "BBCLAW",
     "atk-dnesp32s3-box": "ATK_DNESP32S3_BOX",
 }
 

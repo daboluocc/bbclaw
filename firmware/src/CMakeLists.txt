@@ -13,6 +13,7 @@ set(_bb_srcs
     "bb_ui_assets.c"
     "bb_gateway_node.c"
     "bb_motor.c"
+    "bb_nav_input.c"
     "bb_ptt.c"
     "bb_radio_app.c"
     "bb_time.c"

@@ -12,6 +12,12 @@ config BBCLAW_BOARD_BREADBOARD
     help
         Default development configuration using discrete modules on a breadboard.
 
+config BBCLAW_BOARD_BBCLAW
+    bool "BBClaw custom PCB (battery + rotary encoder + SPI ST7789)"
+    help
+        Custom BBClaw PCB derived from the breadboard wiring, with battery
+        sensing and a rotary encoder with push switch for navigation.
+
 config BBCLAW_BOARD_ATK_DNESP32S3_BOX
     bool "ATK-DNESP32S3-BOX (ES8311 + i80 ST7789 320x240)"
     help

@@ -1,8 +1,8 @@
 /**
- * BBClaw board config: breadboard (INMP441 + MAX98357A + SPI ST7789 1.47")
+ * BBClaw board config: custom BBClaw PCB
  *
- * This is the default development configuration using discrete modules
- * wired on a breadboard with an ESP32-S3 devkit.
+ * Derived from the breadboard wiring baseline, with dedicated battery sensing
+ * and a rotary encoder with push switch for navigation.
  */
 #pragma once
 
@@ -17,13 +17,29 @@
 #define BBCLAW_ES8311_I2S_MCK_GPIO  2
 
 /* ── PTT ── */
-#define BBCLAW_PTT_GPIO        7
+#define BBCLAW_PTT_GPIO         7
 #define BBCLAW_PTT_ACTIVE_LEVEL 1
-#define BBCLAW_PTT_PULL_UP     0
+#define BBCLAW_PTT_PULL_UP      0
+
+/* ── Navigation wheel (rotary encoder + push) ── */
+#define BBCLAW_NAV_ENABLE            1
+#define BBCLAW_NAV_ENC_A_GPIO        6
+#define BBCLAW_NAV_ENC_B_GPIO        8
+#define BBCLAW_NAV_KEY_GPIO          1
+#define BBCLAW_NAV_PULL_UP           1
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL  0
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21
 #define BBCLAW_MOTOR_ENABLE    1
+
+/* ── Battery / power sensing ── */
+#define BBCLAW_POWER_ENABLE            1
+#define BBCLAW_POWER_ADC_GPIO          3
+#define BBCLAW_POWER_ADC_RTOP_OHM      100000
+#define BBCLAW_POWER_ADC_RBOT_OHM      100000
+#define BBCLAW_POWER_BATTERY_FULL_MV   4200
+#define BBCLAW_POWER_BATTERY_EMPTY_MV  3300
 
 /* ── Status LED (discrete R/Y/G) ── */
 #define BBCLAW_STATUS_LED_ENABLE 1
@@ -46,19 +62,10 @@
 #define BBCLAW_ST7789_WIDTH    320
 #define BBCLAW_ST7789_HEIGHT   172
 
-/*
- * Panel variant: 1 = V1 (original), 2 = V2 (current default).
- * Override with -DBBCLAW_ST7789_147_VARIANT=1 if using V1 panel.
- */
 #ifndef BBCLAW_ST7789_147_VARIANT
 #define BBCLAW_ST7789_147_VARIANT 2
 #endif
 
-/**
- * 屏幕安装角度（顺时针，相对该 variant 的默认朝向）。
- * 仅影响 esp_lcd swap_xy / mirror，不改变 WIDTH/HEIGHT 宏（LVGL 仍为 320x172）。
- * 若某档倒置或镜像不对，试相邻的 90° 档，或用编译参数覆盖单宏。
- */
 #ifndef BBCLAW_DISPLAY_ROTATION_DEG
 #define BBCLAW_DISPLAY_ROTATION_DEG 0
 #endif
@@ -108,5 +115,6 @@
 #endif
 #endif
 
-/* ── PA enable (not wired on breadboard) ── */
+/* ── PA enable / speaker sense ── */
 #define BBCLAW_PA_EN_GPIO      -1
+#define BBCLAW_SPEAKER_SW_GPIO -1

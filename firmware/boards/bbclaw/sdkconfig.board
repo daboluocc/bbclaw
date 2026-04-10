@@ -1,0 +1,6 @@
+# BBClaw custom PCB board overlay
+# Usage: cp boards/bbclaw/sdkconfig.board sdkconfig.defaults.board
+#        make fullclean && make init && make build
+CONFIG_BBCLAW_BOARD_BBCLAW=y
+# CONFIG_BBCLAW_BOARD_BREADBOARD is not set
+# CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX is not set
