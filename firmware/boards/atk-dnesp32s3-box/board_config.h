@@ -45,6 +45,10 @@
 #define BBCLAW_MOTOR_ENABLE     0
 #define BBCLAW_MOTOR_GPIO       -1
 
+/* ── Battery / power sensing: not wired on this board ── */
+#define BBCLAW_POWER_ENABLE     0
+#define BBCLAW_POWER_ADC_GPIO   -1
+
 /* ── Status LED: single LED on GPIO4 ── */
 #define BBCLAW_STATUS_LED_ENABLE 1
 #define BBCLAW_STATUS_LED_KIND_RGB_MODULE 0

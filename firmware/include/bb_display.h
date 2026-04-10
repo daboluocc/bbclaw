@@ -25,3 +25,5 @@ void bb_display_set_tts_playing(int playing);
 void bb_display_set_tts_sentence(const char* sentence_text);
 /** PTT 录音阶段的实时输入电平（0-100）与是否检测到有效声音 */
 void bb_display_set_record_level(uint8_t level_pct, int voiced);
+/** 状态栏电池信息；available=0 时显示占位 */
+void bb_display_set_battery(int available, int percent, int low);

@@ -9,6 +9,7 @@ set(_bb_srcs
     "bb_lvgl_display.c"
     "bb_led.c"
     "bb_panel.c"
+    "bb_power.c"
     "bb_ui_assets.c"
     "bb_gateway_node.c"
     "bb_motor.c"
@@ -28,7 +29,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_screen_assets.c")
   list(APPEND _bb_srcs "../generated/bb_lvgl_screen_assets.c")
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c" AND
+   NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bb_lvgl_img_elements.c")
   list(APPEND _bb_srcs "../generated/bb_lvgl_element_assets.c")
 endif()
 
@@ -53,6 +55,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_ledc
         esp_driver_spi
+        esp_adc
         esp_lcd
         esp_netif
         esp_timer

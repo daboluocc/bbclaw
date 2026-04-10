@@ -105,6 +105,12 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_WIFI_BAR_GAP    2
 #define UI_WIFI_BAR_H_STEP 4
 
+/* Battery widget */
+#define UI_BATTERY_W       44
+#define UI_BATTERY_H       14
+#define UI_BATTERY_FILL_W  18
+#define UI_BATTERY_FILL_H  8
+
 /* Recording speaking view */
 #define UI_RECORD_UPDATE_MS       48
 #define UI_RECORD_BAR_COUNT       10
@@ -206,6 +212,10 @@ static lv_obj_t* s_lbl_status_clock;
 static lv_obj_t* s_obj_status_wifi;
 static lv_obj_t* s_lbl_status_wifi_info;
 static lv_obj_t* s_bar_status_wifi[UI_WIFI_BAR_COUNT];
+static lv_obj_t* s_obj_status_battery;
+static lv_obj_t* s_obj_status_battery_fill;
+static lv_obj_t* s_img_status_battery;
+static lv_obj_t* s_lbl_status_battery;
 static lv_obj_t* s_view_speaking;
 static lv_obj_t* s_obj_record_halo_outer;
 static lv_obj_t* s_obj_record_halo_inner;
@@ -242,6 +252,9 @@ static uint8_t s_record_bar_visual[UI_RECORD_BAR_COUNT];
 static uint32_t s_record_anim_tick;
 static int s_record_view_visible;
 static uint32_t s_mascot_frame;
+static int s_battery_available;
+static int s_battery_percent = -1;
+static int s_battery_low;
 
 static void refresh_ui(void);
 
@@ -310,6 +323,35 @@ static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* st
   char wifi_info[64];
   format_wifi_info(wifi_info, sizeof(wifi_info));
   lv_label_set_text(info_lbl, wifi_info);
+}
+
+static void apply_battery_widget(void) {
+  if (s_obj_status_battery_fill == NULL || s_lbl_status_battery == NULL) return;
+
+  int available = 0;
+  int percent = -1;
+  int low = 0;
+  portENTER_CRITICAL(&s_state_lock);
+  available = s_battery_available;
+  percent = s_battery_percent;
+  low = s_battery_low;
+  portEXIT_CRITICAL(&s_state_lock);
+
+  if (!available || percent < 0) {
+    lv_obj_add_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_lbl_status_battery, "--");
+    return;
+  }
+
+  if (percent > 100) percent = 100;
+  if (percent < 0) percent = 0;
+  lv_obj_clear_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_width(s_obj_status_battery_fill, (percent * UI_BATTERY_FILL_W) / 100);
+  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(low ? 0xe66f6f : UI_ME_ACCENT), 0);
+
+  char pct[8];
+  snprintf(pct, sizeof(pct), "%d", percent);
+  lv_label_set_text(s_lbl_status_battery, pct);
 }
 
 /* ── Status icon ── */
@@ -664,6 +706,38 @@ static lv_obj_t* create_wifi_widget(lv_obj_t* parent, int x, int y, lv_obj_t* ba
   return container;
 }
 
+static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
+  const lv_font_t* font = ui_font();
+  lv_obj_t* container = lv_obj_create(parent);
+  lv_obj_remove_style_all(container);
+  lv_obj_set_size(container, UI_BATTERY_W, UI_BATTERY_H);
+  lv_obj_set_pos(container, x, y);
+  lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+
+  s_obj_status_battery_fill = lv_obj_create(container);
+  lv_obj_remove_style_all(s_obj_status_battery_fill);
+  lv_obj_set_size(s_obj_status_battery_fill, UI_BATTERY_FILL_W, UI_BATTERY_FILL_H);
+  lv_obj_set_pos(s_obj_status_battery_fill, 2, 3);
+  lv_obj_set_style_radius(s_obj_status_battery_fill, 1, 0);
+  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(UI_ME_ACCENT), 0);
+  lv_obj_set_style_bg_opa(s_obj_status_battery_fill, LV_OPA_COVER, 0);
+
+  s_img_status_battery = lv_image_create(container);
+  lv_image_set_src(s_img_status_battery, &bb_el_battery_frame_26x12);
+  lv_obj_set_pos(s_img_status_battery, 0, 1);
+
+  s_lbl_status_battery = lv_label_create(container);
+  lv_obj_set_width(s_lbl_status_battery, 16);
+  lv_obj_set_style_text_color(s_lbl_status_battery, lv_color_hex(UI_STATUS_FG), 0);
+  lv_obj_set_style_text_font(s_lbl_status_battery, font, 0);
+  lv_obj_set_style_text_align(s_lbl_status_battery, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_long_mode(s_lbl_status_battery, LV_LABEL_LONG_MODE_CLIP);
+  lv_label_set_text(s_lbl_status_battery, "--");
+  lv_obj_set_pos(s_lbl_status_battery, 28, 0);
+
+  return container;
+}
+
 /* ── Panel init (hardware only) ── */
 
 #if !defined(BBCLAW_SIMULATOR)
@@ -885,10 +959,11 @@ static void create_ui(void) {
   lv_obj_set_pos(s_img_status, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
 
   {
-    const int wifi_w = 108;
+    const int wifi_w = 72;
+    const int battery_w = UI_BATTERY_W;
     const int status_text_x = UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4;
-    const int clock_w = 48;
-    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) - wifi_w - clock_w - 12;
+    const int clock_w = 40;
+    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) - wifi_w - battery_w - clock_w - 16;
 
     s_lbl_status = lv_label_create(s_view_active);
     lv_obj_set_width(s_lbl_status, status_label_w);
@@ -910,9 +985,14 @@ static void create_ui(void) {
     lv_label_set_text(s_lbl_status_clock, "--:--");
     lv_obj_set_pos(s_lbl_status_clock, UI_SAFE_LEFT + body_w - clock_w, UI_SAFE_TOP + (status_h - lh - 2) / 2);
 
+    s_obj_status_battery = create_battery_widget(
+        s_view_active,
+        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w,
+        UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+
     /* WiFi in status bar */
     s_obj_status_wifi = create_wifi_widget(s_view_active,
-        UI_SAFE_LEFT + body_w - clock_w - 4 - wifi_w,
+        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w - 4 - wifi_w,
         UI_SAFE_TOP + (status_h - 16) / 2,
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
@@ -1116,6 +1196,7 @@ static void refresh_ui(void) {
     lv_label_set_text(s_lbl_status, status_text[0] != '\0' ? status_text : "READY");
     apply_status_icon(status);
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
+    apply_battery_widget();
     lv_label_set_text(s_lbl_status_clock, hm);
 
     set_view_visible(s_view_speaking, recording);
@@ -1259,6 +1340,9 @@ esp_err_t bb_display_init(void) {
   memset(s_record_bar_visual, 0, sizeof(s_record_bar_visual));
   s_record_anim_tick = 0;
   s_record_view_visible = 0;
+  s_battery_available = 0;
+  s_battery_percent = -1;
+  s_battery_low = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   create_ui();
@@ -1286,6 +1370,9 @@ esp_err_t bb_display_init(void) {
   memset(s_record_bar_visual, 0, sizeof(s_record_bar_visual));
   s_record_anim_tick = 0;
   s_record_view_visible = 0;
+  s_battery_available = 0;
+  s_battery_percent = -1;
+  s_battery_low = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   ESP_RETURN_ON_ERROR(init_panel(), TAG, "panel init failed");
@@ -1512,6 +1599,15 @@ void bb_display_set_record_level(uint8_t level_pct, int voiced) {
   s_record_voiced = voiced ? 1 : 0;
   s_record_level_updated_ms = bb_now_ms();
   portEXIT_CRITICAL(&s_state_lock);
+}
+
+void bb_display_set_battery(int available, int percent, int low) {
+  portENTER_CRITICAL(&s_state_lock);
+  s_battery_available = available ? 1 : 0;
+  s_battery_percent = percent;
+  s_battery_low = low ? 1 : 0;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
 }
 
 void bb_display_set_tts_playing(int playing) {

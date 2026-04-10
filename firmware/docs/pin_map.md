@@ -1,6 +1,6 @@
 # BBClaw 固件引脚映射（Pin Map）
 
-更新时间：2026-03-24
+更新时间：2026-04-11
 
 本文档是固件接线的单一基线，包含信号线与供电线（`3V3` / `5V`）建议。
 
@@ -8,8 +8,9 @@
 
 对应配置宏（`firmware/include/bb_config.h`）：
 - `BBCLAW_AUDIO_INPUT_SOURCE="inmp441"`
-- `BBCLAW_PTT_GPIO=0`
+- `BBCLAW_PTT_GPIO=7`
 - `BBCLAW_MOTOR_GPIO=21`
+- `BBCLAW_POWER_ADC_GPIO=3`
 - `BBCLAW_STATUS_LED_R_GPIO=2`
 - `BBCLAW_STATUS_LED_Y_GPIO=4`
 - `BBCLAW_STATUS_LED_G_GPIO=5`
@@ -109,12 +110,39 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 | 端子 | 接到开发板 | 说明 |
 | --- | --- | --- |
-| 按键一端 | `GPIO0` | `BBCLAW_PTT_GPIO`，低电平有效 |
-| 按键另一端 | `GND` | 使用内部上拉输入 |
+| 按键一端 | `GPIO7` | `BBCLAW_PTT_GPIO`，高电平有效 |
+| 按键另一端 | `3V3` | 当前 breadboard 默认无内部上拉，按下时输入高电平 |
 
 说明：
-- 当前固件默认编译配置就是 `GPIO0`，不是 `GPIO7`。
+- 当前 breadboard 默认编译配置为 `GPIO7`。
 - 若你的板子把 PTT 接到了别的脚，需要同步改 `BBCLAW_PTT_GPIO`。
+
+### 1.7 电池电压采样（GPIO3 / ADC1_CH2）
+
+| 节点 | 接到开发板 | 说明 |
+| --- | --- | --- |
+| `POWER_ADC` | `GPIO3` | `BBCLAW_POWER_ADC_GPIO`，`ADC1_CH2` |
+| 分压上臂 `Rtop` | `VBAT` -> `POWER_ADC` | 默认 `100kΩ` |
+| 分压下臂 `Rbot` | `POWER_ADC` -> `GND` | 默认 `100kΩ` |
+| 滤波电容 `C` | `POWER_ADC` -> `GND` | 默认 `100nF` |
+
+默认参数（`board_config.h`）：
+
+- `BBCLAW_POWER_ENABLE=1`
+- `BBCLAW_POWER_ADC_GPIO=3`
+- `BBCLAW_POWER_ADC_RTOP_OHM=100000`
+- `BBCLAW_POWER_ADC_RBOT_OHM=100000`
+- `BBCLAW_POWER_BATTERY_EMPTY_MV=3300`
+- `BBCLAW_POWER_BATTERY_FULL_MV=4200`
+
+设计说明：
+
+- 单节锂电池 `VBAT` 不能直接进 ESP32-S3 ADC，必须经分压网络。
+- `100k / 100k` 时：
+  - `4.2V -> 2.1V`
+  - `3.3V -> 1.65V`
+- 当前固件第一版仅做电压采样、电量换算与状态栏显示。
+- 后续版本再叠加充电状态、低功耗策略与休眠逻辑。
 
 ## 2. ES8311 兼容模式（可选）
 
@@ -141,6 +169,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 - 所有模块必须共地（`GND` 共地）。
 - 功放/马达优先走 `5V` 供电（按模块额定电压确认）。
 - 麦克风数字模块（如 INMP441）使用 `3V3` 供电。
+- 电池采样默认使用 `GPIO3 (ADC1_CH2)`，避免占用 `ADC2`。
 - `GPIO45/GPIO46` 避免作为外设上拉输入使用。
 - Wi-Fi/BLE 同时启用时，`ADC2` 不用于 ADC 采样功能。
 - RYG 状态灯默认占用 `GPIO2/4/5`；若切到 `ES8311` 模式，默认 `MCK=GPIO2` 会与红灯冲突，需要二选一重映射。

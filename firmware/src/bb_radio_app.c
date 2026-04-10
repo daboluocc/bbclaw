@@ -14,6 +14,7 @@
 #include "bb_led.h"
 #include "bb_motor.h"
 #include "bb_ogg_opus.h"
+#include "bb_power.h"
 #include "bb_ptt.h"
 #include "bb_time.h"
 #include "bb_transport.h"
@@ -297,6 +298,12 @@ typedef struct {
   uint64_t abs_sum;
 } vad_stats_t;
 
+static void refresh_power_display(void) {
+  bb_power_state_t power = {0};
+  bb_power_get_state(&power);
+  bb_display_set_battery(power.available, power.percent, power.low);
+}
+
 static void log_pin_summary(void) {
   if (using_es8311_input()) {
     ESP_LOGI(TAG,
@@ -316,12 +323,13 @@ static void log_pin_summary(void) {
            BBCLAW_ST7789_BL_GPIO);
   ESP_LOGI(TAG,
            "feature tts_playback=%d spk_test_on_boot=%d pa_en_gpio=%d pa_en_level=%d pa_probe=%d probe_gpio={%d,%d,%d} "
-           "loopback_only=%d display_pull=%d motor_enable=%d motor_gpio=%d motor_level=%d led_enable=%d led_ryg={%d,%d,%d}",
+           "loopback_only=%d display_pull=%d motor_enable=%d motor_gpio=%d motor_level=%d power_enable=%d power_adc=%d "
+           "led_enable=%d led_ryg={%d,%d,%d}",
            BBCLAW_ENABLE_TTS_PLAYBACK, BBCLAW_SPK_TEST_ON_BOOT, BBCLAW_PA_EN_GPIO, BBCLAW_PA_EN_ACTIVE_LEVEL,
            BBCLAW_PA_EN_PROBE_ON_BOOT, BBCLAW_PA_EN_PROBE_GPIO1, BBCLAW_PA_EN_PROBE_GPIO2, BBCLAW_PA_EN_PROBE_GPIO3,
            BBCLAW_LOCAL_LOOPBACK_ONLY, BBCLAW_ENABLE_DISPLAY_PULL, BBCLAW_MOTOR_ENABLE, BBCLAW_MOTOR_GPIO,
-           BBCLAW_MOTOR_ACTIVE_LEVEL, BBCLAW_STATUS_LED_ENABLE, BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_Y_GPIO,
-           BBCLAW_STATUS_LED_G_GPIO);
+           BBCLAW_MOTOR_ACTIVE_LEVEL, BBCLAW_POWER_ENABLE, BBCLAW_POWER_ADC_GPIO, BBCLAW_STATUS_LED_ENABLE,
+           BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO);
   if (using_es8311_input() && BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_R_GPIO == BBCLAW_ES8311_I2S_MCK_GPIO) {
     ESP_LOGW(TAG, "status led red gpio=%d conflicts with es8311 mck; remap one side before enabling both",
              BBCLAW_STATUS_LED_R_GPIO);
@@ -1070,6 +1078,7 @@ static void stream_task(void* arg) {
 #if BBCLAW_ENABLE_DISPLAY_PULL
   int64_t last_display_poll_ms = 0;
 #endif
+  int64_t last_power_poll_ms = 0;
   int64_t last_adapter_heartbeat_ms = 0;
   const int adapter_heartbeat_interval_ms =
       BBCLAW_ADAPTER_HEARTBEAT_INTERVAL_MS > 0 ? BBCLAW_ADAPTER_HEARTBEAT_INTERVAL_MS : 5000;
@@ -1734,6 +1743,16 @@ static void stream_task(void* arg) {
       }
     }
 
+    {
+      int64_t now_ms = bb_now_ms();
+      if (now_ms - last_power_poll_ms >= BBCLAW_POWER_POLL_INTERVAL_MS) {
+        last_power_poll_ms = now_ms;
+        if (bb_power_refresh() == ESP_OK) {
+          refresh_power_display();
+        }
+      }
+    }
+
 #if BBCLAW_ENABLE_DISPLAY_PULL
     if (!streaming && !s_ptt_pressed) {
       int64_t now_ms = bb_now_ms();
@@ -1869,7 +1888,16 @@ esp_err_t bb_radio_app_start(void) {
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
+  refresh_power_display();
   set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
+  {
+    esp_err_t power_err = bb_power_init();
+    if (power_err != ESP_OK) {
+      ESP_LOGW(TAG, "power init failed err=%s (continue without battery sensing)", esp_err_to_name(power_err));
+    } else if (bb_power_refresh() == ESP_OK) {
+      refresh_power_display();
+    }
+  }
   esp_err_t led_err = bb_led_init();
   if (led_err != ESP_OK) {
     ESP_LOGW(TAG, "status led init failed err=%s (continue without led)", esp_err_to_name(led_err));

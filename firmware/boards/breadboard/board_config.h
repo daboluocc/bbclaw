@@ -25,6 +25,14 @@
 #define BBCLAW_MOTOR_GPIO      21
 #define BBCLAW_MOTOR_ENABLE    1
 
+/* ── Battery / power sensing ── */
+#define BBCLAW_POWER_ENABLE            1
+#define BBCLAW_POWER_ADC_GPIO          3
+#define BBCLAW_POWER_ADC_RTOP_OHM      100000
+#define BBCLAW_POWER_ADC_RBOT_OHM      100000
+#define BBCLAW_POWER_BATTERY_FULL_MV   4200
+#define BBCLAW_POWER_BATTERY_EMPTY_MV  3300
+
 /* ── Status LED (discrete R/Y/G) ── */
 #define BBCLAW_STATUS_LED_ENABLE 1
 #define BBCLAW_STATUS_LED_KIND_RGB_MODULE 1
