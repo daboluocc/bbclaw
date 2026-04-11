@@ -118,7 +118,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 ## 2. BBClaw 自研 PCB 扩展配置
 
-在 `bbclaw` 板型上，保留 breadboard 的音频 / 屏幕 / PTT / 马达基础接线，并增加电池采样与拨轮开关。
+在 `bbclaw` 板型上，音频为 **外接 INMP441 + MAX98357A**（**未使用 ES8311**）；并保留屏幕 / PTT / 马达与 breadboard 同类接法，另增加电池采样与拨轮开关。
 
 对应配置宏（`firmware/boards/bbclaw/board_config.h`）：
 
@@ -128,6 +128,44 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 - `BBCLAW_NAV_ENC_A_GPIO=6`
 - `BBCLAW_NAV_ENC_B_GPIO=8`
 - `BBCLAW_NAV_KEY_GPIO=1`
+
+### 2.0 BBClaw PCB（U7）与 breadboard 差异
+
+原理图（MCU 符号 U7）与早期 breadboard 接线对齐关系如下；以 `firmware/boards/bbclaw/board_config.h` 为准。
+
+**ST7789（IO9–14 连续）**
+
+| 屏引脚 | GPIO |
+| --- | --- |
+| `SCLK` | `GPIO9` |
+| `MOSI` | `GPIO10` |
+| `RES` | `GPIO11` |
+| `DC` | `GPIO12` |
+| `CS` | `GPIO13` |
+| `BLK` | `GPIO14` |
+
+**I2S（INMP441 + MAX98357A）**
+
+| 功能 | GPIO | 说明 |
+| --- | --- | --- |
+| `WS` / `LRCK` | `GPIO15` | 与 breadboard 同 |
+| `BCLK` | `GPIO16` | 同 |
+| `DOUT`→功放 | `GPIO17` | 同 |
+| 麦克风 `SD`→ESP I2S RX | `GPIO20`（宏 `BBCLAW_ES8311_I2S_DI_GPIO`） | **仅 INMP441**：模块丝印 **SD** → MCU I2S 收。**宏名**为仓库历史命名，与板上是否焊接 ES8311 无关。须接实线；若量产 GPIO 不是 20，改宏与 PCB 一致。 |
+| `MCLK` | （未引出） | 原理图 IO2 NC；`BBCLAW_ES8311_I2S_MCK_GPIO=-1`，inmp441 路径不输出 MCLK |
+
+**状态 RGB（U6：单线可寻址灯珠，DIN）**
+
+| 引脚 | 说明 |
+| --- | --- |
+| `DIN` | 经 net「RGB1」至 `GPIO5`（与三线 PWM 共阴模块不同） |
+| `DOUT` | 单颗灯时可 **悬空**（不级联下一颗） |
+| 固件 | `bb_led` 当前为 **LEDC 三线 PWM**；该硬件需 **RMT / led_strip** 等单线驱动。`board_config` 默认 **`BBCLAW_STATUS_LED_ENABLE=0`**，避免误用 PWM 脚位。 |
+
+**其它**
+
+- `GPIO4`：原理图为 **SD**（存储卡）；固件未启用 SD 时可仅占位。
+- `GPIO41` / `GPIO42`：原理图 **KEY2** / **KEY1**；导航仍使用编码器 `6`/`8` + 按压 `GPIO1`，两枚独立按键尚未接软件逻辑。
 
 ### 2.1 电池电压采样（GPIO3 / ADC1_CH2）
 

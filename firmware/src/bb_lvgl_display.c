@@ -255,6 +255,7 @@ static uint32_t s_mascot_frame;
 static int s_battery_available;
 static int s_battery_percent = -1;
 static int s_battery_low;
+static int s_battery_supported;
 
 static void refresh_ui(void);
 
@@ -326,17 +327,25 @@ static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* st
 }
 
 static void apply_battery_widget(void) {
-  if (s_obj_status_battery_fill == NULL || s_lbl_status_battery == NULL) return;
+  if (s_obj_status_battery == NULL || s_obj_status_battery_fill == NULL || s_lbl_status_battery == NULL) return;
 
+  int supported = 0;
   int available = 0;
   int percent = -1;
   int low = 0;
   portENTER_CRITICAL(&s_state_lock);
+  supported = s_battery_supported;
   available = s_battery_available;
   percent = s_battery_percent;
   low = s_battery_low;
   portEXIT_CRITICAL(&s_state_lock);
 
+  if (!supported) {
+    lv_obj_add_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+
+  lv_obj_clear_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
   if (!available || percent < 0) {
     lv_obj_add_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_lbl_status_battery, "--");
@@ -960,10 +969,12 @@ static void create_ui(void) {
 
   {
     const int wifi_w = 72;
-    const int battery_w = UI_BATTERY_W;
+    const int battery_enabled = (BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)) ? 1 : 0;
+    const int battery_w = battery_enabled ? UI_BATTERY_W : 0;
+    const int battery_gap = battery_enabled ? 4 : 0;
     const int status_text_x = UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4;
     const int clock_w = 40;
-    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) - wifi_w - battery_w - clock_w - 16;
+    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) - wifi_w - battery_w - battery_gap - clock_w - 16;
 
     s_lbl_status = lv_label_create(s_view_active);
     lv_obj_set_width(s_lbl_status, status_label_w);
@@ -985,14 +996,16 @@ static void create_ui(void) {
     lv_label_set_text(s_lbl_status_clock, "--:--");
     lv_obj_set_pos(s_lbl_status_clock, UI_SAFE_LEFT + body_w - clock_w, UI_SAFE_TOP + (status_h - lh - 2) / 2);
 
-    s_obj_status_battery = create_battery_widget(
-        s_view_active,
-        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w,
-        UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+    if (battery_enabled) {
+      s_obj_status_battery = create_battery_widget(
+          s_view_active,
+          UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w,
+          UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+    }
 
     /* WiFi in status bar */
     s_obj_status_wifi = create_wifi_widget(s_view_active,
-        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w - 4 - wifi_w,
+        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w - battery_gap - wifi_w,
         UI_SAFE_TOP + (status_h - 16) / 2,
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
@@ -1343,6 +1356,7 @@ esp_err_t bb_display_init(void) {
   s_battery_available = 0;
   s_battery_percent = -1;
   s_battery_low = 0;
+  s_battery_supported = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   create_ui();
@@ -1373,6 +1387,7 @@ esp_err_t bb_display_init(void) {
   s_battery_available = 0;
   s_battery_percent = -1;
   s_battery_low = 0;
+  s_battery_supported = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   ESP_RETURN_ON_ERROR(init_panel(), TAG, "panel init failed");
@@ -1601,8 +1616,9 @@ void bb_display_set_record_level(uint8_t level_pct, int voiced) {
   portEXIT_CRITICAL(&s_state_lock);
 }
 
-void bb_display_set_battery(int available, int percent, int low) {
+void bb_display_set_battery(int supported, int available, int percent, int low) {
   portENTER_CRITICAL(&s_state_lock);
+  s_battery_supported = supported ? 1 : 0;
   s_battery_available = available ? 1 : 0;
   s_battery_percent = percent;
   s_battery_low = low ? 1 : 0;

@@ -1,20 +1,28 @@
 /**
- * BBClaw board config: custom BBClaw PCB
+ * BBClaw board config: custom BBClaw PCB (U7 ESP32-S3, schematic rev aligned 2026-04)
  *
- * Derived from the breadboard wiring baseline, with dedicated battery sensing
- * and a rotary encoder with push switch for navigation.
+ * LCD: IO9–14 连续布线（SCL/SDA/RES/DC/CS/BLK）。
+ * 音频：I2S BCK/WS/DO 仍为 16/15/17；原理图 IO18 未接麦克风，INMP441 SD 走 GPIO20。
+ * IO2 未接 MCLK，INMP441 路径不使用 MCLK 输出。
+ * 状态灯 U6：可寻址 RGB（DIN），net「RGB1」→ IO5；单线协议，非三线 PWM。DOUT 级联脚可悬空。
+ *   当前 bb_led 仅支持共阴三线 PWM，故默认关闭状态灯，待 RMT/led_strip 接 GPIO5 后再开。
  */
 #pragma once
 
-/* ── Audio: INMP441 mic + MAX98357A amp, shared I2S bus ── */
+/*
+ * Audio: 外接 INMP441 + MAX98357A，无 ES8311 codec。
+ * `BBCLAW_ES8311_I2S_*` 为仓库共用 I2S 管脚宏（命名历史），本板仅 inmp441 路径使用。
+ */
 #define BBCLAW_AUDIO_INPUT_SOURCE "inmp441"
 #define BBCLAW_AUDIO_SAMPLE_RATE  16000
 
 #define BBCLAW_ES8311_I2S_BCK_GPIO 16
 #define BBCLAW_ES8311_I2S_WS_GPIO  15
 #define BBCLAW_ES8311_I2S_DO_GPIO  17
-#define BBCLAW_ES8311_I2S_DI_GPIO  18
-#define BBCLAW_ES8311_I2S_MCK_GPIO  2
+/** INMP441 模块丝印 SD → I2S RX（`…_DI_GPIO`）；须接实线。与 GPIO20 不一致时改宏。 */
+#define BBCLAW_ES8311_I2S_DI_GPIO  20
+/** IO2 未接 MCLK；inmp441 路径不输出 MCLK */
+#define BBCLAW_ES8311_I2S_MCK_GPIO (-1)
 
 /* ── PTT ── */
 #define BBCLAW_PTT_GPIO         7
@@ -41,24 +49,24 @@
 #define BBCLAW_POWER_BATTERY_FULL_MV   4200
 #define BBCLAW_POWER_BATTERY_EMPTY_MV  3300
 
-/* ── Status LED (discrete R/Y/G) ── */
-#define BBCLAW_STATUS_LED_ENABLE 1
-#define BBCLAW_STATUS_LED_KIND_RGB_MODULE 1
-#define BBCLAW_STATUS_LED_R_GPIO 2
-#define BBCLAW_STATUS_LED_Y_GPIO 4
-#define BBCLAW_STATUS_LED_G_GPIO 5
+/* ── Status LED: U6 = 单线 DIN 可寻址 RGB，数据脚 = GPIO5（RGB1）；非 bb_led 三线 PWM ── */
+#define BBCLAW_STATUS_LED_ENABLE 0
+#define BBCLAW_STATUS_LED_KIND_RGB_MODULE 0
+#define BBCLAW_STATUS_LED_R_GPIO 5
+#define BBCLAW_STATUS_LED_Y_GPIO (-1)
+#define BBCLAW_STATUS_LED_G_GPIO (-1)
 
 /* ── Display: SPI ST7789 1.47" 172x320 ── */
 #define BBCLAW_DISPLAY_BUS_SPI   1
 #define BBCLAW_DISPLAY_BUS_I80   0
 
 #define BBCLAW_ST7789_HOST       2
-#define BBCLAW_ST7789_SCLK_GPIO 12
-#define BBCLAW_ST7789_MOSI_GPIO 11
-#define BBCLAW_ST7789_CS_GPIO   10
-#define BBCLAW_ST7789_DC_GPIO    9
-#define BBCLAW_ST7789_RST_GPIO  14
-#define BBCLAW_ST7789_BL_GPIO   13
+#define BBCLAW_ST7789_SCLK_GPIO  9
+#define BBCLAW_ST7789_MOSI_GPIO 10
+#define BBCLAW_ST7789_RST_GPIO  11
+#define BBCLAW_ST7789_DC_GPIO   12
+#define BBCLAW_ST7789_CS_GPIO   13
+#define BBCLAW_ST7789_BL_GPIO   14
 #define BBCLAW_ST7789_WIDTH    320
 #define BBCLAW_ST7789_HEIGHT   172
 
@@ -118,3 +126,5 @@
 /* ── PA enable / speaker sense ── */
 #define BBCLAW_PA_EN_GPIO      -1
 #define BBCLAW_SPEAKER_SW_GPIO -1
+/** Default probe GPIO1 was 13; on this PCB GPIO13 is LCD CS */
+#define BBCLAW_PA_EN_PROBE_GPIO1 (-1)
