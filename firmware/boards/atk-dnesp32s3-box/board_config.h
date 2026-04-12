@@ -17,11 +17,11 @@
 #define BBCLAW_AUDIO_SAMPLE_RATE  16000
 
 /* I2S pins (duplex: shared BCLK/WS, separate DIN/DOUT) */
-#define BBCLAW_ES8311_I2S_MCK_GPIO -1
-#define BBCLAW_ES8311_I2S_BCK_GPIO 21
-#define BBCLAW_ES8311_I2S_WS_GPIO  13
-#define BBCLAW_ES8311_I2S_DO_GPIO  14
-#define BBCLAW_ES8311_I2S_DI_GPIO  47
+#define BBCLAW_AUDIO_I2S_MCK_GPIO -1
+#define BBCLAW_AUDIO_I2S_BCK_GPIO 21
+#define BBCLAW_AUDIO_I2S_WS_GPIO  13
+#define BBCLAW_AUDIO_I2S_DO_GPIO  14
+#define BBCLAW_AUDIO_I2S_DI_GPIO  47
 
 /* I2C bus (shared with XL9555; ES8311 codec control not used in inmp441 mode) */
 #define BBCLAW_ES8311_I2C_PORT     0

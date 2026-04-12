@@ -52,6 +52,7 @@ static int s_tx_use_stereo16;
 static int s_tx_use_mono16;
 static int s_tx_effective_sample_rate = BBCLAW_AUDIO_SAMPLE_RATE;
 static int s_i2s_full_duplex;
+static volatile int s_playback_interrupt_requested;
 
 typedef enum {
   BB_I2S_PREP_NONE = 0,
@@ -240,7 +241,7 @@ static esp_err_t free_i2s_channels(void) {
 static esp_err_t init_i2s_channels(bool prepare_capture) {
   i2s_chan_handle_t new_tx_chan = NULL;
   i2s_chan_handle_t new_rx_chan = NULL;
-  int mclk_gpio = use_es8311_input_source() ? BBCLAW_ES8311_I2S_MCK_GPIO : I2S_GPIO_UNUSED;
+  int mclk_gpio = use_es8311_input_source() ? BBCLAW_AUDIO_I2S_MCK_GPIO : I2S_GPIO_UNUSED;
   i2s_std_slot_config_t tx_slot_cfg =
       I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
   tx_slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
@@ -326,10 +327,10 @@ static esp_err_t init_i2s_channels(bool prepare_capture) {
         .gpio_cfg =
             {
                 .mclk = mclk_gpio,
-                .bclk = BBCLAW_ES8311_I2S_BCK_GPIO,
-                .ws = BBCLAW_ES8311_I2S_WS_GPIO,
-                .dout = BBCLAW_ES8311_I2S_DO_GPIO,
-                .din = use_es8311_input_source() ? BBCLAW_ES8311_I2S_DI_GPIO : I2S_GPIO_UNUSED,
+                .bclk = BBCLAW_AUDIO_I2S_BCK_GPIO,
+                .ws = BBCLAW_AUDIO_I2S_WS_GPIO,
+                .dout = BBCLAW_AUDIO_I2S_DO_GPIO,
+                .din = use_es8311_input_source() ? BBCLAW_AUDIO_I2S_DI_GPIO : I2S_GPIO_UNUSED,
                 .invert_flags =
                     {
                         .mclk_inv = false,
@@ -348,10 +349,10 @@ static esp_err_t init_i2s_channels(bool prepare_capture) {
         .gpio_cfg =
             {
                 .mclk = mclk_gpio,
-                .bclk = BBCLAW_ES8311_I2S_BCK_GPIO,
-                .ws = BBCLAW_ES8311_I2S_WS_GPIO,
+                .bclk = BBCLAW_AUDIO_I2S_BCK_GPIO,
+                .ws = BBCLAW_AUDIO_I2S_WS_GPIO,
                 .dout = I2S_GPIO_UNUSED,
-                .din = BBCLAW_ES8311_I2S_DI_GPIO,
+                .din = BBCLAW_AUDIO_I2S_DI_GPIO,
                 .invert_flags =
                     {
                         .mclk_inv = false,
@@ -616,14 +617,15 @@ static void log_raw_i2s_diag_pairs(const int32_t* raw_samples, size_t raw_count)
 esp_err_t bb_audio_init(void) {
   s_tx_active = 0;
   s_audio_ready = 0;
+  s_playback_interrupt_requested = 0;
   s_pa_ready = 0;
   s_rx_enabled = 0;
   if (use_es8311_input_source()) {
     ESP_LOGI(TAG,
              "audio init start: source=es8311 i2c(sda=%d scl=%d addr=0x%02X), i2s(mck=%d bck=%d ws=%d do=%d di=%d)",
              BBCLAW_ES8311_I2C_SDA_GPIO, BBCLAW_ES8311_I2C_SCL_GPIO, BBCLAW_ES8311_I2C_ADDR,
-             BBCLAW_ES8311_I2S_MCK_GPIO, BBCLAW_ES8311_I2S_BCK_GPIO, BBCLAW_ES8311_I2S_WS_GPIO,
-             BBCLAW_ES8311_I2S_DO_GPIO, BBCLAW_ES8311_I2S_DI_GPIO);
+             BBCLAW_AUDIO_I2S_MCK_GPIO, BBCLAW_AUDIO_I2S_BCK_GPIO, BBCLAW_AUDIO_I2S_WS_GPIO,
+             BBCLAW_AUDIO_I2S_DO_GPIO, BBCLAW_AUDIO_I2S_DI_GPIO);
     ESP_RETURN_ON_ERROR(i2c_new_master_bus(&(i2c_master_bus_config_t){
                                                  .i2c_port = BBCLAW_ES8311_I2C_PORT,
                                                  .sda_io_num = BBCLAW_ES8311_I2C_SDA_GPIO,
@@ -638,8 +640,8 @@ esp_err_t bb_audio_init(void) {
     ESP_RETURN_ON_ERROR(init_i2c_and_codec(), TAG, "codec init failed");
     es8311_log_reg_summary();
   } else {
-    ESP_LOGI(TAG, "audio init start: source=inmp441 i2s(bck=%d ws=%d do=%d di=%d)", BBCLAW_ES8311_I2S_BCK_GPIO,
-             BBCLAW_ES8311_I2S_WS_GPIO, BBCLAW_ES8311_I2S_DO_GPIO, BBCLAW_ES8311_I2S_DI_GPIO);
+    ESP_LOGI(TAG, "audio init start: source=inmp441 i2s(bck=%d ws=%d do=%d di=%d)", BBCLAW_AUDIO_I2S_BCK_GPIO,
+             BBCLAW_AUDIO_I2S_WS_GPIO, BBCLAW_AUDIO_I2S_DO_GPIO, BBCLAW_AUDIO_I2S_DI_GPIO);
   }
 
   ESP_RETURN_ON_ERROR(init_i2s_channels(false), TAG, "i2s init failed");
@@ -736,6 +738,7 @@ esp_err_t bb_audio_start_playback(void) {
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_chan), TAG, "enable tx channel");
     s_tx_active = 1;
     s_rx_enabled = 0;
+    s_playback_interrupt_requested = 0;
     ESP_LOGI(TAG, "playback start tx_cfg=%s tx_stereo32=%d tx_stereo16=%d tx_mono16=%d volume=%d%%", tx_config_name(),
              s_tx_use_stereo32, s_tx_use_stereo16, s_tx_use_mono16, s_volume_pct);
   } else if (s_rx_enabled) {
@@ -749,7 +752,20 @@ esp_err_t bb_audio_stop_playback(void) {
   if (s_rx_enabled) {
     return ESP_ERR_INVALID_STATE;
   }
+  s_playback_interrupt_requested = 0;
   return bb_audio_stop_tx();
+}
+
+void bb_audio_request_playback_interrupt(void) {
+  s_playback_interrupt_requested = 1;
+}
+
+void bb_audio_clear_playback_interrupt(void) {
+  s_playback_interrupt_requested = 0;
+}
+
+int bb_audio_is_playback_interrupt_requested(void) {
+  return s_playback_interrupt_requested ? 1 : 0;
 }
 
 esp_err_t bb_audio_set_playback_sample_rate(int sample_rate) {
@@ -959,6 +975,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      if (s_playback_interrupt_requested) {
+        ESP_LOGI(TAG, "play_pcm interrupted stereo32 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
+        return ESP_ERR_INVALID_STATE;
+      }
       size_t n = sample_count - sample_idx;
       if (n > 256U) {
         n = 256U;
@@ -972,6 +992,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       size_t out_len = n * 2U * sizeof(int32_t);
       size_t written_total = 0;
       while (written_total < out_len) {
+        if (s_playback_interrupt_requested) {
+          ESP_LOGI(TAG, "play_pcm interrupted stereo32 write=%u/%u", (unsigned)written_total, (unsigned)out_len);
+          return ESP_ERR_INVALID_STATE;
+        }
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx_chan, out + written_total, out_len - written_total, &written,
                                           BBCLAW_AUDIO_IO_TIMEOUT_MS);
@@ -1004,6 +1028,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      if (s_playback_interrupt_requested) {
+        ESP_LOGI(TAG, "play_pcm interrupted stereo16 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
+        return ESP_ERR_INVALID_STATE;
+      }
       size_t n = sample_count - sample_idx;
       if (n > 256U) {
         n = 256U;
@@ -1018,6 +1046,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       size_t out_len = n * 2U * sizeof(int16_t);
       size_t written_total = 0;
       while (written_total < out_len) {
+        if (s_playback_interrupt_requested) {
+          ESP_LOGI(TAG, "play_pcm interrupted stereo16 write=%u/%u", (unsigned)written_total, (unsigned)out_len);
+          return ESP_ERR_INVALID_STATE;
+        }
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx_chan, out + written_total, out_len - written_total, &written,
                                           BBCLAW_AUDIO_IO_TIMEOUT_MS);
@@ -1047,6 +1079,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      if (s_playback_interrupt_requested) {
+        ESP_LOGI(TAG, "play_pcm interrupted mono16 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
+        return ESP_ERR_INVALID_STATE;
+      }
       size_t n = sample_count - sample_idx;
       if (n > 256U) {
         n = 256U;
@@ -1059,6 +1095,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       size_t out_len = n * sizeof(int16_t);
       size_t written_total = 0;
       while (written_total < out_len) {
+        if (s_playback_interrupt_requested) {
+          ESP_LOGI(TAG, "play_pcm interrupted mono16 write=%u/%u", (unsigned)written_total, (unsigned)out_len);
+          return ESP_ERR_INVALID_STATE;
+        }
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx_chan, out + written_total, out_len - written_total, &written,
                                           BBCLAW_AUDIO_IO_TIMEOUT_MS);
@@ -1085,6 +1125,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t sample_idx = 0;
     int16_t frame_buf[256];
     while (sample_idx < sample_count) {
+      if (s_playback_interrupt_requested) {
+        ESP_LOGI(TAG, "play_pcm interrupted scaled sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
+        return ESP_ERR_INVALID_STATE;
+      }
       size_t n = sample_count - sample_idx;
       if (n > 256U) {
         n = 256U;
@@ -1097,6 +1141,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       size_t out_len = n * sizeof(int16_t);
       size_t written_total = 0;
       while (written_total < out_len) {
+        if (s_playback_interrupt_requested) {
+          ESP_LOGI(TAG, "play_pcm interrupted scaled write=%u/%u", (unsigned)written_total, (unsigned)out_len);
+          return ESP_ERR_INVALID_STATE;
+        }
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx_chan, out + written_total, out_len - written_total, &written,
                                           BBCLAW_AUDIO_IO_TIMEOUT_MS);
@@ -1114,6 +1162,10 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
   }
   size_t written_total = 0;
   while (written_total < pcm_len) {
+    if (s_playback_interrupt_requested) {
+      ESP_LOGI(TAG, "play_pcm interrupted raw write=%u/%u", (unsigned)written_total, (unsigned)pcm_len);
+      return ESP_ERR_INVALID_STATE;
+    }
     size_t written = 0;
     esp_err_t err =
         i2s_channel_write(s_tx_chan, pcm + written_total, pcm_len - written_total, &written, BBCLAW_AUDIO_IO_TIMEOUT_MS);

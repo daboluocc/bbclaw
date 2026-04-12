@@ -432,7 +432,7 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   }
   out_pairing->volume_pct = json_object_extract_int(resp.body, "config", "volumePct", -1);
   out_pairing->speed_ratio_x10 = json_object_extract_int(resp.body, "config", "speedRatio", -1);
-  out_pairing->speaker_enabled = json_object_extract_int(resp.body, "config", "speakerEnabled", -1);
+  out_pairing->speaker_enabled = json_object_extract_bool(resp.body, "config", "speakerEnabled", -1);
   /* speedRatio comes as e.g. 1 (integer part only from atoi of "1.2"), need to check for decimal */
   {
     char sr_buf[16] = {0};

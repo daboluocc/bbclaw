@@ -11,18 +11,18 @@
 
 /*
  * Audio: 外接 INMP441 + MAX98357A，无 ES8311 codec。
- * `BBCLAW_ES8311_I2S_*` 为仓库共用 I2S 管脚宏（命名历史），本板仅 inmp441 路径使用。
+ * `BBCLAW_AUDIO_I2S_*` 为板级共用 I2S 管脚宏，本板仅 inmp441 路径使用。
  */
 #define BBCLAW_AUDIO_INPUT_SOURCE "inmp441"
 #define BBCLAW_AUDIO_SAMPLE_RATE  16000
 
-#define BBCLAW_ES8311_I2S_BCK_GPIO 16
-#define BBCLAW_ES8311_I2S_WS_GPIO  15
-#define BBCLAW_ES8311_I2S_DO_GPIO  17
+#define BBCLAW_AUDIO_I2S_BCK_GPIO 16
+#define BBCLAW_AUDIO_I2S_WS_GPIO  15
+#define BBCLAW_AUDIO_I2S_DO_GPIO  17
 /** INMP441 模块丝印 SD → I2S RX（`…_DI_GPIO`）；须接实线。与 GPIO20 不一致时改宏。 */
-#define BBCLAW_ES8311_I2S_DI_GPIO  20
+#define BBCLAW_AUDIO_I2S_DI_GPIO  20
 /** IO2 未接 MCLK；inmp441 路径不输出 MCLK */
-#define BBCLAW_ES8311_I2S_MCK_GPIO (-1)
+#define BBCLAW_AUDIO_I2S_MCK_GPIO (-1)
 
 /* ── PTT ── */
 #define BBCLAW_PTT_GPIO         7

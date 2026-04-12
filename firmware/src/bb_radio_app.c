@@ -174,6 +174,8 @@ static volatile int s_transport_ready;
 static volatile int s_transport_audio_streaming_ready;
 static volatile int s_transport_tts_ready;
 static volatile int s_transport_display_ready;
+static volatile int s_tts_playback_active;
+static volatile int s_tts_interrupt_requested;
 static int s_transport_http_status;
 static char s_transport_detail[64];
 static char s_transport_registration_code[16];
@@ -312,12 +314,12 @@ static void log_pin_summary(void) {
              "pinmap ptt gpio=%d active=%d | es8311_i2c sda=%d scl=%d addr=0x%02X | es8311_i2s mck=%d bck=%d ws=%d "
              "do=%d di=%d",
              BBCLAW_PTT_GPIO, BBCLAW_PTT_ACTIVE_LEVEL, BBCLAW_ES8311_I2C_SDA_GPIO, BBCLAW_ES8311_I2C_SCL_GPIO,
-             BBCLAW_ES8311_I2C_ADDR, BBCLAW_ES8311_I2S_MCK_GPIO, BBCLAW_ES8311_I2S_BCK_GPIO, BBCLAW_ES8311_I2S_WS_GPIO,
-             BBCLAW_ES8311_I2S_DO_GPIO, BBCLAW_ES8311_I2S_DI_GPIO);
+             BBCLAW_ES8311_I2C_ADDR, BBCLAW_AUDIO_I2S_MCK_GPIO, BBCLAW_AUDIO_I2S_BCK_GPIO, BBCLAW_AUDIO_I2S_WS_GPIO,
+             BBCLAW_AUDIO_I2S_DO_GPIO, BBCLAW_AUDIO_I2S_DI_GPIO);
   } else {
     ESP_LOGI(TAG, "pinmap ptt gpio=%d active=%d | inmp441_i2s bck=%d ws=%d do=%d di=%d", BBCLAW_PTT_GPIO,
-             BBCLAW_PTT_ACTIVE_LEVEL, BBCLAW_ES8311_I2S_BCK_GPIO, BBCLAW_ES8311_I2S_WS_GPIO, BBCLAW_ES8311_I2S_DO_GPIO,
-             BBCLAW_ES8311_I2S_DI_GPIO);
+             BBCLAW_PTT_ACTIVE_LEVEL, BBCLAW_AUDIO_I2S_BCK_GPIO, BBCLAW_AUDIO_I2S_WS_GPIO, BBCLAW_AUDIO_I2S_DO_GPIO,
+             BBCLAW_AUDIO_I2S_DI_GPIO);
   }
   ESP_LOGI(TAG, "audio source=%s sample_rate=%d", BBCLAW_AUDIO_INPUT_SOURCE, BBCLAW_AUDIO_SAMPLE_RATE);
   ESP_LOGI(TAG, "pinmap st7789 sclk=%d mosi=%d cs=%d dc=%d rst=%d bl=%d", BBCLAW_ST7789_SCLK_GPIO,
@@ -333,7 +335,7 @@ static void log_pin_summary(void) {
            BBCLAW_MOTOR_ACTIVE_LEVEL, BBCLAW_POWER_ENABLE, BBCLAW_POWER_ADC_GPIO, BBCLAW_NAV_ENABLE,
            BBCLAW_NAV_ENC_A_GPIO, BBCLAW_NAV_ENC_B_GPIO, BBCLAW_NAV_KEY_GPIO, BBCLAW_STATUS_LED_ENABLE,
            BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO);
-  if (using_es8311_input() && BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_R_GPIO == BBCLAW_ES8311_I2S_MCK_GPIO) {
+  if (using_es8311_input() && BBCLAW_STATUS_LED_ENABLE && BBCLAW_STATUS_LED_R_GPIO == BBCLAW_AUDIO_I2S_MCK_GPIO) {
     ESP_LOGW(TAG, "status led red gpio=%d conflicts with es8311 mck; remap one side before enabling both",
              BBCLAW_STATUS_LED_R_GPIO);
   }
@@ -345,6 +347,10 @@ static void log_pin_summary(void) {
 
 static void on_ptt_changed(int pressed) {
   s_ptt_pressed = pressed > 0 ? 1 : 0;
+  if (s_ptt_pressed && s_tts_playback_active) {
+    s_tts_interrupt_requested = 1;
+    bb_audio_request_playback_interrupt();
+  }
   s_ptt_change_version++;
 }
 
@@ -461,6 +467,7 @@ typedef struct {
   volatile int tts_done_received;
   volatile int tts_playback_started;
   volatile int tts_playback_failed;
+  volatile int tts_playback_interrupted;
   volatile int tts_chunk_played;
   volatile size_t tts_total_pcm_bytes;
 } bb_reply_stream_ui_ctx_t;
@@ -492,6 +499,23 @@ static void tts_stream_queue_drain(bb_reply_stream_ui_ctx_t* ui) {
   while (xQueueReceive(ui->tts_queue, &evt, 0) == pdTRUE) {
     free_single_tts_chunk(evt.chunk);
   }
+}
+
+static void tts_playback_set_active(int active) {
+  s_tts_playback_active = active ? 1 : 0;
+  if (active) {
+    s_tts_interrupt_requested = 0;
+    bb_audio_clear_playback_interrupt();
+  }
+}
+
+static void tts_request_interrupt(void) {
+  s_tts_interrupt_requested = 1;
+  bb_audio_request_playback_interrupt();
+}
+
+static int tts_interrupt_requested(void) {
+  return s_tts_interrupt_requested || bb_audio_is_playback_interrupt_requested();
 }
 
 static void tts_stream_task(void* arg) {
@@ -536,6 +560,7 @@ static void tts_stream_task(void* arg) {
       }
       playback_started = 1;
       ui->tts_playback_started = 1;
+      tts_playback_set_active(1);
     }
 
     playback_sample_rate = chunk->sample_rate > 0 ? chunk->sample_rate : BBCLAW_AUDIO_SAMPLE_RATE;
@@ -553,9 +578,14 @@ static void tts_stream_task(void* arg) {
       bb_display_set_tts_sentence(last_sentence);
     }
     if (bb_audio_play_pcm_blocking(chunk->pcm_data, chunk->pcm_len) != ESP_OK) {
-      ui->tts_playback_failed = 1;
-      ESP_LOGE(TAG, "tts chunk play failed seq=%d", seq);
-      signal_error_haptic();
+      if (tts_interrupt_requested()) {
+        ui->tts_playback_interrupted = 1;
+        ESP_LOGI(TAG, "phase=tts_chunk_interrupt seq=%d", seq);
+      } else {
+        ui->tts_playback_failed = 1;
+        ESP_LOGE(TAG, "tts chunk play failed seq=%d", seq);
+        signal_error_haptic();
+      }
       free_single_tts_chunk(chunk);
       break;
     }
@@ -572,6 +602,7 @@ static void tts_stream_task(void* arg) {
     (void)bb_audio_stop_playback();
     (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
   }
+  tts_playback_set_active(0);
   bb_display_set_tts_playing(0);
   ui->tts_task_done = 1;
   ui->tts_task = NULL;
@@ -1156,6 +1187,9 @@ static void stream_task(void* arg) {
         if (!bb_wifi_is_connected()) {
           signal_error_haptic();
           show_status_error("NO WIFI");
+        } else if (s_tts_playback_active) {
+          tts_request_interrupt();
+          show_status_processing("SKIP");
         } else if (session_busy) {
           signal_error_haptic();
           (void)bb_display_show_status("BUSY");
@@ -1451,6 +1485,7 @@ static void stream_task(void* arg) {
 
       bb_finish_result_t* finish = (bb_finish_result_t*)heap_caps_calloc(1, sizeof(bb_finish_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
       bb_reply_stream_ui_ctx_t* ui_stream = (bb_reply_stream_ui_ctx_t*)heap_caps_calloc(1, sizeof(bb_reply_stream_ui_ctx_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      int tts_interrupted = 0;
       if (finish == NULL || ui_stream == NULL) {
         ESP_LOGE(TAG, "finish/ui_stream heap alloc failed");
         show_status_error("ERR");
@@ -1573,6 +1608,7 @@ static void stream_task(void* arg) {
           bb_display_set_tts_playing(1);
           esp_err_t tts_tx = bb_audio_start_playback();
           if (tts_tx == ESP_OK) {
+            tts_playback_set_active(1);
             int chunk_idx = 0;
             int64_t play_start_ms = bb_now_ms();
             size_t total_pcm_bytes = 0;
@@ -1588,8 +1624,13 @@ static void stream_task(void* arg) {
               ESP_LOGI(TAG, "phase=tts_chunk_play seq=%d pcm_bytes=%u rate=%d ch=%d expected_ms=%d",
                        chunk_idx, (unsigned)c->pcm_len, effective_rate, c->channels, expected_ms);
               if (bb_audio_play_pcm_blocking(c->pcm_data, c->pcm_len) != ESP_OK) {
-                ESP_LOGE(TAG, "tts chunk play failed seq=%d", chunk_idx);
-                signal_error_haptic();
+                if (tts_interrupt_requested()) {
+                  tts_interrupted = 1;
+                  ESP_LOGI(TAG, "phase=tts_chunk_interrupt seq=%d", chunk_idx);
+                } else {
+                  ESP_LOGE(TAG, "tts chunk play failed seq=%d", chunk_idx);
+                  signal_error_haptic();
+                }
                 break;
               }
               int64_t chunk_elapsed = bb_now_ms() - chunk_start;
@@ -1605,6 +1646,7 @@ static void stream_task(void* arg) {
             (void)bb_audio_stop_playback();
             /* Restore I2S clock to capture sample rate. */
             (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
+            tts_playback_set_active(0);
           } else {
             ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (TTS stream playback)", esp_err_to_name(tts_tx));
             signal_error_haptic();
@@ -1623,11 +1665,18 @@ static void stream_task(void* arg) {
             bb_display_set_tts_playing(1);
             esp_err_t tts_tx = bb_audio_start_playback();
             if (tts_tx == ESP_OK) {
+              tts_playback_set_active(1);
               if (bb_audio_play_pcm_blocking(tts.pcm_data, tts.pcm_len) != ESP_OK) {
-                ESP_LOGE(TAG, "bb_audio_play_pcm_blocking failed during TTS");
-                signal_error_haptic();
+                if (tts_interrupt_requested()) {
+                  tts_interrupted = 1;
+                  ESP_LOGI(TAG, "phase=tts_interrupt_fallback");
+                } else {
+                  ESP_LOGE(TAG, "bb_audio_play_pcm_blocking failed during TTS");
+                  signal_error_haptic();
+                }
               }
               (void)bb_audio_stop_playback();
+              tts_playback_set_active(0);
             } else {
               ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (TTS playback)", esp_err_to_name(tts_tx));
               signal_error_haptic();
@@ -1657,14 +1706,19 @@ static void stream_task(void* arg) {
           const char* line_ai = finish->reply_text[0] != '\0' ? finish->reply_text : "(no reply)";
           (void)bb_display_upsert_chat_turn(line_you, line_ai, 1);
         }
+        if (ui_stream->tts_playback_interrupted) {
+          tts_interrupted = 1;
+        }
       }
       free(finish);
       free(ui_stream);
       /* RESULT 停留：TTS 播放期间用户已经在听，只需短暂停留让屏幕文字可读 */
-      if (!skip_finish) {
+      if (!skip_finish && !tts_interrupted) {
         (void)bb_display_show_status("RESULT");
         vTaskDelay(pdMS_TO_TICKS(2000));
       }
+      s_tts_interrupt_requested = 0;
+      bb_audio_clear_playback_interrupt();
       show_idle_ready_or_locked();
       streaming = 0;
       session_busy = 0;
