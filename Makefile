@@ -5,9 +5,10 @@
 # 覆盖配置文件路径：
 #   make run ENV_FILE=/path/to/custom.env
 #
-# 运行模式由 .env 中的 ADAPTER_MODE 控制：
-#   ADAPTER_MODE=local  （默认）HTTP server + ASR/TTS
-#   ADAPTER_MODE=cloud  WS relay to BBClaw Cloud
+# 运行模式由 .env 中的 ADAPTER_MODE 控制；省略时默认 auto：
+#   ADAPTER_MODE=auto   HTTP server + （若配置了 CLOUD_WS_URL）WS relay
+#   ADAPTER_MODE=local  仅 HTTP server + ASR/TTS
+#   ADAPTER_MODE=cloud  仅 WS relay to BBClaw Cloud
 
 SHELL := /bin/bash
 

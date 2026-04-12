@@ -6,7 +6,7 @@ Pipeline:
 
 `ESP32 -> HTTP stream upload -> ASR -> OpenClaw Gateway WS (connect -> node.event voice.transcript)`
 
-Provider modes:
+Provider options:
 
 - `ASR_PROVIDER=local` (default): run `ASR_LOCAL_BIN` with optional `ASR_LOCAL_ARGS`; placeholder `{wav}` is the temp 16-bit PCM WAV. Transcript from stdout, else from `{wav}.txt` (override with `ASR_LOCAL_TEXT_PATH`).
 - `ASR_PROVIDER=openai_compatible` (OpenAI-compatible HTTP `/v1/audio/transcriptions`)
@@ -149,31 +149,33 @@ When `SAVE_AUDIO=true`:
 
 注意：这条链路用于当前 firmware/adaptor 联调；未来如果 OpenClaw 出现明确、通用、可上游的节点下行能力，再评估是否替换这条 adapter 展示桥。
 
-## Home Adapter Cloud Mode
+## Single Adapter, Dual Transport
 
-为首个“设备带出去也能用”的版本，仓库增加了一个独立的 `bbclaw-home-adapter` 进程。
+`bbclaw-adapter` 现在是单进程双能力：
 
-它负责：
+- 本地 HTTP ingress：服务 `local_home` 固件
+- Cloud home relay：服务 `cloud_saas` 固件
 
-- 主动连接 BBClaw Cloud
-- 以 `home_adapter` 身份保持出站 WebSocket
-- 接收 Cloud 转发的 `voice.transcript`
-- 调用本地 OpenClaw
-- 将回复回传给 Cloud
+默认推荐：
 
-当前设计里，公网版音频流与 ASR 终止在 Cloud；`bbclaw-home-adapter` 不再依赖本地 `bbclaw-adapter` 进程。
+- 不配置 `ADAPTER_MODE`（默认就是 `auto`）
+- 始终启动本地 HTTP 服务
+- 如果配置了 `CLOUD_WS_URL`，则自动同时连接 Cloud，作为 `home_adapter` relay
 
-最小环境变量：
+这意味着：
 
-- `CLOUD_WS_URL=http://daboluo.cc:38081`
-- `CLOUD_AUTH_TOKEN=...`
-- `HOME_SITE_ID=your-home-site`
-- `OPENCLAW_WS_URL=ws://127.0.0.1:18789`
+- 同一台家里的 Adapter，只跑一个进程
+- `local_home` 设备直接打 `http://<adapter>:18080`
+- `cloud_saas` 设备走 Cloud，但 Cloud 需要 Home Adapter 时仍由这个进程承接
 
-运行：
+调试开关仍保留：
 
-```bash
-cd src
-set -a; source .env; set +a
-./bin/bbclaw-home-adapter
-```
+- `ADAPTER_MODE=auto`：显式声明自动模式，效果与省略相同
+- `ADAPTER_MODE=local`：只启本地 HTTP
+- `ADAPTER_MODE=cloud`：只启 Cloud relay
+
+健康检查：
+
+- `GET /healthz` 返回聚合状态
+- `status=ok` 表示本地能力正常
+- `status=degraded` 表示本地仍可用，但 cloud relay 当前未连上

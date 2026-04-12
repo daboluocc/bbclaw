@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gorilla/websocket"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
+	"github.com/gorilla/websocket"
 )
 
 type CloudEnvelope struct {
@@ -34,6 +34,15 @@ type Adapter struct {
 
 	mu          sync.Mutex
 	lastRegCode string
+	status      Status
+}
+
+type Status struct {
+	Enabled      bool      `json:"enabled"`
+	Connected    bool      `json:"connected"`
+	HomeSiteID   string    `json:"homeSiteId,omitempty"`
+	LastError    string    `json:"lastError,omitempty"`
+	LastChangeAt time.Time `json:"lastChangeAt,omitempty"`
 }
 
 type transcriptSink interface {
@@ -54,7 +63,32 @@ func New(cfg Config, sink transcriptSink, logger *obs.Logger, metrics *obs.Metri
 		dialer: &websocket.Dialer{
 			HandshakeTimeout: cfg.HTTPTimeout,
 		},
+		status: Status{
+			Enabled:      true,
+			HomeSiteID:   cfg.HomeSiteID,
+			LastChangeAt: time.Now(),
+		},
 	}
+}
+
+func (a *Adapter) Status() Status {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.status
+}
+
+func (a *Adapter) setStatus(connected bool, lastErr error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.Enabled = true
+	a.status.Connected = connected
+	a.status.HomeSiteID = a.cfg.HomeSiteID
+	if lastErr != nil {
+		a.status.LastError = strings.TrimSpace(lastErr.Error())
+	} else {
+		a.status.LastError = ""
+	}
+	a.status.LastChangeAt = time.Now()
 }
 
 func (a *Adapter) Run(ctx context.Context) error {
@@ -76,6 +110,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		a.setStatus(false, err)
 		a.metrics.Inc("cloud_disconnect")
 		a.log.Warnf("cloud disconnected home_site=%s err=%v reconnect_in=%s", a.cfg.HomeSiteID, err, a.cfg.ReconnectDelay)
 		select {
@@ -90,6 +125,7 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 	conn, _, err := a.dialer.DialContext(ctx, dialURL, nil)
 	if err != nil {
 		a.metrics.Inc("cloud_dial_failed")
+		a.setStatus(false, err)
 		return fmt.Errorf("dial cloud ws: %w", err)
 	}
 	defer conn.Close()
@@ -106,6 +142,7 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 	}()
 
 	a.metrics.Inc("cloud_connected")
+	a.setStatus(true, nil)
 	a.log.Infof("cloud connected home_site=%s", a.cfg.HomeSiteID)
 
 	for {

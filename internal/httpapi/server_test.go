@@ -142,6 +142,44 @@ func TestUnauthorized(t *testing.T) {
 	}
 }
 
+func TestHealthzIncludesCloudStatus(t *testing.T) {
+	srv := NewServer(
+		AppConfig{
+			NodeID:              "node-1",
+			LocalIngressEnabled: true,
+			CloudRelayEnabled:   true,
+			CloudStatus: func() map[string]any {
+				return map[string]any{
+					"connected":  false,
+					"homeSiteId": "home-1",
+					"lastError":  "dial cloud ws: boom",
+				}
+			},
+		},
+		audio.NewManager(1024, 60, 2),
+		fakeASR{result: asr.Result{Text: "ok"}},
+		fakeTTS{audio: []byte("ok")},
+		&fakeSink{},
+		obs.NewLogger(),
+		obs.NewMetrics(),
+	)
+	rec := doReq(t, srv.Handler(), "GET", "/healthz", nil, "", http.StatusOK)
+	var resp struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal() err = %v", err)
+	}
+	if got, _ := resp.Data["status"].(string); got != "degraded" {
+		t.Fatalf("status = %q", got)
+	}
+	cloud, _ := resp.Data["cloud"].(map[string]any)
+	if connected, _ := cloud["connected"].(bool); connected {
+		t.Fatalf("cloud.connected = %v", cloud["connected"])
+	}
+}
+
 func TestStreamLifecycleStreamMode(t *testing.T) {
 	sink := &fakeSink{
 		streamEvents: []openclaw.VoiceTranscriptStreamEvent{

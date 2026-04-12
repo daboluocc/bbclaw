@@ -11,7 +11,8 @@ import (
 )
 
 type Config struct {
-	// AdapterMode: "local" (default, HTTP server + ASR/TTS) or "cloud" (WS client to Cloud)
+	// AdapterMode: "auto" (default, local HTTP always on + cloud relay when configured),
+	// "local" (force local only), or "cloud" (force cloud relay only).
 	AdapterMode string
 
 	Addr                 string
@@ -53,16 +54,45 @@ type Config struct {
 	ASRReadinessProbe    bool
 	ASRReadinessTimeout  time.Duration
 
-	// Cloud mode fields (used when AdapterMode == "cloud")
-	CloudWSURL       string
-	CloudAuthToken   string
-	HomeSiteID       string
-	ReconnectDelay   time.Duration
+	// Cloud relay fields.
+	CloudWSURL     string
+	CloudAuthToken string
+	HomeSiteID     string
+	ReconnectDelay time.Duration
 }
 
-// IsCloudMode returns true when the adapter should run as a Cloud relay.
-func (c Config) IsCloudMode() bool {
-	return strings.EqualFold(strings.TrimSpace(c.AdapterMode), "cloud")
+func (c Config) normalizedMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.AdapterMode))
+	if mode == "" {
+		return "auto"
+	}
+	return mode
+}
+
+func (c Config) cloudConfigured() bool {
+	return strings.TrimSpace(c.CloudWSURL) != ""
+}
+
+// EnableLocalIngress returns true when the adapter should serve the local HTTP API.
+func (c Config) EnableLocalIngress() bool {
+	switch c.normalizedMode() {
+	case "cloud":
+		return false
+	default:
+		return true
+	}
+}
+
+// EnableCloudRelay returns true when the adapter should connect to Cloud as a home adapter.
+func (c Config) EnableCloudRelay() bool {
+	switch c.normalizedMode() {
+	case "cloud":
+		return true
+	case "local":
+		return false
+	default:
+		return c.cloudConfigured()
+	}
 }
 
 func LoadFromEnv() (Config, error) {
@@ -75,11 +105,7 @@ func LoadFromEnv() (Config, error) {
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("ADAPTER_MODE")))
 	if mode == "" {
-		mode = "local"
-	}
-	nodeIDDefault := "bbclaw-adapter"
-	if mode == "cloud" {
-		nodeIDDefault = "bbclaw-home-adapter"
+		mode = "auto"
 	}
 	cfg := Config{
 		AdapterMode:          mode,
@@ -112,7 +138,7 @@ func LoadFromEnv() (Config, error) {
 		OpenClawURL:          openclawURL,
 		OpenClawAuthToken:    strings.TrimSpace(os.Getenv("OPENCLAW_AUTH_TOKEN")),
 		OpenClawIdentityPath: strings.TrimSpace(os.Getenv("OPENCLAW_DEVICE_IDENTITY_PATH")),
-		OpenClawNodeID:       getEnvOrDefault("OPENCLAW_NODE_ID", nodeIDDefault),
+		OpenClawNodeID:       getEnvOrDefault("OPENCLAW_NODE_ID", "bbclaw-adapter"),
 		OpenClawReplyWait:    time.Duration(getEnvInt("OPENCLAW_REPLY_WAIT_SECONDS", 25)) * time.Second,
 		MaxStreamSeconds:     getEnvInt("MAX_STREAM_SECONDS", 90),
 		MaxAudioBytes:        getEnvInt("MAX_AUDIO_BYTES", 4*1024*1024),
@@ -134,10 +160,10 @@ func LoadFromEnv() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	switch strings.ToLower(strings.TrimSpace(c.AdapterMode)) {
-	case "local", "cloud":
+	switch c.normalizedMode() {
+	case "auto", "local", "cloud":
 	default:
-		return fmt.Errorf("ADAPTER_MODE must be 'local' or 'cloud', got: %s", c.AdapterMode)
+		return fmt.Errorf("ADAPTER_MODE must be 'auto', 'local', or 'cloud', got: %s", c.AdapterMode)
 	}
 
 	// Common validation
@@ -163,15 +189,22 @@ func (c Config) Validate() error {
 		return fmt.Errorf("OPENCLAW endpoint scheme must be one of http/https/ws/wss, got: %s", openclawEndpoint.Scheme)
 	}
 
-	if c.IsCloudMode() {
-		return c.validateCloud()
+	if c.EnableLocalIngress() {
+		if err := c.validateLocal(); err != nil {
+			return err
+		}
 	}
-	return c.validateLocal()
+	if c.EnableCloudRelay() {
+		if err := c.validateCloud(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c Config) validateCloud() error {
 	if strings.TrimSpace(c.CloudWSURL) == "" {
-		return errors.New("CLOUD_WS_URL is required for ADAPTER_MODE=cloud")
+		return errors.New("CLOUD_WS_URL is required when cloud relay is enabled")
 	}
 	if c.ReconnectDelay <= 0 {
 		return errors.New("CLOUD_RECONNECT_DELAY_SECONDS must be > 0")

@@ -24,6 +24,9 @@ import (
 type AppConfig struct {
 	AuthToken            string
 	NodeID               string
+	LocalIngressEnabled  bool
+	CloudRelayEnabled    bool
+	CloudStatus          func() map[string]any
 	SaveAudio            bool
 	SaveInputOnFinish    bool
 	AudioInDir           string
@@ -108,9 +111,33 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Inc("healthz_ok")
 	s.log.Infof("phase=healthz remote=%s ua=%q", clientHost(r), strings.TrimSpace(r.Header.Get("User-Agent")))
+	status := "ok"
+	data := map[string]any{
+		"status":  status,
+		"metrics": s.metrics.Snapshot(),
+		"local": map[string]any{
+			"enabled": s.cfg.LocalIngressEnabled,
+			"ready":   s.cfg.LocalIngressEnabled,
+		},
+	}
+	if s.cfg.CloudRelayEnabled {
+		cloud := map[string]any{
+			"enabled": true,
+		}
+		if s.cfg.CloudStatus != nil {
+			for k, v := range s.cfg.CloudStatus() {
+				cloud[k] = v
+			}
+			if connected, ok := cloud["connected"].(bool); ok && !connected {
+				status = "degraded"
+				data["status"] = status
+			}
+		}
+		data["cloud"] = cloud
+	}
 	writeJSON(w, http.StatusOK, response{
 		OK:   true,
-		Data: map[string]any{"status": "ok", "metrics": s.metrics.Snapshot()},
+		Data: data,
 	})
 }
 

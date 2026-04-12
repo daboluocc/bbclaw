@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
@@ -38,15 +39,19 @@ func main() {
 	}
 
 	logger.Infof("%s", buildinfo.String("bbclaw-adapter"))
-
-	if cfg.IsCloudMode() {
-		runCloud(cfg, logger, metrics)
-	} else {
-		runLocal(cfg, logger, metrics)
-	}
+	run(cfg, logger, metrics)
 }
 
-func runCloud(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
+func buildSink(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) pipeline.Sink {
+	return pipeline.Wrap(openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
+		NodeID:             cfg.OpenClawNodeID,
+		AuthToken:          cfg.OpenClawAuthToken,
+		DeviceIdentityPath: cfg.OpenClawIdentityPath,
+		ReplyWaitTimeout:   cfg.OpenClawReplyWait,
+	}), logger, metrics)
+}
+
+func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, metrics *obs.Metrics) (*homeadapter.Adapter, error) {
 	homeCfg := homeadapter.Config{
 		CloudWSURL:           cfg.CloudWSURL,
 		CloudAuthToken:       cfg.CloudAuthToken,
@@ -59,41 +64,20 @@ func runCloud(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		OpenClawReplyWait:    cfg.OpenClawReplyWait,
 		OpenClawIdentityPath: cfg.OpenClawIdentityPath,
 	}
-	// Derive HomeSiteID if not set
 	if strings.TrimSpace(homeCfg.HomeSiteID) == "" {
 		derived, err := homeadapter.EnsureHomeSiteID()
 		if err != nil {
-			logger.Errorf("derive home_site_id failed: %v", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("derive home_site_id failed: %w", err)
 		}
 		homeCfg.HomeSiteID = derived
 	}
 	if err := homeCfg.Validate(); err != nil {
-		logger.Errorf("cloud config invalid: %v", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("cloud config invalid: %w", err)
 	}
-
-	sink := pipeline.Wrap(openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
-		NodeID:             cfg.OpenClawNodeID,
-		AuthToken:          cfg.OpenClawAuthToken,
-		DeviceIdentityPath: cfg.OpenClawIdentityPath,
-		ReplyWaitTimeout:   cfg.OpenClawReplyWait,
-	}), logger, metrics)
-
-	adapter := homeadapter.New(homeCfg, sink, logger, metrics)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	logger.Infof("starting bbclaw-adapter mode=cloud home_site=%s cloud=%s openclaw=%s",
-		homeCfg.HomeSiteID, homeCfg.CloudWSURL, homeCfg.OpenClawURL)
-	if err := adapter.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Errorf("adapter stopped: %v", err)
-		os.Exit(1)
-	}
+	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func runLocal(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -108,12 +92,6 @@ func runLocal(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			cfg.ASRBaseURL, cfg.ASRAPIKey, cfg.ASRModel, &http.Client{Timeout: cfg.HTTPTimeout},
 		)
 	}
-	sink := pipeline.Wrap(openclaw.NewClient(cfg.OpenClawURL, cfg.HTTPTimeout, openclaw.Options{
-		NodeID:             cfg.OpenClawNodeID,
-		AuthToken:          cfg.OpenClawAuthToken,
-		DeviceIdentityPath: cfg.OpenClawIdentityPath,
-		ReplyWaitTimeout:   cfg.OpenClawReplyWait,
-	}), logger, metrics)
 	var ttsProvider tts.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.TTSProvider)) {
 	case "mock":
@@ -127,23 +105,37 @@ func runLocal(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	if cfg.ASRReadinessProbe {
 		rp, ok := asrProvider.(asr.ReadinessProbe)
 		if !ok {
-			logger.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
-			os.Exit(1)
+			return nil, fmt.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
 		}
 		pctx, pcancel := context.WithTimeout(context.Background(), cfg.ASRReadinessTimeout)
 		err := rp.Ping(pctx)
 		pcancel()
 		if err != nil {
-			logger.Errorf("asr readiness probe failed: %v", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("asr readiness probe failed: %w", err)
 		}
 		logger.Infof("asr readiness probe ok provider=%s", cfg.ASRProvider)
+	}
+
+	var cloudStatus func() map[string]any
+	if cloudRelay != nil {
+		cloudStatus = func() map[string]any {
+			status := cloudRelay.Status()
+			return map[string]any{
+				"connected":    status.Connected,
+				"homeSiteId":   status.HomeSiteID,
+				"lastError":    status.LastError,
+				"lastChangeAt": status.LastChangeAt.Format(time.RFC3339),
+			}
+		}
 	}
 
 	server := httpapi.NewServer(
 		httpapi.AppConfig{
 			AuthToken:            cfg.AuthToken,
 			NodeID:               cfg.OpenClawNodeID,
+			LocalIngressEnabled:  cfg.EnableLocalIngress(),
+			CloudRelayEnabled:    cfg.EnableCloudRelay(),
+			CloudStatus:          cloudStatus,
 			SaveAudio:            cfg.SaveAudio,
 			SaveInputOnFinish:    cfg.SaveInputOnFinish,
 			AudioInDir:           cfg.AudioInDir,
@@ -152,11 +144,79 @@ func runLocal(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
+	return &http.Server{
+		Addr:    cfg.Addr,
+		Handler: server.Handler(),
+	}, nil
+}
 
-	logger.Infof("starting bbclaw-adapter mode=local addr=%s asr_provider=%s tts_provider=%s",
-		cfg.Addr, cfg.ASRProvider, cfg.TTSProvider)
-	if err := http.ListenAndServe(cfg.Addr, server.Handler()); err != nil {
-		logger.Errorf("http server stopped: %v", err)
+func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
+	sink := buildSink(cfg, logger, metrics)
+	var cloudRelay *homeadapter.Adapter
+	var err error
+	if cfg.EnableCloudRelay() {
+		cloudRelay, err = buildCloudRelay(cfg, sink, logger, metrics)
+		if err != nil {
+			logger.Errorf("%v", err)
+			os.Exit(1)
+		}
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	active := 0
+
+	if cfg.EnableCloudRelay() {
+		active++
+		cloudStatus := cloudRelay.Status()
+		logger.Infof("starting bbclaw-adapter cloud_relay=enabled home_site=%s cloud=%s openclaw=%s",
+			cloudStatus.HomeSiteID, cfg.CloudWSURL, cfg.OpenClawURL)
+		go func() {
+			errCh <- cloudRelay.Run(ctx)
+		}()
+	}
+
+	if cfg.EnableLocalIngress() {
+		active++
+		server, err := buildLocalServer(cfg, sink, cloudRelay, logger, metrics)
+		if err != nil {
+			logger.Errorf("%v", err)
+			os.Exit(1)
+		}
+		logger.Infof("starting bbclaw-adapter local_ingress=enabled addr=%s asr_provider=%s tts_provider=%s cloud_relay=%t",
+			cfg.Addr, cfg.ASRProvider, cfg.TTSProvider, cfg.EnableCloudRelay())
+		go func() {
+			err := server.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+				return
+			}
+			errCh <- nil
+		}()
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelShutdown()
+			_ = server.Shutdown(shutdownCtx)
+		}()
+	}
+
+	if !cfg.EnableLocalIngress() && !cfg.EnableCloudRelay() {
+		logger.Errorf("adapter has no enabled capabilities")
 		os.Exit(1)
+	}
+
+	for active > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errCh:
+			active--
+			if err != nil && !errors.Is(err, context.Canceled) {
+				logger.Errorf("adapter stopped: %v", err)
+				os.Exit(1)
+			}
+		}
 	}
 }
