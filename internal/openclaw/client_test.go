@@ -182,12 +182,13 @@ func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) 
 			}
 		}
 
+		sessionID := "f8a628e551c04d93be971b2e7be9b7f0"
 		events := []map[string]any{
 			{
 				"type":  "event",
 				"event": "agent",
 				"payload": map[string]any{
-					"sessionKey": "agent:main:main",
+					"sessionKey": "agent:main:" + sessionID,
 					"stream":     "lifecycle",
 					"data":       map[string]any{"phase": "start"},
 				},
@@ -196,7 +197,7 @@ func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) 
 				"type":  "event",
 				"event": "agent",
 				"payload": map[string]any{
-					"sessionKey": "agent:main:main",
+					"sessionKey": "agent:main:" + sessionID,
 					"stream":     "assistant",
 					"data":       map[string]any{"delta": "Hi!", "text": "Hi!"},
 				},
@@ -205,7 +206,7 @@ func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) 
 				"type":  "event",
 				"event": "agent",
 				"payload": map[string]any{
-					"sessionKey": "agent:main:main",
+					"sessionKey": "agent:main:" + sessionID,
 					"stream":     "assistant",
 					"data": map[string]any{
 						"delta": " 有什么需要帮忙的吗？🦐",
@@ -217,7 +218,7 @@ func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) 
 				"type":  "event",
 				"event": "agent",
 				"payload": map[string]any{
-					"sessionKey": "agent:main:main",
+					"sessionKey": "agent:main:" + sessionID,
 					"stream":     "lifecycle",
 					"data":       map[string]any{"phase": "end"},
 				},
@@ -244,7 +245,7 @@ func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) 
 	var deltas []string
 	delivery, err := c.SendVoiceTranscriptStream(context.Background(), VoiceTranscriptEvent{
 		Text:       "hello",
-		SessionKey: "agent:main:main",
+		SessionKey: "f8a628e551c04d93be971b2e7be9b7f0",
 		StreamID:   "stream-1",
 		Source:     "bbclaw.adapter",
 		NodeID:     "bbclaw-node",

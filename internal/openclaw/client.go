@@ -870,7 +870,7 @@ func parseChatText(frame map[string]any, sessionKey string) (string, string) {
 		return "", ""
 	}
 	payloadSessionKey, _ := payload["sessionKey"].(string)
-	if strings.TrimSpace(payloadSessionKey) != strings.TrimSpace(sessionKey) {
+	if !sessionKeyMatches(payloadSessionKey, sessionKey) {
 		return "", ""
 	}
 	state, _ := payload["state"].(string)
@@ -889,7 +889,7 @@ func parseAgentText(frame map[string]any, sessionKey string) (string, string) {
 		return "", ""
 	}
 	payloadSessionKey, _ := payload["sessionKey"].(string)
-	if strings.TrimSpace(payloadSessionKey) != strings.TrimSpace(sessionKey) {
+	if !sessionKeyMatches(payloadSessionKey, sessionKey) {
 		return "", ""
 	}
 	stream, _ := payload["stream"].(string)
@@ -910,6 +910,29 @@ func parseAgentText(frame map[string]any, sessionKey string) (string, string) {
 		return "", ""
 	}
 	return "delta", text
+}
+
+func sessionKeyMatches(eventSessionKey, requestSessionKey string) bool {
+	eventSessionKey = strings.ToLower(strings.TrimSpace(eventSessionKey))
+	requestSessionKey = strings.ToLower(strings.TrimSpace(requestSessionKey))
+	if eventSessionKey == "" || requestSessionKey == "" {
+		return false
+	}
+	if eventSessionKey == requestSessionKey {
+		return true
+	}
+	return sessionKeyTail(eventSessionKey) == sessionKeyTail(requestSessionKey)
+}
+
+func sessionKeyTail(sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(sessionKey, ":"); idx >= 0 && idx+1 < len(sessionKey) {
+		return sessionKey[idx+1:]
+	}
+	return sessionKey
 }
 
 func extractChatText(payload map[string]any) string {
