@@ -208,9 +208,78 @@ func (a *Adapter) handleRequest(ctx context.Context, conn *websocket.Conn, env C
 	switch strings.ToLower(strings.TrimSpace(env.Kind)) {
 	case "voice.transcript":
 		return a.handleTranscriptRequest(ctx, conn, env)
+	case "chat.text":
+		return a.handleChatTextRequest(ctx, conn, env)
 	default:
 		return nil
 	}
+}
+
+func (a *Adapter) handleChatTextRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
+	text, _ := env.Payload["text"].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("payload.text is required")
+	}
+	sessionKey, _ := env.Payload["sessionKey"].(string)
+	streamID, _ := env.Payload["streamId"].(string)
+	source, _ := env.Payload["source"].(string)
+	nodeID, _ := env.Payload["nodeId"].(string)
+
+	routeStart := time.Now()
+	a.log.Infof("phase=chat_text_request_recv session=%s stream=%s text_chars=%d",
+		strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
+
+	var connMu sync.Mutex
+	writeEvent := func(kind string, payload map[string]any) {
+		connMu.Lock()
+		defer connMu.Unlock()
+		if err := a.writeStreamEvent(conn, env, kind, payload); err != nil {
+			a.log.Warnf("writeEvent failed kind=%s err=%v", kind, err)
+		}
+	}
+
+	deltaSeq := 0
+	delivery, err := a.sink.SendVoiceTranscriptStream(ctx, openclaw.VoiceTranscriptEvent{
+		Text:       text,
+		SessionKey: strings.TrimSpace(sessionKey),
+		StreamID:   strings.TrimSpace(streamID),
+		Source:     strings.TrimSpace(source),
+		NodeID:     strings.TrimSpace(nodeID),
+	}, func(evt openclaw.VoiceTranscriptStreamEvent) {
+		switch evt.Type {
+		case "reply.delta":
+			if strings.TrimSpace(evt.Text) == "" {
+				return
+			}
+			deltaSeq++
+			a.log.Infof("phase=chat_reply_delta session=%s delta_seq=%d elapsed_s=%.3f text=%.80s",
+				strings.TrimSpace(sessionKey), deltaSeq, time.Since(routeStart).Seconds(), evt.Text)
+			writeEvent("voice.reply.delta", map[string]any{"text": evt.Text})
+		case "thinking":
+			writeEvent("thinking", map[string]any{"text": evt.Text})
+		case "tool_call":
+			writeEvent("tool_call", map[string]any{"name": evt.Text})
+		}
+	})
+	if err != nil {
+		a.log.Warnf("phase=chat_text_request_failed session=%s elapsed_s=%.3f err=%v",
+			strings.TrimSpace(sessionKey), time.Since(routeStart).Seconds(), err)
+		return err
+	}
+	replyText := strings.TrimSpace(delivery.ReplyText)
+	a.log.Infof("phase=chat_text_request_done session=%s elapsed_s=%.3f reply_chars=%d",
+		strings.TrimSpace(sessionKey), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
+	return conn.WriteJSON(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "voice.reply",
+		Payload: map[string]any{
+			"ok":   true,
+			"text": replyText,
+		},
+	})
 }
 
 func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
