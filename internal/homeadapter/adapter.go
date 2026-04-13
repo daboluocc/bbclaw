@@ -132,6 +132,15 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 	}
 	defer conn.Close()
 
+	// All writes to conn must go through writeConn to satisfy gorilla's
+	// "one concurrent writer" requirement.
+	var writeMu sync.Mutex
+	writeConn := func(env CloudEnvelope) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(env)
+	}
+
 	// ReadJSON blocks without ctx; closing the conn on cancel unblocks shutdown (Ctrl+C / SIGTERM).
 	stop := make(chan struct{})
 	defer close(stop)
@@ -140,6 +149,22 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 		case <-ctx.Done():
 			_ = conn.Close()
 		case <-stop:
+		}
+	}()
+
+	// Send periodic ping to keep the WS connection alive (cloud read deadline = 35s).
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := writeConn(CloudEnvelope{Type: "ping"}); err != nil {
+					return
+				}
+			}
 		}
 	}()
 
@@ -166,7 +191,7 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 					}
 				}
 				// report adapter version info to cloud
-				if err := conn.WriteJSON(CloudEnvelope{
+				if err := writeConn(CloudEnvelope{
 					Type:       "info",
 					HomeSiteID: a.cfg.HomeSiteID,
 					Payload: map[string]any{
@@ -181,7 +206,7 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 			}
 			continue
 		case "ping":
-			if err := conn.WriteJSON(CloudEnvelope{Type: "pong"}); err != nil {
+			if err := writeConn(CloudEnvelope{Type: "pong"}); err != nil {
 				return fmt.Errorf("write pong: %w", err)
 			}
 			continue
@@ -194,9 +219,9 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 			continue
 		case "request":
 			go func(env CloudEnvelope) {
-				if err := a.handleRequest(ctx, conn, env); err != nil {
+				if err := a.handleRequest(ctx, writeConn, env); err != nil {
 					a.metrics.Inc("cloud_request_failed")
-					if writeErr := a.writeErrorResponse(conn, env, err); writeErr != nil {
+					if writeErr := a.writeErrorResponse(writeConn, env, err); writeErr != nil {
 						a.log.Warnf("write error reply failed device=%s err=%v", env.DeviceID, writeErr)
 					}
 				}
@@ -221,18 +246,18 @@ func (a *Adapter) announceRegistrationCode(source, code, expiresAt string) {
 		code, expiresAt, a.cfg.HomeSiteID, source)
 }
 
-func (a *Adapter) handleRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
+func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) error, env CloudEnvelope) error {
 	switch strings.ToLower(strings.TrimSpace(env.Kind)) {
 	case "voice.transcript":
-		return a.handleTranscriptRequest(ctx, conn, env)
+		return a.handleTranscriptRequest(ctx, write, env)
 	case "chat.text":
-		return a.handleChatTextRequest(ctx, conn, env)
+		return a.handleChatTextRequest(ctx, write, env)
 	default:
 		return nil
 	}
 }
 
-func (a *Adapter) handleChatTextRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
+func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnvelope) error, env CloudEnvelope) error {
 	text, _ := env.Payload["text"].(string)
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -247,11 +272,8 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, conn *websocket.Con
 	a.log.Infof("phase=chat_text_request_recv session=%s stream=%s text_chars=%d",
 		strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 
-	var connMu sync.Mutex
 	writeEvent := func(kind string, payload map[string]any) {
-		connMu.Lock()
-		defer connMu.Unlock()
-		if err := a.writeStreamEvent(conn, env, kind, payload); err != nil {
+		if err := a.writeStreamEvent(write, env, kind, payload); err != nil {
 			a.log.Warnf("writeEvent failed kind=%s err=%v", kind, err)
 		}
 	}
@@ -287,7 +309,7 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, conn *websocket.Con
 	replyText := strings.TrimSpace(delivery.ReplyText)
 	a.log.Infof("phase=chat_text_request_done session=%s elapsed_s=%.3f reply_chars=%d",
 		strings.TrimSpace(sessionKey), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
-	return conn.WriteJSON(CloudEnvelope{
+	return write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
 		HomeSiteID: a.cfg.HomeSiteID,
@@ -299,7 +321,7 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, conn *websocket.Con
 	})
 }
 
-func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.Conn, env CloudEnvelope) error {
+func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudEnvelope) error, env CloudEnvelope) error {
 	if strings.TrimSpace(env.DeviceID) == "" {
 		return errors.New("deviceId is required")
 	}
@@ -317,11 +339,8 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 
 	a.metrics.Inc("voice_transcript_forwarded")
-	var connMu sync.Mutex
 	writeEvent := func(kind string, payload map[string]any) {
-		connMu.Lock()
-		defer connMu.Unlock()
-		if err := a.writeStreamEvent(conn, env, kind, payload); err != nil {
+		if err := a.writeStreamEvent(write, env, kind, payload); err != nil {
 			a.log.Warnf("writeEvent failed kind=%s device=%s err=%v", kind, env.DeviceID, err)
 		}
 	}
@@ -365,7 +384,7 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	replyText := strings.TrimSpace(delivery.ReplyText)
 	a.log.Infof("phase=transcript_request_done device=%s session=%s stream=%s elapsed_s=%.3f reply_chars=%d reply_wait_timed_out=%t",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText), delivery.ReplyWaitTimedOut)
-	if err := conn.WriteJSON(CloudEnvelope{
+	if err := write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
 		DeviceID:   env.DeviceID,
@@ -385,11 +404,8 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, conn *websocket.C
 	return nil
 }
 
-func (a *Adapter) writeStreamEvent(conn *websocket.Conn, env CloudEnvelope, kind string, payload map[string]any) error {
-	if conn == nil {
-		return nil
-	}
-	return conn.WriteJSON(CloudEnvelope{
+func (a *Adapter) writeStreamEvent(write func(CloudEnvelope) error, env CloudEnvelope, kind string, payload map[string]any) error {
+	return write(CloudEnvelope{
 		Type:       "event",
 		MessageID:  env.MessageID,
 		DeviceID:   env.DeviceID,
@@ -399,8 +415,8 @@ func (a *Adapter) writeStreamEvent(conn *websocket.Conn, env CloudEnvelope, kind
 	})
 }
 
-func (a *Adapter) writeErrorResponse(conn *websocket.Conn, env CloudEnvelope, err error) error {
-	return conn.WriteJSON(CloudEnvelope{
+func (a *Adapter) writeErrorResponse(write func(CloudEnvelope) error, env CloudEnvelope, err error) error {
+	return write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
 		DeviceID:   env.DeviceID,
