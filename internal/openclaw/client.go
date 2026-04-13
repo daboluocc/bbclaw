@@ -174,7 +174,7 @@ func (c *Client) sendSlashCommandWS(ctx context.Context, command, sessionKey str
 
 		// Capture chat events (command output like /status results)
 		if frame["type"] == "event" {
-			replyText, _ = captureChatFrame(frame, sessionKey, replyText, "", nil)
+			replyText, _ = captureReplyFrame(frame, sessionKey, replyText, "", nil)
 		}
 
 		if frame["type"] != "res" {
@@ -695,7 +695,7 @@ func (c *Client) waitResponseOKWithChatCapture(
 			continue
 		}
 
-		replyText, lastDeltaText = captureChatFrame(frame, sessionKey, replyText, lastDeltaText, onEvent)
+		replyText, lastDeltaText = captureReplyFrame(frame, sessionKey, replyText, lastDeltaText, onEvent)
 
 		if frame["type"] != "res" {
 			continue
@@ -750,7 +750,13 @@ func (c *Client) waitChatFinalText(
 				if replyText != "" {
 					return replyText, false
 				}
+				if strings.TrimSpace(lastDeltaText) != "" {
+					return strings.TrimSpace(lastDeltaText), false
+				}
 				return "", true
+			}
+			if replyText == "" && strings.TrimSpace(lastDeltaText) != "" {
+				return strings.TrimSpace(lastDeltaText), false
 			}
 			return replyText, false
 		}
@@ -809,7 +815,7 @@ func (c *Client) waitChatFinalText(
 			}
 		}
 		prevReply := replyText
-		replyText, lastDeltaText = captureChatFrame(frame, sessionKey, replyText, lastDeltaText, onEvent)
+		replyText, lastDeltaText = captureReplyFrame(frame, sessionKey, replyText, lastDeltaText, onEvent)
 		if replyText != "" && replyText != prevReply {
 			// Got a final — but if agent is still working (tool/thinking active),
 			// don't return yet; keep listening for subsequent messages.
@@ -822,7 +828,7 @@ func (c *Client) waitChatFinalText(
 	}
 }
 
-func captureChatFrame(
+func captureReplyFrame(
 	frame map[string]any,
 	sessionKey string,
 	replyText string,
@@ -830,6 +836,9 @@ func captureChatFrame(
 	onEvent func(VoiceTranscriptStreamEvent),
 ) (string, string) {
 	state, text := parseChatText(frame, sessionKey)
+	if state == "" {
+		state, text = parseAgentText(frame, sessionKey)
+	}
 	switch state {
 	case "delta":
 		if onEvent != nil && text != "" && text != lastDeltaText {
@@ -869,6 +878,38 @@ func parseChatText(frame map[string]any, sessionKey string) (string, string) {
 		return "", ""
 	}
 	return state, extractChatText(payload)
+}
+
+func parseAgentText(frame map[string]any, sessionKey string) (string, string) {
+	if frame["type"] != "event" || frame["event"] != "agent" {
+		return "", ""
+	}
+	payload, ok := frame["payload"].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	payloadSessionKey, _ := payload["sessionKey"].(string)
+	if strings.TrimSpace(payloadSessionKey) != strings.TrimSpace(sessionKey) {
+		return "", ""
+	}
+	stream, _ := payload["stream"].(string)
+	if strings.TrimSpace(stream) != "assistant" {
+		return "", ""
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	text, _ := data["text"].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		delta, _ := data["delta"].(string)
+		text = strings.TrimSpace(delta)
+	}
+	if text == "" {
+		return "", ""
+	}
+	return "delta", text
 }
 
 func extractChatText(payload map[string]any) string {

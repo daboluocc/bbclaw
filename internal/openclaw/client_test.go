@@ -150,6 +150,126 @@ func TestSendVoiceTranscriptStreamWS_CapturesDeltaAndFinal(t *testing.T) {
 	}
 }
 
+func TestSendVoiceTranscriptStreamWS_CapturesAgentAssistantStream(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{
+			"type": "event", "event": "connect.challenge",
+			"payload": map[string]any{"nonce": "n-1"},
+		})
+
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req map[string]any
+			if json.Unmarshal(msg, &req) != nil {
+				continue
+			}
+			reqID, _ := req["id"].(string)
+			_ = conn.WriteJSON(map[string]any{"type": "res", "id": reqID, "ok": true})
+			if method, _ := req["method"].(string); method == "node.event" {
+				if params, ok := req["params"].(map[string]any); ok && params["event"] == "voice.transcript" {
+					break
+				}
+			}
+		}
+
+		events := []map[string]any{
+			{
+				"type":  "event",
+				"event": "agent",
+				"payload": map[string]any{
+					"sessionKey": "agent:main:main",
+					"stream":     "lifecycle",
+					"data":       map[string]any{"phase": "start"},
+				},
+			},
+			{
+				"type":  "event",
+				"event": "agent",
+				"payload": map[string]any{
+					"sessionKey": "agent:main:main",
+					"stream":     "assistant",
+					"data":       map[string]any{"delta": "Hi!", "text": "Hi!"},
+				},
+			},
+			{
+				"type":  "event",
+				"event": "agent",
+				"payload": map[string]any{
+					"sessionKey": "agent:main:main",
+					"stream":     "assistant",
+					"data": map[string]any{
+						"delta": " 有什么需要帮忙的吗？🦐",
+						"text":  "Hi! 有什么需要帮忙的吗？🦐",
+					},
+				},
+			},
+			{
+				"type":  "event",
+				"event": "agent",
+				"payload": map[string]any{
+					"sessionKey": "agent:main:main",
+					"stream":     "lifecycle",
+					"data":       map[string]any{"phase": "end"},
+				},
+			},
+		}
+		for _, evt := range events {
+			if err := conn.WriteJSON(evt); err != nil {
+				t.Fatalf("write agent event: %v", err)
+			}
+		}
+	}))
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parse test server url: %v", err)
+	}
+	u.Scheme = "ws"
+
+	c := NewClient(u.String(), 500*time.Millisecond, Options{
+		NodeID:             "bbclaw-node",
+		DeviceIdentityPath: t.TempDir() + "/device-identity.json",
+	})
+	var deltas []string
+	delivery, err := c.SendVoiceTranscriptStream(context.Background(), VoiceTranscriptEvent{
+		Text:       "hello",
+		SessionKey: "agent:main:main",
+		StreamID:   "stream-1",
+		Source:     "bbclaw.adapter",
+		NodeID:     "bbclaw-node",
+	}, func(evt VoiceTranscriptStreamEvent) {
+		if evt.Type == "reply.delta" {
+			deltas = append(deltas, evt.Text)
+		}
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceTranscriptStream() error = %v", err)
+	}
+	if delivery.ReplyText != "Hi! 有什么需要帮忙的吗？🦐" {
+		t.Fatalf("reply = %q", delivery.ReplyText)
+	}
+	want := []string{"Hi!", "Hi! 有什么需要帮忙的吗？🦐"}
+	if len(deltas) != len(want) {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+	for i, got := range deltas {
+		if got != want[i] {
+			t.Fatalf("delta[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 func TestSendVoiceTranscriptHTTP_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
