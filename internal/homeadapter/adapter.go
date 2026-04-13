@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/gorilla/websocket"
@@ -154,12 +156,27 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 
 		switch strings.ToLower(strings.TrimSpace(env.Type)) {
 		case "welcome", "ack":
-			if strings.EqualFold(strings.TrimSpace(env.Type), "welcome") && env.Payload != nil {
-				if reg, ok := env.Payload["homeAdapterRegistration"].(string); ok {
-					reg = strings.TrimSpace(reg)
-					if reg != "" {
-						a.log.Infof("cloud welcome home_site=%s home_adapter_registration=%s", a.cfg.HomeSiteID, reg)
+			if strings.EqualFold(strings.TrimSpace(env.Type), "welcome") {
+				if env.Payload != nil {
+					if reg, ok := env.Payload["homeAdapterRegistration"].(string); ok {
+						reg = strings.TrimSpace(reg)
+						if reg != "" {
+							a.log.Infof("cloud welcome home_site=%s home_adapter_registration=%s", a.cfg.HomeSiteID, reg)
+						}
 					}
+				}
+				// report adapter version info to cloud
+				if err := conn.WriteJSON(CloudEnvelope{
+					Type:       "info",
+					HomeSiteID: a.cfg.HomeSiteID,
+					Payload: map[string]any{
+						"adapterVersion": buildinfo.Tag,
+						"buildTime":      buildinfo.BuildTime,
+						"platform":       runtime.GOOS + "/" + runtime.GOARCH,
+						"goVersion":      runtime.Version(),
+					},
+				}); err != nil {
+					a.log.Warnf("send adapter info failed: %v", err)
 				}
 			}
 			continue
