@@ -32,34 +32,15 @@ func decodeOpusWithFFmpeg(ctx context.Context, sampleRate int, channels int, pay
 	if sampleRate <= 0 || channels <= 0 {
 		return nil, fmt.Errorf("invalid sampleRate/channels")
 	}
-	args := []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-f", "opus",
-		"-ar", fmt.Sprintf("%d", sampleRate),
-		"-ac", fmt.Sprintf("%d", channels),
-		"-i", "pipe:0",
-		"-f", "s16le",
-		"-ar", fmt.Sprintf("%d", sampleRate),
-		"-ac", fmt.Sprintf("%d", channels),
-		"pipe:1",
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stdin = bytes.NewReader(payload)
-
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errOut.String())
-		if msg == "" {
-			msg = err.Error()
+	var lastErr error
+	for _, inputFormat := range []string{"opus", "ogg", ""} {
+		out, err := decodeWithFFmpeg(ctx, inputFormat, sampleRate, channels, payload)
+		if err == nil {
+			return out, nil
 		}
-		return nil, fmt.Errorf("ffmpeg opus decode failed: %s", msg)
+		lastErr = err
 	}
-	return out.Bytes(), nil
+	return nil, fmt.Errorf("ffmpeg opus decode failed: %w", lastErr)
 }
 
 func DecodeMediaToPCM16LE(ctx context.Context, inputFormat string, sampleRate int, channels int, payload []byte) ([]byte, error) {
@@ -70,16 +51,28 @@ func DecodeMediaToPCM16LE(ctx context.Context, inputFormat string, sampleRate in
 	if fmtName == "" {
 		fmtName = "mp3"
 	}
+	out, err := decodeWithFFmpeg(ctx, fmtName, sampleRate, channels, payload)
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg media decode failed: %w", err)
+	}
+	return out, nil
+}
+
+func decodeWithFFmpeg(ctx context.Context, inputFormat string, sampleRate int, channels int, payload []byte) ([]byte, error) {
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
-		"-f", fmtName,
+	}
+	if strings.TrimSpace(inputFormat) != "" {
+		args = append(args, "-f", strings.TrimSpace(inputFormat))
+	}
+	args = append(args,
 		"-i", "pipe:0",
 		"-f", "s16le",
 		"-ar", fmt.Sprintf("%d", sampleRate),
 		"-ac", fmt.Sprintf("%d", channels),
 		"pipe:1",
-	}
+	)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(payload)
 
@@ -93,7 +86,7 @@ func DecodeMediaToPCM16LE(ctx context.Context, inputFormat string, sampleRate in
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("ffmpeg media decode failed: %s", msg)
+		return nil, fmt.Errorf("%s", msg)
 	}
 	return out.Bytes(), nil
 }

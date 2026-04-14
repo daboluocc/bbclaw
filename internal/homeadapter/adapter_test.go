@@ -43,7 +43,7 @@ func TestHandleRequestRequiresText(t *testing.T) {
 		log:     obs.NewLogger(),
 		metrics: obs.NewMetrics(),
 	}
-	err := a.handleRequest(context.Background(), nil, CloudEnvelope{
+	err := a.handleRequest(context.Background(), func(CloudEnvelope) error { return nil }, CloudEnvelope{
 		Type:     "request",
 		DeviceID: "device-1",
 		Kind:     "voice.transcript",
@@ -77,7 +77,7 @@ func TestHandleRequestReturnsSinkError(t *testing.T) {
 		metrics: obs.NewMetrics(),
 		sink:    sink,
 	}
-	err := a.handleRequest(context.Background(), nil, CloudEnvelope{
+	err := a.handleRequest(context.Background(), func(CloudEnvelope) error { return nil }, CloudEnvelope{
 		Type:     "request",
 		DeviceID: "device-1",
 		Kind:     "voice.transcript",
@@ -136,7 +136,9 @@ func TestHandleTranscriptRequestStreamsIntermediateEvents(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- a.handleTranscriptRequest(context.Background(), serverConn, CloudEnvelope{
+		done <- a.handleTranscriptRequest(context.Background(), func(env CloudEnvelope) error {
+			return serverConn.WriteJSON(env)
+		}, CloudEnvelope{
 			Type:      "request",
 			MessageID: "msg-1",
 			DeviceID:  "device-1",
