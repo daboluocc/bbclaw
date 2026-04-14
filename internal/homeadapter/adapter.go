@@ -152,7 +152,10 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 		}
 	}()
 
-	// Send periodic ping to keep the WS connection alive (cloud read deadline = 35s).
+	// Send periodic websocket PING to keep the WS connection alive.
+	// Cloud's PingHandler resets the 35s read deadline on each PING frame.
+	// The JSON ping ("type":"ping") is no longer needed since the websocket
+	// level PING now satisfies the cloud's read timeout.
 	go func() {
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
@@ -161,7 +164,10 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 			case <-stop:
 				return
 			case <-ticker.C:
-				if err := writeConn(CloudEnvelope{Type: "ping"}); err != nil {
+				writeMu.Lock()
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				writeMu.Unlock()
+				if err != nil {
 					return
 				}
 			}
@@ -203,11 +209,6 @@ func (a *Adapter) runOnce(ctx context.Context, dialURL string) error {
 				}); err != nil {
 					a.log.Warnf("send adapter info failed: %v", err)
 				}
-			}
-			continue
-		case "ping":
-			if err := writeConn(CloudEnvelope{Type: "pong"}); err != nil {
-				return fmt.Errorf("write pong: %w", err)
 			}
 			continue
 		case "event":
