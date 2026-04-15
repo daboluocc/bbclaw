@@ -628,7 +628,11 @@ static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
       if (y < max_y) lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
       if (ctx->wait_ticks > 0) ctx->wait_ticks--;
       else if (s_tts_playing) ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
-      else auto_scroll_ctx_reset(ctx);
+      else {
+        // 不重置回顶部，保持在底部
+        ctx->phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
+        ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+      }
       break;
     case UI_AUTO_SCROLL_RUNNING:
     default:
