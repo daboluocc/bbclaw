@@ -40,9 +40,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bb_lvgl_img_elements.c")
   list(APPEND _bb_srcs "bb_lvgl_img_elements.c")
 endif()
 
+set(_bb_include_dirs "../include" "../boards")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated")
+  list(APPEND _bb_include_dirs "../generated")
+endif()
+
 idf_component_register(
     SRCS ${_bb_srcs}
-    INCLUDE_DIRS "../include" "../generated" "../boards"
+    INCLUDE_DIRS ${_bb_include_dirs}
     EMBED_FILES
         "../assets/svg/bbclaw.wav"
     EMBED_TXTFILES
