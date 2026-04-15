@@ -4,3 +4,7 @@
 CONFIG_BBCLAW_BOARD_BBCLAW=y
 # CONFIG_BBCLAW_BOARD_BREADBOARD is not set
 # CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX is not set
+
+# OTA partition table (boards/bbclaw/partitions_ota.csv auto-copied to project root on make build)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"

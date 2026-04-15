@@ -1267,6 +1267,14 @@ static void refresh_ui(void) {
         snprintf(buf, sizeof(buf), "处理中...");
       }
       lv_label_set_text(s_lbl_text, buf);
+    } else if (strcmp(status, BB_STATUS_WIFI_AP) == 0) {
+      /* AP provisioning mode: show AP info from chat history */
+      if (you[0] != '\0' || reply[0] != '\0') {
+        snprintf(buf, sizeof(buf), "%s\n%s", you, reply);
+      } else {
+        snprintf(buf, sizeof(buf), "AP 模式");
+      }
+      lv_label_set_text(s_lbl_text, buf);
     } else if (strncmp(status, BB_STATUS_BOOT, 4) == 0) {
       lv_label_set_text(s_lbl_text, "启动中...");
     } else if (strstr(status, BB_STATUS_WIFI) != NULL) {

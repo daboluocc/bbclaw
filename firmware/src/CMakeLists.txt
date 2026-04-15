@@ -14,6 +14,7 @@ set(_bb_srcs
     "bb_gateway_node.c"
     "bb_motor.c"
     "bb_nav_input.c"
+    "bb_ota.c"
     "bb_ptt.c"
     "bb_radio_app.c"
     "bb_time.c"
@@ -59,6 +60,8 @@ idf_component_register(
         esp_adc
         esp_lcd
         esp_netif
+        app_update
+        esp_partition
         esp_timer
         esp_wifi
         esp_websocket_client

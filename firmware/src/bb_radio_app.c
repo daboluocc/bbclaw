@@ -22,6 +22,7 @@
 #include "bb_transport.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
+#include "bb_ota.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -2132,6 +2133,23 @@ esp_err_t bb_radio_app_start(void) {
         if (rpt != ESP_OK) {
           ESP_LOGW(TAG, "device info report failed err=%s (non-fatal)", esp_err_to_name(rpt));
         }
+        /* Silent OTA check: download and flash if update available */
+        if (bb_transport_is_cloud_saas()) {
+          ota_update_info_t ota_info = {0};
+          esp_err_t ota_err = bb_ota_check(&ota_info);
+          if (ota_err == ESP_OK && ota_info.has_update) {
+            ESP_LOGI(TAG, "OTA update available: version=%s size=%u", ota_info.version, ota_info.size);
+            (void)bb_display_show_chat_turn("Updating...", ota_info.version);
+            esp_err_t dl_err = bb_ota_download_and_flash(&ota_info, NULL);
+            if (dl_err == ESP_OK) {
+              ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
+              (void)bb_ota_apply_update();
+              /* Never returns */
+            } else {
+              ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+            }
+          }
+        }
       } else {
         ESP_LOGI(TAG, "cloud pairing requested and pending approval status=%d detail=%s", health_status,
                  state.detail);
@@ -2165,6 +2183,13 @@ esp_err_t bb_radio_app_start(void) {
       show_status_error("LINK ERR");
       (void)bb_display_show_chat_turn("Local adapter unreachable", "Check " BBCLAW_ADAPTER_BASE_URL);
     }
+  }
+
+  /* Show OTA celebration if we just updated */
+  if (bb_ota_was_just_updated()) {
+    ESP_LOGI(TAG, "OTA celebration: just updated!");
+    (void)bb_display_show_chat_turn("更新成功!", "新版本已安装");
+    vTaskDelay(pdMS_TO_TICKS(2000));
   }
 
   log_heap_snapshot("before ringbuf");

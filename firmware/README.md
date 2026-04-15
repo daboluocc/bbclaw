@@ -244,6 +244,15 @@ make build
 2. 在 `Kconfig.projbuild` 加一个 choice
 3. 在 `bb_config.h` 顶部加 `#elif`
 
+## OTA 在线升级
+
+OTA 功能**仅支持 `cloud_saas` 模式**。
+
+- `cloud_saas` 模式：设备连接 Cloud，可通过 `GET /v1/ota/check` 检查固件更新
+- `local_home` 模式：不支持 OTA（开发调试模式，固件通过串口烧录）
+
+OTA 分区表默认启用（`boards/bbclaw/sdkconfig.board`），构建时会自动复制 `partitions_ota.csv` 到项目根目录。
+
 ## 致谢
 
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的 board 适配体系受其多板子架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现

@@ -3,6 +3,7 @@
 #include "nvs_flash.h"
 
 #include "bb_identity.h"
+#include "bb_ota.h"
 #include "bb_radio_app.h"
 
 static const char* TAG = "bbclaw_main";
@@ -17,5 +18,9 @@ void app_main(void) {
 
   ESP_LOGI(TAG, "starting BBClaw firmware bootstrap");
   bbclaw_identity_init();
+
+  // Initialize OTA
+  bb_ota_init();
+
   ESP_ERROR_CHECK(bb_radio_app_start());
 }
