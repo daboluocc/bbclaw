@@ -11,7 +11,7 @@ sdkconfig.local*
 managed_components/
 
 # 本地生成（见 Makefile：gen-lv-font 等）
-generated/
+# generated/  # 已提交到 git，CI 需要
 
 # make monitor-log、sim-export-feedback 等
 .cache/
