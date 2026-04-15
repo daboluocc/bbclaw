@@ -15,13 +15,13 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board
+.PHONY: help idf-env init set-target reconfigure build flash flash-ota0 erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
 	@echo "  make init          # set esp32s3 target + reconfigure"
 	@echo "  make build         # idf.py build"
-	@echo "  make flash         # idf.py flash"
+	@echo "  make flash         # build + flash to ota_0 partition"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
@@ -53,18 +53,38 @@ set-board:
 	@python3 scripts/set_board.py $(BOARD)
 
 build:
+	@# Ensure OTA partition table exists
+	@if [ ! -f partitions_ota.csv ] && [ -f boards/bbclaw/partitions_ota.csv ]; then \
+		cp boards/bbclaw/partitions_ota.csv .; \
+		echo "[build] copied partitions_ota.csv to project root"; \
+	fi
 	@$(IDF_SOURCE) idf.py build
 
-flash: build
-	@$(IDF_SOURCE) idf.py flash
+flash: flash-ota0
+
+# Flash to ota_0 partition (firmware 2.2MB > factory 1MB)
+flash-ota0: build
+	@echo "Flashing to ota_0 partition (0x110000)..."
+	@python3 -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
+		write_flash \
+		--flash_mode dio --flash_size 8MB --flash_freq 80m \
+		0x0 build/bootloader/bootloader.bin \
+		0x8000 build/partition_table/partition-table.bin \
+		0x110000 build/bbclaw_firmware.bin
 
 erase:
 	@$(IDF_SOURCE) idf.py erase-flash
 
 monitor:
-	@$(IDF_SOURCE) idf.py monitor
+	@pkill -f "idf_monitor.py" 2>/dev/null || true
+	@sleep 1
+	@mkdir -p "$(LOG_DIR)"
+	@echo "[monitor] logging to $(MONITOR_LOG)"
+	@$(IDF_SOURCE) idf.py monitor 2>&1 | tee "$(MONITOR_LOG)"
 
 monitor-log:
+	@pkill -f "idf_monitor.py" 2>/dev/null || true
+	@sleep 1
 	@mkdir -p "$(LOG_DIR)"
 	@: > "$(MONITOR_LOG)"
 	@echo "[monitor-log] overwrite -> $(MONITOR_LOG)"
@@ -96,7 +116,7 @@ clean:
 fullclean:
 	@$(IDF_SOURCE) idf.py fullclean
 
-all: build flash monitor-log
+all: build flash-ota0 monitor-log
 
 # 已有 sdkconfig 时 defaults 不会覆盖「is not set」；一键打开 lv_font_conv 所需选项
 lvgl-kconfig-fix:

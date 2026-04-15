@@ -940,6 +940,16 @@ static esp_err_t wait_for_transport_health(int* out_status) {
     }
     ESP_LOGW(TAG, "transport bootstrap retry=%d/%d profile=%s err=%s", attempt, BBCLAW_ADAPTER_BOOT_HEALTH_RETRIES,
              bb_transport_profile_name(), esp_err_to_name(last_err));
+    /* On first failure show error immediately so user doesn't wait 8 retries */
+    if (attempt == 1) {
+      if (bb_transport_is_cloud_saas()) {
+        show_status_error("CLOUD ERR");
+        (void)bb_display_show_chat_turn("Cloud unreachable", "Check " BBCLAW_CLOUD_BASE_URL);
+      } else {
+        show_status_error("LINK ERR");
+        (void)bb_display_show_chat_turn("Local adapter unreachable", "Check " BBCLAW_ADAPTER_BASE_URL);
+      }
+    }
     if (attempt < BBCLAW_ADAPTER_BOOT_HEALTH_RETRIES) {
       vTaskDelay(pdMS_TO_TICKS(BBCLAW_ADAPTER_BOOT_HEALTH_DELAY_MS));
     }
@@ -1972,13 +1982,24 @@ static void stream_task(void* arg) {
                      esp_err_to_name(health_err), health_status);
           }
           if (adapter_health_is_up && adapter_health_fail_streak >= adapter_heartbeat_fail_threshold) {
+            /* Adapter was up but now gone down — mark as down and show error */
             adapter_health_is_up = 0;
             s_transport_health_ok = 0;
             if (bb_transport_is_cloud_saas()) {
-              show_cloud_transport_or_locked(&state);
+              show_status_error("CLOUD ERR");
+              (void)bb_display_show_chat_turn("Cloud unreachable", "Check " BBCLAW_CLOUD_BASE_URL);
             } else {
               show_status_error("LINK ERR");
+              (void)bb_display_show_chat_turn("Local adapter unreachable", "Check " BBCLAW_ADAPTER_BASE_URL);
             }
+          } else if (!bb_transport_is_cloud_saas() && !adapter_health_is_up && adapter_health_fail_streak == 1) {
+            /* local_home: adapter never came up — show error immediately on first failure */
+            show_status_error("LINK ERR");
+            (void)bb_display_show_chat_turn("Local adapter unreachable", "Check " BBCLAW_ADAPTER_BASE_URL);
+          } else if (bb_transport_is_cloud_saas() && !adapter_health_is_up && adapter_health_fail_streak == 1) {
+            /* cloud_saas: cloud never came up — show error immediately on first failure */
+            show_status_error("CLOUD ERR");
+            (void)bb_display_show_chat_turn("Cloud unreachable", "Check " BBCLAW_CLOUD_BASE_URL);
           }
         }
       }
@@ -2142,7 +2163,7 @@ esp_err_t bb_radio_app_start(void) {
       show_cloud_transport_or_locked(&state);
     } else {
       show_status_error("LINK ERR");
-      (void)bb_display_show_chat_turn("", "");
+      (void)bb_display_show_chat_turn("Local adapter unreachable", "Check " BBCLAW_ADAPTER_BASE_URL);
     }
   }
 
