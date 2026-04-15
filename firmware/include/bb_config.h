@@ -517,7 +517,7 @@ const char *bbclaw_session_key(void);
 #endif
 
 #ifndef BBCLAW_HTTP_TIMEOUT_MS
-#define BBCLAW_HTTP_TIMEOUT_MS 20000
+#define BBCLAW_HTTP_TIMEOUT_MS 5000
 #endif
 
 #ifndef BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
