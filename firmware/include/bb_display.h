@@ -5,6 +5,8 @@
 #include "esp_err.h"
 
 esp_err_t bb_display_init(void);
+/** 设置当前运行模式，用于状态栏 HOME/CLOUD 图标显示 */
+void bb_display_set_cloud_mode(int is_cloud);
 esp_err_t bb_display_show_status(const char* status_line);
 /** 主界面：仅展示「自己说的」与「助手回复」，短信式上下两行（ME / AI） */
 esp_err_t bb_display_show_chat_turn(const char* user_said, const char* assistant_reply);

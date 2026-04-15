@@ -21,6 +21,10 @@ extern const lv_image_dsc_t bb_img_rec_2;
 
 extern const lv_image_dsc_t bb_img_rec_3;
 
+extern const lv_image_dsc_t bb_img_mode_home;
+
+extern const lv_image_dsc_t bb_img_mode_cloud;
+
 extern const lv_image_dsc_t bb_img_logo_claw;
 
 extern const lv_image_dsc_t bb_img_logo_openclaw;

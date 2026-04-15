@@ -133,11 +133,26 @@ typedef enum {
 } ui_view_mode_t;
 ```
 
+### 3.1 状态说明
+
 | 状态 | 屏幕内容 | 进入条件 |
 |------|----------|----------|
 | `UI_VIEW_STANDBY` | 时钟动画、品牌图标 | 无对话历史 + status 为 READY/null |
 | `UI_VIEW_LOCKED` | 挂锁图标、解锁提示文案 | `radio_app_is_locked()` 为 true |
 | `UI_VIEW_ACTIVE` | 顶部状态栏、中部滚动文本、录音波形 | 有对话历史 或 status 非空闲 |
+
+### 3.2 状态栏模式指示器
+
+在 `UI_VIEW_ACTIVE` 状态下，状态栏左侧显示当前运行模式：
+
+| 指示器 | 图标 | 说明 |
+|--------|------|------|
+| HOME | 🏠 房屋图标 | local_home 模式（本地运行，无需网络） |
+| CLOUD | ☁️ 云图标 | cloud_saas 模式（云端服务） |
+
+**位置**: 状态栏最左侧，在状态图标（`s_img_status`）左边
+**尺寸**: 20x20，与状态图标一致
+**颜色**: 与状态图标使用相同的 `UI_STATUS_FG` 颜色
 
 ---
 

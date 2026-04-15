@@ -165,6 +165,8 @@ def main() -> int:
         ("icon_rec_1.svg", "bb_img_rec_1"),
         ("icon_rec_2.svg", "bb_img_rec_2"),
         ("icon_rec_3.svg", "bb_img_rec_3"),
+        ("icon_home.svg", "bb_img_mode_home"),
+        ("icon_cloud.svg", "bb_img_mode_cloud"),
         ("logo_claw.svg", "bb_img_logo_claw"),
         ("logo_openclaw.svg", "bb_img_logo_openclaw"),
         ("logo_openclaw_panel.svg", "bb_img_logo_openclaw_panel"),

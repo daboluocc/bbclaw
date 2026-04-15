@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <!-- Simple cloud: 3 overlapping circles and flat bottom -->
+  <circle cx="22" cy="36" r="12" stroke="#E2E8F0" stroke-width="5"/>
+  <circle cx="36" cy="30" r="14" stroke="#E2E8F0" stroke-width="5"/>
+  <circle cx="50" cy="36" r="10" stroke="#E2E8F0" stroke-width="5"/>
+  <path d="M12 42H52" stroke="#E2E8F0" stroke-width="5" stroke-linecap="round"/>
+</svg>

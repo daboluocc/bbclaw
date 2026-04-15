@@ -2005,6 +2005,7 @@ esp_err_t bb_radio_app_start(void) {
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
+  bb_display_set_cloud_mode(bb_transport_is_cloud_saas());
   refresh_power_display();
   set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
   {

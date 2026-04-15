@@ -208,6 +208,7 @@ static lv_obj_t* s_lbl_locked_hint;
 
 /* LVGL objects — active (status bar + text) */
 static lv_obj_t* s_view_active;
+static lv_obj_t* s_img_mode;      /* HOME/CLOUD mode indicator */
 static lv_obj_t* s_img_status;
 static lv_obj_t* s_lbl_status;
 static lv_obj_t* s_lbl_status_clock;
@@ -258,6 +259,7 @@ static int s_battery_available;
 static int s_battery_percent = -1;
 static int s_battery_low;
 static int s_battery_supported;
+static int s_cloud_mode;  /* 1 = cloud_saas, 0 = local_home */
 
 static void refresh_ui(void);
 
@@ -971,19 +973,26 @@ static void create_ui(void) {
   lv_obj_set_scrollbar_mode(s_view_active, LV_SCROLLBAR_MODE_OFF);
 
   /* Status bar */
+  /* Mode indicator (HOME/CLOUD) - leftmost */
+  s_img_mode = lv_image_create(s_view_active);
+  lv_obj_set_size(s_img_mode, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
+  lv_obj_set_pos(s_img_mode, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
+  lv_image_set_src(s_img_mode, s_cloud_mode ? &bb_img_mode_cloud : &bb_img_mode_home);
+
+  /* Status icon - after mode indicator */
   s_img_status = lv_image_create(s_view_active);
   lv_image_set_src(s_img_status, &bb_img_ready);
   lv_obj_set_size(s_img_status, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
-  lv_obj_set_pos(s_img_status, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
+  lv_obj_set_pos(s_img_status, UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
 
   {
     const int wifi_w = 72;
     const int battery_enabled = (BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)) ? 1 : 0;
     const int battery_w = battery_enabled ? UI_BATTERY_W : 0;
     const int battery_gap = battery_enabled ? 4 : 0;
-    const int status_text_x = UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4;
+    const int status_text_x = UI_SAFE_LEFT + (UI_STATUS_ICON_SZ + 4) * 2 + 4;
     const int clock_w = 40;
-    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) - wifi_w - battery_w - battery_gap - clock_w - 16;
+    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) * 2 - 4 - wifi_w - battery_w - battery_gap - clock_w - 16;
 
     s_lbl_status = lv_label_create(s_view_active);
     lv_obj_set_width(s_lbl_status, status_label_w);
@@ -1605,6 +1614,13 @@ void bb_display_chat_focus_ai(void) {
   s_focus_ai = 1;
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
+}
+
+void bb_display_set_cloud_mode(int is_cloud) {
+  s_cloud_mode = is_cloud ? 1 : 0;
+  if (s_ready && s_img_mode != NULL) {
+    lv_image_set_src(s_img_mode, s_cloud_mode ? &bb_img_mode_cloud : &bb_img_mode_home);
+  }
 }
 
 void bb_display_set_locked(int locked) {
