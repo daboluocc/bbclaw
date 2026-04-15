@@ -1,4 +1,5 @@
 #include "bb_display.h"
+#include "bb_status.h"
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -564,7 +565,7 @@ static const char* chat_line_visible(const char* s) {
 }
 
 static bool is_recording_status(const char* status) {
-  return starts_with_ci(status, "TX");
+  return starts_with_ci(status, BB_STATUS_TX);
 }
 
 static const bb_ui_mono_bitmap_t* pick_status_icon(const char* status, uint32_t frame) {
@@ -578,38 +579,38 @@ static const bb_ui_mono_bitmap_t* pick_status_icon(const char* status, uint32_t 
         return &BB_UI_ICON_REC_12_3;
     }
   }
-  if (contains_ci(status, "ERR")) {
+  if (contains_ci(status, BB_STATUS_ERR)) {
     return &BB_UI_ICON_ERR_12;
   }
-  if (starts_with_ci(status, "READY")) {
+  if (starts_with_ci(status, BB_STATUS_READY)) {
     return &BB_UI_ICON_READY_12;
   }
-  if (starts_with_ci(status, "TX")) {
+  if (starts_with_ci(status, BB_STATUS_TX)) {
     return &BB_UI_ICON_TX_12;
   }
-  if (starts_with_ci(status, "RX")) {
+  if (starts_with_ci(status, BB_STATUS_RX)) {
     return &BB_UI_ICON_RX_12;
   }
-  if (starts_with_ci(status, "SPEAK")) {
+  if (starts_with_ci(status, BB_STATUS_SPEAK)) {
     return &BB_UI_ICON_SPEAK_12;
   }
-  if (starts_with_ci(status, "TASK") || starts_with_ci(status, "WIFI") || starts_with_ci(status, "ADAPTER")) {
+  if (starts_with_ci(status, BB_STATUS_TASK) || starts_with_ci(status, BB_STATUS_WIFI) || starts_with_ci(status, BB_STATUS_ADAPTER)) {
     return &BB_UI_ICON_TASK_12;
   }
   return NULL;
 }
 
 static uint16_t pick_status_accent(const char* status) {
-  if (contains_ci(status, "ERR")) {
+  if (contains_ci(status, BB_STATUS_ERR)) {
     return kColorErr;
   }
   if (is_recording_status(status)) {
     return kColorAccent;
   }
-  if (starts_with_ci(status, "SPEAK")) {
+  if (starts_with_ci(status, BB_STATUS_SPEAK)) {
     return RGB565(0, 160, 188);
   }
-  if (starts_with_ci(status, "READY")) {
+  if (starts_with_ci(status, BB_STATUS_READY)) {
     return RGB565(0, 168, 112);
   }
   return RGB565(96, 120, 116);
@@ -648,7 +649,7 @@ typedef struct {
 } display_snap_t;
 
 static int is_standby_status(const char* status) {
-  return status == NULL || status[0] == '\0' || strcmp(status, "READY") == 0;
+  return status == NULL || status[0] == '\0' || strcmp(status, BB_STATUS_READY) == 0;
 }
 
 static void snapshot_fill(display_snap_t* o) {
@@ -831,7 +832,7 @@ static esp_err_t init_panel(void) {
 
 esp_err_t bb_display_init(void) {
   backlight_on();
-  strncpy(s_status, "BOOT", sizeof(s_status) - 1);
+  strncpy(s_status, BB_STATUS_BOOT, sizeof(s_status) - 1);
   s_status[sizeof(s_status) - 1] = '\0';
   s_history_count = 0;
   s_stream_turn_active = 0;

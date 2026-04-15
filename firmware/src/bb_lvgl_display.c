@@ -5,6 +5,7 @@
  * All other states: top status bar + full-screen scrollable text area.
  */
 #include "bb_display.h"
+#include "bb_status.h"
 
 #if defined(BBCLAW_SIMULATOR)
 #include <stdint.h>
@@ -302,7 +303,7 @@ static void format_wifi_info(char* out, size_t out_size) {
 }
 
 static int wifi_signal_level(const char* status) {
-  if (status != NULL && strstr(status, "ERR") != NULL) return 0;
+  if (status != NULL && strstr(status, BB_STATUS_ERR) != NULL) return 0;
   int rssi = bb_wifi_get_rssi();
   if (rssi == 0) return 1;
   if (rssi >= -50) return 4;
@@ -372,20 +373,20 @@ static void apply_status_icon(const char* status) {
     lv_image_set_src(s_img_status, src);
     return;
   }
-  if (strstr(status, "ERR") != NULL) src = &bb_img_err;
-  else if (strcmp(status, "TX") == 0) src = &bb_img_tx;
-  else if (strcmp(status, "RX") == 0) src = &bb_img_rx;
-  else if (strcmp(status, "TASK") == 0 || strcmp(status, "BUSY") == 0) src = &bb_img_task;
-  else if (strcmp(status, "SPEAK") == 0) src = &bb_img_speak;
-  else if (strcmp(status, "RESULT") == 0) src = &bb_img_ready;
-  else if (strncmp(status, "BOOT", 4) == 0 || strstr(status, "WIFI") != NULL ||
-           strstr(status, "ADAPTER") != NULL || strstr(status, "SPK") != NULL) src = &bb_img_task;
-  else if (strcmp(status, "READY") == 0) src = &bb_img_ready;
+  if (strstr(status, BB_STATUS_ERR) != NULL) src = &bb_img_err;
+  else if (strcmp(status, BB_STATUS_TX) == 0) src = &bb_img_tx;
+  else if (strcmp(status, BB_STATUS_RX) == 0) src = &bb_img_rx;
+  else if (strcmp(status, BB_STATUS_TASK) == 0 || strcmp(status, BB_STATUS_BUSY) == 0) src = &bb_img_task;
+  else if (strcmp(status, BB_STATUS_SPEAK) == 0) src = &bb_img_speak;
+  else if (strcmp(status, BB_STATUS_RESULT) == 0) src = &bb_img_ready;
+  else if (strncmp(status, BB_STATUS_BOOT, 4) == 0 || strstr(status, BB_STATUS_WIFI) != NULL ||
+           strstr(status, BB_STATUS_ADAPTER) != NULL || strstr(status, BB_STATUS_SPK) != NULL) src = &bb_img_task;
+  else if (strcmp(status, BB_STATUS_READY) == 0) src = &bb_img_ready;
   lv_image_set_src(s_img_status, src);
 }
 
 static int is_recording_status(const char* status) {
-  return status != NULL && strcmp(status, "TX") == 0;
+  return status != NULL && strcmp(status, BB_STATUS_TX) == 0;
 }
 
 static const lv_image_dsc_t* record_anim_icon(uint32_t tick) {
@@ -415,14 +416,14 @@ static const lv_image_dsc_t* standby_mascot_green_frame(uint32_t tick) {
 /* ── View mode ── */
 
 static int is_standby_status(const char* status) {
-  return status == NULL || status[0] == '\0' || strcmp(status, "READY") == 0;
+  return status == NULL || status[0] == '\0' || strcmp(status, BB_STATUS_READY) == 0;
 }
 
 static int should_show_locked_view(int locked, const char* status) {
   if (!locked) return 0;
   if (status == NULL || status[0] == '\0') return 1;
-  if (strcmp(status, "LOCKED") == 0 || strcmp(status, "READY") == 0) return 1;
-  if (strncmp(status, "VERIFY", 6) == 0) return 1;
+  if (strcmp(status, BB_STATUS_LOCKED) == 0 || strcmp(status, BB_STATUS_READY) == 0) return 1;
+  if (strncmp(status, BB_STATUS_VERIFY, 6) == 0) return 1;
   return 0;
 }
 
@@ -986,7 +987,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(s_lbl_status, font, 0);
     lv_label_set_long_mode(s_lbl_status, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_height(s_lbl_status, lh + 2);
-    lv_label_set_text(s_lbl_status, "BOOT");
+    lv_label_set_text(s_lbl_status, BB_STATUS_BOOT);
     lv_obj_set_pos(s_lbl_status, status_text_x, UI_SAFE_TOP + (status_h - lh - 2) / 2);
 
     /* Clock in status bar (right side) */
@@ -1191,13 +1192,13 @@ static void refresh_ui(void) {
     lv_label_set_text(s_lbl_standby_clock, hm);
     s_record_view_visible = 0;
   } else if (mode == UI_VIEW_LOCKED) {
-    if (strcmp(status, "VERIFY TX") == 0) {
+    if (strcmp(status, BB_STATUS_VERIFY_TX) == 0) {
       lv_label_set_text(s_lbl_locked_title, "正在聆听密语");
       lv_label_set_text(s_lbl_locked_hint, "松开按键后开始验证");
-    } else if (strcmp(status, "VERIFY") == 0) {
+    } else if (strcmp(status, BB_STATUS_VERIFY) == 0) {
       lv_label_set_text(s_lbl_locked_title, "正在验证密语");
       lv_label_set_text(s_lbl_locked_hint, "请稍候");
-    } else if (strcmp(status, "VERIFY ERR") == 0) {
+    } else if (strcmp(status, BB_STATUS_VERIFY_ERR) == 0) {
       lv_label_set_text(s_lbl_locked_title, "解锁失败");
       lv_label_set_text(s_lbl_locked_hint, "请重新说出密语");
     } else {
@@ -1208,9 +1209,9 @@ static void refresh_ui(void) {
   } else {
     /* Status bar */
     const char* status_text = status;
-    if (strcmp(status, "TX") == 0) status_text = "LISTENING";
-    else if (strcmp(status, "RX") == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) status_text = "PROCESSING";
-    lv_label_set_text(s_lbl_status, status_text[0] != '\0' ? status_text : "READY");
+    if (strcmp(status, BB_STATUS_TX) == 0) status_text = "LISTENING";
+    else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) status_text = "PROCESSING";
+    lv_label_set_text(s_lbl_status, status_text[0] != '\0' ? status_text : BB_STATUS_READY);
     apply_status_icon(status);
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
     apply_battery_widget();
@@ -1234,7 +1235,7 @@ static void refresh_ui(void) {
     if (recording) {
       lv_label_set_text(s_lbl_record_title, "正在聆听");
       lv_label_set_text(s_lbl_record_hint, "松开发送");
-    } else if (strcmp(status, "RX") == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) {
+    } else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) {
       if (you[0] != '\0' && reply[0] != '\0') {
         snprintf(buf, sizeof(buf), "我: %s\n答: %s", you, reply);
       } else if (you[0] != '\0') {
@@ -1243,8 +1244,8 @@ static void refresh_ui(void) {
         snprintf(buf, sizeof(buf), "处理中...");
       }
       lv_label_set_text(s_lbl_text, buf);
-    } else if (strcmp(status, "RESULT") == 0 || strcmp(status, "SPEAK") == 0 ||
-               strcmp(status, "TASK") == 0 || strcmp(status, "BUSY") == 0) {
+    } else if (strcmp(status, BB_STATUS_RESULT) == 0 || strcmp(status, BB_STATUS_SPEAK) == 0 ||
+               strcmp(status, BB_STATUS_TASK) == 0 || strcmp(status, BB_STATUS_BUSY) == 0) {
       if (you[0] != '\0' || reply[0] != '\0') {
         snprintf(buf, sizeof(buf), "我: %s\n答: %s",
                  you[0] != '\0' ? you : "--",
@@ -1253,13 +1254,13 @@ static void refresh_ui(void) {
         snprintf(buf, sizeof(buf), "处理中...");
       }
       lv_label_set_text(s_lbl_text, buf);
-    } else if (strncmp(status, "BOOT", 4) == 0) {
+    } else if (strncmp(status, BB_STATUS_BOOT, 4) == 0) {
       lv_label_set_text(s_lbl_text, "启动中...");
-    } else if (strstr(status, "WIFI") != NULL) {
+    } else if (strstr(status, BB_STATUS_WIFI) != NULL) {
       lv_label_set_text(s_lbl_text, "连接 WiFi...");
-    } else if (strstr(status, "ADAPTER") != NULL) {
+    } else if (strstr(status, BB_STATUS_ADAPTER) != NULL) {
       lv_label_set_text(s_lbl_text, "连接服务...");
-    } else if (strcmp(status, "PAIR") == 0) {
+    } else if (strcmp(status, BB_STATUS_PAIR) == 0) {
       /* Pairing: show registration code or detail from chat turn */
       if (reply[0] != '\0' && you[0] != '\0') {
         /* radio_app puts "Enter 6-digit code" in you, code in reply */
@@ -1283,7 +1284,7 @@ static void refresh_ui(void) {
         snprintf(buf, sizeof(buf), "等待配对...");
       }
       lv_label_set_text(s_lbl_text, buf);
-    } else if (strstr(status, "ERR") != NULL || strcmp(status, "AUTH") == 0) {
+    } else if (strstr(status, BB_STATUS_ERR) != NULL || strcmp(status, BB_STATUS_AUTH) == 0) {
       if (you[0] != '\0' || reply[0] != '\0') {
         snprintf(buf, sizeof(buf), "%s\n%s",
                  you[0] != '\0' ? you : "",
@@ -1338,7 +1339,7 @@ static void refresh_ui(void) {
 
 esp_err_t bb_display_init(void) {
 #if defined(BBCLAW_SIMULATOR)
-  strncpy(s_status, "BOOT", sizeof(s_status) - 1);
+  strncpy(s_status, BB_STATUS_BOOT, sizeof(s_status) - 1);
   s_status[sizeof(s_status) - 1] = '\0';
   s_history_count = 0;
   s_stream_turn_active = 0;
@@ -1369,7 +1370,7 @@ esp_err_t bb_display_init(void) {
   return ESP_OK;
 #else
   backlight_on();
-  strncpy(s_status, "BOOT", sizeof(s_status) - 1);
+  strncpy(s_status, BB_STATUS_BOOT, sizeof(s_status) - 1);
   s_status[sizeof(s_status) - 1] = '\0';
   s_history_count = 0;
   s_stream_turn_active = 0;

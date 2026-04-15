@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "bb_adapter_client.h"
+#include "bb_status.h"
 #include "bb_audio.h"
 #include "bb_config.h"
 #include "bb_display.h"
@@ -246,8 +247,13 @@ static void refresh_lock_screen_visibility(void) {
 }
 
 static void set_radio_app_state(bb_radio_app_state_t state) {
-  s_app_state = state;
-  refresh_lock_screen_visibility();
+  if (s_app_state != state) {
+    ESP_LOGI(TAG, "STATE_TRANSITION: %s -> %s",
+             s_app_state == BBCLAW_STATE_LOCKED ? BB_STATUS_LOCKED : BB_STATUS_READY,
+             state == BBCLAW_STATE_LOCKED ? BB_STATUS_LOCKED : BB_STATUS_READY);
+    s_app_state = state;
+    refresh_lock_screen_visibility();
+  }
 }
 
 static size_t voice_verify_max_pcm_bytes(void) {
@@ -451,9 +457,9 @@ static void pulse_success_on_idle(const char* status) {
 
 static void show_idle_ready_or_locked(void) {
   if (radio_app_is_locked()) {
-    show_status_idle("LOCKED");
+    show_status_idle(BB_STATUS_LOCKED);
   } else {
-    show_status_idle("READY");
+    show_status_idle(BB_STATUS_READY);
   }
 }
 
@@ -547,7 +553,7 @@ static void tts_stream_task(void* arg) {
     if (!playback_started) {
       ESP_LOGI(TAG, "phase=tts_play_start mono_ms=%lld first_chunk=1 queue_depth=%u", (long long)bb_now_ms(),
                (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
-      (void)bb_display_show_status("SPEAK");
+      (void)bb_display_show_status(BB_STATUS_SPEAK);
       (void)bb_led_set_status(BB_LED_REPLY);
       bb_display_set_tts_playing(1);
       esp_err_t start_err = bb_audio_start_playback();
@@ -826,7 +832,7 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
   }
 
   if (strcmp(state->detail, "unauthorized") == 0 || state->http_status == 401 || state->http_status == 403) {
-    show_status_error("AUTH");
+    show_status_error(BB_STATUS_AUTH);
     (void)bb_display_show_chat_turn("Cloud auth required", "Set Cloud token in menuconfig");
     return;
   }
@@ -835,7 +841,7 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
       state->pairing_status == BB_TRANSPORT_PAIRING_BINDING_REQUIRED) {
     char line1[BBCLAW_DISPLAY_CHAT_LINE_LEN];
     char line2[BBCLAW_DISPLAY_CHAT_LINE_LEN];
-    show_status_processing("PAIR");
+    show_status_processing(BB_STATUS_PAIR);
     if (state->cloud_registration_code[0] != '\0') {
       snprintf(line1, sizeof(line1), "Enter 6-digit code in portal");
       snprintf(line2, sizeof(line2), "%s", state->cloud_registration_code);
@@ -881,7 +887,7 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
   }
 
   if (state->ready) {
-    pulse_success_on_idle("READY");
+    pulse_success_on_idle(BB_STATUS_READY);
     char info[BBCLAW_DISPLAY_CHAT_LINE_LEN];
     const char* ssid = bb_wifi_get_active_ssid();
     if (!state->supports_tts && !state->supports_display) {
@@ -906,7 +912,7 @@ static void show_cloud_transport_message(const bb_transport_state_t* state) {
 
 static void show_cloud_transport_or_locked(const bb_transport_state_t* state) {
   if (state != NULL && radio_app_is_locked() && state->ready && state->supports_audio_streaming) {
-    show_status_idle("LOCKED");
+    show_status_idle(BB_STATUS_LOCKED);
     refresh_lock_screen_visibility();
     return;
   }
@@ -1186,29 +1192,29 @@ static void stream_task(void* arg) {
       if (s_ptt_pressed) {
         if (!bb_wifi_is_connected()) {
           signal_error_haptic();
-          show_status_error("NO WIFI");
+          show_status_error(BB_STATUS_NO_WIFI);
         } else if (s_tts_playback_active) {
           tts_request_interrupt();
-          show_status_processing("SKIP");
+          show_status_processing(BB_STATUS_SKIP);
         } else if (session_busy) {
           signal_error_haptic();
-          (void)bb_display_show_status("BUSY");
+          (void)bb_display_show_status(BB_STATUS_BUSY);
         } else if (radio_app_is_locked()) {
-          show_status_recording("VERIFY TX");
+          show_status_recording(BB_STATUS_VERIFY_TX);
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
         } else if (cloud_saas_tx_wait_is_benign()) {
-          show_status_processing("PAIR");
+          show_status_processing(BB_STATUS_PAIR);
           /* 配对 / ASR 未就绪：不按 TX 成功震动，避免用户以为在报错 */
         } else {
-          show_status_recording("TX");
+          show_status_recording(BB_STATUS_TX);
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
         }
       } else {
         if (bb_wifi_is_connected()) {
           if (verifying || radio_app_is_locked()) {
-            show_status_processing(verifying ? "VERIFY" : "LOCKED");
+            show_status_processing(verifying ? BB_STATUS_VERIFY : BB_STATUS_LOCKED);
           } else {
-            show_status_processing("RX");
+            show_status_processing(BB_STATUS_RX);
           }
         }
         pairing_ptt_ui_last_ms = 0;
@@ -1235,14 +1241,14 @@ static void stream_task(void* arg) {
 
     if (s_ptt_pressed && !streaming && !arming && !session_busy) {
       if (!bb_wifi_is_connected()) {
-        show_status_error("NO WIFI");
+        show_status_error(BB_STATUS_NO_WIFI);
         signal_error_haptic();
         vTaskDelay(pdMS_TO_TICKS(250));
         continue;
       }
       if (radio_app_is_locked()) {
         if (!bb_transport_is_cloud_saas()) {
-          show_status_error("VERIFY ERR");
+          show_status_error(BB_STATUS_VERIFY_ERR);
           (void)bb_display_show_chat_turn("Voice unlock unavailable", "cloud_saas transport required");
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(250));
@@ -1279,11 +1285,11 @@ static void stream_task(void* arg) {
           verifying = 1;
           session_busy = 1;
           s_capture_active = 1;
-          show_status_recording("VERIFY TX");
+          show_status_recording(BB_STATUS_VERIFY_TX);
           ESP_LOGI(TAG, "phase=voice_verify_capture_start mono_ms=%lld", (long long)bb_now_ms());
         } else {
           ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (voice verify)", esp_err_to_name(tx_err));
-          show_status_error("VERIFY ERR");
+          show_status_error(BB_STATUS_VERIFY_ERR);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(200));
         }
@@ -1345,7 +1351,7 @@ static void stream_task(void* arg) {
           ESP_LOGI(TAG, "phase=arm_listen mono_ms=%lld (wait speech before stream/start)", (long long)bb_now_ms());
         } else {
           ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (PTT arm)", esp_err_to_name(tx_err));
-          show_status_error("ERR");
+          show_status_error(BB_STATUS_ERR);
           signal_error_haptic();
           vTaskDelay(pdMS_TO_TICKS(200));
         }
@@ -1370,7 +1376,7 @@ static void stream_task(void* arg) {
         }
       }
 
-      show_status_processing("VERIFY");
+      show_status_processing(BB_STATUS_VERIFY);
       {
         uint64_t duration_ms = (verify_vad.total_samples * 1000ULL) / BBCLAW_AUDIO_SAMPLE_RATE;
         uint32_t nonzero_permille = 0;
@@ -1386,14 +1392,14 @@ static void stream_task(void* arg) {
                  (unsigned)duration_ms, (unsigned)nonzero_permille, (unsigned)mean_abs);
         if (duration_ms < BBCLAW_VAD_ARM_MIN_DURATION_MS || nonzero_permille < BBCLAW_VAD_ARM_MIN_NONZERO_PERMILLE ||
             mean_abs < BBCLAW_VAD_ARM_MIN_MEAN_ABS || s_voice_verify_pcm_len == 0U) {
-          show_status_error("VERIFY ERR");
+          show_status_error(BB_STATUS_VERIFY_ERR);
           (void)bb_display_show_chat_turn("未检测到有效声音", "请重试");
           signal_error_haptic();
           verifying = 0;
           session_busy = 0;
           voice_verify_capture_reset();
           vTaskDelay(pdMS_TO_TICKS(1200));
-          show_status_idle("LOCKED");
+          show_status_idle(BB_STATUS_LOCKED);
           continue;
         }
       }
@@ -1405,30 +1411,30 @@ static void stream_task(void* arg) {
       voice_verify_capture_reset();
       if (verify_err != ESP_OK) {
         ESP_LOGE(TAG, "voice verify failed err=%s", esp_err_to_name(verify_err));
-        show_status_error("VERIFY ERR");
+        show_status_error(BB_STATUS_VERIFY_ERR);
         (void)bb_display_show_chat_turn("密语验证失败",
                                         verify_result.message[0] != '\0' ? verify_result.message : "cloud verify error");
         signal_error_haptic();
         vTaskDelay(pdMS_TO_TICKS(1200));
-        show_status_idle("LOCKED");
+        show_status_idle(BB_STATUS_LOCKED);
         continue;
       }
 
       if (verify_result.match) {
         ESP_LOGI(TAG, "phase=voice_verify_unlock confidence=%.3f", (double)verify_result.confidence);
         set_radio_app_state(BBCLAW_STATE_UNLOCKED);
-        pulse_success_on_idle("READY");
+        pulse_success_on_idle(BB_STATUS_READY);
         (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
       } else {
         ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
                  verify_result.message);
-        show_status_error("VERIFY ERR");
+        show_status_error(BB_STATUS_VERIFY_ERR);
         (void)bb_display_show_chat_turn("密语未匹配",
                                         verify_result.message[0] != '\0' ? verify_result.message : "请重试");
         signal_error_haptic();
         vTaskDelay(pdMS_TO_TICKS(1200));
-        show_status_idle("LOCKED");
+        show_status_idle(BB_STATUS_LOCKED);
       }
       continue;
     }
@@ -1488,7 +1494,7 @@ static void stream_task(void* arg) {
       int tts_interrupted = 0;
       if (finish == NULL || ui_stream == NULL) {
         ESP_LOGE(TAG, "finish/ui_stream heap alloc failed");
-        show_status_error("ERR");
+        show_status_error(BB_STATUS_ERR);
         signal_error_haptic();
         skip_finish = 1;
         free(finish);
@@ -1505,7 +1511,7 @@ static void stream_task(void* arg) {
       if (!skip_finish) {
         if (flush_stream_chunk(&stream, s_stream_pcm_chunk_buf, &pending_pcm_len) != ESP_OK) {
           ESP_LOGE(TAG, "flush pending chunk failed before finish");
-          show_status_error("ERR");
+          show_status_error(BB_STATUS_ERR);
           signal_error_haptic();
           skip_finish = 1;
         }
@@ -1535,13 +1541,13 @@ static void stream_task(void* arg) {
           }
 
           if (reply_text[0] != '\0') {
-            (void)bb_display_show_status("RESULT");
+            (void)bb_display_show_status(BB_STATUS_RESULT);
             (void)bb_led_set_status(BB_LED_REPLY);
           } else if (finish->transcript[0] != '\0') {
-            (void)bb_display_show_status("RESULT");
+            (void)bb_display_show_status(BB_STATUS_RESULT);
             (void)bb_led_set_status(BB_LED_SUCCESS);
           } else {
-            (void)bb_display_show_status("RESULT");
+            (void)bb_display_show_status(BB_STATUS_RESULT);
             (void)bb_led_set_status(BB_LED_SUCCESS);
           }
 
@@ -1566,7 +1572,7 @@ static void stream_task(void* arg) {
                    finish->error_code[0] != '\0' ? finish->error_code : "(none)", stream.stream_id,
                    finish->reply_wait_timed_out);
           {
-            const char* ecode = finish->error_code[0] != '\0' ? finish->error_code : "ERR";
+            const char* ecode = finish->error_code[0] != '\0' ? finish->error_code : BB_STATUS_ERR;
             show_status_error(ecode);
             (void)bb_display_upsert_chat_turn("(error)", ecode, 1);
           }
@@ -1603,7 +1609,7 @@ static void stream_task(void* arg) {
         } else if (tts_streamed && finish != NULL && finish->tts_chunks != NULL) {
           /* Play pre-synthesized TTS chunks from streaming finish. */
           ESP_LOGI(TAG, "phase=tts_stream_play mono_ms=%lld (playing streamed chunks)", (long long)bb_now_ms());
-          (void)bb_display_show_status("SPEAK");
+          (void)bb_display_show_status(BB_STATUS_SPEAK);
           (void)bb_led_set_status(BB_LED_REPLY);
           bb_display_set_tts_playing(1);
           esp_err_t tts_tx = bb_audio_start_playback();
@@ -1660,7 +1666,7 @@ static void stream_task(void* arg) {
           if (bb_adapter_tts_synthesize_pcm16(tts_text, &tts) == ESP_OK && tts.pcm_data != NULL && tts.pcm_len > 0U) {
             ESP_LOGI(TAG, "phase=tts_play mono_ms=%lld pcm_bytes=%u (REPLY pulse then SPEAK)", (long long)bb_now_ms(),
                      (unsigned)tts.pcm_len);
-            (void)bb_display_show_status("SPEAK");
+            (void)bb_display_show_status(BB_STATUS_SPEAK);
             (void)bb_led_set_status(BB_LED_REPLY);
             bb_display_set_tts_playing(1);
             esp_err_t tts_tx = bb_audio_start_playback();
@@ -1714,7 +1720,7 @@ static void stream_task(void* arg) {
       free(ui_stream);
       /* RESULT 停留：TTS 播放期间用户已经在听，只需短暂停留让屏幕文字可读 */
       if (!skip_finish && !tts_interrupted) {
-        (void)bb_display_show_status("RESULT");
+        (void)bb_display_show_status(BB_STATUS_RESULT);
         vTaskDelay(pdMS_TO_TICKS(2000));
       }
       s_tts_interrupt_requested = 0;
@@ -1743,7 +1749,7 @@ static void stream_task(void* arg) {
           bb_audio_read_pcm_frame(s_stream_task_pcm_read_buf, sizeof(s_stream_task_pcm_read_buf), &pcm_read);
       if (read_err != ESP_OK) {
         ESP_LOGE(TAG, "pcm read failed err=%s", esp_err_to_name(read_err));
-        show_status_error("ERR");
+        show_status_error(BB_STATUS_ERR);
         signal_error_haptic();
         arming = 0;
         (void)bb_audio_stop_tx();
@@ -1759,7 +1765,7 @@ static void stream_task(void* arg) {
           esp_err_t start_err = bb_adapter_stream_start(&stream);
           if (start_err != ESP_OK) {
             ESP_LOGE(TAG, "bb_adapter_stream_start failed esp=%s (after VAD arm)", esp_err_to_name(start_err));
-            show_status_error("ERR");
+            show_status_error(BB_STATUS_ERR);
             signal_error_haptic();
             arming = 0;
             (void)bb_audio_stop_tx();
@@ -1799,7 +1805,7 @@ static void stream_task(void* arg) {
         vad_update_from_pcm(&verify_vad, (const uint8_t*)rb_item, rb_item_size);
         if (voice_verify_capture_append((const uint8_t*)rb_item, rb_item_size) != ESP_OK) {
           ESP_LOGE(TAG, "voice verify capture append failed");
-          show_status_error("VERIFY ERR");
+          show_status_error(BB_STATUS_VERIFY_ERR);
           signal_error_haptic();
           s_capture_active = 0;
           verifying = 0;
@@ -1818,7 +1824,7 @@ static void stream_task(void* arg) {
             stream_ingest_pcm(&stream, &vad, s_capture_seed_buf, s_capture_seed_len, &pending_pcm_len, &ingest_ok);
         if (ige != ESP_OK || !ingest_ok) {
           ESP_LOGE(TAG, "stream seed ingest failed");
-          show_status_error("ERR");
+          show_status_error(BB_STATUS_ERR);
           signal_error_haptic();
           s_capture_active = 0;
           capture_seed_clear();
@@ -1838,7 +1844,7 @@ static void stream_task(void* arg) {
                 ESP_OK ||
             !ingest_ok) {
           ESP_LOGE(TAG, "stream ingest failed");
-          show_status_error("ERR");
+          show_status_error(BB_STATUS_ERR);
           signal_error_haptic();
           s_capture_active = 0;
           capture_seed_clear();
@@ -1873,7 +1879,7 @@ static void stream_task(void* arg) {
         if (bb_transport_is_cloud_saas() && !s_transport_display_ready) {
           /* Cloud health says display queue is unavailable; skip until next heartbeat refresh. */
         } else if (bb_adapter_display_pull(&task) == ESP_OK && task.has_task) {
-          show_status_notification("TASK");
+          show_status_notification(BB_STATUS_TASK);
           (void)bb_display_show_chat_turn("Task", task.display_text[0] != '\0' ? task.display_text : "(empty)");
           if (!cloud_saas_tx_wait_is_benign()) {
             (void)bb_motor_trigger(BB_MOTOR_PATTERN_TASK_NOTIFY);
@@ -1887,7 +1893,7 @@ static void stream_task(void* arg) {
     if (!streaming && !s_ptt_pressed) {
       /* If WiFi dropped and entered provisioning, show AP info and block PTT */
       if (bb_wifi_is_provisioning_mode()) {
-        show_status_error("NO WIFI");
+        show_status_error(BB_STATUS_NO_WIFI);
         char ap_line[64];
         char hint_line[64];
         snprintf(ap_line, sizeof(ap_line), "AP %s", bb_wifi_get_ap_ssid());
@@ -1946,7 +1952,7 @@ static void stream_task(void* arg) {
             if (bb_transport_is_cloud_saas()) {
               show_cloud_transport_or_locked(&state);
             } else {
-              pulse_success_on_idle("READY");
+              pulse_success_on_idle(BB_STATUS_READY);
             }
           } else if (bb_transport_is_cloud_saas() &&
                      (prev_ready != state.ready || prev_audio_ready != state.supports_audio_streaming ||
@@ -2013,7 +2019,7 @@ esp_err_t bb_radio_app_start(void) {
   if (led_err != ESP_OK) {
     ESP_LOGW(TAG, "status led init failed err=%s (continue without led)", esp_err_to_name(led_err));
   } else {
-    show_status_processing("BOOT");
+    show_status_processing(BB_STATUS_BOOT);
   }
   esp_err_t motor_err = bb_motor_init();
   if (motor_err != ESP_OK) {
@@ -2058,11 +2064,11 @@ esp_err_t bb_radio_app_start(void) {
   ESP_ERROR_CHECK(bb_gateway_node_init(&node_cfg));
   ESP_ERROR_CHECK(bb_gateway_node_connect());
 
-  show_status_processing("WIFI...");
+  show_status_processing(BB_STATUS_WIFI);
   esp_err_t wifi_err = bb_wifi_init_and_connect();
   if (wifi_err != ESP_OK) {
     ESP_LOGE(TAG, "wifi init failed err=%s", esp_err_to_name(wifi_err));
-    show_status_error("WIFI ERR");
+    show_status_error(BB_STATUS_WIFI_ERR);
     return wifi_err;
   }
   if (bb_wifi_is_provisioning_mode()) {
@@ -2074,7 +2080,7 @@ esp_err_t bb_radio_app_start(void) {
     } else {
       snprintf(hint_line, sizeof(hint_line), "%s OPEN", bb_wifi_get_ap_ip());
     }
-    show_status_processing("WIFI AP");
+    show_status_processing(BB_STATUS_WIFI_AP);
     (void)bb_display_show_chat_turn(ap_line, hint_line);
     ESP_LOGW(TAG, "wifi provisioning mode active ssid=%s ip=%s", bb_wifi_get_ap_ssid(), bb_wifi_get_ap_ip());
     return ESP_OK;
@@ -2111,7 +2117,7 @@ esp_err_t bb_radio_app_start(void) {
       show_cloud_transport_or_locked(&state);
     } else {
       ESP_LOGI(TAG, "transport health ok status=%d", health_status);
-      pulse_success_on_idle("READY");
+      pulse_success_on_idle(BB_STATUS_READY);
       (void)bb_display_show_chat_turn("", "");
     }
   } else {
