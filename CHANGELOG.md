@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-04-15
+
+### Added
+- 固件状态机重构：新增 `bb_status.h` 集中定义所有 status 字符串常量
+- 状态机文档：`firmware/docs/state_machine.md` 完整描述 AP/锁屏/正常/待机/问答模式
+- 状态转换追踪：LOCKED ↔ UNLOCKED 切换时输出 `STATE_TRANSITION` 日志
+
+### Changed
+- 重构 `bb_radio_app.c`、`bb_lvgl_display.c`、`bb_display_bitmap.c` 使用 BB_STATUS_* 常量
+
 ## [0.3.2] - 2026-04-13
 
 ### Fixed
