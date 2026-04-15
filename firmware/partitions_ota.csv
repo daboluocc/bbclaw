@@ -5,14 +5,16 @@
 # - 0x000000-0x00FFFF: bootloader (64KB)
 # - 0x010000-0x017FFF: nvs (24KB)
 # - 0x018000-0x018FFF: phy_init (4KB)
-# - 0x019000-0x118FFF: factory app (1MB)
-# - 0x119000-0x3FFFFF: ota_0 (2.5MB)
+# - 0x019000-0x019FFF: otadata (8KB) - OTA boot selection
+# - 0x01A000-0x11FFFF: factory app (1MB)
+# - 0x120000-0x3FFFFF: ota_0 (2.5MB)
 # - 0x400000-0x6FFFFF: ota_1 (2.5MB)
 # - 0x700000-0x7FFFFF: resources (1MB, for fonts/assets)
 #
 # Name,     Type, SubType, Offset,  Size
 nvs,        data, nvs,     ,        0x6000,
 phy_init,   data, phy,     ,        0x1000,
+otadata,    data, ota,     ,        0x2000,
 factory,    app,  factory, ,        0x100000,
 ota_0,      app,  ota_0,   ,        0x280000,
 ota_1,      app,  ota_1,   ,        0x280000,

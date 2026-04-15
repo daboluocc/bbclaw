@@ -135,6 +135,7 @@ esp_err_t bb_ota_check(ota_update_info_t* info) {
     }
 
     int status_code = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "OTA HTTP status: %d", status_code);
     esp_http_client_cleanup(client);
 
     if (status_code != 200) {
@@ -146,17 +147,22 @@ esp_err_t bb_ota_check(ota_update_info_t* info) {
     // 解析 JSON 响应
     // {"ok":true,"data":{"hasUpdate":true,"version":"1.1.0",...}}
     char* body = response_body;
+    ESP_LOGI(TAG, "OTA response body (first 300): %.300s", body);
     if (body[0] == '{') {
         // Simple JSON parsing without cJSON
         char* p = body;
 
         // Find "hasUpdate":true
         if ((p = strstr(p, "\"hasUpdate\":")) != NULL) {
-            p += 11;  // skip "\"hasUpdate\":"
+            p += 12;  // skip "\"hasUpdate\":"
             while (*p == ' ') p++;
+            ESP_LOGI(TAG, "OTA hasUpdate value: '%.8s'", p);
             if (strncmp(p, "true", 4) == 0) {
                 info->has_update = true;
+                ESP_LOGI(TAG, "OTA parsed has_update=1");
             }
+        } else {
+            ESP_LOGW(TAG, "OTA hasUpdate field not found in response");
         }
 
         if (info->has_update) {

@@ -63,14 +63,22 @@ build:
 flash: flash-ota0
 
 # Flash to ota_0 partition (firmware 2.2MB > factory 1MB)
+# Partition layout:
+#   0x00000-0x0FFFF: bootloader
+#   0x10000-0x11FFF: otadata (8KB)
+#   0x20000-0x11FFFF: factory app (1MB)
+#   0x120000-0x39FFFF: ota_0 (2.5MB)
+#   0x3A0000-0x61FFFF: ota_1 (2.5MB)
+#   0x620000-0x71FFFF: resources (1MB)
 flash-ota0: build
-	@echo "Flashing to ota_0 partition (0x110000)..."
+	@echo "Flashing to ota_0 partition (0x120000)..."
 	@python3 -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
 		write_flash \
 		--flash_mode dio --flash_size 8MB --flash_freq 80m \
 		0x0 build/bootloader/bootloader.bin \
 		0x8000 build/partition_table/partition-table.bin \
-		0x110000 build/bbclaw_firmware.bin
+		0x10000 build/ota_data_initial.bin \
+		0x120000 build/bbclaw_firmware.bin
 
 erase:
 	@$(IDF_SOURCE) idf.py erase-flash
