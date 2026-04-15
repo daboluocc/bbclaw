@@ -65,6 +65,7 @@ idf_component_register(
         esp_adc
         esp_lcd
         esp_netif
+        esp_ringbuf
         app_update
         esp_partition
         esp_timer

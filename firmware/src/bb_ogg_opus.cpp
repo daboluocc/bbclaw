@@ -266,7 +266,7 @@ static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size
       uint32_t guard_before;
       uint8_t packet[kMaxOpusPacketSize];
       uint32_t guard_after;
-    } packet_buf = {.guard_before = 0x13579BDFU, .guard_after = 0x2468ACE0U};
+    } packet_buf = {.guard_before = 0x13579BDFU, .packet = {0}, .guard_after = 0x2468ACE0U};
     const int packet_len = opus_encode(state->enc, state->pending_pcm, state->frame_samples_per_channel,
                                        packet_buf.packet, sizeof(packet_buf.packet));
     if (packet_len < 0) {
