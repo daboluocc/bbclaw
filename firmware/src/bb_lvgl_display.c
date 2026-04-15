@@ -162,6 +162,7 @@ typedef enum {
   UI_AUTO_SCROLL_HOLD_TOP = 0,
   UI_AUTO_SCROLL_RUNNING,
   UI_AUTO_SCROLL_HOLD_BOTTOM,
+  UI_AUTO_SCROLL_IDLE,  /* 滚动到底后停止，等待用户手动滚动或新内容 */
 } ui_auto_scroll_phase_t;
 
 typedef struct {
@@ -630,10 +631,13 @@ static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
       if (ctx->wait_ticks > 0) ctx->wait_ticks--;
       else if (s_tts_playing) ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
       else {
-        // 不重置回顶部，保持在底部
-        ctx->phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
-        ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+        // TTS 结束，切换到 IDLE 状态，不再自动滚动
+        ctx->phase = UI_AUTO_SCROLL_IDLE;
       }
+      break;
+    case UI_AUTO_SCROLL_IDLE:
+      // 停在底部，等待用户手动滚动或新内容到达后通过 auto_scroll_ctx_reset 重置
+      if (y < max_y) lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
       break;
     case UI_AUTO_SCROLL_RUNNING:
     default:

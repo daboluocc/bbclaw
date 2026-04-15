@@ -1,5 +1,14 @@
 # BBClaw Project Rules
 
+## ⚠️ 设计文档优先原则
+
+**设计文档是开发决策的唯一真相来源（Source of Truth）**
+
+- 设计文档位于仓库根目录 `design/` 下
+- 所有代码实现必须符合设计文档
+- **如有冲突，先解决设计问题再实现代码**，不能以"代码能跑"为由绕过设计
+- 新功能设计必须先编写/更新设计文档，再写代码
+
 ## Release & Tag Policy
 
 **Only create git tags and GitHub releases in the main `daboluocc/bbclaw` repo when:**

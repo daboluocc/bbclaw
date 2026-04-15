@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 固件状态机重构：新增 `bb_status.h` 集中定义所有 status 字符串常量
-- 状态机文档：`firmware/docs/state_machine.md` 完整描述 AP/锁屏/正常/待机/问答模式
+- 状态机文档：`design/STATE_MACHINE.md` 完整描述 AP/锁屏/正常/待机/问答模式
 - 状态转换追踪：LOCKED ↔ UNLOCKED 切换时输出 `STATE_TRANSITION` 日志
 
 ### Changed
