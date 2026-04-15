@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-04-16
+
+### Added
+- **OTA 在线升级**：云端连接成功后自动检查并下载固件更新
+- **双分区 OTA**：支持 ota_0/ota_1 交替升级，2.5MB 分区空间
+- **OTA 状态机**：`bb_ota.c/h` 实现检查/下载/校验/烧写完整流程
+- **升级庆祝**：更新成功后首次启动显示"更新成功!"画面
+- **固件版本上报**：设备信息包含固件版本，云端可查看
+
+### Fixed
+- 分区表：添加缺失 otadata 分区，修正 ota_0 起始地址
+- JSON 解析：`hasUpdate` 字段偏移修复 (11→12)
+- Makefile flash 地址：0x110000 → 0x120000
+
 ## [0.3.3] - 2026-04-15
 
 ### Added
