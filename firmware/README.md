@@ -253,6 +253,52 @@ OTA 功能**仅支持 `cloud_saas` 模式**。
 
 OTA 分区表默认启用（`boards/bbclaw/sdkconfig.board`），构建时会自动复制 `partitions_ota.csv` 到项目根目录。
 
+### OTA 固件发布（Cloud 生产流程）
+
+`POST /v1/ota/firmware` 文件上传已弃用。生产环境改为两步：
+
+1. 通过 nginx `PUT /ota/upload/<version>/<filename>` 上传二进制
+2. 调用 `POST /v1/ota/firmware/meta` 注册版本元数据
+
+示例（以 `0.3.5` / `esp32s3` 为例）：
+
+```bash
+export OTA_HOST="https://bbclaw.daboluo.cc"
+export OTA_ADMIN_KEY="替换为你的 X-OTA-Admin-Key"
+export OTA_VERSION="0.3.5"
+export OTA_PLATFORM="esp32s3"
+export OTA_FILE="build/bbclaw_firmware.bin"
+export OTA_FILENAME="bbclaw-esp32s3-${OTA_VERSION}.bin"
+
+# 1) 上传固件文件（nginx）
+curl -X PUT "${OTA_HOST}/ota/upload/${OTA_VERSION}/${OTA_FILENAME}" \
+  -H "X-OTA-Admin-Key: ${OTA_ADMIN_KEY}" \
+  --data-binary @"${OTA_FILE}"
+
+# 2) 计算 size/checksum 并注册 metadata（cloud）
+OTA_SIZE=$(wc -c < "${OTA_FILE}" | tr -d ' ')
+OTA_SHA256=$(sha256sum "${OTA_FILE}" | awk '{print $1}')
+
+curl -X POST "${OTA_HOST}/v1/ota/firmware/meta" \
+  -H "X-OTA-Admin-Key: ${OTA_ADMIN_KEY}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"version\":\"${OTA_VERSION}\",
+    \"platform\":\"${OTA_PLATFORM}\",
+    \"filename\":\"${OTA_FILENAME}\",
+    \"size\":${OTA_SIZE},
+    \"checksum\":\"sha256:${OTA_SHA256}\",
+    \"releaseNotes\":\"OTA release ${OTA_VERSION}\",
+    \"isActive\":true
+  }"
+```
+
+可选验证：
+
+```bash
+curl -s "${OTA_HOST}/v1/ota/check?current_version=0.1.0&platform=${OTA_PLATFORM}"
+```
+
 ## 致谢
 
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的 board 适配体系受其多板子架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现
