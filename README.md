@@ -92,10 +92,30 @@ make -C firmware monitor
    - **Local Adapter Base URL**：局域网模式下填运行 Adapter 的机器地址，例如 `http://192.168.1.100:18080`；公网模式再配 **Cloud Base URL**（见菜单项）
    - 可选：编译期 **Wi-Fi SSID / Password**；不填则上电后用热点 `BBClaw-Setup-xxxx`（默认密码 `bbclaw1234`）网页配网  
    **`auth_token`**：`adapter.yaml` 与固件侧须一致，写法见 [使用手册](docs/user_guide.md)。
-4. **局域网 Adapter（内网必做）**：到 [GitHub Releases](https://github.com/daboluocc/bbclaw/releases) 下载 **`internal`（局域网）** 包内的 `bbclaw-adapter-*`，按 [使用手册](docs/user_guide.md) 写好 `adapter.yaml` 并在同网段机器上启动，使固件里填的 **Local Adapter Base URL** 可访问。
+4. **局域网 Adapter（内网必做）**：推荐用下面的「[Adapter 一键安装](#adapter-一键安装自动识别系统)」脚本；或到 [GitHub Releases](https://github.com/daboluocc/bbclaw/releases) 下载对应平台的 `bbclaw-adapter-*` 手动安装。写好 `.env` 后在同网段机器上启动，使固件里填的 **Local Adapter Base URL** 可访问。
 5. **编译烧录**：`make -C firmware build`，接 USB 后 `make -C firmware flash`，`make -C firmware monitor` 查看日志（WiFi 与 Adapter 就绪后即可联调）。
 
 公网模式除固件选 `cloud_saas` 外，Adapter 需使用 Release 中的 **`internet`** 包，并完成云端账号与设备绑定（见 [公网模式](docs/cloud_saas_architecture.md)）。
+
+### Adapter 一键安装（自动识别系统）
+
+脚本会根据 `uname` 自动选择 `darwin-arm64` / `darwin-amd64` / `linux-amd64` / `linux-arm64` 二进制，下载到 `~/bbclaw-adapter/` 并赋予执行权限。
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daboluocc/bbclaw/main/scripts/install-adapter.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/daboluocc/bbclaw/main/scripts/install-adapter.ps1 | iex
+```
+
+可选环境变量：`BBCLAW_INSTALL_DIR`（自定义安装目录）、`BBCLAW_VERSION`（指定版本 tag，默认 `latest`）。
+
+安装后按 [Adapter 外部安装 Skill](docs/skills/bbclaw-adapter-external-install.md) 写 `.env`（`ADAPTER_AUTH_TOKEN` / `OPENCLAW_WS_URL` / ASR 相关变量）并启动。
 
 ## 项目结构
 
@@ -103,7 +123,7 @@ make -C firmware monitor
 bbclaw/
 ├── firmware/        # ESP32-S3 固件源码（C/C++）
 ├── docs/            # 架构、协议、硬件文档
-├── scripts/         # 烧录、调试脚本
+├── scripts/         # Adapter 一键安装、烧录、调试脚本
 ├── tools/           # 本地 ASR/TTS 工具
 ├── CHANGELOG.md     # 版本历史
 └── LICENSE          # Apache 2.0
