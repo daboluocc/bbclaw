@@ -43,14 +43,32 @@ esac
 binary="bbclaw-adapter-${os}-${arch}"
 echo "==> 检测到平台: ${os}/${arch}"
 
-# 最新的 firmware-only release 不带 adapter 二进制，所以不能直接用
-# /releases/latest/download/。查询 API 找到第一个包含目标二进制的 release。
+# 最新的 firmware-only release 不带 adapter 二进制，不能直接用 /releases/latest/download/。
+# 从 releases.atom（公开 RSS，不受 API 限流影响）拿 tag 列表，再对每个 tag
+# HEAD 一次资产 URL，第一个返回 200/302 的就是最新可用版本。
 if [ "$VERSION" = "latest" ]; then
   echo "==> 查询最新带 adapter 二进制的 release"
-  api_url="https://api.github.com/repos/${REPO}/releases?per_page=30"
-  url="$(curl -fsSL "$api_url" \
-    | grep -o "https://github.com/${REPO}/releases/download/[^\"]*/${binary}" \
-    | head -n 1 || true)"
+  atom_url="https://github.com/${REPO}/releases.atom"
+  tags="$(curl -fsSL "$atom_url" \
+    | grep -o "/${REPO}/releases/tag/[^\"<]*" \
+    | sed "s#/${REPO}/releases/tag/##" \
+    || true)"
+  if [ -z "$tags" ]; then
+    echo "错误: 无法从 $atom_url 获取 release 列表" >&2
+    exit 1
+  fi
+
+  url=""
+  for tag in $tags; do
+    candidate="https://github.com/${REPO}/releases/download/${tag}/${binary}"
+    code="$(curl -sI -o /dev/null -w '%{http_code}' "$candidate" || echo 000)"
+    if [ "$code" = "200" ] || [ "$code" = "302" ]; then
+      url="$candidate"
+      echo "==> 命中 $tag"
+      break
+    fi
+  done
+
   if [ -z "$url" ]; then
     echo "错误: 在最近的 release 中找不到 ${binary}" >&2
     echo "      请到 https://github.com/${REPO}/releases 手动下载，或用 BBCLAW_VERSION=vX.Y.Z 指定版本" >&2
