@@ -19,14 +19,28 @@ if ($arch -notin @('x64', 'amd64')) {
 }
 
 $binary = 'bbclaw-adapter-windows-amd64.exe'
+
+Write-Host "==> 检测到平台: windows/amd64"
+
+# 最新的 firmware-only release 不带 adapter 二进制，不能直接用 /releases/latest/download/
 if ($Version -eq 'latest') {
-    $url = "https://github.com/$Repo/releases/latest/download/$binary"
+    Write-Host "==> 查询最新带 adapter 二进制的 release"
+    $api = "https://api.github.com/repos/$Repo/releases?per_page=30"
+    $releases = Invoke-RestMethod -Uri $api -UseBasicParsing
+    $asset = $null
+    foreach ($r in $releases) {
+        $asset = $r.assets | Where-Object { $_.name -eq $binary } | Select-Object -First 1
+        if ($asset) { break }
+    }
+    if (-not $asset) {
+        Write-Error "在最近的 release 中找不到 $binary。请到 https://github.com/$Repo/releases 手动下载，或用 `$env:BBCLAW_VERSION='vX.Y.Z' 指定版本"
+    }
+    $url = $asset.browser_download_url
 } else {
     $url = "https://github.com/$Repo/releases/download/$Version/$binary"
 }
 
-Write-Host "==> 检测到平台: windows/amd64"
-Write-Host "==> 下载 $binary ($Version) 到 $InstallDir"
+Write-Host "==> 下载 $url 到 $InstallDir"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $dest = Join-Path $InstallDir 'bbclaw-adapter.exe'

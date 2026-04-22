@@ -41,14 +41,26 @@ case "$uname_m" in
 esac
 
 binary="bbclaw-adapter-${os}-${arch}"
+echo "==> 检测到平台: ${os}/${arch}"
+
+# 最新的 firmware-only release 不带 adapter 二进制，所以不能直接用
+# /releases/latest/download/。查询 API 找到第一个包含目标二进制的 release。
 if [ "$VERSION" = "latest" ]; then
-  url="https://github.com/${REPO}/releases/latest/download/${binary}"
+  echo "==> 查询最新带 adapter 二进制的 release"
+  api_url="https://api.github.com/repos/${REPO}/releases?per_page=30"
+  url="$(curl -fsSL "$api_url" \
+    | grep -o "https://github.com/${REPO}/releases/download/[^\"]*/${binary}" \
+    | head -n 1 || true)"
+  if [ -z "$url" ]; then
+    echo "错误: 在最近的 release 中找不到 ${binary}" >&2
+    echo "      请到 https://github.com/${REPO}/releases 手动下载，或用 BBCLAW_VERSION=vX.Y.Z 指定版本" >&2
+    exit 1
+  fi
 else
   url="https://github.com/${REPO}/releases/download/${VERSION}/${binary}"
 fi
 
-echo "==> 检测到平台: ${os}/${arch}"
-echo "==> 下载 ${binary} (${VERSION}) 到 ${INSTALL_DIR}"
+echo "==> 下载 ${url} 到 ${INSTALL_DIR}"
 
 mkdir -p "$INSTALL_DIR"
 tmp="$(mktemp "${TMPDIR:-/tmp}/bbclaw-adapter.XXXXXX")"
