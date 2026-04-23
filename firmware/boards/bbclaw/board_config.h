@@ -24,10 +24,12 @@
 /** IO2 未接 MCLK；inmp441 路径不输出 MCLK */
 #define BBCLAW_AUDIO_I2S_MCK_GPIO (-1)
 
-/* ── PTT ── */
+/* ── PTT: U5 = GT-TC072A-H060-L1 capacitive touch sensor ──
+ * "-L" variant: output LOW when touched, HIGH when idle.
+ * Push-pull output, internal pull-up keeps GPIO HIGH at idle. */
 #define BBCLAW_PTT_GPIO         7
-#define BBCLAW_PTT_ACTIVE_LEVEL 1
-#define BBCLAW_PTT_PULL_UP      0
+#define BBCLAW_PTT_ACTIVE_LEVEL 0
+#define BBCLAW_PTT_PULL_UP      1
 
 /* ── Navigation wheel (rotary encoder + push) ── */
 #define BBCLAW_NAV_ENABLE            1
@@ -125,6 +127,6 @@
 
 /* ── PA enable / speaker sense ── */
 #define BBCLAW_PA_EN_GPIO      -1
-#define BBCLAW_SPEAKER_SW_GPIO -1
+#define BBCLAW_SPEAKER_SW_GPIO  4
 /** Default probe GPIO1 was 13; on this PCB GPIO13 is LCD CS */
 #define BBCLAW_PA_EN_PROBE_GPIO1 (-1)

@@ -1,0 +1,5 @@
+menu "LED Strip Encoder"
+    config LED_STRIP_ENCODER
+        bool "Enable LED strip encoder component"
+        default y
+endmenu

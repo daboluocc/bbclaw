@@ -42,7 +42,7 @@ extern const uint8_t _binary_bbclaw_wav_end[] asm("_binary_bbclaw_wav_end");
 #define BB_LOG_TEXT_CHUNK 400
 #define BB_TTS_STREAM_QUEUE_DEPTH 128
 #define BB_TTS_STREAM_TASK_STACK 6144
-#define BB_STREAM_TASK_STACK 40960
+#define BB_STREAM_TASK_STACK 12288
 
 #if BBCLAW_SPK_TEST_ON_BOOT
 static uint16_t read_le16(const uint8_t* p) {
@@ -225,8 +225,8 @@ static void log_heap_snapshot(const char* phase) {
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+           (unsigned)heap_caps_get_free_size(BBCLAW_MALLOC_CAP_PREFER_PSRAM),
+           (unsigned)heap_caps_get_largest_free_block(BBCLAW_MALLOC_CAP_PREFER_PSRAM));
 }
 
 static void capture_seed_clear(void) {
@@ -277,7 +277,7 @@ static esp_err_t voice_verify_capture_append(const uint8_t* pcm, size_t pcm_len)
   }
   if (s_voice_verify_pcm_buf == NULL || s_voice_verify_pcm_cap != cap) {
     uint8_t* new_buf =
-        (uint8_t*)heap_caps_realloc(s_voice_verify_pcm_buf, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        (uint8_t*)heap_caps_realloc(s_voice_verify_pcm_buf, cap, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
     if (new_buf == NULL) {
       return ESP_ERR_NO_MEM;
     }
@@ -1500,8 +1500,8 @@ static void stream_task(void* arg) {
       }
 #endif
 
-      bb_finish_result_t* finish = (bb_finish_result_t*)heap_caps_calloc(1, sizeof(bb_finish_result_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      bb_reply_stream_ui_ctx_t* ui_stream = (bb_reply_stream_ui_ctx_t*)heap_caps_calloc(1, sizeof(bb_reply_stream_ui_ctx_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      bb_finish_result_t* finish = (bb_finish_result_t*)heap_caps_calloc(1, sizeof(bb_finish_result_t), BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+      bb_reply_stream_ui_ctx_t* ui_stream = (bb_reply_stream_ui_ctx_t*)heap_caps_calloc(1, sizeof(bb_reply_stream_ui_ctx_t), BBCLAW_MALLOC_CAP_PREFER_PSRAM);
       int tts_interrupted = 0;
       if (finish == NULL || ui_stream == NULL) {
         ESP_LOGE(TAG, "finish/ui_stream heap alloc failed");
@@ -1815,13 +1815,17 @@ static void stream_task(void* arg) {
       if (rb_item != NULL && rb_item_size > 0U) {
         vad_update_from_pcm(&verify_vad, (const uint8_t*)rb_item, rb_item_size);
         if (voice_verify_capture_append((const uint8_t*)rb_item, rb_item_size) != ESP_OK) {
-          ESP_LOGE(TAG, "voice verify capture append failed");
-          show_status_error(BB_STATUS_VERIFY_ERR);
-          signal_error_haptic();
-          s_capture_active = 0;
-          verifying = 0;
-          session_busy = 0;
-          (void)bb_audio_stop_tx();
+          /* Buffer alloc may fail on no-PSRAM boards; keep verifying so
+           * VAD stats accumulate.  On PTT release the pcm_bytes==0 path
+           * will show a user-friendly "no valid sound" error instead of
+           * the rapid restart loop caused by aborting here. */
+          if (s_voice_verify_pcm_buf == NULL) {
+            static int s_verify_buf_warn_logged;
+            if (!s_verify_buf_warn_logged) {
+              s_verify_buf_warn_logged = 1;
+              ESP_LOGW(TAG, "voice verify pcm buffer unavailable (no PSRAM?), VAD-only mode");
+            }
+          }
         }
         vRingbufferReturnItem(s_capture_rb, rb_item);
       }
@@ -2194,7 +2198,7 @@ esp_err_t bb_radio_app_start(void) {
 
   log_heap_snapshot("before ringbuf");
   s_capture_rb = xRingbufferCreateWithCaps(CAPTURE_RINGBUF_SIZE, RINGBUF_TYPE_BYTEBUF,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                           MALLOC_CAP_8BIT);
   if (s_capture_rb == NULL) {
     ESP_LOGE(TAG, "capture ring buffer alloc failed size=%u", (unsigned)CAPTURE_RINGBUF_SIZE);
     return ESP_ERR_NO_MEM;
@@ -2221,10 +2225,10 @@ esp_err_t bb_radio_app_start(void) {
    * encode burst can go materially deeper than the steady-state watermark,
    * so keep a larger PSRAM-backed stack here. */
 #ifdef CONFIG_FREERTOS_UNICORE
-  ok = xTaskCreateWithCaps(stream_task, "bb_stream_task", BB_STREAM_TASK_STACK, NULL, 5, NULL, MALLOC_CAP_SPIRAM);
+  ok = xTaskCreateWithCaps(stream_task, "bb_stream_task", BB_STREAM_TASK_STACK, NULL, 5, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #else
   ok = xTaskCreatePinnedToCoreWithCaps(stream_task, "bb_stream_task", BB_STREAM_TASK_STACK, NULL, 5, NULL, 0,
-                                       MALLOC_CAP_SPIRAM);
+                                       BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #endif
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "stream task create failed stack=%u free=%u largest=%u", (unsigned)BB_STREAM_TASK_STACK,

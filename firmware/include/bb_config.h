@@ -388,6 +388,20 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS 2
 #endif
 
+/**
+ * WS2812 single-wire mode detection:
+ * When RGB_MODULE=0 (not RGB module) AND Y_GPIO<0 AND G_GPIO<0,
+ * it means single-wire WS2812 mode (using R_GPIO as the single data pin).
+ * For BBClaw board: GPIO5 is WS2812 single-wire DIN.
+ */
+#ifndef BBCLAW_STATUS_LED_WS2812
+#if !BBCLAW_STATUS_LED_KIND_RGB_MODULE && BBCLAW_STATUS_LED_Y_GPIO < 0 && BBCLAW_STATUS_LED_G_GPIO < 0
+#define BBCLAW_STATUS_LED_WS2812 1
+#else
+#define BBCLAW_STATUS_LED_WS2812 0
+#endif
+#endif
+
 #ifndef BBCLAW_AUDIO_SAMPLE_RATE
 #define BBCLAW_AUDIO_SAMPLE_RATE 16000
 #endif
@@ -721,4 +735,17 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_ST7789_SWAP_BYTES
 #define BBCLAW_ST7789_SWAP_BYTES 1
+#endif
+
+/**
+ * PSRAM 内存分配宏：
+ * - 当 CONFIG_SPIRAM=y 时，使用 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT（优先 PSRAM）
+ * - 当 CONFIG_SPIRAM=n 时，仅使用 MALLOC_CAP_8BIT（回退到内部 RAM）
+ */
+#ifndef BBCLAW_MALLOC_CAP_PREFER_PSRAM
+#ifdef CONFIG_SPIRAM
+#define BBCLAW_MALLOC_CAP_PREFER_PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
+#define BBCLAW_MALLOC_CAP_PREFER_PSRAM (MALLOC_CAP_8BIT)
+#endif
 #endif

@@ -77,6 +77,8 @@ idf_component_register(
         nvs_flash
         lvgl
         esp_lvgl_port
+        esp_driver_rmt
+        led_strip_encoder
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")

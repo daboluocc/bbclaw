@@ -2,14 +2,17 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "bb_config.h"
 #include "bb_time.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "driver/rmt_tx.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_strip_encoder.h"
 
 static const char* TAG = "bb_led";
 
@@ -19,6 +22,9 @@ static const char* TAG = "bb_led";
 #define BB_LED_LEDC_DUTY_RES LEDC_TIMER_10_BIT
 #define BB_LED_LEDC_FREQ_HZ 4000
 #define BB_LED_LEDC_MAX_DUTY ((1U << 10) - 1U)
+
+#define BB_LED_WS2812_RESOLUTION_HZ 10000000 // 10MHz, 1 tick = 0.1us
+#define BB_LED_WS2812_PIXEL_BYTES 3         // GRB format
 
 typedef struct {
   bb_led_status_t base_status;
@@ -38,6 +44,13 @@ static bool s_boot_anim_active;
 static int64_t s_boot_anim_start_ms;
 static uint32_t s_led_on_duty;
 static uint32_t s_led_off_duty;
+
+// WS2812 single-wire mode resources
+#if BBCLAW_STATUS_LED_WS2812
+static rmt_channel_handle_t s_rmt_chan;
+static rmt_encoder_handle_t s_rmt_encoder;
+static uint8_t s_ws2812_pixel[BB_LED_WS2812_PIXEL_BYTES];
+#endif
 
 #if BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE && BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS > 0
 #define BB_LED_BOOT_TOTAL_MS (3U * BBCLAW_STATUS_LED_BOOT_ANIM_STEP_MS * BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS)
@@ -68,6 +81,24 @@ static void led_set_rgb_bits(int r, int g, int b) {
   ledc_apply(LEDC_CHANNEL_1, g);
   ledc_apply(LEDC_CHANNEL_2, b);
 }
+#elif BBCLAW_STATUS_LED_WS2812
+/** WS2812 单线 RGB：使用 RMT 发送 GRB 数据到单 GPIO */
+static void led_set_ws2812_bits(int r, int g, int b) {
+  // Apply brightness scaling
+  uint32_t brightness = clamp_brightness_pct();
+  r = (r * brightness) / 100;
+  g = (g * brightness) / 100;
+  b = (b * brightness) / 100;
+  // WS2812 uses GRB format
+  s_ws2812_pixel[0] = (uint8_t)g;  // Green
+  s_ws2812_pixel[1] = (uint8_t)r;  // Red
+  s_ws2812_pixel[2] = (uint8_t)b;  // Blue
+  rmt_transmit_config_t tx_cfg = {
+      .loop_count = 0,
+  };
+  rmt_transmit(s_rmt_chan, s_rmt_encoder, s_ws2812_pixel, sizeof(s_ws2812_pixel), &tx_cfg);
+  rmt_tx_wait_all_done(s_rmt_chan, portMAX_DELAY);
+}
 #else
 static void led_set_ryg_bits(int r, int y, int g) {
   ledc_apply(LEDC_CHANNEL_0, r);
@@ -79,6 +110,11 @@ static void led_set_ryg_bits(int r, int y, int g) {
 static void led_all_off(void) {
 #if BBCLAW_STATUS_LED_KIND_RGB_MODULE
   led_set_rgb_bits(0, 0, 0);
+#elif BBCLAW_STATUS_LED_WS2812
+  memset(s_ws2812_pixel, 0, sizeof(s_ws2812_pixel));
+  rmt_transmit_config_t tx_cfg = { .loop_count = 0 };
+  rmt_transmit(s_rmt_chan, s_rmt_encoder, s_ws2812_pixel, sizeof(s_ws2812_pixel), &tx_cfg);
+  rmt_tx_wait_all_done(s_rmt_chan, portMAX_DELAY);
 #else
   led_set_ryg_bits(0, 0, 0);
 #endif
@@ -146,6 +182,43 @@ static esp_err_t led_init_pwm_channels(void) {
   return ESP_OK;
 }
 
+#if BBCLAW_STATUS_LED_WS2812
+static esp_err_t led_init_ws2812(void) {
+  // Create RMT TX channel
+  rmt_tx_channel_config_t tx_chan_cfg = {
+      .clk_src = RMT_CLK_SRC_DEFAULT,
+      .gpio_num = BBCLAW_STATUS_LED_R_GPIO,
+      .mem_block_symbols = 64,
+      .resolution_hz = BB_LED_WS2812_RESOLUTION_HZ,
+      .trans_queue_depth = 4,
+  };
+  esp_err_t err = rmt_new_tx_channel(&tx_chan_cfg, &s_rmt_chan);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "rmt new tx channel failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  // Create WS2812 encoder
+  led_strip_encoder_config_t encoder_cfg = {
+      .resolution = BB_LED_WS2812_RESOLUTION_HZ,
+  };
+  err = rmt_new_led_strip_encoder(&encoder_cfg, &s_rmt_encoder);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "rmt new led strip encoder failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = rmt_enable(s_rmt_chan);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "rmt enable failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  ESP_LOGI(TAG, "ws2812 init done gpio=%d", BBCLAW_STATUS_LED_R_GPIO);
+  return ESP_OK;
+}
+#endif
+
 static void render_boot_marquee(uint32_t elapsed_ms) {
   uint32_t step = (uint32_t)BBCLAW_STATUS_LED_BOOT_ANIM_STEP_MS;
   if (step == 0U) {
@@ -159,6 +232,14 @@ static void render_boot_marquee(uint32_t elapsed_ms) {
     led_set_rgb_bits(0, 1, 0);
   } else {
     led_set_rgb_bits(0, 0, 1);
+  }
+#elif BBCLAW_STATUS_LED_WS2812
+  if (idx == 0U) {
+    led_set_ws2812_bits(255, 0, 0);
+  } else if (idx == 1U) {
+    led_set_ws2812_bits(0, 255, 0);
+  } else {
+    led_set_ws2812_bits(0, 0, 255);
   }
 #else
   if (idx == 0U) {
@@ -223,6 +304,57 @@ static void render_led(bb_led_status_t status, bool overlay_active, uint32_t ela
       break;
     default:
       led_set_rgb_bits(0, 0, 0);
+      break;
+  }
+#elif BBCLAW_STATUS_LED_WS2812
+  switch (status) {
+    case BB_LED_IDLE:
+      led_set_ws2812_bits(0, 255, 0);
+      break;
+    case BB_LED_RECORDING:
+      led_set_ws2812_bits(255, 0, 0);
+      break;
+    case BB_LED_PROCESSING:
+      phase = (elapsed_ms / 250U) % 2U;
+      if (phase == 0U) {
+        led_set_ws2812_bits(255, 255, 0);
+      } else {
+        led_set_ws2812_bits(0, 0, 0);
+      }
+      break;
+    case BB_LED_REPLY:
+      phase = (elapsed_ms / 250U) % 2U;
+      if (phase == 0U) {
+        led_set_ws2812_bits(0, 255, 0);
+      } else {
+        led_set_ws2812_bits(0, 0, 0);
+      }
+      break;
+    case BB_LED_NOTIFICATION:
+      phase = (elapsed_ms / 200U) % 2U;
+      if (phase == 0U) {
+        led_set_ws2812_bits(255, 0, 0);
+      } else {
+        led_set_ws2812_bits(0, 0, 0);
+      }
+      break;
+    case BB_LED_SUCCESS:
+      if (overlay_active && elapsed_ms < 200U) {
+        led_set_ws2812_bits(0, 255, 0);
+      } else {
+        led_set_ws2812_bits(0, 0, 0);
+      }
+      break;
+    case BB_LED_ERROR:
+      phase = (elapsed_ms / 250U) % 2U;
+      if (phase == 0U) {
+        led_set_ws2812_bits(255, 0, 0);
+      } else {
+        led_set_ws2812_bits(0, 0, 0);
+      }
+      break;
+    default:
+      led_set_ws2812_bits(0, 0, 0);
       break;
   }
 #else
@@ -343,6 +475,11 @@ esp_err_t bb_led_init(void) {
   }
   uint64_t mask = (1ULL << (unsigned)BBCLAW_STATUS_LED_R_GPIO) | (1ULL << (unsigned)BBCLAW_STATUS_LED_RGB_G_GPIO) |
                   (1ULL << (unsigned)BBCLAW_STATUS_LED_RGB_B_GPIO);
+#elif BBCLAW_STATUS_LED_WS2812
+  if (BBCLAW_STATUS_LED_R_GPIO < 0) {
+    ESP_LOGW(TAG, "ws2812 enabled but data gpio not configured");
+    return ESP_ERR_INVALID_ARG;
+  }
 #else
   if (BBCLAW_STATUS_LED_R_GPIO < 0 || BBCLAW_STATUS_LED_Y_GPIO < 0 || BBCLAW_STATUS_LED_G_GPIO < 0) {
     ESP_LOGW(TAG, "status led enabled but gpio not fully configured");
@@ -358,6 +495,13 @@ esp_err_t bb_led_init(void) {
                   (1ULL << (unsigned)BBCLAW_STATUS_LED_G_GPIO);
 #endif
 
+#if BBCLAW_STATUS_LED_WS2812
+  esp_err_t err = led_init_ws2812();
+  if (err != ESP_OK) {
+    return err;
+  }
+  led_all_off();
+#else
   gpio_config_t io = {
       .pin_bit_mask = mask,
       .mode = GPIO_MODE_OUTPUT,
@@ -374,6 +518,7 @@ esp_err_t bb_led_init(void) {
     return err;
   }
   led_all_off();
+#endif
 
 #if BBCLAW_STATUS_LED_BOOT_ANIM_ENABLE && BBCLAW_STATUS_LED_BOOT_ANIM_LOOPS > 0
   s_boot_anim_start_ms = bb_now_ms();
@@ -395,6 +540,9 @@ esp_err_t bb_led_init(void) {
   ESP_LOGI(TAG, "status led rgb module r=%d g=%d b=%d gpio_on_level=%d brightness_pct=%d pwm=%uHz/%ubit (yellow=R+G)",
            BBCLAW_STATUS_LED_R_GPIO, BBCLAW_STATUS_LED_RGB_G_GPIO, BBCLAW_STATUS_LED_RGB_B_GPIO,
            BBCLAW_STATUS_LED_GPIO_ON_LEVEL, BBCLAW_STATUS_LED_BRIGHTNESS_PCT, BB_LED_LEDC_FREQ_HZ, 10U);
+#elif BBCLAW_STATUS_LED_WS2812
+  ESP_LOGI(TAG, "status led ws2812 data_gpio=%d brightness_pct=%d", BBCLAW_STATUS_LED_R_GPIO,
+           BBCLAW_STATUS_LED_BRIGHTNESS_PCT);
 #else
   ESP_LOGI(TAG, "status led ryg r=%d y=%d g=%d gpio_on_level=%d brightness_pct=%d pwm=%uHz/%ubit", BBCLAW_STATUS_LED_R_GPIO,
            BBCLAW_STATUS_LED_Y_GPIO, BBCLAW_STATUS_LED_G_GPIO, BBCLAW_STATUS_LED_GPIO_ON_LEVEL,

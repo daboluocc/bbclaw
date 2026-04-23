@@ -31,8 +31,8 @@ static void log_mem_snapshot(const char* phase) {
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+           (unsigned)heap_caps_get_free_size(BBCLAW_MALLOC_CAP_PREFER_PSRAM),
+           (unsigned)heap_caps_get_largest_free_block(BBCLAW_MALLOC_CAP_PREFER_PSRAM));
 }
 
 static const char* active_base_url(void) {
@@ -819,7 +819,7 @@ static void ws_handle_binary_message(const uint8_t* data, size_t len) {
     while (new_cap < need) {
       new_cap *= 2U;
     }
-    uint8_t* new_buf = (uint8_t*)heap_caps_realloc(s_ws.tts_audio_buf, new_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t* new_buf = (uint8_t*)heap_caps_realloc(s_ws.tts_audio_buf, new_cap, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
     if (new_buf == NULL) {
       xSemaphoreGive(s_ws.lock);
       return;
@@ -875,7 +875,7 @@ static void ws_event_handler(void* handler_args, esp_event_base_t base, int32_t 
     while (new_cap < need) {
       new_cap *= 2U;
     }
-    uint8_t* new_buf = (uint8_t*)heap_caps_realloc(s_ws.text_buf, new_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t* new_buf = (uint8_t*)heap_caps_realloc(s_ws.text_buf, new_cap, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
     if (new_buf == NULL) {
       xSemaphoreGive(s_ws.lock);
       return;
