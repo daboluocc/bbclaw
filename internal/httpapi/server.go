@@ -67,6 +67,14 @@ type Server struct {
 	agent   agent.Driver // optional; set via SetAgentDriver
 	log     *obs.Logger
 	metrics *obs.Metrics
+
+	// agentCtx is a long-lived context used for agent sessions so they can
+	// survive across individual HTTP requests. agentCancel is kept for a
+	// future shutdown hook; Phase 1.5 has no server shutdown plumbing, so
+	// in practice agentCtx lives until the process exits.
+	agentCtx      context.Context
+	agentCancel   context.CancelFunc
+	agentSessions *sessionRegistry
 }
 
 func NewServer(cfg AppConfig, streams *audio.Manager, asrProvider ASRProvider, ttsProvider TTSProvider, sink OpenClawSink, logger *obs.Logger, metrics *obs.Metrics) *Server {
