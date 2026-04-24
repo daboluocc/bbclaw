@@ -18,3 +18,4 @@
 | 编号 | 标题 | 日期 | 状态 |
 |------|------|------|------|
 | [ADR-001](ADR-001-adapter-as-agent-bus.md) | adapter 作为 Agent 总线 | 2026-04-25 | 已接受 |
+| [ADR-002](ADR-002-multi-turn-session-lifecycle.md) | 多轮会话生命周期 | 2026-04-25 | 已接受 |
