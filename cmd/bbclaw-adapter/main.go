@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
@@ -144,6 +145,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
+	server.SetAgentDriver(claudecode.New(claudecode.Options{}, logger))
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),

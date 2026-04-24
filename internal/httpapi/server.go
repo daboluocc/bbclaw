@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -63,6 +64,7 @@ type Server struct {
 	tts     TTSProvider
 	sink    OpenClawSink
 	display *displayTaskQueue
+	agent   agent.Driver // optional; set via SetAgentDriver
 	log     *obs.Logger
 	metrics *obs.Metrics
 }
@@ -90,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/task", s.withAuth(s.handleDisplayTask))
 	mux.HandleFunc("POST /v1/display/pull", s.withAuth(s.handleDisplayPull))
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
+	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	return mux
 }
 
