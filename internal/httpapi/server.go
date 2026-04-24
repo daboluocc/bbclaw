@@ -64,7 +64,7 @@ type Server struct {
 	tts     TTSProvider
 	sink    OpenClawSink
 	display *displayTaskQueue
-	agent   agent.Driver // optional; set via SetAgentDriver
+	router  *agent.Router // optional; set via SetAgentDriver / SetAgentRouter
 	log     *obs.Logger
 	metrics *obs.Metrics
 
@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/pull", s.withAuth(s.handleDisplayPull))
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
+	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	return mux
 }
 

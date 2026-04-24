@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +20,12 @@ const (
 )
 
 // sessionEntry tracks one live agent session held open across HTTP turns.
+// driverName records which router entry owns the underlying driver session
+// so sweeps + subsequent turns always route to the right Driver.
 type sessionEntry struct {
-	sid      agent.SessionID
-	lastUsed time.Time
+	sid        agent.SessionID
+	driverName string
+	lastUsed   time.Time
 }
 
 // sessionRegistry is a goroutine-safe map of server-visible session id
@@ -73,26 +77,38 @@ func (r *sessionRegistry) snapshotExpired(ttl time.Duration) []*sessionEntry {
 	return out
 }
 
-// SetAgentDriver attaches an agent driver to the server. Pass nil to disable
-// the /v1/agent/* endpoints. Phase 1.5 adds multi-turn session continuity:
-// sessions persist across HTTP requests and are evicted by a background
-// sweeper after sessionTTL of inactivity.
+// SetAgentDriver is the Phase 1.5 convenience wrapper: it builds a
+// single-driver Router internally and forwards to SetAgentRouter. Kept for
+// backward compatibility with existing tests and the main binary's previous
+// wiring.
 func (s *Server) SetAgentDriver(d agent.Driver) {
-	s.agent = d
 	if d == nil {
+		s.SetAgentRouter(nil)
+		return
+	}
+	r := agent.NewRouter()
+	r.Register(d, s.log)
+	s.SetAgentRouter(r)
+}
+
+// SetAgentRouter attaches a multi-driver router to the server. Pass nil to
+// disable the /v1/agent/* endpoints. Starts the long-lived session sweeper
+// the same way Phase 1.5 did.
+func (s *Server) SetAgentRouter(r *agent.Router) {
+	s.router = r
+	if r == nil || r.Default() == nil {
 		if s.agentCancel != nil {
 			s.agentCancel()
 			s.agentCancel = nil
 		}
 		s.agentCtx = nil
 		s.agentSessions = nil
+		s.router = nil
 		return
 	}
-	// NOTE: the Server struct has no Shutdown hook in Phase 1.5, so in
-	// practice agentCtx lives for the process lifetime. That is acceptable
-	// here because the sweeper goroutine is the only long-lived consumer
-	// and the process exits with the parent. When a shutdown hook is added
-	// later, call s.agentCancel() from there to tear everything down.
+	// NOTE: the Server struct has no Shutdown hook yet, so in practice
+	// agentCtx lives for the process lifetime. When a shutdown hook is
+	// added later, call s.agentCancel() from there to tear everything down.
 	s.agentCtx, s.agentCancel = context.WithCancel(context.Background())
 	s.agentSessions = newSessionRegistry()
 	go s.runSessionSweeper(s.agentCtx, sweepInterval, sessionTTL)
@@ -114,29 +130,54 @@ func (s *Server) runSessionSweeper(ctx context.Context, interval, ttl time.Durat
 }
 
 // sweepSessions removes idle sessions from the registry and stops them on
-// the driver. Safe to call concurrently with request handling.
+// the driver pinned to each entry. Safe to call concurrently with request
+// handling.
 func (s *Server) sweepSessions(ttl time.Duration) {
-	if s.agentSessions == nil || s.agent == nil {
+	if s.agentSessions == nil || s.router == nil {
 		return
 	}
 	for _, e := range s.agentSessions.snapshotExpired(ttl) {
-		if err := s.agent.Stop(e.sid); err != nil {
-			s.log.Warnf("agent: sweep stop sid=%s err=%v", e.sid, err)
+		drv, ok := s.router.Get(e.driverName)
+		if !ok {
+			s.log.Warnf("agent: sweep found entry with unknown driver=%s sid=%s", e.driverName, e.sid)
 			continue
 		}
-		s.log.Infof("agent: swept idle sid=%s", e.sid)
+		if err := drv.Stop(e.sid); err != nil {
+			s.log.Warnf("agent: sweep stop driver=%s sid=%s err=%v", e.driverName, e.sid, err)
+			continue
+		}
+		s.log.Infof("agent: swept idle driver=%s sid=%s", e.driverName, e.sid)
 	}
 }
 
 type agentMessageRequest struct {
 	Text      string `json:"text"`
 	SessionId string `json:"sessionId,omitempty"`
+	Driver    string `json:"driver,omitempty"`
+}
+
+// handleAgentDrivers lists the drivers currently registered on the router.
+//
+//	GET /v1/agent/drivers
+//	response: {"ok":true,"data":{"drivers":[{"name":"...","capabilities":{...}},...]}}
+func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	drivers := s.router.List()
+	// Stable order makes the response testable and easier to eyeball.
+	sort.Slice(drivers, func(i, j int) bool { return drivers[i].Name < drivers[j].Name })
+	writeJSON(w, http.StatusOK, response{
+		OK:   true,
+		Data: map[string]any{"drivers": drivers},
+	})
 }
 
 // handleAgentMessage streams one agent turn as NDJSON.
 //
 //	POST /v1/agent/message
-//	{"text":"hello","sessionId":"<optional>"}
+//	{"text":"hello","sessionId":"<optional>","driver":"<optional>"}
 //
 //	response: application/x-ndjson
 //	  {"type":"session","sessionId":"...","isNew":true|false,"seq":0}
@@ -144,12 +185,11 @@ type agentMessageRequest struct {
 //	  {"type":"tokens","in":N,"out":M}
 //	  {"type":"turn_end"}
 //
-// Phase 1.5: if sessionId is provided and matches a live entry, the
-// existing driver session is reused (multi-turn continuity). Otherwise a
-// fresh driver session is started. Sessions are NOT stopped on turn_end;
-// a background sweeper evicts them after sessionTTL of inactivity.
+// Phase 3: routes to one of the registered drivers. When the request
+// includes a sessionId for an existing entry, the driver is pinned to that
+// session (see SESSION_DRIVER_MISMATCH handling below).
 func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
-	if s.agent == nil {
+	if s.router == nil {
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
 		return
 	}
@@ -164,35 +204,98 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_TEXT"})
 		return
 	}
+	requestedDriver := strings.TrimSpace(req.Driver)
 
-	sw, ok := newFinishStreamWriter(w)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "STREAMING_NOT_SUPPORTED"})
-		return
+	// Resolve an initial candidate driver. If the caller named one, it must
+	// exist; otherwise we fall back to the router default. A reused session
+	// may still override this below because sessions are pinned to whichever
+	// driver started them.
+	var (
+		drv        agent.Driver
+		driverName string
+	)
+	if requestedDriver != "" {
+		var ok bool
+		drv, ok = s.router.Get(requestedDriver)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, response{
+				OK:     false,
+				Error:  "UNKNOWN_DRIVER",
+				Detail: "driver not registered: " + requestedDriver,
+			})
+			return
+		}
+		driverName = requestedDriver
+	} else {
+		drv = s.router.Default()
+		if drv == nil {
+			writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+			return
+		}
+		driverName = drv.Name()
 	}
 
 	// Resolve or create the backing session. We key the registry by the
 	// string form of agent.SessionID so the device-visible id and the
 	// driver-internal id are the same value.
+	//
+	// Session lookup + pinning validation happens BEFORE we flip the
+	// response to NDJSON so we can still emit a plain JSON 4xx for
+	// SESSION_DRIVER_MISMATCH / UNKNOWN_DRIVER.
 	var (
 		sid   agent.SessionID
 		isNew bool
 	)
 	if requested := strings.TrimSpace(req.SessionId); requested != "" {
 		if entry, found := s.agentSessions.get(requested); found {
+			// Sessions are pinned to the driver that started them. If the
+			// caller supplied an explicit driver that disagrees, fail loudly
+			// with a 400 instead of silently switching drivers mid-
+			// conversation.
+			if requestedDriver != "" && requestedDriver != entry.driverName {
+				writeJSON(w, http.StatusBadRequest, response{
+					OK:     false,
+					Error:  "SESSION_DRIVER_MISMATCH",
+					Detail: "sessionId is pinned to driver=" + entry.driverName + ", request asked for driver=" + requestedDriver,
+				})
+				return
+			}
+			// Ignore any candidate driver from the resolution above and use
+			// the pinned one.
+			pinned, found2 := s.router.Get(entry.driverName)
+			if !found2 {
+				writeJSON(w, http.StatusInternalServerError, response{
+					OK:     false,
+					Error:  "UNKNOWN_DRIVER",
+					Detail: "session references unregistered driver: " + entry.driverName,
+				})
+				return
+			}
+			drv = pinned
+			driverName = entry.driverName
 			sid = entry.sid
 			isNew = false
 		}
 	}
+
+	sw, ok := newFinishStreamWriter(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "STREAMING_NOT_SUPPORTED"})
+		return
+	}
 	if sid == "" {
-		newSid, err := s.agent.Start(s.agentCtx, agent.StartOpts{})
+		newSid, err := drv.Start(s.agentCtx, agent.StartOpts{})
 		if err != nil {
 			_ = sw.write(map[string]any{"type": "error", "error": "AGENT_START_FAILED", "detail": err.Error()})
 			return
 		}
 		sid = newSid
 		isNew = true
-		s.agentSessions.put(string(sid), &sessionEntry{sid: sid, lastUsed: time.Now()})
+		s.agentSessions.put(string(sid), &sessionEntry{
+			sid:        sid,
+			driverName: driverName,
+			lastUsed:   time.Now(),
+		})
 	}
 
 	// Emit the session frame first so the client learns (or confirms) the
@@ -201,6 +304,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		"type":      "session",
 		"sessionId": string(sid),
 		"isNew":     isNew,
+		"driver":    driverName,
 		"seq":       0,
 	}); err != nil {
 		s.log.Warnf("agent: write session frame failed: %v", err)
@@ -210,15 +314,15 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	// Bump lastUsed now that we've committed to serving this turn.
 	s.agentSessions.touch(string(sid))
 
-	events := s.agent.Events(sid)
+	events := drv.Events(sid)
 
 	// Send blocks until the subprocess exits and emits EvTurnEnd. Run it in
 	// a goroutine so we can drain events concurrently.
 	sendErrCh := make(chan error, 1)
-	go func() { sendErrCh <- s.agent.Send(sid, text) }()
+	go func() { sendErrCh <- drv.Send(sid, text) }()
 
 	s.metrics.Inc("agent_message_start")
-	s.log.Infof("phase=agent_start sid=%s is_new=%v text_chars=%d", sid, isNew, len(text))
+	s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v text_chars=%d", driverName, sid, isNew, len(text))
 
 	ctx := r.Context()
 	for {
@@ -240,13 +344,13 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			if ev.Type == agent.EvTurnEnd {
 				// Wait for Send to return so we log its error properly.
 				if sendErr := <-sendErrCh; sendErr != nil {
-					s.log.Errorf("phase=agent_send_failed sid=%s err=%v", sid, sendErr)
+					s.log.Errorf("phase=agent_send_failed driver=%s sid=%s err=%v", driverName, sid, sendErr)
 				}
 				// Turn ended cleanly: keep the session alive for the next
 				// request and refresh lastUsed.
 				s.agentSessions.touch(string(sid))
 				s.metrics.Inc("agent_message_ok")
-				s.log.Infof("phase=agent_done sid=%s", sid)
+				s.log.Infof("phase=agent_done driver=%s sid=%s", driverName, sid)
 				return
 			}
 		}

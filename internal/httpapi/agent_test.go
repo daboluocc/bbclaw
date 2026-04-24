@@ -21,7 +21,11 @@ import (
 // It supports multi-turn reuse: each Send pushes a full 4-event reply
 // (text, text, tokens, turn_end) onto the shared events channel. Stop
 // closes the channel once; repeat calls are idempotent.
+//
+// The name is configurable so the router tests can register two mocks
+// side by side without Name() collisions.
 type mockDriver struct {
+	name     string
 	mu       sync.Mutex
 	events   chan agent.Event
 	received []string
@@ -29,14 +33,19 @@ type mockDriver struct {
 }
 
 func newMockDriver() *mockDriver {
-	return &mockDriver{events: make(chan agent.Event, 64)}
+	return newNamedMockDriver("mock")
 }
 
-func (m *mockDriver) Name() string                    { return "mock" }
+func newNamedMockDriver(name string) *mockDriver {
+	return &mockDriver{name: name, events: make(chan agent.Event, 64)}
+}
+
+func (m *mockDriver) Name() string                    { return m.name }
 func (m *mockDriver) Capabilities() agent.Capabilities { return agent.Capabilities{Streaming: true} }
 
 func (m *mockDriver) Start(_ context.Context, _ agent.StartOpts) (agent.SessionID, error) {
-	return "mock-sid", nil
+	// Unique sid per driver keeps assertions easy when two mocks coexist.
+	return agent.SessionID(m.name + "-sid"), nil
 }
 
 func (m *mockDriver) Send(_ agent.SessionID, text string) error {
@@ -46,7 +55,7 @@ func (m *mockDriver) Send(_ agent.SessionID, text string) error {
 	// Simulate a streamed reply. Events are pushed synchronously so
 	// successive Send calls produce deterministic ordering.
 	m.events <- agent.Event{Type: agent.EvText, Text: "hello "}
-	m.events <- agent.Event{Type: agent.EvText, Text: "from mock"}
+	m.events <- agent.Event{Type: agent.EvText, Text: "from " + m.name}
 	m.events <- agent.Event{Type: agent.EvTokens, Tokens: &agent.Tokens{In: 7, Out: 3}}
 	m.events <- agent.Event{Type: agent.EvTurnEnd}
 	return nil
@@ -221,6 +230,205 @@ func TestHandleAgentMessage_MultiTurn(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("driver received[%d]=%q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestHandleAgentDrivers(t *testing.T) {
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	router := agent.NewRouter()
+	router.Register(newNamedMockDriver("mock1"), obs.NewLogger())
+	router.Register(newNamedMockDriver("mock2"), obs.NewLogger())
+	srv.SetAgentRouter(router)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/agent/drivers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Drivers []struct {
+				Name         string             `json:"name"`
+				Capabilities agent.Capabilities `json:"capabilities"`
+			} `json:"drivers"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK {
+		t.Fatalf("ok=false, body=%+v", body)
+	}
+	if len(body.Data.Drivers) != 2 {
+		t.Fatalf("want 2 drivers, got %d: %+v", len(body.Data.Drivers), body.Data.Drivers)
+	}
+	names := []string{body.Data.Drivers[0].Name, body.Data.Drivers[1].Name}
+	want := []string{"mock1", "mock2"} // sorted by handler
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("drivers[%d].name=%q want %q", i, names[i], want[i])
+		}
+	}
+	// Capabilities must round-trip.
+	if !body.Data.Drivers[0].Capabilities.Streaming {
+		t.Errorf("expected Streaming=true on mock1, got %+v", body.Data.Drivers[0].Capabilities)
+	}
+}
+
+func TestHandleAgentDrivers_NotConfigured(t *testing.T) {
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/agent/drivers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status=%d want 501", resp.StatusCode)
+	}
+}
+
+func TestHandleAgentMessage_ExplicitDriver(t *testing.T) {
+	m1 := newNamedMockDriver("mock1")
+	m2 := newNamedMockDriver("mock2")
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	router := agent.NewRouter()
+	router.Register(m1, obs.NewLogger())
+	router.Register(m2, obs.NewLogger())
+	srv.SetAgentRouter(router)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{"text": "hello", "driver": "mock2"})
+	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	frames := readNDJSONFrames(t, resp.Body)
+	if len(frames) == 0 || frames[0]["type"] != "session" {
+		t.Fatalf("first frame must be session: %+v", frames)
+	}
+	if frames[0]["driver"] != "mock2" {
+		t.Errorf("session driver=%v want mock2", frames[0]["driver"])
+	}
+
+	// Only mock2 should have been called.
+	if got := m1.receivedTexts(); len(got) != 0 {
+		t.Errorf("mock1 received=%v, want empty", got)
+	}
+	if got := m2.receivedTexts(); len(got) != 1 || got[0] != "hello" {
+		t.Errorf("mock2 received=%v, want [hello]", got)
+	}
+	// The text frame proves mock2 (not mock1) emitted it.
+	foundM2Text := false
+	for _, f := range frames {
+		if f["type"] == "text" && f["text"] == "from mock2" {
+			foundM2Text = true
+		}
+	}
+	if !foundM2Text {
+		t.Errorf("expected a 'from mock2' text frame, got %+v", frames)
+	}
+}
+
+func TestHandleAgentMessage_UnknownDriver(t *testing.T) {
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	router := agent.NewRouter()
+	router.Register(newNamedMockDriver("mock1"), obs.NewLogger())
+	srv.SetAgentRouter(router)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{"text": "hi", "driver": "nope"})
+	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+	var r struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if r.OK || r.Error != "UNKNOWN_DRIVER" {
+		t.Fatalf("resp=%+v want {ok:false, error:UNKNOWN_DRIVER}", r)
+	}
+}
+
+func TestHandleAgentMessage_DriverMismatch(t *testing.T) {
+	m1 := newNamedMockDriver("mock1")
+	m2 := newNamedMockDriver("mock2")
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	router := agent.NewRouter()
+	router.Register(m1, obs.NewLogger())
+	router.Register(m2, obs.NewLogger())
+	srv.SetAgentRouter(router)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Turn 1: start a session pinned to mock1 (the default).
+	resp1, err := http.Post(ts.URL+"/v1/agent/message", "application/json",
+		bytes.NewBufferString(`{"text":"hi"}`))
+	if err != nil {
+		t.Fatalf("POST turn 1: %v", err)
+	}
+	frames1 := readNDJSONFrames(t, resp1.Body)
+	resp1.Body.Close()
+	sid1, _ := frames1[0]["sessionId"].(string)
+	if sid1 == "" {
+		t.Fatalf("turn 1: missing sessionId: %+v", frames1)
+	}
+	if frames1[0]["driver"] != "mock1" {
+		t.Fatalf("turn 1 driver=%v want mock1", frames1[0]["driver"])
+	}
+
+	// Turn 2: same sessionId, but force driver=mock2. Expect a plain JSON
+	// 400 with SESSION_DRIVER_MISMATCH since we validate the pin before
+	// committing to NDJSON.
+	body, _ := json.Marshal(map[string]any{"text": "hi again", "sessionId": sid1, "driver": "mock2"})
+	resp2, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST turn 2: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("turn 2 status=%d want 400", resp2.StatusCode)
+	}
+	var r struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&r); err != nil {
+		t.Fatalf("decode turn 2: %v", err)
+	}
+	if r.OK || r.Error != "SESSION_DRIVER_MISMATCH" {
+		t.Fatalf("turn 2 resp=%+v want {ok:false, error:SESSION_DRIVER_MISMATCH}", r)
+	}
+	// mock2 must never have been invoked for this session.
+	if got := m2.receivedTexts(); len(got) != 0 {
+		t.Errorf("mock2 received=%v, want none (mismatch should short-circuit)", got)
 	}
 }
 

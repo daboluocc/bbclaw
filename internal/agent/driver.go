@@ -61,10 +61,10 @@ type Tokens struct {
 // Capabilities declares what a driver supports. Device-side UX adapts to
 // this (e.g. hides the "approve" menu when ToolApproval is false).
 type Capabilities struct {
-	ToolApproval  bool
-	Resume        bool
-	Streaming     bool
-	MaxInputBytes int
+	ToolApproval  bool `json:"toolApproval"`
+	Resume        bool `json:"resume"`
+	Streaming     bool `json:"streaming"`
+	MaxInputBytes int  `json:"maxInputBytes"`
 }
 
 // StartOpts carries per-session startup parameters.

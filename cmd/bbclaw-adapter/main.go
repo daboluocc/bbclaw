@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
@@ -145,11 +148,96 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
-	server.SetAgentDriver(claudecode.New(claudecode.Options{}, logger))
+	server.SetAgentRouter(buildAgentRouter(logger))
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
 	}, nil
+}
+
+// buildAgentRouter constructs the Router using these two env vars (both
+// optional; zero-config means "auto-detect what's available"):
+//
+//   AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,ollama"); empty =
+//                          auto mode — claude-code always registered,
+//                          ollama registered only if 127.0.0.1:11434 is
+//                          listening.
+//   AGENT_DEFAULT_DRIVER   request without explicit driver routes to this
+//                          one; empty = first registered driver.
+//
+// Everything else is hardcoded by design (see feedback_config_minimalism).
+func buildAgentRouter(logger *obs.Logger) *agent.Router {
+	router := agent.NewRouter()
+	enabled := parseEnabledDrivers(os.Getenv("AGENT_ENABLED_DRIVERS"))
+
+	registerClaude := enabled == nil || enabled["claude-code"]
+	if registerClaude {
+		router.Register(claudecode.New(claudecode.Options{}, logger), logger)
+	}
+
+	registerOllama := false
+	switch {
+	case enabled == nil:
+		registerOllama = probeTCP("127.0.0.1:11434", 500*time.Millisecond)
+		if registerOllama {
+			logger.Infof("ollama: auto-detected on 127.0.0.1:11434, registering")
+		} else {
+			logger.Infof("ollama: 127.0.0.1:11434 not reachable, skipping (set AGENT_ENABLED_DRIVERS to force)")
+		}
+	case enabled["ollama"]:
+		registerOllama = true
+		logger.Infof("ollama: explicitly enabled via AGENT_ENABLED_DRIVERS")
+	}
+	if registerOllama {
+		router.Register(ollama.New(ollama.Options{}, logger), logger)
+	}
+
+	if want := strings.TrimSpace(os.Getenv("AGENT_DEFAULT_DRIVER")); want != "" {
+		if !router.SetDefault(want) {
+			logger.Warnf("AGENT_DEFAULT_DRIVER=%q is not a registered driver; keeping %q", want, router.DefaultName())
+		} else {
+			logger.Infof("agent router: default overridden to %q via AGENT_DEFAULT_DRIVER", want)
+		}
+	}
+
+	var names []string
+	for _, info := range router.List() {
+		names = append(names, info.Name)
+	}
+	logger.Infof("agent router ready drivers=%s default=%s", strings.Join(names, ","), router.DefaultName())
+	return router
+}
+
+// parseEnabledDrivers turns a comma list into a set. Empty input returns
+// nil (signalling "auto mode"); explicit empty entries are ignored.
+func parseEnabledDrivers(raw string) map[string]bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out[part] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// probeTCP dials addr with the given timeout and returns whether the dial
+// succeeded. Immediately closes the connection on success.
+func probeTCP(addr string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
