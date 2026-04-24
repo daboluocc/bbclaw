@@ -233,8 +233,9 @@ type ToolCall struct {
 | Phase | 内容 | 状态 |
 |---|---|---|
 | 1 | adapter 加 `driver/claude_code` + `AgentDriver` 接口 + `POST /v1/agent/message` NDJSON 端点 | ✅ 完成（2026-04-25） |
-| 2 | `tool_use` 审批闭环：`EvToolCall` + `Approve()` + 设备 ack 帧 | 待做 |
-| 3 | 加第二个 driver（推荐 Ollama 最无依赖） | 待做 |
+| 1.5 | 多轮 session 续接（`sessionId` 复用 + sweeper）· [ADR-002](decisions/ADR-002-multi-turn-session-lifecycle.md) | ✅ 完成（2026-04-25） |
+| 3 | `Router` 抽象 + 第二个 driver（Ollama）+ `GET /v1/agent/drivers` · [ADR-003](decisions/ADR-003-router-and-multi-driver.md) | 🔄 进行中 |
+| 2 | `tool_use` 审批闭环：`EvToolCall` + `Approve()` + 设备 ack 帧（需持久子进程 + `--input-format stream-json` 双向流） | 暂缓（等 Router 稳定后） |
 | 4 | 设备端 agent 切换菜单 + NVS 持久化 | 待做 |
 | 5 | Codex / Aider / Gemini driver | 按需加 |
 
