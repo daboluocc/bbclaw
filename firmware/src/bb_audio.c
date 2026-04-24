@@ -490,6 +490,17 @@ int bb_audio_get_speaker_sw_enabled(void) {
   return s_speaker_sw_enabled;
 }
 
+void bb_audio_poll_speaker_sw(void) {
+#if BBCLAW_SPEAKER_SW_GPIO >= 0
+  int level = gpio_get_level(BBCLAW_SPEAKER_SW_GPIO);
+  int enabled = (level == BBCLAW_SPEAKER_SW_ACTIVE_LEVEL) ? 1 : 0;
+  if (enabled != s_speaker_sw_enabled) {
+    s_speaker_sw_enabled = enabled;
+    ESP_LOGI(TAG, "speaker sw changed level=%d enabled=%d", level, enabled);
+  }
+#endif
+}
+
 static int16_t clamp_i16(int32_t v) {
   if (v > INT16_MAX) {
     return INT16_MAX;

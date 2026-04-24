@@ -20,4 +20,5 @@ esp_err_t bb_audio_play_test_tone(uint32_t freq_hz, uint32_t duration_ms, int16_
 void bb_audio_set_volume_pct(int pct);
 void bb_audio_set_speaker_enabled(int enabled);
 int bb_audio_get_speaker_sw_enabled(void);
+void bb_audio_poll_speaker_sw(void);
 esp_err_t bb_audio_encode_opus(const uint8_t* pcm, size_t pcm_len, uint8_t* out_buf, size_t out_buf_len, size_t* out_len);

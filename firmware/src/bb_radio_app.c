@@ -42,7 +42,11 @@ extern const uint8_t _binary_bbclaw_wav_end[] asm("_binary_bbclaw_wav_end");
 #define BB_LOG_TEXT_CHUNK 400
 #define BB_TTS_STREAM_QUEUE_DEPTH 128
 #define BB_TTS_STREAM_TASK_STACK 6144
+#ifdef CONFIG_SPIRAM
+#define BB_STREAM_TASK_STACK 40960
+#else
 #define BB_STREAM_TASK_STACK 12288
+#endif
 
 #if BBCLAW_SPK_TEST_ON_BOOT
 static uint16_t read_le16(const uint8_t* p) {
@@ -1882,6 +1886,7 @@ static void stream_task(void* arg) {
         if (bb_power_refresh() == ESP_OK) {
           refresh_power_display();
         }
+        bb_audio_poll_speaker_sw();
       }
     }
 
