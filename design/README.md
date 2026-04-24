@@ -8,8 +8,10 @@ BBClaw 项目的系统级设计文档，是开发决策的唯一真相来源。
 design/
 ├── README.md              # 本文件，文档索引
 ├── STATE_MACHINE.md       # 状态机设计文档（核心）
+├── agent_bus.md           # Agent 总线架构（adapter 多路复用各 AI CLI）
 └── decisions/            # 重要设计决策记录 (ADRs)
-    └── README.md
+    ├── README.md
+    └── ADR-001-adapter-as-agent-bus.md
 ```
 
 ## 核心原则
@@ -23,6 +25,7 @@ design/
 | 文档 | 说明 |
 |------|------|
 | `STATE_MACHINE.md` | PTT状态机、App状态机、UI状态机等 |
+| `agent_bus.md` | adapter 作为 Agent 总线，多 AI CLI 接入架构 |
 
 ---
 
