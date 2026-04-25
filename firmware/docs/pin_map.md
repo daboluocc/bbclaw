@@ -42,7 +42,7 @@
 | `BCLK`        | `GPIO16`| `BCLK`          | `BBCLAW_SPK_BCLK_GPIO`    | `BBCLAW_AUDIO_I2S_BCK_GPIO`   |
 | `LRC`         | `GPIO15`| `WS / LRCK`     | `BBCLAW_SPK_LRC_GPIO`     | `BBCLAW_AUDIO_I2S_WS_GPIO`    |
 | `DIN`         | `GPIO17`| ESP TX → amp    | `BBCLAW_SPK_DIN_GPIO`     | `BBCLAW_AUDIO_I2S_DO_GPIO`    |
-| `SD/EN`（若有）  | 悬空或 GPIO | 静音/使能控制       | —                         | —                             |
+| `SD/EN`（若有）  | 悬空或 GPIO | 静音/使能控制       | `BBCLAW_SPK_SD_GPIO`      | `BBCLAW_SPEAKER_SW_GPIO`（`bbclaw` PCB 默认 `GPIO4`） |
 | `GAIN`（若有）    | 默认悬空   | 增益拨档（模块内部下拉） | —                         | —                             |
 | `SPK+ / SPK-` | 扬声器正负极 | 扬声器输出          | —                         | —                             |
 
@@ -179,7 +179,8 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 | 位时钟          | `SCK`      | `BCLK`      | `GPIO16`   | `BBCLAW_MIC_SCK_GPIO` / `BBCLAW_SPK_BCLK_GPIO`            | 共线（`BBCLAW_AUDIO_I2S_BCK_GPIO`）                          |
 | 字时钟          | `WS`       | `LRC`       | `GPIO15`   | `BBCLAW_MIC_WS_GPIO`  / `BBCLAW_SPK_LRC_GPIO`             | 共线（`BBCLAW_AUDIO_I2S_WS_GPIO`）                           |
 | 功放输入 DIN      | —          | `DIN`       | `GPIO17`   | `BBCLAW_SPK_DIN_GPIO`                                     | ESP TX → amp（`BBCLAW_AUDIO_I2S_DO_GPIO`）                    |
-| 麦克风输出 SD     | `SD`       | —           | `GPIO20`   | `BBCLAW_MIC_SD_GPIO`                                      | mic → ESP RX（`BBCLAW_AUDIO_I2S_DI_GPIO`）；**仅 INMP441**，PCB 上与 breadboard 的 `GPIO18` 不同 |
+| 功放使能 SD       | —          | `SD`        | `GPIO4`    | `BBCLAW_SPK_SD_GPIO`                                      | MAX98357A shutdown / 静音；LOW=静音（`BBCLAW_SPEAKER_SW_GPIO`） |
+| 麦克风输出 SD     | `SD`       | —           | `GPIO18`   | `BBCLAW_MIC_SD_GPIO`                                      | mic → ESP RX（`BBCLAW_AUDIO_I2S_DI_GPIO`）                    |
 | 主时钟 MCLK      | —          | —           | （未引出）     | —                                                         | `BBCLAW_AUDIO_I2S_MCK_GPIO=-1`，INMP441 路径不输出主时钟        |
 
 
@@ -195,7 +196,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 **其它**
 
-- `GPIO4`：原理图为 **SD**（存储卡）；固件未启用 SD 时可仅占位。
+- `GPIO4`：MAX98357A 丝印 **SD**（shutdown / 静音使能）。对应 `BBCLAW_SPEAKER_SW_GPIO` / `BBCLAW_SPK_SD_GPIO`，LOW=静音；固件默认开机时推高。
 - `GPIO41` / `GPIO42`：原理图 **KEY2** / **KEY1**；导航仍使用编码器 `6`/`8` + 按压 `GPIO1`，两枚独立按键尚未接软件逻辑。
 
 ### 2.1 电池电压采样（GPIO3 / ADC1_CH2）
@@ -260,7 +261,7 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 - `A/B/KEY` 三路默认都使用内部上拉，外部可不再加上拉电阻。
 - 若旋转方向与预期相反，互换 `A/B` 两根线即可。
-- `GPIO1` 被保留给编码器按键，因此 `bbclaw` 板型默认关闭 `BBCLAW_SPEAKER_SW_GPIO`。
+- `GPIO1` 由导航按键使用；`bbclaw` 板型把 MAX98357A 的 SD（shutdown）接到 `GPIO4`，由 `BBCLAW_SPEAKER_SW_GPIO=4` 控制（等价 `BBCLAW_SPK_SD_GPIO`）。
 - 若切到 `ES8311` 模式，`GPIO6/8` 会与 `I2C SCL/SDA` 冲突，需要重新分配编码器引脚。
 
 ## 3. ES8311 兼容模式（可选）

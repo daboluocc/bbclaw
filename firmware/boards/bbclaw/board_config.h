@@ -11,16 +11,31 @@
 
 /*
  * Audio: 外接 INMP441 + MAX98357A，无 ES8311 codec。
- * `BBCLAW_AUDIO_I2S_*` 为板级共用 I2S 管脚宏，本板仅 inmp441 路径使用。
+ *
+ * 以模块丝印名为导向的接线表：
+ *
+ *   INMP441 丝印   →  ESP GPIO  →  作用（I2S）       →  等价宏
+ *     SCK          →  GPIO16   →  BCLK（共享）           →  BBCLAW_MIC_SCK_GPIO  / BBCLAW_AUDIO_I2S_BCK_GPIO
+ *     WS           →  GPIO15   →  WS/LRCK（共享）        →  BBCLAW_MIC_WS_GPIO   / BBCLAW_AUDIO_I2S_WS_GPIO
+ *     SD           →  GPIO18   →  mic → ESP RX            →  BBCLAW_MIC_SD_GPIO   / BBCLAW_AUDIO_I2S_DI_GPIO
+ *     VDD/GND/LR   →  3V3/GND/任选  （非 GPIO）
+ *
+ *   MAX98357A 丝印 →  ESP GPIO  →  作用（I2S）       →  等价宏
+ *     BCLK         →  GPIO16   →  与麦克风 SCK 共线
+ *     LRC          →  GPIO15   →  与麦克风 WS  共线
+ *     DIN          →  GPIO17   →  ESP TX → amp           →  BBCLAW_SPK_DIN_GPIO  / BBCLAW_AUDIO_I2S_DO_GPIO
+ *     SD           →  GPIO4    →  shutdown/使能（默认低=静音）  →  BBCLAW_SPK_SD_GPIO   / BBCLAW_SPEAKER_SW_GPIO
+ *     VIN/GND      →  5V/GND   （非 GPIO）
+ *
+ *   MCLK（IO2）未引出，INMP441 不需要主时钟。
  */
 #define BBCLAW_AUDIO_INPUT_SOURCE "inmp441"
 #define BBCLAW_AUDIO_SAMPLE_RATE  16000
 
-#define BBCLAW_AUDIO_I2S_BCK_GPIO 16
-#define BBCLAW_AUDIO_I2S_WS_GPIO  15
-#define BBCLAW_AUDIO_I2S_DO_GPIO  17
-/** INMP441 模块丝印 SD → I2S RX（`…_DI_GPIO`）；须接实线。与 GPIO20 不一致时改宏。 */
-#define BBCLAW_AUDIO_I2S_DI_GPIO  20
+#define BBCLAW_AUDIO_I2S_BCK_GPIO 16  /* mic SCK / spk BCLK (shared) */
+#define BBCLAW_AUDIO_I2S_WS_GPIO  15  /* mic WS  / spk LRC  (shared) */
+#define BBCLAW_AUDIO_I2S_DO_GPIO  17  /* ESP TX → MAX98357A DIN */
+#define BBCLAW_AUDIO_I2S_DI_GPIO  18  /* INMP441 SD → ESP RX */
 /** IO2 未接 MCLK；inmp441 路径不输出 MCLK */
 #define BBCLAW_AUDIO_I2S_MCK_GPIO (-1)
 
@@ -125,7 +140,9 @@
 #endif
 #endif
 
-/* ── PA enable / speaker sense ── */
+/* ── PA enable / speaker SD ENable ──
+ * MAX98357A 丝印 SD 引脚（shutdown / mode）走 GPIO4，LOW = 静音/关功放。
+ * 等价别名：BBCLAW_SPK_SD_GPIO。 */
 #define BBCLAW_PA_EN_GPIO      -1
 #define BBCLAW_SPEAKER_SW_GPIO  4
 /** Default probe GPIO1 was 13; on this PCB GPIO13 is LCD CS */

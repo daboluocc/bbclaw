@@ -6,11 +6,15 @@ IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
 # Serial port for flash/monitor/erase.
-# Default: /dev/cu.usbmodem2112401 (override to auto-detect or a different device as needed).
+# Auto-detect: newest USB serial device on macOS (cu.usbmodem* / cu.usbserial*).
+# Non-USB serial nodes (Bluetooth, debug-console, wchusbserial aliases, etc.) are ignored.
+# Precedence: command-line PORT=... > env BBCLAW_PORT > auto-detect.
 # Override per-invocation: make flash PORT=/dev/cu.usbmodemXXXX
 # Or export once:          export BBCLAW_PORT=/dev/cu.usbmodemXXXX
-# Force auto-detect:       make flash PORT=
-DEFAULT_PORT := /dev/cu.usbmodem2112401
+# Force esptool/idf.py auto-detect: make flash PORT=
+# List currently detected USB serial devices: make list-ports
+USB_PORT_GLOBS := /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.wchusbserial*
+DEFAULT_PORT := $(shell ls -t $(USB_PORT_GLOBS) 2>/dev/null | head -n 1)
 PORT ?= $(if $(BBCLAW_PORT),$(BBCLAW_PORT),$(DEFAULT_PORT))
 ESPTOOL_PORT_ARG := $(if $(PORT),--port $(PORT),)
 IDF_PORT_ARG := $(if $(PORT),-p $(PORT),)
@@ -25,7 +29,7 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash flash-ota0 erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board
+.PHONY: help idf-env init set-target reconfigure build flash flash-ota0 erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -34,6 +38,7 @@ help:
 	@echo "  make flash         # build + flash to ota_0 partition"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
+	@echo "  make list-ports    # list USB serial devices (pick one for PORT=...)"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
 	@echo "  make set-board BOARD=bbclaw             # 切换 board（breadboard | bbclaw | atk-dnesp32s3-box）"
 	@echo "  make gen             # 一键生成所有 LVGL 资源（字库 + SVG 位图 + 元素位图）"
@@ -61,6 +66,19 @@ reconfigure:
 BOARD ?= breadboard
 set-board:
 	@python3 scripts/set_board.py $(BOARD)
+
+# Show all USB serial devices currently visible to macOS.
+# Use the printed path as PORT=... or export BBCLAW_PORT=... to pin it.
+list-ports:
+	@ports=$$(ls -t $(USB_PORT_GLOBS) 2>/dev/null); \
+		if [ -z "$$ports" ]; then \
+			echo "[list-ports] no USB serial devices found (plug in the board?)"; \
+		else \
+			echo "[list-ports] USB serial devices (newest first):"; \
+			for p in $$ports; do echo "  $$p"; done; \
+			echo "[list-ports] selected default: $(DEFAULT_PORT)"; \
+			echo "[list-ports] override with: make flash PORT=/dev/cu.usbmodemXXXX"; \
+		fi
 
 build:
 	@# Ensure OTA partition table exists
