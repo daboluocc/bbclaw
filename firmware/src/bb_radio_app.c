@@ -20,16 +20,19 @@
 #include "bb_ptt.h"
 #include "bb_time.h"
 #include "bb_transport.h"
+#include "bb_ui_agent_chat.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
 #include "bb_ota.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/ringbuf.h"
 #include "freertos/task.h"
+#include "lvgl.h"
 
 static const char* TAG = "bb_radio_app";
 
@@ -261,6 +264,111 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
   }
 }
 
+/* ─── Phase 4.2: Agent Chat overlay ───────────────────────────────────
+ * Long-press from the unlocked home toggles a full-screen agent chat overlay.
+ * While active, PTT and chat-history nav events are suppressed. Encoder
+ * rotation moves the preset picker; click sends the highlighted phrase;
+ * another long-press exits.
+ *
+ * The overlay is a single fresh lv_obj_t parent off lv_screen_active(),
+ * laid LV_OPA_COVER full-screen so it visually occludes the existing
+ * standby/active views without us needing to mutate bb_lvgl_display.c. */
+static void show_status_idle(const char* status); /* fwd: defined later in file */
+static volatile int s_agent_chat_active;
+static lv_obj_t* s_agent_chat_root;
+
+static const char* const k_agent_chat_phrases[] = {
+    "Hello, who are you?",
+    "今天天气怎么样？",
+    "帮我看一下当前 git 状态",
+    "/status",
+    "/new",
+};
+#define K_AGENT_CHAT_PHRASE_COUNT \
+    (int)(sizeof(k_agent_chat_phrases) / sizeof(k_agent_chat_phrases[0]))
+
+static int agent_chat_is_active(void) {
+  return s_agent_chat_active != 0;
+}
+
+/** Build the overlay container, attach the agent-chat screen + picker,
+ *  and mark the gate so PTT/nav are suppressed.
+ *  Returns 0 on success, -1 on failure (caller is unchanged). */
+static int agent_chat_enter(void) {
+  if (s_agent_chat_active) return 0;
+  if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
+    ESP_LOGW(TAG, "agent_chat_enter: lvgl_port_lock timeout");
+    return -1;
+  }
+  lv_obj_t* scr = lv_screen_active();
+  if (scr == NULL) {
+    lvgl_port_unlock();
+    ESP_LOGE(TAG, "agent_chat_enter: no active screen");
+    return -1;
+  }
+  s_agent_chat_root = lv_obj_create(scr);
+  lv_obj_remove_style_all(s_agent_chat_root);
+  lv_obj_set_size(s_agent_chat_root, lv_pct(100), lv_pct(100));
+  lv_obj_set_pos(s_agent_chat_root, 0, 0);
+  lv_obj_clear_flag(s_agent_chat_root, LV_OBJ_FLAG_SCROLLABLE);
+  /* Solid bg ensures we cover the underlying standby/active view. */
+  lv_obj_set_style_bg_color(s_agent_chat_root, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_bg_opa(s_agent_chat_root, LV_OPA_COVER, 0);
+  lv_obj_move_foreground(s_agent_chat_root);
+
+  bb_ui_agent_chat_show(s_agent_chat_root);
+  bb_ui_agent_chat_picker_show(k_agent_chat_phrases, K_AGENT_CHAT_PHRASE_COUNT);
+
+  lvgl_port_unlock();
+  s_agent_chat_active = 1;
+  ESP_LOGI(TAG, "agent_chat: ENTER (phrases=%d)", K_AGENT_CHAT_PHRASE_COUNT);
+  /* LED hint that we're in a different mode. */
+  (void)bb_led_set_status(BB_LED_PROCESSING);
+  return 0;
+}
+
+/** Tear the overlay down, restore radio state. Safe to call when not active. */
+static void agent_chat_exit(void) {
+  if (!s_agent_chat_active) return;
+  s_agent_chat_active = 0;
+
+  if (lvgl_port_lock(pdMS_TO_TICKS(500))) {
+    bb_ui_agent_chat_hide();  /* runs theme on_exit; deletes theme root inside our overlay */
+    if (s_agent_chat_root != NULL) {
+      lv_obj_del(s_agent_chat_root);
+      s_agent_chat_root = NULL;
+    }
+    lvgl_port_unlock();
+  } else {
+    ESP_LOGW(TAG, "agent_chat_exit: lvgl_port_lock timeout, leaking overlay");
+  }
+  ESP_LOGI(TAG, "agent_chat: EXIT");
+  /* Repaint the radio's normal status so the underlying view is current. */
+  if (bb_wifi_is_connected()) {
+    show_status_idle(radio_app_is_locked() ? BB_STATUS_LOCKED : BB_STATUS_READY);
+  } else {
+    show_status_idle("NO WIFI");
+  }
+}
+
+/** Wrapper around lvgl_port_lock for picker ops invoked from the stream task. */
+static void agent_chat_picker_move_locked(int delta) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    bb_ui_agent_chat_picker_move(delta);
+    lvgl_port_unlock();
+  }
+}
+
+static void agent_chat_picker_send_locked(void) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    esp_err_t err = bb_ui_agent_chat_picker_send_selected();
+    lvgl_port_unlock();
+    if (err != ESP_OK) {
+      ESP_LOGI(TAG, "agent_chat: send refused err=%s (still streaming?)", esp_err_to_name(err));
+    }
+  }
+}
+
 static size_t voice_verify_max_pcm_bytes(void) {
   return (size_t)((BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_VOICE_VERIFY_MAX_MS / 1000) * sizeof(int16_t) *
                   BBCLAW_AUDIO_CHANNELS);
@@ -357,6 +465,11 @@ static void log_pin_summary(void) {
 }
 
 static void on_ptt_changed(int pressed) {
+  /* Phase 4.2: agent-chat overlay owns the screen + nav; ignore PTT entirely
+   * (don't bump version, don't poke TTS). On exit we'll resync if needed. */
+  if (s_agent_chat_active) {
+    return;
+  }
   s_ptt_pressed = pressed > 0 ? 1 : 0;
   if (s_ptt_pressed && s_tts_playback_active) {
     s_tts_interrupt_requested = 1;
@@ -1166,6 +1279,28 @@ static void stream_task(void* arg) {
     for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
+        if (agent_chat_is_active()) {
+          /* Phase 4.2: while agent chat overlay is up, the encoder + click
+           * drive the preset picker and long-press exits. */
+          switch ((bb_nav_event_t)event) {
+            case BB_NAV_EVENT_ROTATE_CCW:
+              agent_chat_picker_move_locked(-1);
+              break;
+            case BB_NAV_EVENT_ROTATE_CW:
+              agent_chat_picker_move_locked(+1);
+              break;
+            case BB_NAV_EVENT_CLICK:
+              agent_chat_picker_send_locked();
+              break;
+            case BB_NAV_EVENT_LONG_PRESS:
+              agent_chat_exit();
+              break;
+            case BB_NAV_EVENT_COUNT:
+            default:
+              break;
+          }
+          continue;
+        }
         switch ((bb_nav_event_t)event) {
           case BB_NAV_EVENT_ROTATE_CCW:
             if (nav_history_mode) {
@@ -1191,14 +1326,29 @@ static void stream_task(void* arg) {
             ESP_LOGI(TAG, "nav click focus=%s", nav_focus_ai ? "ai" : "me");
             break;
           case BB_NAV_EVENT_LONG_PRESS:
-            nav_history_mode = !nav_history_mode;
-            ESP_LOGI(TAG, "nav long_press mode=%s", nav_history_mode ? "history" : "scroll");
+            /* Phase 4.2: long-press from the unlocked home enters Agent Chat.
+             * Locked devices stay locked (voice unlock first). If we couldn't
+             * enter (e.g. lvgl lock timeout), fall back to the prior history
+             * toggle so the gesture still does something visible. */
+            if (!radio_app_is_locked() && agent_chat_enter() == 0) {
+              ESP_LOGI(TAG, "nav long_press -> agent_chat enter");
+            } else {
+              nav_history_mode = !nav_history_mode;
+              ESP_LOGI(TAG, "nav long_press mode=%s", nav_history_mode ? "history" : "scroll");
+            }
             break;
           case BB_NAV_EVENT_COUNT:
           default:
             break;
         }
       }
+    }
+
+    /* Phase 4.2: while agent chat overlay is up, suppress the entire PTT/
+     * audio-streaming pipeline below. Skip the rest of this iteration. */
+    if (agent_chat_is_active()) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
     }
 
     unsigned ptt_version = s_ptt_change_version;

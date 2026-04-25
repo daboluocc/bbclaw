@@ -31,6 +31,9 @@ static const char* TAG = "bb_agent_ui";
  *     堆上拷贝 payload，丢给 lv_async_call；payload 在 LVGL 任务侧 free
  *   - agent 任务结束时 self-delete
  */
+/* Phase 4.2 picker 上限（防止意外大数组）。 */
+#define BB_CHAT_PICKER_MAX_ITEMS 12
+
 typedef struct {
   int active;                 /* show 之后置 1，hide 后清 0 */
   int sending;                /* agent 任务在跑期间置 1 */
@@ -42,6 +45,13 @@ typedef struct {
   /* 持久化 session/driver；adapter SESSION 帧到达时更新。Phase 4.2 还会接 NVS。 */
   char session_id[64];
   char driver_name[24];
+
+  /* picker 状态（Phase 4.2） */
+  lv_obj_t* picker_root;
+  lv_obj_t* picker_items[BB_CHAT_PICKER_MAX_ITEMS];
+  const char* const* picker_phrases;  /* 调用方持有 */
+  int picker_count;
+  int picker_sel;
 } bb_chat_state_t;
 
 static bb_chat_state_t s_chat = {0};
@@ -338,6 +348,17 @@ void bb_ui_agent_chat_hide(void) {
   /* 把 active 先清，让任何 in-flight 的 async dispatch 直接丢弃。
    * 在跑的 agent task 不强 kill；它结束后 self-delete。 */
   s_chat.active = 0;
+  /* picker 是 parent 的子；如果在 theme on_exit 之前没显式拆，
+   * theme 删除自己根容器时会连带把 picker 清掉（picker 是 parent 的子，
+   * 而 parent 会被 caller 删除）。这里只是把指针清空、避免悬挂。 */
+  s_chat.picker_root = NULL;
+  for (int i = 0; i < BB_CHAT_PICKER_MAX_ITEMS; ++i) {
+    s_chat.picker_items[i] = NULL;
+  }
+  s_chat.picker_phrases = NULL;
+  s_chat.picker_count = 0;
+  s_chat.picker_sel = 0;
+
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->on_exit != NULL) {
     theme->on_exit();
@@ -387,4 +408,124 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
     return ESP_FAIL;
   }
   return ESP_OK;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Phase 4.2 — preset phrase picker
+ *
+ * The picker is a thin overlay (~52px tall) anchored to the bottom of the
+ * agent-chat parent container. It deliberately sits ON TOP of whatever the
+ * theme drew there (text-only theme reserves a 20px input row that says
+ * "(input not wired yet)"; we cover it).
+ *
+ * Visual model: a column of label rows. The selected row gets a brighter
+ * background. There is no LVGL focus group here (single source of truth is
+ * s_chat.picker_sel + an explicit re-render).
+ * ───────────────────────────────────────────────────────────────────── */
+
+#define BB_PICKER_BG       0x12211b
+#define BB_PICKER_FG       0xc8e2d6
+#define BB_PICKER_FG_DIM   0x6b8c80
+#define BB_PICKER_SEL_BG   0x2ec4a0
+#define BB_PICKER_SEL_FG   0x0a0e0c
+#define BB_PICKER_ROW_H    16
+#define BB_PICKER_VISIBLE  3   /* show 3 rows; user sees current + neighbors */
+
+static void picker_apply_styles(void) {
+  if (s_chat.picker_count == 0) return;
+  /* "viewport" = which contiguous slice of items is visible */
+  int first = s_chat.picker_sel - BB_PICKER_VISIBLE / 2;
+  if (first < 0) first = 0;
+  if (first + BB_PICKER_VISIBLE > s_chat.picker_count) {
+    first = s_chat.picker_count - BB_PICKER_VISIBLE;
+    if (first < 0) first = 0;
+  }
+  for (int i = 0; i < s_chat.picker_count; ++i) {
+    lv_obj_t* row = s_chat.picker_items[i];
+    if (row == NULL) continue;
+    int visible = (i >= first && i < first + BB_PICKER_VISIBLE);
+    if (visible) {
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (i == s_chat.picker_sel) {
+      lv_obj_set_style_bg_color(row, lv_color_hex(BB_PICKER_SEL_BG), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_SEL_FG), 0);
+    } else {
+      lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG_DIM), 0);
+    }
+  }
+}
+
+void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
+  if (!s_chat.active || s_chat.parent == NULL) {
+    ESP_LOGW(TAG, "picker_show: chat not active");
+    return;
+  }
+  if (phrases == NULL || count <= 0) return;
+  if (count > BB_CHAT_PICKER_MAX_ITEMS) count = BB_CHAT_PICKER_MAX_ITEMS;
+
+  /* Replace any prior picker. */
+  if (s_chat.picker_root != NULL) {
+    lv_obj_del(s_chat.picker_root);
+    s_chat.picker_root = NULL;
+    for (int i = 0; i < BB_CHAT_PICKER_MAX_ITEMS; ++i) s_chat.picker_items[i] = NULL;
+  }
+
+  s_chat.picker_phrases = phrases;
+  s_chat.picker_count = count;
+  s_chat.picker_sel = 0;
+
+  const int picker_h = BB_PICKER_ROW_H * BB_PICKER_VISIBLE + 4;
+
+  s_chat.picker_root = lv_obj_create(s_chat.parent);
+  lv_obj_remove_style_all(s_chat.picker_root);
+  lv_obj_set_size(s_chat.picker_root, lv_pct(100), picker_h);
+  lv_obj_align(s_chat.picker_root, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(s_chat.picker_root, lv_color_hex(BB_PICKER_BG), 0);
+  lv_obj_set_style_bg_opa(s_chat.picker_root, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(s_chat.picker_root, 2, 0);
+  lv_obj_set_flex_flow(s_chat.picker_root, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(s_chat.picker_root, LV_OBJ_FLAG_SCROLLABLE);
+  /* Make sure picker overlays the theme's input area. */
+  lv_obj_move_foreground(s_chat.picker_root);
+
+  for (int i = 0; i < count; ++i) {
+    lv_obj_t* row = lv_label_create(s_chat.picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_pad_right(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG), 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text(row, phrases[i] != NULL ? phrases[i] : "");
+    s_chat.picker_items[i] = row;
+  }
+  picker_apply_styles();
+}
+
+void bb_ui_agent_chat_picker_move(int delta) {
+  if (!s_chat.active || s_chat.picker_root == NULL || s_chat.picker_count == 0) return;
+  int sel = s_chat.picker_sel + delta;
+  if (sel < 0) sel = 0;
+  if (sel >= s_chat.picker_count) sel = s_chat.picker_count - 1;
+  if (sel == s_chat.picker_sel) return;
+  s_chat.picker_sel = sel;
+  picker_apply_styles();
+}
+
+esp_err_t bb_ui_agent_chat_picker_send_selected(void) {
+  if (!s_chat.active || s_chat.picker_root == NULL || s_chat.picker_count == 0 ||
+      s_chat.picker_phrases == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (s_chat.picker_sel < 0 || s_chat.picker_sel >= s_chat.picker_count) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const char* phrase = s_chat.picker_phrases[s_chat.picker_sel];
+  if (phrase == NULL || phrase[0] == '\0') return ESP_ERR_INVALID_ARG;
+  return bb_ui_agent_chat_send(phrase);
 }

@@ -36,3 +36,25 @@ void bb_ui_agent_chat_hide(void);
  * @param text  非空字符串；内部会拷贝。
  */
 esp_err_t bb_ui_agent_chat_send(const char* text);
+
+/**
+ * Phase 4.2 预置短语 picker。
+ *
+ * 在 agent-chat 根容器底部叠一个简单的高亮列表。调用前必须先 _show()。
+ * - phrases / count：调用方持有所有权；内部仅引用指针，要求 phrases 在
+ *   下次 _picker_show / _hide 之前保持有效（典型用法是 static 数组）。
+ * - 多次调用会替换之前的 picker。
+ *
+ * 必须在 LVGL 任务中调用（持有 lvgl 锁的上下文）。
+ */
+void bb_ui_agent_chat_picker_show(const char* const* phrases, int count);
+
+/** 移动 picker 高亮项；delta = -1 / +1。LVGL 任务中调用。 */
+void bb_ui_agent_chat_picker_move(int delta);
+
+/**
+ * 发送当前 picker 选中的短语（等价于 send(selected)）。
+ * - 如有正在发送的请求，返回 ESP_ERR_INVALID_STATE（picker 不会消失，用户可以
+ *   在 turn_end 后再按）。
+ */
+esp_err_t bb_ui_agent_chat_picker_send_selected(void);
