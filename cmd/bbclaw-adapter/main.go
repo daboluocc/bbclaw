@@ -15,6 +15,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/openclawdriver"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
@@ -148,7 +149,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
-	server.SetAgentRouter(buildAgentRouter(logger))
+	server.SetAgentRouter(buildAgentRouter(cfg, logger))
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
@@ -158,21 +159,51 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 // buildAgentRouter constructs the Router using these two env vars (both
 // optional; zero-config means "auto-detect what's available"):
 //
-//   AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,ollama"); empty =
-//                          auto mode — claude-code always registered,
-//                          ollama registered only if 127.0.0.1:11434 is
-//                          listening.
+//   AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,openclaw,ollama");
+//                          empty = auto mode — claude-code always
+//                          registered, openclaw registered when an openclaw
+//                          URL is configured (cfg.OpenClawURL), ollama
+//                          registered only if 127.0.0.1:11434 is listening.
 //   AGENT_DEFAULT_DRIVER   request without explicit driver routes to this
 //                          one; empty = first registered driver.
 //
+// Registration order (which determines the default when AGENT_DEFAULT_DRIVER
+// is unset): claude-code, openclaw, ollama.
+//
 // Everything else is hardcoded by design (see feedback_config_minimalism).
-func buildAgentRouter(logger *obs.Logger) *agent.Router {
+func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 	router := agent.NewRouter()
 	enabled := parseEnabledDrivers(os.Getenv("AGENT_ENABLED_DRIVERS"))
 
 	registerClaude := enabled == nil || enabled["claude-code"]
 	if registerClaude {
 		router.Register(claudecode.New(claudecode.Options{}, logger), logger)
+	}
+
+	// openclaw: registered when an openclaw URL is configured. We reuse the
+	// same env knobs as buildSink — there is no separate AGENT_OPENCLAW_URL
+	// — so the agent driver and the legacy PTT path always talk to the same
+	// gateway.
+	openclawURL := strings.TrimSpace(cfg.OpenClawURL)
+	registerOpenclaw := false
+	switch {
+	case openclawURL == "":
+		logger.Infof("agent router: openclaw driver skipped (no URL configured)")
+	case enabled == nil:
+		registerOpenclaw = true
+	case enabled["openclaw"]:
+		registerOpenclaw = true
+	}
+	if registerOpenclaw {
+		router.Register(openclawdriver.New(openclawdriver.Options{
+			URL:                openclawURL,
+			AuthToken:          cfg.OpenClawAuthToken,
+			NodeID:             cfg.OpenClawNodeID,
+			DeviceIdentityPath: cfg.OpenClawIdentityPath,
+			ReplyWaitTimeout:   cfg.OpenClawReplyWait,
+			HTTPTimeout:        cfg.HTTPTimeout,
+		}, logger), logger)
+		logger.Infof("agent router: openclaw driver registered url=%s", openclawURL)
 	}
 
 	registerOllama := false
