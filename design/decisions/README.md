@@ -20,3 +20,4 @@
 | [ADR-001](ADR-001-adapter-as-agent-bus.md) | adapter 作为 Agent 总线 | 2026-04-25 | 已接受 |
 | [ADR-002](ADR-002-multi-turn-session-lifecycle.md) | 多轮会话生命周期 | 2026-04-25 | 已接受 |
 | [ADR-003](ADR-003-router-and-multi-driver.md) | Router + 多 driver 路由策略 | 2026-04-25 | 已接受 |
+| [ADR-004](ADR-004-cloud-agent-proxy.md) | cloud_saas 模式下的 Agent Bus 代理 | 2026-04-25 | 已接受 |
