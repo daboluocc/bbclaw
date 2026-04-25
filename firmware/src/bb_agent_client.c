@@ -16,11 +16,17 @@
 static const char* TAG = "bb_agent";
 
 /*
- * Agent Bus 走 adapter 本地端口（design/agent_bus.md §1）。云上 cloud_saas 模式当前未承载
- * agent endpoint —— 这里始终走 BBCLAW_ADAPTER_BASE_URL，和 bb_adapter_client.c 的
- * `active_base_url()` 区别开（它会按 transport profile 切换）。等 cloud 侧也接入后再合并。
+ * Mirror bb_adapter_client.c::active_base_url(): cloud_saas profile uses
+ * the cloud URL, otherwise the local adapter. The cloud side currently
+ * does NOT yet expose the agent endpoints (/v1/agent/message and
+ * /v1/agent/drivers) — for end-to-end on cloud_saas to work, cloud needs
+ * to proxy those routes through to a home adapter. Tracked as followup;
+ * device-side selector lands now so we don't have to re-flash later.
  */
 static const char* agent_base_url(void) {
+  if (strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0) {
+    return BBCLAW_CLOUD_BASE_URL;
+  }
   return BBCLAW_ADAPTER_BASE_URL;
 }
 

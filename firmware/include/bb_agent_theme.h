@@ -49,6 +49,16 @@ typedef struct bb_agent_theme {
 void bb_agent_theme_register(const bb_agent_theme_t* theme);
 
 /**
+ * 显式注册内置 "text-only" 主题。在 app 启动早期调一次（典型：bb_radio_app_start
+ * 入口），保证 bb_agent_theme_get_active() 第一次被调时 registry 不为空。
+ *
+ * 之前用 GCC __attribute__((constructor)) 自注册，但 ESP-IDF 静态库链接 +
+ * --gc-sections 会把没有外部引用的构造函数 DCE 掉，真机上 registry 空了。
+ * 改成显式 init 后由调用点 force-link，绕开 DCE。幂等（重名注册带警告）。
+ */
+void bb_theme_text_only_init(void);
+
+/**
  * 当前激活主题；首次调用时从 NVS（namespace=bbclaw, key=agent/theme）加载，缺省 fallback 到 "text-only"。
  * 永不返回 NULL（只要至少注册过一个主题；text-only 通过 constructor 自动注册）。
  */

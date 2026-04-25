@@ -20,6 +20,7 @@
 #include "bb_ptt.h"
 #include "bb_time.h"
 #include "bb_transport.h"
+#include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
@@ -279,8 +280,8 @@ static lv_obj_t* s_agent_chat_root;
 
 static const char* const k_agent_chat_phrases[] = {
     "Hello, who are you?",
-    "今天天气怎么样？",
-    "帮我看一下当前 git 状态",
+    "What is the weather like?",
+    "Show me current git status",
     "/status",
     "/new",
 };
@@ -2173,6 +2174,12 @@ static void stream_task(void* arg) {
 }
 
 esp_err_t bb_radio_app_start(void) {
+  /* Eagerly register the built-in agent chat theme so the registry isn't
+   * empty when the user enters the Agent Chat overlay. The constructor
+   * approach gets DCE'd on ESP-IDF static-archive links; explicit init
+   * ensures the symbol is force-linked. */
+  bb_theme_text_only_init();
+
   bb_gateway_node_config_t node_cfg = {
       .node_id = BBCLAW_NODE_ID,
       .gateway_url = BBCLAW_GATEWAY_URL,

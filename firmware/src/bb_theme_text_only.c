@@ -270,10 +270,10 @@ static const bb_agent_theme_t s_text_only_theme = {
 };
 
 /*
- * GCC constructor 优先级：100 偏早，确保在用户代码访问 get_active 之前注册完。
- * Phase 4.2 引入主题切换菜单时若想切换顺序，可改成显式 init() + 在 app_main 调。
+ * 之前用 GCC __attribute__((constructor)) 自注册，但 ESP-IDF 静态库链接 +
+ * --gc-sections 经常会把没有外部引用的构造函数 DCE 掉（实测面包板真机上 dispatcher
+ * 起来后 registry 是空的）。改成显式 init —— bb_radio_app_start 启动时调一次。
  */
-__attribute__((constructor(150)))
-static void bb_text_theme_register(void) {
+void bb_theme_text_only_init(void) {
   bb_agent_theme_register(&s_text_only_theme);
 }

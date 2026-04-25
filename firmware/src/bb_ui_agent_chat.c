@@ -16,7 +16,12 @@
 
 static const char* TAG = "bb_agent_ui";
 
-#define BB_CHAT_AGENT_TASK_STACK 8192
+/* 6 KB on internal heap. 8 KB was too generous: PTT/voice loop already
+ * fragments internal heap so the largest free block is ~7.9 KB on a fresh
+ * boot — xTaskCreate(8192) reliably fails. The agent task only spawns
+ * http_post + cJSON parsing + lv_async_call dispatch; 6 KB has plenty of
+ * margin per esp32_dump after ~10 turns of testing. */
+#define BB_CHAT_AGENT_TASK_STACK 6144
 #define BB_CHAT_AGENT_TASK_PRIO  5
 #define BB_CHAT_HEART_THRESHOLD_MS 5000
 
@@ -280,6 +285,14 @@ static void agent_task(void* arg) {
 
   s_chat.turn_start_ms = bb_now_ms();
   s_chat.saw_text_in_turn = 0;
+
+  /* Push BUSY immediately so the user gets visible feedback that the click
+   * was accepted, even before HTTP connect lands. Without this the topbar
+   * stayed on the previous state (IDLE/HEART) while the user mashed the
+   * picker repeatedly during a slow connect — see real-device debug log
+   * 2026-04-25. The on_agent_event handler will switch to BUSY on the
+   * first SESSION/TEXT frame too; this make-it-stick early. */
+  post_state(BB_AGENT_STATE_BUSY);
 
   esp_err_t err = bb_agent_send_message(
       args->text,
