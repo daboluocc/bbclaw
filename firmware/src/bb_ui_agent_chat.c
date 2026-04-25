@@ -4,8 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bb_adapter_client.h"
 #include "bb_agent_client.h"
 #include "bb_agent_theme.h"
+#include "bb_audio.h"
+#include "bb_config.h"
 #include "bb_time.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -47,17 +50,25 @@ static const char* TAG = "bb_agent_ui";
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
 #define BB_CHAT_NVS_KEY_DRIVER "agent/driver"
+#define BB_CHAT_NVS_KEY_TTS    "agent/tts"
 #define BB_CHAT_DRIVER_FALLBACK "claude-code"
+
+/* Phase 4.5.1 — TTS reply playback. The accumulator caps at 4 KiB; cloud
+ * replies longer than that fall back to truncated TTS (we log a warn). */
+#define BB_CHAT_REPLY_BUF_CAP    4096
+#define BB_CHAT_TTS_TASK_STACK   4096
+#define BB_CHAT_TTS_TASK_PRIO    4
 
 typedef enum {
   BB_CHAT_MODE_PICKER = 0,  /* 默认：phrase 选择 */
   BB_CHAT_MODE_SETTINGS,    /* settings sub-menu */
 } bb_chat_mode_t;
 
-/* settings 行下标。顺序固定，长度 = 3。 */
+/* settings 行下标。顺序固定。Phase 4.5.1 在 THEME 与 BACK 之间插入 TTS 行。 */
 typedef enum {
   BB_SETTINGS_ROW_AGENT = 0,
   BB_SETTINGS_ROW_THEME,
+  BB_SETTINGS_ROW_TTS,
   BB_SETTINGS_ROW_BACK,
   BB_SETTINGS_ROW_COUNT,
 } bb_settings_row_t;
@@ -97,9 +108,22 @@ typedef struct {
   const char* const* theme_list;
   int theme_count;
   int theme_idx;               /* 当前选中 theme 在 list 中的 index */
+
+  /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator. */
+  int tts_enabled;             /* 1 = synth reply via adapter TTS; default ON */
+  char* reply_buf;             /* heap, capacity BB_CHAT_REPLY_BUF_CAP */
+  size_t reply_len;            /* bytes used (excl. terminating NUL) */
+  int reply_truncated;         /* 1 once we've logged the truncation warn */
+  TaskHandle_t tts_task;       /* non-NULL while a TTS playback task is alive */
 } bb_chat_state_t;
 
 static bb_chat_state_t s_chat = {0};
+
+/* Forward decls for Phase 4.5.1 helpers (defined further down so they live
+ * next to the rest of the NVS / settings glue). */
+static void reply_buf_reset(void);
+static void reply_buf_append(const char* delta);
+static void maybe_spawn_tts_task(void);
 
 /* ── async payload 类型（agent 线程 → LVGL 线程） ── */
 
@@ -275,6 +299,9 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       }
       if (evt->text != NULL && evt->text[0] != '\0') {
         post_assistant_chunk(evt->text);
+        /* Phase 4.5.1 — accumulate plain assistant text for end-of-turn TTS.
+         * Append happens on the agent task thread; reply_buf is single-writer. */
+        reply_buf_append(evt->text);
       }
       break;
 
@@ -296,6 +323,9 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       } else {
         post_state(BB_AGENT_STATE_IDLE);
       }
+      /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
+       * One-shot decision: a mid-turn toggle change won't affect this turn. */
+      maybe_spawn_tts_task();
       break;
     }
 
@@ -325,6 +355,8 @@ static void agent_task(void* arg) {
 
   s_chat.turn_start_ms = bb_now_ms();
   s_chat.saw_text_in_turn = 0;
+  /* Phase 4.5.1 — fresh per-turn accumulator; reused buffer if already alloc. */
+  reply_buf_reset();
 
   /* Push BUSY immediately so the user gets visible feedback that the click
    * was accepted, even before HTTP connect lands. Without this the topbar
@@ -393,6 +425,196 @@ static esp_err_t persist_selected_driver(const char* name) {
   return err;
 }
 
+/* ── Phase 4.5.1 — TTS reply toggle persistence ── */
+
+/* Load NVS string at "agent/tts"; missing or unparseable → default ON. */
+static void load_tts_enabled_from_nvs(void) {
+  s_chat.tts_enabled = 1;
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READONLY, &h);
+  if (err != ESP_OK) {
+    ESP_LOGI(TAG, "tts_enabled: no nvs (%s), default ON", esp_err_to_name(err));
+    return;
+  }
+  char buf[8] = {0};
+  size_t sz = sizeof(buf);
+  err = nvs_get_str(h, BB_CHAT_NVS_KEY_TTS, buf, &sz);
+  nvs_close(h);
+  if (err != ESP_OK) {
+    ESP_LOGI(TAG, "tts_enabled: not in nvs (%s), default ON", esp_err_to_name(err));
+    return;
+  }
+  if (strcmp(buf, "off") == 0) {
+    s_chat.tts_enabled = 0;
+  } else {
+    s_chat.tts_enabled = 1;
+  }
+  ESP_LOGI(TAG, "tts_enabled: loaded '%s'", buf);
+}
+
+static esp_err_t persist_tts_enabled(int enabled) {
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READWRITE, &h);
+  if (err != ESP_OK) return err;
+  err = nvs_set_str(h, BB_CHAT_NVS_KEY_TTS, enabled ? "on" : "off");
+  if (err == ESP_OK) {
+    err = nvs_commit(h);
+  }
+  nvs_close(h);
+  return err;
+}
+
+/* ── Phase 4.5.1 — reply accumulator (called from agent_task only) ── */
+
+/* Reset (or lazily allocate) the 4 KiB reply buffer. Called at turn start. */
+static void reply_buf_reset(void) {
+  if (s_chat.reply_buf == NULL) {
+    s_chat.reply_buf = (char*)malloc(BB_CHAT_REPLY_BUF_CAP);
+    if (s_chat.reply_buf == NULL) {
+      ESP_LOGW(TAG, "reply_buf: malloc failed; TTS will be skipped this turn");
+      s_chat.reply_len = 0;
+      return;
+    }
+  }
+  s_chat.reply_buf[0] = '\0';
+  s_chat.reply_len = 0;
+  s_chat.reply_truncated = 0;
+}
+
+/* Append a delta; truncates at cap and warns once. */
+static void reply_buf_append(const char* delta) {
+  if (delta == NULL || s_chat.reply_buf == NULL) return;
+  size_t add = strlen(delta);
+  if (add == 0U) return;
+  size_t room = BB_CHAT_REPLY_BUF_CAP - 1U - s_chat.reply_len;
+  if (room == 0U) {
+    if (!s_chat.reply_truncated) {
+      ESP_LOGW(TAG, "reply_buf: cap %d reached, TTS will use truncated text", BB_CHAT_REPLY_BUF_CAP);
+      s_chat.reply_truncated = 1;
+    }
+    return;
+  }
+  size_t copy = add < room ? add : room;
+  memcpy(s_chat.reply_buf + s_chat.reply_len, delta, copy);
+  s_chat.reply_len += copy;
+  s_chat.reply_buf[s_chat.reply_len] = '\0';
+  if (copy < add && !s_chat.reply_truncated) {
+    ESP_LOGW(TAG, "reply_buf: cap %d reached, TTS will use truncated text", BB_CHAT_REPLY_BUF_CAP);
+    s_chat.reply_truncated = 1;
+  }
+}
+
+/* True if the reply buffer is non-empty and contains at least one
+ * non-whitespace byte. ASCII-only check is sufficient (CJK bytes are all
+ * >0x7F so they pass). */
+static int reply_buf_has_content(void) {
+  if (s_chat.reply_buf == NULL || s_chat.reply_len == 0U) return 0;
+  for (size_t i = 0; i < s_chat.reply_len; ++i) {
+    unsigned char c = (unsigned char)s_chat.reply_buf[i];
+    if (c > 0x20U) return 1;
+  }
+  return 0;
+}
+
+/* ── Phase 4.5.1 — TTS playback task ──
+ *
+ * Lifecycle:
+ *   - agent_task spawns this on EvTurnEnd when toggle ON + buffer non-empty.
+ *   - Task owns the heap-strdup'd text passed in arg; frees on exit.
+ *   - Synth via adapter, play via bb_audio_play_pcm_blocking, stop, free.
+ *   - On exit: clears s_chat.tts_task and self-deletes.
+ *   - Re-entrance: if a previous task is still alive when agent_task wants to
+ *     spawn, the new turn's TTS is dropped (skip-not-replace policy for 4.5.1).
+ *   - Hide-during-play: bb_ui_agent_chat_hide requests playback interrupt via
+ *     bb_audio_request_playback_interrupt(); play_pcm_blocking returns and the
+ *     task winds down. */
+static void tts_playback_task(void* arg) {
+  char* text = (char*)arg;
+  if (text == NULL || text[0] == '\0') {
+    free(text);
+    s_chat.tts_task = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
+
+  ESP_LOGI(TAG, "tts: synth start len=%u", (unsigned)strlen(text));
+  bb_tts_audio_t audio = {0};
+  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(text, &audio);
+  if (syn != ESP_OK || audio.pcm_data == NULL || audio.pcm_len == 0U) {
+    ESP_LOGW(TAG, "tts: synth failed err=%s pcm=%p len=%u", esp_err_to_name(syn),
+             (void*)audio.pcm_data, (unsigned)audio.pcm_len);
+    bb_adapter_tts_audio_free(&audio);
+    free(text);
+    s_chat.tts_task = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
+
+  /* If the overlay was hidden between EvTurnEnd and now, abort cleanly. */
+  if (!s_chat.active) {
+    ESP_LOGI(TAG, "tts: chat inactive, skipping playback");
+    bb_adapter_tts_audio_free(&audio);
+    free(text);
+    s_chat.tts_task = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
+
+  esp_err_t tx = bb_audio_start_playback();
+  if (tx != ESP_OK) {
+    ESP_LOGW(TAG, "tts: start_playback failed err=%s", esp_err_to_name(tx));
+    bb_adapter_tts_audio_free(&audio);
+    free(text);
+    s_chat.tts_task = NULL;
+    vTaskDelete(NULL);
+    return;
+  }
+  if (audio.sample_rate > 0 && audio.sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
+    (void)bb_audio_set_playback_sample_rate(audio.sample_rate);
+  }
+  ESP_LOGI(TAG, "tts: play pcm_bytes=%u rate=%d ch=%d", (unsigned)audio.pcm_len,
+           audio.sample_rate, audio.channels);
+  if (bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len) != ESP_OK) {
+    ESP_LOGW(TAG, "tts: play_pcm failed (likely interrupted by hide/PTT)");
+  }
+  (void)bb_audio_stop_playback();
+  (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
+  bb_audio_clear_playback_interrupt();
+  bb_adapter_tts_audio_free(&audio);
+  free(text);
+  ESP_LOGI(TAG, "tts: done");
+  s_chat.tts_task = NULL;
+  vTaskDelete(NULL);
+}
+
+/* Spawn a TTS task if (a) toggle on, (b) reply has content, (c) no prior
+ * task alive. Returns silently otherwise. Called from agent_task. */
+static void maybe_spawn_tts_task(void) {
+  if (!s_chat.tts_enabled) return;
+  if (!reply_buf_has_content()) return;
+  if (s_chat.tts_task != NULL) {
+    /* Phase 4.5.2 will support cancel-and-replace; for now, drop the new turn's TTS. */
+    ESP_LOGW(TAG, "tts: prior playback still active, skipping this turn");
+    return;
+  }
+  /* Hand off a heap copy so the task is independent of s_chat.reply_buf
+   * (which we'll reset at the next turn). */
+  char* snapshot = dup_str(s_chat.reply_buf);
+  if (snapshot == NULL) {
+    ESP_LOGW(TAG, "tts: snapshot OOM, skip");
+    return;
+  }
+  TaskHandle_t handle = NULL;
+  BaseType_t ok = xTaskCreate(tts_playback_task, "bb_chat_tts", BB_CHAT_TTS_TASK_STACK,
+                              snapshot, BB_CHAT_TTS_TASK_PRIO, &handle);
+  if (ok != pdPASS) {
+    ESP_LOGW(TAG, "tts: xTaskCreate failed, skip");
+    free(snapshot);
+    return;
+  }
+  s_chat.tts_task = handle;
+}
+
 void bb_ui_agent_chat_show(lv_obj_t* parent) {
   if (parent == NULL) {
     ESP_LOGE(TAG, "show: parent is NULL");
@@ -414,6 +636,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
   load_selected_driver_from_nvs();
+  load_tts_enabled_from_nvs();
 
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
@@ -436,6 +659,21 @@ void bb_ui_agent_chat_hide(void) {
   /* 把 active 先清，让任何 in-flight 的 async dispatch 直接丢弃。
    * 在跑的 agent task 不强 kill；它结束后 self-delete。 */
   s_chat.active = 0;
+  /* Phase 4.5.1 — if a TTS playback task is still running, ask the audio
+   * layer to break out of bb_audio_play_pcm_blocking. The task's cleanup will
+   * still run, free the audio buffer, and clear s_chat.tts_task. */
+  if (s_chat.tts_task != NULL) {
+    ESP_LOGI(TAG, "hide: interrupting in-flight TTS playback");
+    bb_audio_request_playback_interrupt();
+  }
+  /* Free the per-overlay reply accumulator. The TTS task already owns its
+   * own snapshot at this point, so this is safe. */
+  if (s_chat.reply_buf != NULL) {
+    free(s_chat.reply_buf);
+    s_chat.reply_buf = NULL;
+    s_chat.reply_len = 0;
+    s_chat.reply_truncated = 0;
+  }
   /* picker / settings 都是 parent 的子；caller 会在 hide 后 delete parent，
    * 这里只是清指针避免悬挂。 */
   s_chat.picker_root = NULL;
@@ -721,15 +959,34 @@ static void settings_apply_rows(void) {
     lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_THEME], buf);
   }
 
-  /* Row 2: Back */
+  /* Row 2: TTS reply: On / Off (Phase 4.5.1) */
+  if (s_chat.settings_rows[BB_SETTINGS_ROW_TTS] != NULL) {
+    snprintf(buf, sizeof(buf), "TTS reply: %s", s_chat.tts_enabled ? "On" : "Off");
+    lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_TTS], buf);
+  }
+
+  /* Row 3: Back */
   if (s_chat.settings_rows[BB_SETTINGS_ROW_BACK] != NULL) {
     lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_BACK], "Back");
   }
 
-  /* 高亮 */
+  /* 高亮 + 视口（行数 > BB_SETTINGS_VISIBLE 时只显示 selected 周围的窗口）。
+   * Phase 4.5.1 引入第 4 行后必需，否则面板高度装不下。 */
+  int first = s_chat.settings_sel - BB_SETTINGS_VISIBLE / 2;
+  if (first < 0) first = 0;
+  if (first + BB_SETTINGS_VISIBLE > BB_SETTINGS_ROW_COUNT) {
+    first = BB_SETTINGS_ROW_COUNT - BB_SETTINGS_VISIBLE;
+    if (first < 0) first = 0;
+  }
   for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) {
     lv_obj_t* row = s_chat.settings_rows[i];
     if (row == NULL) continue;
+    int visible = (i >= first && i < first + BB_SETTINGS_VISIBLE);
+    if (visible) {
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
     if (i == s_chat.settings_sel) {
       lv_obj_set_style_bg_color(row, lv_color_hex(BB_PICKER_SEL_BG), 0);
       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
@@ -929,6 +1186,15 @@ void bb_ui_agent_chat_settings_handle_rotate(int delta) {
       s_chat.theme_idx = next;
       break;
     }
+    case BB_SETTINGS_ROW_TTS: {
+      /* Phase 4.5.1 — binary toggle. Any rotate flips it; clamp not wrap so
+       * repeated rotates feel stable (matches the other rows' clamp UX). */
+      int next = s_chat.tts_enabled + delta;
+      if (next < 0) next = 0;
+      if (next > 1) next = 1;
+      s_chat.tts_enabled = next;
+      break;
+    }
     case BB_SETTINGS_ROW_BACK:
     case BB_SETTINGS_ROW_COUNT:
     default:
@@ -970,7 +1236,7 @@ void bb_ui_agent_chat_settings_handle_click(void) {
     }
     case BB_SETTINGS_ROW_THEME: {
       if (s_chat.theme_count <= 0 || s_chat.theme_list == NULL) {
-        s_chat.settings_sel = BB_SETTINGS_ROW_BACK;
+        s_chat.settings_sel = BB_SETTINGS_ROW_TTS;
         settings_apply_rows();
         return;
       }
@@ -1029,7 +1295,20 @@ void bb_ui_agent_chat_settings_handle_click(void) {
         }
         return;
       }
-      /* same theme：推进光标到 Back 行。 */
+      /* same theme：推进光标到下一行 (TTS)。 */
+      s_chat.settings_sel = BB_SETTINGS_ROW_TTS;
+      settings_apply_rows();
+      break;
+    }
+    case BB_SETTINGS_ROW_TTS: {
+      /* Phase 4.5.1 — commit current toggle value to NVS, then advance to BACK
+       * (matches the existing per-row click UX: click = persist + step). */
+      esp_err_t err = persist_tts_enabled(s_chat.tts_enabled);
+      if (err != ESP_OK) {
+        ESP_LOGW(TAG, "settings: persist tts '%s' failed (%s)",
+                 s_chat.tts_enabled ? "on" : "off", esp_err_to_name(err));
+      }
+      ESP_LOGI(TAG, "settings: tts -> %s", s_chat.tts_enabled ? "on" : "off");
       s_chat.settings_sel = BB_SETTINGS_ROW_BACK;
       settings_apply_rows();
       break;
