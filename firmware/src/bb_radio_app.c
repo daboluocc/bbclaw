@@ -355,13 +355,23 @@ static void agent_chat_exit(void) {
 /** Wrapper around lvgl_port_lock for picker ops invoked from the stream task. */
 static void agent_chat_picker_move_locked(int delta) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    bb_ui_agent_chat_picker_move(delta);
+    /* Phase 4.2.5: route rotate to settings sub-mode when active. */
+    if (bb_ui_agent_chat_in_settings()) {
+      bb_ui_agent_chat_settings_handle_rotate(delta);
+    } else {
+      bb_ui_agent_chat_picker_move(delta);
+    }
     lvgl_port_unlock();
   }
 }
 
 static void agent_chat_picker_send_locked(void) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    if (bb_ui_agent_chat_in_settings()) {
+      bb_ui_agent_chat_settings_handle_click();
+      lvgl_port_unlock();
+      return;
+    }
     esp_err_t err = bb_ui_agent_chat_picker_send_selected();
     lvgl_port_unlock();
     if (err != ESP_OK) {

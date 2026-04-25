@@ -56,5 +56,28 @@ void bb_ui_agent_chat_picker_move(int delta);
  * 发送当前 picker 选中的短语（等价于 send(selected)）。
  * - 如有正在发送的请求，返回 ESP_ERR_INVALID_STATE（picker 不会消失，用户可以
  *   在 turn_end 后再按）。
+ * - 如果当前选中的是首行 "Settings"，则切换到 settings 模式（不发消息）。
  */
 esp_err_t bb_ui_agent_chat_picker_send_selected(void);
+
+/**
+ * Phase 4.2.5 — settings sub-mode.
+ *
+ * Settings 是一个覆盖在 chat 屏幕底部的列表，三行：
+ *   1. Agent: <name>   ── 旋转切换 driver；点击确认 + 持久化（NVS "agent/driver"）
+ *   2. Theme: <name>   ── 旋转切换主题；点击 bb_agent_theme_set_active + on_exit/on_enter
+ *   3. Back            ── 返回到 phrase picker
+ *
+ * 进入：picker 中选 "Settings" 行后 click。
+ * 退出：选 "Back" 后 click → 回到 picker；或按住长按 → 退出整个 chat overlay
+ *       （long-press 路由由 radio_app 处理；此处只暴露状态查询给 radio_app）。
+ *
+ * 调用者通过 bb_ui_agent_chat_in_settings() 决定把 rotate/click 派发到哪一组 API。
+ */
+int bb_ui_agent_chat_in_settings(void);
+
+/** 旋转事件：在 settings 模式下移动当前行的内部光标（driver / theme 列表里循环）。 */
+void bb_ui_agent_chat_settings_handle_rotate(int delta);
+
+/** 点击事件：在 settings 模式下确认当前行（switch driver / switch theme / back）。 */
+void bb_ui_agent_chat_settings_handle_click(void);
