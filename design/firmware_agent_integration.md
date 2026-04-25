@@ -50,10 +50,11 @@ agent bus 是**完全独立的第二条通路**，走纯文本：
 
 ### 固件已有基础设施（可复用）
 
-- `bb_http_*` 封装（`http_post_json`、动态 accumulator、event handler）
+- `bb_http_*` 封装（`http_post_json`、动态 accumulator、event handler）—— **注意：`bb_http_dyn_accum_t` 当前是 `bb_adapter_client.c` 文件内的 static 结构**，跨模块复用要么各自重定义一份（Phase 4.0 选这条，简单），要么以后抽到 `bb_http.h` 头里
 - `bb_finish_stream_event_t` 结构里**已经定义**了 `THINKING` / `TOOL_CALL` / `REPLY_DELTA` 事件类型 —— Agent Bus 事件一一对齐，不需要新数据类型
 - WiFi + NVS 基础完善
 - LVGL 文本渲染组件（含中文字体）
+- **cJSON**：ESP-IDF 自带 `json` 组件。`bb_adapter_client.c` 当前**没用**它（手写字符串解析），所以 `bb_agent_client.c` 是固件里第一个 cJSON 消费者；CMakeLists.txt 的 `REQUIRES` 需要加 `json`
 
 ### adapter 已有 endpoint
 

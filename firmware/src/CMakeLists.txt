@@ -2,6 +2,7 @@ set(_bb_srcs
     "bb_identity.c"
     "bb_audio.c"
     "bb_adapter_client.c"
+    "bb_agent_client.c"
     "bb_button_test.c"
     "bb_cloud_client.c"
     "bb_ogg_opus.cpp"
@@ -73,6 +74,7 @@ idf_component_register(
         esp_websocket_client
         78__esp-opus
         78__esp-opus-encoder
+        json
         mbedtls
         nvs_flash
         lvgl

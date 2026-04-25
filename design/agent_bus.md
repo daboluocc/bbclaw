@@ -236,7 +236,7 @@ type ToolCall struct {
 | 1.5 | 多轮 session 续接（`sessionId` 复用 + sweeper）· [ADR-002](decisions/ADR-002-multi-turn-session-lifecycle.md) | ✅ 完成（2026-04-25） |
 | 3 | `Router` 抽象 + 第二个 driver（Ollama）+ `GET /v1/agent/drivers` · [ADR-003](decisions/ADR-003-router-and-multi-driver.md) | 🔄 进行中 |
 | 2 | `tool_use` 审批闭环：`EvToolCall` + `Approve()` + 设备 ack 帧（需持久子进程 + `--input-format stream-json` 双向流） | 暂缓（等 Router 稳定后） |
-| 4 | 设备端 agent 切换菜单 + NVS 持久化 | 待做 |
+| 4 | 固件接入 Agent Bus（设备端聊天 / driver 切换 / NVS 持久化）· 详细子阶段见 [firmware_agent_integration.md](firmware_agent_integration.md) | 🔄 4.0 进行中 |
 | 5 | Codex / Aider / Gemini driver | 按需加 |
 
 ### Phase 1 验收记录
