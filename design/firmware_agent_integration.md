@@ -123,10 +123,63 @@ esp_err_t bb_agent_send_message(
 
 ### 新增 LVGL 屏幕 `firmware/src/ui/bb_ui_agent_chat.c`（不存在就新建目录）
 
-- 上：transcript 列表（用户消息 + 助手消息分色，tool_call 作 toast 样式独立一条）
+屏幕本体只管"接事件、维护状态、调当前主题渲染"。视觉**全部委托给主题**（见下面"主题系统"小节）。
+
+骨架：
+- 上：transcript 列表（用户消息 + 助手消息 + tool_call toast；具体长相由主题决定）
 - 中：driver 标签 + session 剩余 TTL 提示（可选）
 - 下：输入区（第一版用预置短语列表 "你好 / 今天天气 / /status"，后续加软键盘）
-- 状态：idle / thinking（等首字）/ streaming（有字在进）/ error
+
+### 主题系统（核心抽象）
+
+**为什么做主题**：参考 [`claude-desktop-buddy`](https://github.com/anthropics/claude-desktop-buddy)（同款 ST7789 1.47" 屏），它的"七态角色 + ASCII/GIF"渲染范式天然对齐 Agent Bus 事件流。把屏幕本体和具体视觉解耦，未来既能保持极简文字流，也能挂上 buddy 风格甚至自定义角色。
+
+#### 七态映射（沿用 buddy 命名）
+
+| State | 触发 | bbclaw 来源 |
+|---|---|---|
+| `sleep` | adapter 不可达 / 无活跃 session | bb_agent_client 探测失败 |
+| `idle` | 有 session 但当前无 turn | 上一次 `turn_end` 之后 |
+| `busy` | 流式生成中 | `EvText` 帧到达期间 |
+| `attention` | 等审批 | `EvToolCall`（Phase 2 真审批前为 display-only 提示）|
+| `celebrate` | token 累计达阈值 | `EvTokens` 累加（每 50K out tokens）|
+| `dizzy` | 错误 | `EvError` |
+| `heart` | 快速 turn_end / 成功结束 | `EvTurnEnd` 且响应 < 5s |
+
+#### 接口（C）
+
+```c
+typedef enum {
+    BB_AGENT_STATE_SLEEP, BB_AGENT_STATE_IDLE, BB_AGENT_STATE_BUSY,
+    BB_AGENT_STATE_ATTENTION, BB_AGENT_STATE_CELEBRATE,
+    BB_AGENT_STATE_DIZZY, BB_AGENT_STATE_HEART,
+} bb_agent_state_t;
+
+typedef struct bb_agent_theme {
+    const char* name;                          /* "text-only", "buddy-ascii", … */
+    void (*on_enter)(lv_obj_t* parent);         /* 建初始 UI（一次） */
+    void (*on_exit)(void);                      /* 清理（一次） */
+    void (*set_state)(bb_agent_state_t state);  /* 七态切换 */
+    void (*append_user)(const char* text);
+    void (*append_assistant_chunk)(const char* delta);  /* 流式 append */
+    void (*append_tool_call)(const char* tool, const char* hint);
+    void (*append_error)(const char* msg);
+    void (*set_driver)(const char* driver_name); /* 顶部状态栏更新 */
+    void (*set_session)(const char* sid_short);  /* 显示 session 前 8 位 */
+} bb_agent_theme_t;
+
+void bb_agent_theme_register(const bb_agent_theme_t* theme);
+const bb_agent_theme_t* bb_agent_theme_get_active(void);
+esp_err_t bb_agent_theme_set_active(const char* name);   /* 持久化到 NVS */
+const char** bb_agent_theme_list(int* out_count);        /* 菜单用 */
+```
+
+#### 主题注册策略
+
+- 主题对象用**链表注册**（启动时各主题在自己的 init 函数里 `bb_agent_theme_register`）
+- 内置 `text-only` 永远第一个，作为 fallback（NVS 里没值或主题不存在时）
+- NVS key：`agent/theme`（string，不超过 24 字符）
+- 切换时机：从设置菜单选择 → 写 NVS → 重新 `on_exit`/`on_enter`
 
 ### 菜单集成（`bb_radio_app.c` 改动）
 
@@ -182,14 +235,19 @@ adapter URL 已在现有 `bb_config.h` 里。无需新增。
 
 | Phase | 内容 | 验收 |
 |---|---|---|
-| 4.0 | `bb_agent_client.c/h` + 最简 CLI 测试（串口命令触发 send）| `idf.py monitor` 下打一条命令能看到 NDJSON 逐行回来 |
-| 4.1 | LVGL Agent Chat 屏（只看不发，预置短语发） | 设备屏幕能流式显示助手回复 |
-| 4.2 | driver picker 菜单 + NVS 持久化 session | 切 driver / 重启后继续聊 |
-| 4.3 | tool_call toast + tokens 角标 | UI 完整 |
+| 4.0 | `bb_agent_client.c/h` + 最简 CLI 测试（串口命令触发 send）| ✅ 模块已落地（commit `0535218`）；串口测试待补 |
+| 4.1 | 主题接口 + `text-only` 默认主题 + LVGL Agent Chat 骨架 | 设备屏幕能流式显示助手回复（极简风格）|
+| 4.2 | driver picker 菜单 + NVS 持久化 session + 主题切换菜单 | 切 driver / 切主题 / 重启后继续 |
+| 4.3 | tool_call toast + tokens 角标（在 text-only 主题里实现）| UI 完整 |
 | 4.4 | 软键盘或拼音输入法（如果硬件支持） | 用户能真·自由输入 |
 | 4.5 | 语音输入桥：长按 PTT → ASR → agent_bus（复用 `bb_adapter_client` 的 ASR，拿到文字后喂给 `bb_agent_client`）| 一键说话给 claude-code |
+| 4.6 | `buddy-ascii` 主题：移植 [claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) 的七态 ASCII 角色，状态机绑到 Agent Bus 事件 | 选 buddy 主题 → 屏幕变 buddy 风 |
+| 4.7 | 角色包推送：adapter 实现 buddy 同款 `char_begin/file/chunk/file_end` folder push 协议，bbclaw LittleFS 存 GIF 包 + LVGL GIF 解码 | 拖拽角色包到 web playground / 桌面工具，设备上自动切到自定义角色 |
 
-**先做 4.0 + 4.1 + 4.2**（MVP）。4.3–4.5 按 UX 反馈节奏。
+**先做 4.1 + 4.2 + 4.3**（MVP，纯文字流就足够交付一次完整 UX）。
+**4.4–4.5** 按 UX 反馈节奏。
+**4.6** 是"可选 polish"——先做完文字流主线，再考虑 buddy 风格。
+**4.7** 是大头，等 4.6 验证 ASCII 角色 OK 之后再决定要不要再投入实现 GIF。
 
 ## 8. 测试策略
 
