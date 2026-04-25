@@ -1,6 +1,10 @@
 CONFIG_IDF_TARGET="esp32s3"
 # 与常见 8MB SPI Flash 一致；若写 4MB 而芯片为 8MB 会告警且 esptool 只认 header 容量
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# 面包板调试：Mac en0 (192.168.1.x WiFi) 实际 IP；覆盖 Kconfig 默认 192.168.10.26
+# 真生产 PCB 不要 commit 此行，或换成其他 sdkconfig.defaults.* 文件单独存放
+CONFIG_BBCLAW_ADAPTER_BASE_URL="http://192.168.1.2:18080"
 # bb_http_resp_t.body[8192] + 调用链：须大于 8K，否则 main 任务栈溢出（见 bb_cloud_pair_request）
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 # LVGL 偶发整屏 SW 合成较慢时给 IDLE 留出余量（默认 5s 可能偏紧）

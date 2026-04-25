@@ -268,6 +268,15 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_NAV_LONG_PRESS_MS 700
 #endif
 
+/**
+ * 把 ENC_A / ENC_B 当作两个独立按键来处理（按下 A → ROTATE_CCW，按下 B → ROTATE_CW）。
+ * 默认 0 = 走正交编码器解码（bbclaw 生产板的旋钮编码器）。
+ * 面包板没有真编码器、用普通按键代替时改成 1。
+ */
+#ifndef BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC 0
+#endif
+
 /** 外接按键测试（仅调试用）：设为 -1 关闭；与 PTT 同脚时不要开，避免重复配置 GPIO */
 #ifndef BBCLAW_BUTTON_TEST_GPIO
 #define BBCLAW_BUTTON_TEST_GPIO -1
@@ -657,9 +666,10 @@ const char *bbclaw_session_key(void);
  *     BCLK            → I2S BCLK           → BBCLAW_SPK_BCLK_GPIO
  *     LRC             → I2S WS/LRCK        → BBCLAW_SPK_LRC_GPIO
  *     DIN             → I2S data out (TX)  → BBCLAW_SPK_DIN_GPIO
+ *     SD              → shutdown / enable  → BBCLAW_SPK_SD_GPIO  (alias of BBCLAW_SPEAKER_SW_GPIO)
  *     VIN             → 5V (recommended)   → (power, not a GPIO)
  *     GND             → GND                → (power, not a GPIO)
- *     SD/GAIN         → strap (typ. float) → (not a GPIO)
+ *     GAIN            → strap (typ. float) → (not a GPIO)
  *
  * BCLK and WS/LRC are the shared I2S clock lines between mic and speaker,
  * so BBCLAW_MIC_SCK_GPIO == BBCLAW_SPK_BCLK_GPIO and
@@ -688,6 +698,10 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_SPK_DIN_GPIO
 #define BBCLAW_SPK_DIN_GPIO BBCLAW_AUDIO_I2S_DO_GPIO
+#endif
+
+#ifndef BBCLAW_SPK_SD_GPIO
+#define BBCLAW_SPK_SD_GPIO BBCLAW_SPEAKER_SW_GPIO
 #endif
 
 #ifndef BBCLAW_ST7789_HOST

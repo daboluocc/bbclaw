@@ -30,10 +30,21 @@
 #define BBCLAW_PTT_PULL_UP      1
 
 /*
- * Navigation wheel: not wired on breadboard.
- * BBClaw PCB: ENC_A=6, ENC_B=8, KEY=1.
+ * Navigation: 三个独立按键代替 bbclaw 板上的旋钮编码器。GPIO 与 bbclaw PCB 一致：
+ *   GPIO 6  → 按一下发 ROTATE_CCW（替代左旋）
+ *   GPIO 8  → 按一下发 ROTATE_CW （替代右旋）
+ *   GPIO 1  → 短按发 CLICK，长按 ≥0.7s 发 LONG_PRESS
+ * 三个键都是按下接 GND，靠内部上拉。BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC=1
+ * 让 bb_nav_input.c 走"按键边沿检测"模式而非正交解码。
  */
-#define BBCLAW_NAV_ENABLE       0
+#define BBCLAW_NAV_ENABLE                   1
+#define BBCLAW_NAV_ENC_A_GPIO               6
+#define BBCLAW_NAV_ENC_B_GPIO               8
+#define BBCLAW_NAV_KEY_GPIO                 1
+#define BBCLAW_NAV_PULL_UP                  1
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL         0
+#define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC   1
+
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21
