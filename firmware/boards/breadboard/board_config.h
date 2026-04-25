@@ -30,20 +30,35 @@
 #define BBCLAW_PTT_PULL_UP      1
 
 /*
- * Navigation: 三个独立按键代替 bbclaw 板上的旋钮编码器。GPIO 与 bbclaw PCB 一致：
- *   GPIO 6  → 按一下发 ROTATE_CCW（替代左旋）
- *   GPIO 8  → 按一下发 ROTATE_CW （替代右旋）
- *   GPIO 1  → 短按发 CLICK，长按 ≥0.7s 发 LONG_PRESS
- * 三个键都是按下接 GND，靠内部上拉。BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC=1
- * 让 bb_nav_input.c 走"按键边沿检测"模式而非正交解码。
+ * Navigation: Flipper Zero 6-button layout (Phase 4.x Option A — events unchanged).
+ * Six independent push-buttons replace the bbclaw PCB rotary encoder. The
+ * existing 4 nav events are reused; LEFT/RIGHT are wired and debounced
+ * but emit no event yet (reserved for Phase 5 Option B).
+ *
+ *   GPIO 6  UP    → BB_NAV_EVENT_ROTATE_CCW (press edge, replaces left rotate)
+ *   GPIO 8  DOWN  → BB_NAV_EVENT_ROTATE_CW  (press edge, replaces right rotate)
+ *   GPIO 1  OK    → BB_NAV_EVENT_CLICK      (release edge, like the legacy KEY)
+ *   GPIO 0  BACK  → BB_NAV_EVENT_LONG_PRESS (press edge — explicit "exit" key;
+ *                   GPIO0 is the BOOT strap, post-boot it's a free input;
+ *                   ESP32-S3 modules have an external pull-up on GPIO0)
+ *   GPIO 38 LEFT  → no event yet (Option A); set to -1 if not wired
+ *   GPIO 39 RIGHT → no event yet (Option A); set to -1 if not wired
+ *
+ * Press = active LOW with internal pull-up. BBCLAW_NAV_FLIPPER_6BUTTON=1
+ * routes bb_nav_input.c through the 6-button branch; the legacy
+ * BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC and BBCLAW_NAV_ENC_A/B/KEY_GPIO macros
+ * default sensibly via bb_config.h's -1 defaults.
  */
 #define BBCLAW_NAV_ENABLE                   1
-#define BBCLAW_NAV_ENC_A_GPIO               6
-#define BBCLAW_NAV_ENC_B_GPIO               8
-#define BBCLAW_NAV_KEY_GPIO                 1
+#define BBCLAW_NAV_FLIPPER_6BUTTON          1
+#define BBCLAW_NAV_BTN_UP_GPIO              6
+#define BBCLAW_NAV_BTN_DOWN_GPIO            8
+#define BBCLAW_NAV_BTN_OK_GPIO              1
+#define BBCLAW_NAV_BTN_BACK_GPIO            0
+#define BBCLAW_NAV_BTN_LEFT_GPIO            38
+#define BBCLAW_NAV_BTN_RIGHT_GPIO           39
 #define BBCLAW_NAV_PULL_UP                  1
 #define BBCLAW_NAV_KEY_ACTIVE_LEVEL         0
-#define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC   1
 
 
 /* ── Motor ── */

@@ -9,11 +9,42 @@
 
 static const char* TAG = "bb_nav_input";
 
-#if BBCLAW_NAV_ENABLE && (BBCLAW_NAV_ENC_A_GPIO >= 0) && (BBCLAW_NAV_ENC_B_GPIO >= 0) && (BBCLAW_NAV_KEY_GPIO >= 0)
+/* Compile-time enablement:
+ *   - Legacy modes (quadrature encoder OR 3-buttons-as-encoder): require all
+ *     three of ENC_A / ENC_B / KEY GPIOs to be valid.
+ *   - Flipper 6-button (Option A): require BBCLAW_NAV_FLIPPER_6BUTTON=1 and
+ *     at least UP / DOWN / OK GPIOs to be valid (LEFT / RIGHT / BACK optional).
+ */
+#define BB_NAV_HAS_ENCODER_PINS                                                                       \
+  ((BBCLAW_NAV_ENC_A_GPIO >= 0) && (BBCLAW_NAV_ENC_B_GPIO >= 0) && (BBCLAW_NAV_KEY_GPIO >= 0))
+
+#define BB_NAV_HAS_FLIPPER_PINS                                                                       \
+  (BBCLAW_NAV_FLIPPER_6BUTTON && (BBCLAW_NAV_BTN_UP_GPIO >= 0) && (BBCLAW_NAV_BTN_DOWN_GPIO >= 0) && \
+   (BBCLAW_NAV_BTN_OK_GPIO >= 0))
+
+#if BBCLAW_NAV_ENABLE && (BB_NAV_HAS_ENCODER_PINS || BB_NAV_HAS_FLIPPER_PINS)
 static bb_nav_input_callback_t s_callback;
 static esp_timer_handle_t s_timer;
 
-#if BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+/* Flipper 6-button mode: each of UP/DOWN/LEFT/RIGHT/OK/BACK has its own
+ * debounce state. Buttons whose GPIO macro is -1 are skipped at gpio_config
+ * time and their poll branch is short-circuited.
+ */
+typedef struct {
+  int gpio;
+  int raw;
+  int stable;
+  int count;
+} bb_nav_btn_t;
+
+static bb_nav_btn_t s_btn_up = {.gpio = BBCLAW_NAV_BTN_UP_GPIO};
+static bb_nav_btn_t s_btn_down = {.gpio = BBCLAW_NAV_BTN_DOWN_GPIO};
+static bb_nav_btn_t s_btn_left = {.gpio = BBCLAW_NAV_BTN_LEFT_GPIO};
+static bb_nav_btn_t s_btn_right = {.gpio = BBCLAW_NAV_BTN_RIGHT_GPIO};
+static bb_nav_btn_t s_btn_ok = {.gpio = BBCLAW_NAV_BTN_OK_GPIO};
+static bb_nav_btn_t s_btn_back = {.gpio = BBCLAW_NAV_BTN_BACK_GPIO};
+#elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 /* Two-buttons-as-encoder mode: each press on the A pin emits ROTATE_CCW,
  * each press on the B pin emits ROTATE_CW. Same debounce logic as the
  * KEY pin. Used when the breadboard has plain push-buttons wired to
@@ -26,13 +57,21 @@ static uint8_t s_last_ab;
 static int8_t s_step_accum;
 #endif
 
+#if !BBCLAW_NAV_FLIPPER_6BUTTON
 static int s_key_raw;
 static int s_key_stable;
 static int s_key_stable_count;
 static int64_t s_key_press_start_ms;
 static int s_long_press_sent;
+#endif
 
-#if BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+/* Active-level read for any Flipper button. */
+static int read_btn_pressed(int gpio) {
+  if (gpio < 0) return 0;
+  return gpio_get_level(gpio) == BBCLAW_NAV_KEY_ACTIVE_LEVEL ? 1 : 0;
+}
+#elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 static int read_a_pressed(void) {
   /* Same active-level rule as the KEY: pressed = ACTIVE_LEVEL. */
   return gpio_get_level(BBCLAW_NAV_ENC_A_GPIO) == BBCLAW_NAV_KEY_ACTIVE_LEVEL ? 1 : 0;
@@ -48,10 +87,12 @@ static uint8_t read_ab_state(void) {
 }
 #endif
 
+#if !BBCLAW_NAV_FLIPPER_6BUTTON
 static int read_key_pressed(void) {
   int level = gpio_get_level(BBCLAW_NAV_KEY_GPIO);
   return level == BBCLAW_NAV_KEY_ACTIVE_LEVEL ? 1 : 0;
 }
+#endif
 
 static void emit_event(bb_nav_event_t event) {
   if (s_callback != NULL) {
@@ -59,7 +100,7 @@ static void emit_event(bb_nav_event_t event) {
   }
 }
 
-#if BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#if BBCLAW_NAV_FLIPPER_6BUTTON || BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 /* Debounced edge detection: when raw input matches stable for at least
  * debounce_samples polls AND differs from the previously latched stable
  * state, we have a confirmed transition. Returns 1 on a press edge
@@ -81,6 +122,17 @@ static int debounce_step(int* raw_var, int* stable_var, int* count_var, int new_
 }
 #endif
 
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+/* Convenience wrapper: poll one Flipper button, return debounce_step()
+ * result (1 = press edge, -1 = release edge, 0 = no change). Buttons
+ * whose GPIO is -1 yield 0.
+ */
+static int poll_btn(bb_nav_btn_t* btn, int debounce_samples) {
+  if (btn->gpio < 0) return 0;
+  return debounce_step(&btn->raw, &btn->stable, &btn->count, read_btn_pressed(btn->gpio), debounce_samples);
+}
+#endif
+
 static void nav_poll_cb(void* arg) {
   (void)arg;
 
@@ -88,7 +140,38 @@ static void nav_poll_cb(void* arg) {
       (BBCLAW_NAV_KEY_DEBOUNCE_MS + BBCLAW_NAV_POLL_MS - 1) / BBCLAW_NAV_POLL_MS;
   const int eff_debounce = debounce_samples > 0 ? debounce_samples : 1;
 
-#if BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+  /* Flipper 6-button mode (Option A). Press-edge for UP/DOWN/BACK,
+   * release-edge for OK to preserve the legacy KEY click semantics.
+   * LEFT/RIGHT are debounced + logged but emit nothing — Phase 5 (Option B)
+   * will introduce dedicated events and rework picker code to consume them.
+   */
+  if (poll_btn(&s_btn_up, eff_debounce) > 0) {
+    emit_event(BB_NAV_EVENT_ROTATE_CCW);
+  }
+  if (poll_btn(&s_btn_down, eff_debounce) > 0) {
+    emit_event(BB_NAV_EVENT_ROTATE_CW);
+  }
+  /* OK: emit on RELEASE edge to mirror the legacy KEY click behavior. */
+  if (poll_btn(&s_btn_ok, eff_debounce) < 0) {
+    emit_event(BB_NAV_EVENT_CLICK);
+  }
+  /* BACK: explicit "exit overlay" gesture — emit LONG_PRESS on press edge,
+   * no actual hold timing required since BACK has its own dedicated key. */
+  if (poll_btn(&s_btn_back, eff_debounce) > 0) {
+    emit_event(BB_NAV_EVENT_LONG_PRESS);
+  }
+  /* TODO(phase5/optionB): emit dedicated LEFT/RIGHT events and rework
+   * picker code to consume them; for now they are debounced + logged only. */
+  int left_edge = poll_btn(&s_btn_left, eff_debounce);
+  int right_edge = poll_btn(&s_btn_right, eff_debounce);
+  if (left_edge > 0) {
+    ESP_LOGI(TAG, "btn LEFT pressed (no event in option A)");
+  }
+  if (right_edge > 0) {
+    ESP_LOGI(TAG, "btn RIGHT pressed (no event in option A)");
+  }
+#elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
   if (debounce_step(&s_a_raw, &s_a_stable, &s_a_stable_count, read_a_pressed(), eff_debounce) > 0) {
     emit_event(BB_NAV_EVENT_ROTATE_CCW);
   }
@@ -120,6 +203,9 @@ static void nav_poll_cb(void* arg) {
   }
 #endif
 
+#if !BBCLAW_NAV_FLIPPER_6BUTTON
+  /* Legacy KEY (single click + long-press) path. Flipper mode handles its
+   * OK / BACK keys above and skips this block entirely. */
   int key_raw = read_key_pressed();
   if (key_raw == s_key_raw) {
     s_key_stable_count++;
@@ -145,13 +231,48 @@ static void nav_poll_cb(void* arg) {
       emit_event(BB_NAV_EVENT_LONG_PRESS);
     }
   }
+#endif
 }
 #endif
 
 esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
-#if BBCLAW_NAV_ENABLE && (BBCLAW_NAV_ENC_A_GPIO >= 0) && (BBCLAW_NAV_ENC_B_GPIO >= 0) && (BBCLAW_NAV_KEY_GPIO >= 0)
+#if BBCLAW_NAV_ENABLE && (BB_NAV_HAS_ENCODER_PINS || BB_NAV_HAS_FLIPPER_PINS)
   s_callback = callback;
 
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+  /* Build pin_bit_mask from the (up to) 6 buttons whose GPIO macro is >= 0. */
+  uint64_t pin_mask = 0;
+  if (BBCLAW_NAV_BTN_UP_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_UP_GPIO);
+  if (BBCLAW_NAV_BTN_DOWN_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_DOWN_GPIO);
+  if (BBCLAW_NAV_BTN_LEFT_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_LEFT_GPIO);
+  if (BBCLAW_NAV_BTN_RIGHT_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_RIGHT_GPIO);
+  if (BBCLAW_NAV_BTN_OK_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_OK_GPIO);
+  if (BBCLAW_NAV_BTN_BACK_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_BACK_GPIO);
+
+  gpio_config_t io_conf = {
+      .pin_bit_mask = pin_mask,
+      .mode = GPIO_MODE_INPUT,
+#if BBCLAW_NAV_PULL_UP
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+#else
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_ENABLE,
+#endif
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+  /* Initialize debounce state for every button (skip those = -1). */
+  bb_nav_btn_t* all_btns[] = {&s_btn_up, &s_btn_down, &s_btn_left, &s_btn_right, &s_btn_ok, &s_btn_back};
+  for (size_t i = 0; i < sizeof(all_btns) / sizeof(all_btns[0]); ++i) {
+    bb_nav_btn_t* b = all_btns[i];
+    if (b->gpio < 0) continue;
+    b->raw = read_btn_pressed(b->gpio);
+    b->stable = b->raw;
+    b->count = 0;
+  }
+#else
   gpio_config_t io_conf = {
       .pin_bit_mask =
           (1ULL << BBCLAW_NAV_ENC_A_GPIO) | (1ULL << BBCLAW_NAV_ENC_B_GPIO) | (1ULL << BBCLAW_NAV_KEY_GPIO),
@@ -184,6 +305,7 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
   s_key_stable_count = 0;
   s_key_press_start_ms = 0;
   s_long_press_sent = 0;
+#endif /* BBCLAW_NAV_FLIPPER_6BUTTON */
 
   const esp_timer_create_args_t timer_args = {
       .callback = nav_poll_cb,
@@ -192,6 +314,15 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
   ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_timer));
   ESP_ERROR_CHECK(esp_timer_start_periodic(s_timer, BBCLAW_NAV_POLL_MS * 1000));
 
+#if BBCLAW_NAV_FLIPPER_6BUTTON
+  ESP_LOGI(TAG,
+           "nav init mode=flipper6 up=%d down=%d left=%d right=%d ok=%d back=%d pull=%s key_active=%d "
+           "poll_ms=%d debounce_ms=%d",
+           BBCLAW_NAV_BTN_UP_GPIO, BBCLAW_NAV_BTN_DOWN_GPIO, BBCLAW_NAV_BTN_LEFT_GPIO,
+           BBCLAW_NAV_BTN_RIGHT_GPIO, BBCLAW_NAV_BTN_OK_GPIO, BBCLAW_NAV_BTN_BACK_GPIO,
+           BBCLAW_NAV_PULL_UP ? "up" : "down", BBCLAW_NAV_KEY_ACTIVE_LEVEL, BBCLAW_NAV_POLL_MS,
+           BBCLAW_NAV_KEY_DEBOUNCE_MS);
+#else
   ESP_LOGI(TAG,
            "nav init mode=%s a=%d b=%d key=%d pull=%s key_active=%d poll_ms=%d debounce_ms=%d long_ms=%d",
 #if BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
@@ -201,6 +332,7 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
 #endif
            BBCLAW_NAV_ENC_A_GPIO, BBCLAW_NAV_ENC_B_GPIO, BBCLAW_NAV_KEY_GPIO, BBCLAW_NAV_PULL_UP ? "up" : "down",
            BBCLAW_NAV_KEY_ACTIVE_LEVEL, BBCLAW_NAV_POLL_MS, BBCLAW_NAV_KEY_DEBOUNCE_MS, BBCLAW_NAV_LONG_PRESS_MS);
+#endif
   return ESP_OK;
 #else
   (void)callback;

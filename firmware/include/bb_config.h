@@ -277,6 +277,53 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC 0
 #endif
 
+/* Flipper 6-button layout (Option A: maps to existing 4 events).
+ * When BBCLAW_NAV_FLIPPER_6BUTTON=1, bb_nav_input.c reads UP/DOWN/
+ * LEFT/RIGHT/OK/BACK as 6 individual edge-detected buttons.
+ * Mutually exclusive with BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC.
+ *
+ * Event mapping in Option A (events themselves unchanged):
+ *   UP    → BB_NAV_EVENT_ROTATE_CCW (press edge)
+ *   DOWN  → BB_NAV_EVENT_ROTATE_CW  (press edge)
+ *   OK    → BB_NAV_EVENT_CLICK      (release edge, like the legacy KEY)
+ *   BACK  → BB_NAV_EVENT_LONG_PRESS (press edge — explicit "exit overlay" key)
+ *   LEFT  → no event yet (debounced + logged; reserved for Phase 5 Option B)
+ *   RIGHT → no event yet (debounced + logged; reserved for Phase 5 Option B)
+ *
+ * All 6 share BBCLAW_NAV_KEY_ACTIVE_LEVEL / BBCLAW_NAV_PULL_UP. Set the
+ * GPIO macro to -1 to skip wiring an individual button. */
+#ifndef BBCLAW_NAV_FLIPPER_6BUTTON
+#define BBCLAW_NAV_FLIPPER_6BUTTON 0
+#endif
+
+#ifndef BBCLAW_NAV_BTN_UP_GPIO
+#define BBCLAW_NAV_BTN_UP_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_BTN_DOWN_GPIO
+#define BBCLAW_NAV_BTN_DOWN_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_BTN_LEFT_GPIO
+#define BBCLAW_NAV_BTN_LEFT_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_BTN_RIGHT_GPIO
+#define BBCLAW_NAV_BTN_RIGHT_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_BTN_OK_GPIO
+#define BBCLAW_NAV_BTN_OK_GPIO -1
+#endif
+
+#ifndef BBCLAW_NAV_BTN_BACK_GPIO
+#define BBCLAW_NAV_BTN_BACK_GPIO -1
+#endif
+
+#if BBCLAW_NAV_FLIPPER_6BUTTON && BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+#error "BBCLAW_NAV_FLIPPER_6BUTTON and BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC are mutually exclusive"
+#endif
+
 /** 外接按键测试（仅调试用）：设为 -1 关闭；与 PTT 同脚时不要开，避免重复配置 GPIO */
 #ifndef BBCLAW_BUTTON_TEST_GPIO
 #define BBCLAW_BUTTON_TEST_GPIO -1
