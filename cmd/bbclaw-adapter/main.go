@@ -82,7 +82,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -149,7 +149,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
-	server.SetAgentRouter(buildAgentRouter(cfg, logger))
+	server.SetAgentRouter(agentRouter)
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
@@ -273,6 +273,7 @@ func probeTCP(addr string, timeout time.Duration) bool {
 
 func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sink := buildSink(cfg, logger, metrics)
+	agentRouter := buildAgentRouter(cfg, logger)
 	var cloudRelay *homeadapter.Adapter
 	var err error
 	if cfg.EnableCloudRelay() {
@@ -281,6 +282,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			logger.Errorf("%v", err)
 			os.Exit(1)
 		}
+		cloudRelay.SetRouter(agentRouter)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -300,7 +302,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)

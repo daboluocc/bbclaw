@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
@@ -30,6 +31,7 @@ type CloudEnvelope struct {
 type Adapter struct {
 	cfg     Config
 	sink    transcriptSink
+	router  *agent.Router
 	log     *obs.Logger
 	metrics *obs.Metrics
 	dialer  *websocket.Dialer
@@ -78,6 +80,11 @@ func (a *Adapter) Status() Status {
 	defer a.mu.Unlock()
 	return a.status
 }
+
+// SetRouter attaches the agent router so that chat.text requests with an
+// explicit driver field are dispatched through the agent bus instead of the
+// openclaw sink.
+func (a *Adapter) SetRouter(r *agent.Router) { a.router = r }
 
 func (a *Adapter) setStatus(connected bool, lastErr error) {
 	a.mu.Lock()
@@ -249,9 +256,33 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		return a.handleTranscriptRequest(ctx, write, env)
 	case "chat.text":
 		return a.handleChatTextRequest(ctx, write, env)
+	case "chat.drivers":
+		return a.handleChatDriversRequest(write, env)
 	default:
 		return nil
 	}
+}
+
+func (a *Adapter) handleChatDriversRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	var drivers []map[string]any
+	if a.router != nil {
+		for _, info := range a.router.List() {
+			drivers = append(drivers, map[string]any{
+				"name":         info.Name,
+				"capabilities": info.Capabilities,
+			})
+		}
+	}
+	if drivers == nil {
+		drivers = []map[string]any{}
+	}
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "chat.drivers.reply",
+		Payload:    map[string]any{"drivers": drivers},
+	})
 }
 
 func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnvelope) error, env CloudEnvelope) error {
@@ -264,10 +295,16 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnv
 	streamID, _ := env.Payload["streamId"].(string)
 	source, _ := env.Payload["source"].(string)
 	nodeID, _ := env.Payload["nodeId"].(string)
+	driverName, _ := env.Payload["driver"].(string)
+	driverName = strings.TrimSpace(driverName)
 
 	routeStart := time.Now()
-	a.log.Infof("phase=chat_text_request_recv session=%s stream=%s text_chars=%d",
-		strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
+	a.log.Infof("phase=chat_text_request_recv session=%s stream=%s text_chars=%d driver=%s",
+		strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text), driverName)
+
+	if a.router != nil && driverName != "" {
+		return a.handleChatTextViaAgent(ctx, write, env, text, sessionKey, streamID, driverName, routeStart)
+	}
 
 	writeEvent := func(kind string, payload map[string]any) {
 		if err := a.writeStreamEvent(write, env, kind, payload); err != nil {
@@ -399,6 +436,76 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
 	a.metrics.Inc("voice_reply_sent")
 	return nil
+}
+
+func (a *Adapter) handleChatTextViaAgent(
+	ctx context.Context,
+	write func(CloudEnvelope) error,
+	env CloudEnvelope,
+	text, sessionKey, streamID, driverName string,
+	routeStart time.Time,
+) error {
+	drv, ok := a.router.Get(driverName)
+	if !ok {
+		return fmt.Errorf("agent driver %q not registered", driverName)
+	}
+
+	sid, err := drv.Start(ctx, agent.StartOpts{})
+	if err != nil {
+		return fmt.Errorf("agent start: %w", err)
+	}
+	defer func() { _ = drv.Stop(sid) }()
+
+	events := drv.Events(sid)
+	sendErrCh := make(chan error, 1)
+	go func() { sendErrCh <- drv.Send(sid, text) }()
+
+	writeEvent := func(kind string, payload map[string]any) {
+		if err := a.writeStreamEvent(write, env, kind, payload); err != nil {
+			a.log.Warnf("writeEvent failed kind=%s err=%v", kind, err)
+		}
+	}
+
+	var replyParts []string
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				break loop
+			}
+			switch ev.Type {
+			case agent.EvText:
+				if t := strings.TrimSpace(ev.Text); t != "" {
+					replyParts = append(replyParts, ev.Text)
+					writeEvent("voice.reply.delta", map[string]any{"text": ev.Text})
+				}
+			case agent.EvToolCall:
+				if ev.Tool != nil {
+					writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
+				}
+			case agent.EvTurnEnd:
+				break loop
+			}
+		}
+	}
+
+	if sendErr := <-sendErrCh; sendErr != nil {
+		a.log.Warnf("phase=agent_send_failed driver=%s session=%s err=%v", driverName, sessionKey, sendErr)
+	}
+
+	replyText := strings.TrimSpace(strings.Join(replyParts, ""))
+	a.log.Infof("phase=chat_text_request_done driver=%s session=%s elapsed_s=%.3f reply_chars=%d",
+		driverName, sessionKey, time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "voice.reply",
+		Payload:    map[string]any{"ok": true, "text": replyText},
+	})
 }
 
 func (a *Adapter) writeStreamEvent(write func(CloudEnvelope) error, env CloudEnvelope, kind string, payload map[string]any) error {
