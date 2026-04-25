@@ -1,48 +1,69 @@
 /**
- * BBClaw board config: breadboard (INMP441 + MAX98357A + SPI ST7789 1.47")
+ * BBClaw board config: breadboard
  *
- * This is the default development configuration using discrete modules
- * wired on a breadboard with an ESP32-S3 devkit.
+ * Wired to match BBClaw PCB pin assignments (schematic rev 2026-04).
+ * Differences from BBClaw PCB are documented per section below.
  */
 #pragma once
 
-/* ── Audio: INMP441 mic + MAX98357A amp, shared I2S bus ── */
+/*
+ * Audio: INMP441 mic + MAX98357A amp (same as BBClaw PCB).
+ * DI_GPIO/MCK_GPIO kept at breadboard wire positions.
+ */
 #define BBCLAW_AUDIO_INPUT_SOURCE "inmp441"
 #define BBCLAW_AUDIO_SAMPLE_RATE  16000
 
 #define BBCLAW_AUDIO_I2S_BCK_GPIO 16
 #define BBCLAW_AUDIO_I2S_WS_GPIO  15
 #define BBCLAW_AUDIO_I2S_DO_GPIO  17
+/** Breadboard: INMP441 SD wired to GPIO18 (BBClaw PCB uses GPIO20) */
 #define BBCLAW_AUDIO_I2S_DI_GPIO  18
+/** Breadboard: MCLK wired to GPIO2 (BBClaw PCB leaves IO2 unconnected) */
 #define BBCLAW_AUDIO_I2S_MCK_GPIO  2
 
-/* ── PTT ── */
-#define BBCLAW_PTT_GPIO        7
-#define BBCLAW_PTT_ACTIVE_LEVEL 1
-#define BBCLAW_PTT_PULL_UP     0
+/*
+ * PTT: plain push-button on breadboard — one end to GPIO7, the other to GND.
+ * Idle pulled HIGH by internal pull-up; pressed = LOW (matches BBClaw PCB NAV key on GPIO1).
+ */
+#define BBCLAW_PTT_GPIO         7
+#define BBCLAW_PTT_ACTIVE_LEVEL 0
+#define BBCLAW_PTT_PULL_UP      1
+
+/*
+ * Navigation wheel: not wired on breadboard.
+ * BBClaw PCB: ENC_A=6, ENC_B=8, KEY=1.
+ */
+#define BBCLAW_NAV_ENABLE       0
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21
 #define BBCLAW_MOTOR_ENABLE    1
 
-/* ── Status LED (discrete R/Y/G) ── */
-#define BBCLAW_STATUS_LED_ENABLE 1
-#define BBCLAW_STATUS_LED_KIND_RGB_MODULE 1
-#define BBCLAW_STATUS_LED_R_GPIO 2
-#define BBCLAW_STATUS_LED_Y_GPIO 4
-#define BBCLAW_STATUS_LED_G_GPIO 5
+/*
+ * Battery / power sensing: no ADC divider on breadboard.
+ */
+#define BBCLAW_POWER_ENABLE    0
 
-/* ── Display: SPI ST7789 1.47" 172x320 ── */
+/*
+ * Status LED: discrete R/Y/G on breadboard (BBClaw PCB uses WS2812 on GPIO5).
+ */
+#define BBCLAW_STATUS_LED_ENABLE          1
+#define BBCLAW_STATUS_LED_KIND_RGB_MODULE 1
+#define BBCLAW_STATUS_LED_R_GPIO          2
+#define BBCLAW_STATUS_LED_Y_GPIO          4
+#define BBCLAW_STATUS_LED_G_GPIO          5
+
+/* ── Display: SPI ST7789 1.47" 172x320, same GPIO as BBClaw PCB ── */
 #define BBCLAW_DISPLAY_BUS_SPI   1
 #define BBCLAW_DISPLAY_BUS_I80   0
 
 #define BBCLAW_ST7789_HOST       2
-#define BBCLAW_ST7789_SCLK_GPIO 12
-#define BBCLAW_ST7789_MOSI_GPIO 11
-#define BBCLAW_ST7789_CS_GPIO   10
-#define BBCLAW_ST7789_DC_GPIO    9
-#define BBCLAW_ST7789_RST_GPIO  14
-#define BBCLAW_ST7789_BL_GPIO   13
+#define BBCLAW_ST7789_SCLK_GPIO  9
+#define BBCLAW_ST7789_MOSI_GPIO 10
+#define BBCLAW_ST7789_RST_GPIO  11
+#define BBCLAW_ST7789_DC_GPIO   12
+#define BBCLAW_ST7789_CS_GPIO   13
+#define BBCLAW_ST7789_BL_GPIO   14
 #define BBCLAW_ST7789_WIDTH    320
 #define BBCLAW_ST7789_HEIGHT   172
 
@@ -108,5 +129,7 @@
 #endif
 #endif
 
-/* ── PA enable (not wired on breadboard) ── */
-#define BBCLAW_PA_EN_GPIO      -1
+/* ── PA enable / speaker sense: not wired on breadboard ── */
+#define BBCLAW_PA_EN_GPIO        -1
+#define BBCLAW_SPEAKER_SW_GPIO   -1
+#define BBCLAW_PA_EN_PROBE_GPIO1 (-1)

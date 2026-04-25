@@ -213,19 +213,19 @@ const char *bbclaw_session_key(void);
 #endif
 
 /**
- * PTT 只使用一个引脚（BBCLAW_PTT_GPIO）。BOOT0 与外接键二选一；若要两键同时各管不同逻辑需改代码（当前无第二路 PTT）。
- * 外接键实测：空闲 0、按下 1 → ACTIVE_LEVEL=1、PULL_UP=0。
+ * PTT 只使用一个引脚（BBCLAW_PTT_GPIO）。默认“普通按键接地”接法：按下→LOW，内部上拉。
+ * 若外接键为“按下接 3V3”，改为 ACTIVE_LEVEL=1 / PULL_UP=0（可参考 bb_button_test 日志）。
  */
 #ifndef BBCLAW_PTT_GPIO
 #define BBCLAW_PTT_GPIO 7
 #endif
 
 #ifndef BBCLAW_PTT_ACTIVE_LEVEL
-#define BBCLAW_PTT_ACTIVE_LEVEL 1
+#define BBCLAW_PTT_ACTIVE_LEVEL 0
 #endif
 
 #ifndef BBCLAW_PTT_PULL_UP
-#define BBCLAW_PTT_PULL_UP 0
+#define BBCLAW_PTT_PULL_UP 1
 #endif
 
 #ifndef BBCLAW_PTT_DEBOUNCE_MS
@@ -636,6 +636,58 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_ES8311_I2S_DI_GPIO
 #define BBCLAW_ES8311_I2S_DI_GPIO BBCLAW_AUDIO_I2S_DI_GPIO
+#endif
+
+/* ------------------------------------------------------------------
+ * Mic / Speaker silk-label aliases (INMP441 + MAX98357A)
+ *
+ * These aliases map 1:1 to BBCLAW_AUDIO_I2S_* so firmware has a single
+ * source of truth, while boards / docs can refer to the pin names that
+ * are actually silk-printed on each module:
+ *
+ *   INMP441 mic silk  → ESP I2S role       → macro
+ *     SCK             → I2S BCLK           → BBCLAW_MIC_SCK_GPIO
+ *     WS              → I2S WS/LRCK        → BBCLAW_MIC_WS_GPIO
+ *     SD              → I2S data in (RX)   → BBCLAW_MIC_SD_GPIO
+ *     VDD             → 3V3                → (power, not a GPIO)
+ *     GND             → GND                → (power, not a GPIO)
+ *     L/R             → GND or 3V3         → (strap, not a GPIO)
+ *
+ *   MAX98357A speaker silk → ESP I2S role   → macro
+ *     BCLK            → I2S BCLK           → BBCLAW_SPK_BCLK_GPIO
+ *     LRC             → I2S WS/LRCK        → BBCLAW_SPK_LRC_GPIO
+ *     DIN             → I2S data out (TX)  → BBCLAW_SPK_DIN_GPIO
+ *     VIN             → 5V (recommended)   → (power, not a GPIO)
+ *     GND             → GND                → (power, not a GPIO)
+ *     SD/GAIN         → strap (typ. float) → (not a GPIO)
+ *
+ * BCLK and WS/LRC are the shared I2S clock lines between mic and speaker,
+ * so BBCLAW_MIC_SCK_GPIO == BBCLAW_SPK_BCLK_GPIO and
+ *    BBCLAW_MIC_WS_GPIO  == BBCLAW_SPK_LRC_GPIO by construction.
+ * ------------------------------------------------------------------ */
+
+#ifndef BBCLAW_MIC_SCK_GPIO
+#define BBCLAW_MIC_SCK_GPIO BBCLAW_AUDIO_I2S_BCK_GPIO
+#endif
+
+#ifndef BBCLAW_MIC_WS_GPIO
+#define BBCLAW_MIC_WS_GPIO BBCLAW_AUDIO_I2S_WS_GPIO
+#endif
+
+#ifndef BBCLAW_MIC_SD_GPIO
+#define BBCLAW_MIC_SD_GPIO BBCLAW_AUDIO_I2S_DI_GPIO
+#endif
+
+#ifndef BBCLAW_SPK_BCLK_GPIO
+#define BBCLAW_SPK_BCLK_GPIO BBCLAW_AUDIO_I2S_BCK_GPIO
+#endif
+
+#ifndef BBCLAW_SPK_LRC_GPIO
+#define BBCLAW_SPK_LRC_GPIO BBCLAW_AUDIO_I2S_WS_GPIO
+#endif
+
+#ifndef BBCLAW_SPK_DIN_GPIO
+#define BBCLAW_SPK_DIN_GPIO BBCLAW_AUDIO_I2S_DO_GPIO
 #endif
 
 #ifndef BBCLAW_ST7789_HOST

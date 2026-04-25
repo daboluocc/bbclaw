@@ -1575,7 +1575,8 @@ static void stream_task(void* arg) {
       session_busy = 0;
       voice_verify_capture_reset();
       if (verify_err != ESP_OK) {
-        ESP_LOGE(TAG, "voice verify failed err=%s", esp_err_to_name(verify_err));
+        ESP_LOGE(TAG, "voice verify failed err=%s msg=%s", esp_err_to_name(verify_err),
+                 verify_result.message[0] != '\0' ? verify_result.message : "(no message)");
         show_status_error(BB_STATUS_VERIFY_ERR);
         (void)bb_display_show_chat_turn("密语验证失败",
                                         verify_result.message[0] != '\0' ? verify_result.message : "cloud verify error");

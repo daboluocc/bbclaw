@@ -1,6 +1,6 @@
 # BBClaw 固件引脚映射（Pin Map）
 
-更新时间：2026-04-11
+更新时间：2026-04-25
 
 本文档是固件接线的单一基线，包含信号线与供电线（`3V3` / `5V`）建议。
 
@@ -17,31 +17,34 @@
 
 ### 1.1 INMP441 麦克风接线（3.3V）
 
+ teadily / 通用 INMP441 模块为 6 pin 圆形板，两侧各 3 pin；丝印一侧为 `L/R` / `WS` / `SCK`，另一侧为 `SD` / `VDD` / `GND`。固件端提供两组等价宏（以丝印名的 `BBCLAW_MIC_*` 为导向，兼容通用 `BBCLAW_AUDIO_I2S_*`），全部定义在 [bb_config.h](/Volumes/1TB/github/bbclaw/firmware/include/bb_config.h)。
 
-| 模块引脚  | 接到开发板         | 说明                       |
-| ----- | ------------- | ------------------------ |
-| `VDD` | `3V3`         | 数字麦克风供电，使用 3.3V          |
-| `GND` | `GND`         | 共地                       |
-| `SCK` | `GPIO16`      | I2S `BCLK`               |
-| `WS`  | `GPIO15`      | I2S `WS/LRCK`            |
-| `SD`  | `GPIO18`      | I2S 数据输出（mic -> ESP）     |
-| `L/R` | `GND` 或 `3V3` | 左右声道选择；当前固件默认会自动锁定有能量的一侧 |
+| 丝印（mic） | 接到开发板       | ESP I2S 角色     | 配置宏（推荐）                | 兼容宏                           |
+| --------- | ----------- | ------------- | ------------------------- | ----------------------------- |
+| `VDD`     | `3V3`       | 供电（必须 3.3V） | —                         | —                             |
+| `GND`     | `GND`       | 共地            | —                         | —                             |
+| `SCK`     | `GPIO16`    | `BCLK`        | `BBCLAW_MIC_SCK_GPIO`     | `BBCLAW_AUDIO_I2S_BCK_GPIO`   |
+| `WS`      | `GPIO15`    | `WS / LRCK`   | `BBCLAW_MIC_WS_GPIO`      | `BBCLAW_AUDIO_I2S_WS_GPIO`    |
+| `SD`      | `GPIO18`    | mic → ESP RX  | `BBCLAW_MIC_SD_GPIO`      | `BBCLAW_AUDIO_I2S_DI_GPIO`    |
+| `L/R`     | `GND` 或 `3V3` | 声道选择       | —                         | —（`BBCLAW_AUDIO_RX_AUTO_CHANNEL_LOCK=1` 默认自动锁定非零声道） |
 
-参考 [INMP441.png](./INMP441.png)：模块丝印一侧为 `L/R` / `WS` / `SCK`，另一侧为 `SD` / `VDD` / `GND`。接线时以模块丝印为准，不要把 `SD` 和 `WS/SCK` 看反。
+参考 [INMP441.png](./INMP441.png)。接线时以模块丝印为准，**不要把 `SD` 和 `WS/SCK` 看反**。MCLK 未使用（INMP441 不需主时钟）。
 
 
 ### 1.2 MAX98357A 功放接线（推荐 5V）
 
+ MAX98357A 常见模块丝印为 `VIN` / `GND` / `SD` / `GAIN` / `DIN` / `BCLK` / `LRC`；固件端提供“丝印名”的 `BBCLAW_SPK_*` 别名，内部仍指向通用 `BBCLAW_AUDIO_I2S_*`。`BCLK` / `LRC` 与上面麦克风的 `SCK` / `WS` **物理共线**（同一根 I2S 时钟 / 字时钟）。
 
-| 模块引脚          | 接到开发板    | 说明                      |
-| ------------- | -------- | ----------------------- |
-| `VIN`         | `5V`（推荐） | 5V 输出功率更高；也可按模块规格用 3.3V |
-| `GND`         | `GND`    | 共地                      |
-| `BCLK`        | `GPIO16` | 与 INMP441 共享 I2S 时钟     |
-| `LRC/LRCLK`   | `GPIO15` | 与 INMP441 共享 I2S 字时钟    |
-| `DIN`         | `GPIO17` | I2S 播放数据（ESP -> amp）    |
-| `SD/EN`（若有）   | 悬空或 GPIO | 默认常开；需要静音控制时再接 GPIO     |
-| `SPK+ / SPK-` | 扬声器正负极   | 按扬声器规格连接                |
+| 丝印（spk）      | 接到开发板  | ESP I2S 角色       | 配置宏（推荐）                | 兼容宏                           |
+| ------------- | ------- | --------------- | ------------------------- | ----------------------------- |
+| `VIN`         | `5V`（推荐） | 供电；按模块规格也可 3.3V | —                        | —                             |
+| `GND`         | `GND`   | 共地              | —                         | —                             |
+| `BCLK`        | `GPIO16`| `BCLK`          | `BBCLAW_SPK_BCLK_GPIO`    | `BBCLAW_AUDIO_I2S_BCK_GPIO`   |
+| `LRC`         | `GPIO15`| `WS / LRCK`     | `BBCLAW_SPK_LRC_GPIO`     | `BBCLAW_AUDIO_I2S_WS_GPIO`    |
+| `DIN`         | `GPIO17`| ESP TX → amp    | `BBCLAW_SPK_DIN_GPIO`     | `BBCLAW_AUDIO_I2S_DO_GPIO`    |
+| `SD/EN`（若有）  | 悬空或 GPIO | 静音/使能控制       | —                         | —                             |
+| `GAIN`（若有）    | 默认悬空   | 增益拨档（模块内部下拉） | —                         | —                             |
+| `SPK+ / SPK-` | 扬声器正负极 | 扬声器输出          | —                         | —                             |
 
 
 ### 1.3 状态灯接线（对讲状态）
@@ -125,16 +128,17 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 ### 1.6 PTT 按键接线
 
 
-| 端子    | 接到开发板   | 说明                             |
-| ----- | ------- | ------------------------------ |
-| 按键一端  | `GPIO7` | `BBCLAW_PTT_GPIO`，高电平有效        |
-| 按键另一端 | `3V3`   | 当前 breadboard 默认无内部上拉，按下时输入高电平 |
+| 端子    | 接到开发板   | 说明                                      |
+| ----- | ------- | --------------------------------------- |
+| 按键一端  | `GPIO7` | `BBCLAW_PTT_GPIO`，内部上拉，空闲 HIGH                 |
+| 按键另一端 | `GND`   | 普通按键接地，按下拉低，与 `GPIO1` 的导航按键接法一致                  |
 
 
 说明：
 
-- 当前 breadboard 默认编译配置为 `GPIO7`。
-- 若你的板子把 PTT 接到了别的脚，需要同步改 `BBCLAW_PTT_GPIO`。
+- 最新 breadboard 上 PTT 已改为**普通按键接地**，与 `bbclaw` PCB 上 `GPIO1` 导航按键语义相同：ACTIVE\_LEVEL=0、PULL\_UP=1。
+- 旧版“按下接 3V3”接法仍然兼容：在对应 `boards/*/board_config.h` 里把 `BBCLAW_PTT_ACTIVE_LEVEL` 改回 `1`、`BBCLAW_PTT_PULL_UP` 改回 `0` 即可。
+- 若你的板子把 PTT 接到了别的脚，需同步改 `BBCLAW_PTT_GPIO`。
 
 ## 2. BBClaw 自研 PCB 扩展配置
 
@@ -168,14 +172,15 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 **I2S（INMP441 + MAX98357A）**
 
+以两模块的丝印名为导向；同一行 的“上/下”两列当两者**共线**时合并，单线时单列填写。
 
-| 功能                  | GPIO                                    | 说明                                                                                                    |
-| ------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `WS` / `LRCK`       | `GPIO15`                                | 与 breadboard 同                                                                                        |
-| `BCLK`              | `GPIO16`                                | 同                                                                                                     |
-| `DOUT`→功放           | `GPIO17`                                | 同                                                                                                     |
-| 麦克风 `SD`→ESP I2S RX | `GPIO20`（宏 `BBCLAW_AUDIO_I2S_DI_GPIO`） | **仅 INMP441**：模块丝印 **SD** → MCU I2S 收。须接实线；若量产 GPIO 不是 20，改宏与 PCB 一致。 |
-| `MCLK`              | （未引出）                                   | 原理图 IO2 NC；`BBCLAW_AUDIO_I2S_MCK_GPIO=-1`，inmp441 路径不输出 MCLK                                         |
+| 功能            | mic 丝印     | spk 丝印      | GPIO       | 配置宏（推荐）                                            | 备注                                                             |
+| ------------- | ---------- | ----------- | ---------- | --------------------------------------------------------- | -------------------------------------------------------------- |
+| 位时钟          | `SCK`      | `BCLK`      | `GPIO16`   | `BBCLAW_MIC_SCK_GPIO` / `BBCLAW_SPK_BCLK_GPIO`            | 共线（`BBCLAW_AUDIO_I2S_BCK_GPIO`）                          |
+| 字时钟          | `WS`       | `LRC`       | `GPIO15`   | `BBCLAW_MIC_WS_GPIO`  / `BBCLAW_SPK_LRC_GPIO`             | 共线（`BBCLAW_AUDIO_I2S_WS_GPIO`）                           |
+| 功放输入 DIN      | —          | `DIN`       | `GPIO17`   | `BBCLAW_SPK_DIN_GPIO`                                     | ESP TX → amp（`BBCLAW_AUDIO_I2S_DO_GPIO`）                    |
+| 麦克风输出 SD     | `SD`       | —           | `GPIO20`   | `BBCLAW_MIC_SD_GPIO`                                      | mic → ESP RX（`BBCLAW_AUDIO_I2S_DI_GPIO`）；**仅 INMP441**，PCB 上与 breadboard 的 `GPIO18` 不同 |
+| 主时钟 MCLK      | —          | —           | （未引出）     | —                                                         | `BBCLAW_AUDIO_I2S_MCK_GPIO=-1`，INMP441 路径不输出主时钟        |
 
 
 **状态 RGB（U6：单线可寻址灯珠，DIN）**
