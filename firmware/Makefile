@@ -5,6 +5,16 @@ IDF_PATH ?= $(HOME)/esp/esp-idf
 IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
+# Serial port for flash/monitor/erase.
+# Default: /dev/cu.usbmodem2112401 (override to auto-detect or a different device as needed).
+# Override per-invocation: make flash PORT=/dev/cu.usbmodemXXXX
+# Or export once:          export BBCLAW_PORT=/dev/cu.usbmodemXXXX
+# Force auto-detect:       make flash PORT=
+DEFAULT_PORT := /dev/cu.usbmodem2112401
+PORT ?= $(if $(BBCLAW_PORT),$(BBCLAW_PORT),$(DEFAULT_PORT))
+ESPTOOL_PORT_ARG := $(if $(PORT),--port $(PORT),)
+IDF_PORT_ARG := $(if $(PORT),-p $(PORT),)
+
 LOG_DIR := .cache
 MONITOR_LOG := $(LOG_DIR)/idf-monitor.latest.log
 MONITOR_FILTER ?= ^$$
@@ -71,8 +81,10 @@ flash: flash-ota0
 #   0x3A0000-0x61FFFF: ota_1 (2.5MB)
 #   0x620000-0x71FFFF: resources (1MB)
 flash-ota0: build
-	@echo "Flashing to ota_0 partition (0x120000)..."
-	@python3 -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
+	@echo "Flashing to ota_0 partition (0x120000)... port=$(if $(PORT),$(PORT),auto)"
+	@pkill -f "idf_monitor.py" 2>/dev/null || true
+	@sleep 1
+	@python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
 		write_flash \
 		--flash_mode dio --flash_size 8MB --flash_freq 80m \
 		0x0 build/bootloader/bootloader.bin \
@@ -81,28 +93,31 @@ flash-ota0: build
 		0x120000 build/bbclaw_firmware.bin
 
 erase:
-	@$(IDF_SOURCE) idf.py erase-flash
+	@pkill -f "idf_monitor.py" 2>/dev/null || true
+	@sleep 1
+	@echo "[erase] port=$(if $(PORT),$(PORT),auto)"
+	@$(IDF_SOURCE) idf.py $(IDF_PORT_ARG) erase-flash
 
 monitor:
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
 	@sleep 1
 	@mkdir -p "$(LOG_DIR)"
-	@echo "[monitor] logging to $(MONITOR_LOG)"
-	@$(IDF_SOURCE) idf.py monitor 2>&1 | tee "$(MONITOR_LOG)"
+	@echo "[monitor] logging to $(MONITOR_LOG) port=$(if $(PORT),$(PORT),auto)"
+	@$(IDF_SOURCE) idf.py $(IDF_PORT_ARG) monitor 2>&1 | tee "$(MONITOR_LOG)"
 
 monitor-log:
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
 	@sleep 1
 	@mkdir -p "$(LOG_DIR)"
 	@: > "$(MONITOR_LOG)"
-	@echo "[monitor-log] overwrite -> $(MONITOR_LOG)"
-	@$(IDF_SOURCE) idf.py monitor 2>&1 | tee "$(MONITOR_LOG)"
+	@echo "[monitor-log] overwrite -> $(MONITOR_LOG) port=$(if $(PORT),$(PORT),auto)"
+	@$(IDF_SOURCE) idf.py $(IDF_PORT_ARG) monitor 2>&1 | tee "$(MONITOR_LOG)"
 
 monitor-log-filtered:
 	@mkdir -p "$(LOG_DIR)"
 	@: > "$(MONITOR_LOG)"
 	@echo "[monitor-log-filtered] overwrite -> $(MONITOR_LOG), hide regex=$(MONITOR_FILTER)"
-	@$(IDF_SOURCE) idf.py monitor 2>&1 | tee "$(MONITOR_LOG)" | $(MONITOR_FILTER_CMD)
+	@$(IDF_SOURCE) idf.py $(IDF_PORT_ARG) monitor 2>&1 | tee "$(MONITOR_LOG)" | $(MONITOR_FILTER_CMD)
 
 monitor-last:
 	@test -f "$(MONITOR_LOG)" || (echo "[monitor-last] log not found: $(MONITOR_LOG)" && exit 1)
