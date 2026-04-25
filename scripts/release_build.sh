@@ -25,6 +25,13 @@ BIN_PATH="$STAGE_DIR/$BIN_NAME"
 README_PATH="$STAGE_DIR/README.txt"
 ENV_EXAMPLE_SRC="$ROOT_DIR/.env.example"
 
+# Flat binary name expected by the public install-adapter.sh on daboluocc/bbclaw.
+case "$GOOS_TARGET" in
+  windows) FLAT_BIN_NAME="bbclaw-adapter-${GOOS_TARGET}-${GOARCH_TARGET}.exe" ;;
+  *) FLAT_BIN_NAME="bbclaw-adapter-${GOOS_TARGET}-${GOARCH_TARGET}" ;;
+esac
+FLAT_BIN_PATH="$DIST_DIR/$FLAT_BIN_NAME"
+
 LDFLAGS="-X github.com/daboluocc/bbclaw/adapter/internal/buildinfo.Tag=${VERSION} -X github.com/daboluocc/bbclaw/adapter/internal/buildinfo.BuildTime=${BUILD_TIME}"
 
 cleanup() {
@@ -54,6 +61,8 @@ Quick start:
 2. Run the adapter binary.
 3. Check /healthz after startup.
 EOF
+
+install -m 0755 "$BIN_PATH" "$FLAT_BIN_PATH"
 
 if [[ "$GOOS_TARGET" == "windows" ]]; then
   (
