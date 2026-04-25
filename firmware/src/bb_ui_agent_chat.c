@@ -861,6 +861,47 @@ static void settings_show(void) {
            s_chat.driver_cache_count, s_chat.theme_count);
 }
 
+/* ── Phase 4.5 — voice bridge helpers ── */
+
+int bb_ui_agent_chat_is_busy(void) {
+  return (s_chat.active && s_chat.sending) ? 1 : 0;
+}
+
+/* When true, the topbar's session field shows the listening hint instead of
+ * the cached short session id. Cleared by voice_listening(0) so that future
+ * SESSION frames (post-send) restore the real id. */
+static void post_listening_topbar(int begin) {
+  if (!s_chat.active) return;
+  if (begin) {
+    /* Use the existing set_session pipe — the text-only theme renders this
+     * in the topbar, so reusing it keeps the change purely additive in the
+     * theme layer. "LISTEN..." fits in the 16-char buffer. */
+    post_session("LISTEN..");
+  } else {
+    char shortbuf[16] = {0};
+    if (s_chat.session_id[0] != '\0') {
+      strncpy(shortbuf, s_chat.session_id, 8);
+      shortbuf[8] = '\0';
+    } else {
+      snprintf(shortbuf, sizeof(shortbuf), "--------");
+    }
+    post_session(shortbuf);
+  }
+}
+
+void bb_ui_agent_chat_voice_listening(int begin) {
+  if (!s_chat.active) return;
+  if (begin) {
+    post_state(BB_AGENT_STATE_BUSY);
+    post_listening_topbar(1);
+  } else {
+    post_listening_topbar(0);
+    /* Don't force IDLE here — caller follows up with bb_ui_agent_chat_send
+     * which will drive BUSY → text → TURN_END. If we reset to IDLE here we
+     * get a brief flicker; better to leave the previous state in place. */
+  }
+}
+
 /* 公开 API ──── 被 bb_radio_app.c 路由调用（在 LVGL 锁里调）。 */
 
 int bb_ui_agent_chat_in_settings(void) {

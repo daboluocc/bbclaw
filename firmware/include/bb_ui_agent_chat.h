@@ -81,3 +81,26 @@ void bb_ui_agent_chat_settings_handle_rotate(int delta);
 
 /** 点击事件：在 settings 模式下确认当前行（switch driver / switch theme / back）。 */
 void bb_ui_agent_chat_settings_handle_click(void);
+
+/**
+ * Phase 4.5 — voice bridge helpers.
+ *
+ * Used by bb_radio_app.c to drive the PTT-as-text-input flow when the chat
+ * overlay is open. Cheap query + visual hints; no agent network traffic.
+ */
+
+/**
+ * Returns 1 when the chat overlay is currently servicing a turn (the agent
+ * task is in flight or replies are still streaming). Used by radio_app to
+ * reject concurrent PTT presses.
+ */
+int bb_ui_agent_chat_is_busy(void);
+
+/**
+ * Light visual hint that the device is recording PTT for an agent turn.
+ * begin=1 → topbar shows "LISTEN…" + state goes BUSY.
+ * begin=0 → restore the cached session id (or clear if none).
+ *
+ * Safe to call from any task; internally posts via lv_async_call.
+ */
+void bb_ui_agent_chat_voice_listening(int begin);

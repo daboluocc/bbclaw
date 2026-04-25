@@ -380,6 +380,83 @@ static void agent_chat_picker_send_locked(void) {
   }
 }
 
+/* Phase 4.5 — true when PTT presses should route into the agent voice bridge:
+ * chat is open, settings sub-mode is closed, and no agent turn is in flight.
+ * The third clause prevents the user from kicking off a second ASR while a
+ * previous send is still streaming text on screen. */
+static int agent_chat_voice_capture_active(void) {
+  if (!s_agent_chat_active) return 0;
+  int in_settings = 0;
+  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+    in_settings = bb_ui_agent_chat_in_settings();
+    lvgl_port_unlock();
+  }
+  return in_settings ? 0 : 1;
+}
+
+/* Wrapper that grabs lvgl lock + queries chat-busy state, used to reject PTT
+ * while a previous chat turn is still streaming. */
+static int agent_chat_is_busy_locked(void) {
+  int busy = 0;
+  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+    busy = bb_ui_agent_chat_is_busy();
+    lvgl_port_unlock();
+  }
+  return busy;
+}
+
+static void agent_chat_voice_listening_locked(int begin) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+    bb_ui_agent_chat_voice_listening(begin);
+    lvgl_port_unlock();
+  }
+}
+
+static esp_err_t agent_chat_voice_send_locked(const char* text) {
+  esp_err_t err = ESP_FAIL;
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    err = bb_ui_agent_chat_send(text);
+    lvgl_port_unlock();
+  }
+  return err;
+}
+
+/* Phase 4.5 — error path for the agent voice bridge. Drops the listening
+ * hint and surfaces a one-liner via the active theme (if any). All error
+ * branches in the streaming pipeline funnel through here when
+ * voice_target_agent is set. */
+static void agent_chat_voice_post_error(const char* msg) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    bb_ui_agent_chat_voice_listening(0);
+    if (msg != NULL && msg[0] != '\0') {
+      const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+      if (theme != NULL && theme->append_error != NULL) {
+        theme->append_error(msg);
+      }
+    }
+    lvgl_port_unlock();
+  }
+}
+
+/* utf-8-safe trim of leading/trailing ASCII whitespace. Returns pointer into
+ * buf and trims tail in place by writing '\0'. ASR transcripts come back with
+ * stray spaces / newlines occasionally; we don't need full unicode trimming. */
+static char* trim_ascii_inplace(char* s) {
+  if (s == NULL) return NULL;
+  while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+  size_t n = strlen(s);
+  while (n > 0) {
+    char c = s[n - 1];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      s[n - 1] = '\0';
+      n--;
+    } else {
+      break;
+    }
+  }
+  return s;
+}
+
 static size_t voice_verify_max_pcm_bytes(void) {
   return (size_t)((BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_VOICE_VERIFY_MAX_MS / 1000) * sizeof(int16_t) *
                   BBCLAW_AUDIO_CHANNELS);
@@ -476,9 +553,12 @@ static void log_pin_summary(void) {
 }
 
 static void on_ptt_changed(int pressed) {
-  /* Phase 4.2: agent-chat overlay owns the screen + nav; ignore PTT entirely
-   * (don't bump version, don't poke TTS). On exit we'll resync if needed. */
-  if (s_agent_chat_active) {
+  /* Phase 4.5: when the agent-chat overlay is up AND the user is NOT in the
+   * settings sub-mode, PTT routes audio capture into the agent voice bridge
+   * (ASR transcript → bb_ui_agent_chat_send). If the user is inside the
+   * settings overlay, keep PTT silently dropped (settings is encoder-only).
+   * Phase 4.2 default: drop PTT entirely while chat is active. */
+  if (s_agent_chat_active && bb_ui_agent_chat_in_settings()) {
     return;
   }
   s_ptt_pressed = pressed > 0 ? 1 : 0;
@@ -1280,6 +1360,11 @@ static void stream_task(void* arg) {
   int nav_focus_ai = 1;
   int nav_history_mode = 0;
   unsigned nav_handled_versions[BB_NAV_EVENT_COUNT] = {0};
+  /* Phase 4.5: when the current arming/streaming turn was kicked off while
+   * agent-chat overlay was open, route the resulting transcript into the
+   * agent bus instead of playing TTS. Latched at PTT-press time so that even
+   * if the user exits chat mid-capture we still complete the agent turn. */
+  int voice_target_agent = 0;
 
   ESP_LOGI(TAG, "stream task ready stack_hw=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
   for (int i = 0; i < BB_NAV_EVENT_COUNT; ++i) {
@@ -1355,17 +1440,54 @@ static void stream_task(void* arg) {
       }
     }
 
-    /* Phase 4.2: while agent chat overlay is up, suppress the entire PTT/
-     * audio-streaming pipeline below. Skip the rest of this iteration. */
-    if (agent_chat_is_active()) {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
+    /* Phase 4.2/4.5: while agent chat overlay is up, the PTT/audio pipeline is
+     * suppressed by default. Phase 4.5 allows it through when:
+     *   - chat is open AND not in settings
+     *   - device is unlocked (locked devices still use voice unlock first)
+     *   - no streaming/arming/verifying turn is already in flight (so we
+     *     finish the current capture before deciding to gate again)
+     *
+     * The actual "agent voice" routing (status hint + skip TTS + send
+     * transcript) is layered on top of the existing capture logic by the
+     * voice_target_agent flag below. */
+    if (agent_chat_is_active() && !arming && !streaming && !verifying) {
+      if (!agent_chat_voice_capture_active()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+      if (radio_app_is_locked()) {
+        /* Don't break the unlock path: lock screen stays on voice-verify. */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
     }
 
     unsigned ptt_version = s_ptt_change_version;
     if (ptt_version != ptt_handled_version) {
       ptt_handled_version = ptt_version;
-      if (s_ptt_pressed) {
+      /* Phase 4.5: agent voice bridge — chat overlay is on the LCD, so the
+       * legacy show_status_* writes go to a hidden surface. Use the chat
+       * theme's topbar hint instead. Otherwise fall through to the normal
+       * voice loop UI. */
+      int chat_voice = (s_ptt_pressed && agent_chat_voice_capture_active() && !arming &&
+                        !streaming && !verifying && !radio_app_is_locked());
+      if (chat_voice) {
+        if (!bb_wifi_is_connected()) {
+          signal_error_haptic();
+        } else if (s_tts_playback_active) {
+          tts_request_interrupt();
+        } else if (session_busy) {
+          signal_error_haptic();
+        } else if (agent_chat_is_busy_locked()) {
+          /* Existing chat reply still streaming; refuse log-only (matches
+           * picker's ESP_ERR_INVALID_STATE behaviour). */
+          ESP_LOGI(TAG, "agent_chat: PTT press refused (chat send in flight)");
+          signal_error_haptic();
+        } else {
+          agent_chat_voice_listening_locked(1);
+          (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
+        }
+      } else if (s_ptt_pressed) {
         if (!bb_wifi_is_connected()) {
           signal_error_haptic();
           show_status_error(BB_STATUS_NO_WIFI);
@@ -1386,11 +1508,15 @@ static void stream_task(void* arg) {
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
         }
       } else {
-        if (bb_wifi_is_connected()) {
-          if (verifying || radio_app_is_locked()) {
-            show_status_processing(verifying ? BB_STATUS_VERIFY : BB_STATUS_LOCKED);
-          } else {
-            show_status_processing(BB_STATUS_RX);
+        /* PTT release branch: don't touch the legacy radio_app status when
+         * the chat overlay is up. */
+        if (!agent_chat_is_active()) {
+          if (bb_wifi_is_connected()) {
+            if (verifying || radio_app_is_locked()) {
+              show_status_processing(verifying ? BB_STATUS_VERIFY : BB_STATUS_LOCKED);
+            } else {
+              show_status_processing(BB_STATUS_RX);
+            }
           }
         }
         pairing_ptt_ui_last_ms = 0;
@@ -1406,7 +1532,13 @@ static void stream_task(void* arg) {
       arming = 0;
       memset(&vad, 0, sizeof(vad));
       pending_pcm_len = 0;
-      if (bb_wifi_is_connected()) {
+      if (voice_target_agent) {
+        /* Phase 4.5: PTT released before VAD triggered streaming. Drop the
+         * listening hint and let the chat overlay return to its prior state.
+         * No agent_send (we have no transcript). */
+        agent_chat_voice_post_error(NULL);
+        voice_target_agent = 0;
+      } else if (bb_wifi_is_connected()) {
         show_idle_ready_or_locked();
       } else {
         show_status_idle("NO WIFI");
@@ -1524,7 +1656,12 @@ static void stream_task(void* arg) {
           arm_started_ms = bb_now_ms();
           memset(&vad, 0, sizeof(vad));
           pending_pcm_len = 0;
-          ESP_LOGI(TAG, "phase=arm_listen mono_ms=%lld (wait speech before stream/start)", (long long)bb_now_ms());
+          /* Phase 4.5: latch voice routing target at arm time. The chat
+           * overlay drives all UI for this turn and we'll skip TTS playback
+           * + push the transcript through bb_ui_agent_chat_send on finish. */
+          voice_target_agent = agent_chat_voice_capture_active() ? 1 : 0;
+          ESP_LOGI(TAG, "phase=arm_listen mono_ms=%lld voice_target=%s (wait speech before stream/start)",
+                   (long long)bb_now_ms(), voice_target_agent ? "agent" : "openclaw");
         } else {
           ESP_LOGE(TAG, "bb_audio_start_tx failed err=%s (PTT arm)", esp_err_to_name(tx_err));
           show_status_error(BB_STATUS_ERR);
@@ -1695,12 +1832,19 @@ static void stream_task(void* arg) {
       }
       if (!skip_finish) {
         int64_t t_cloud_req_ms = bb_now_ms();
-        ESP_LOGI(TAG, "phase=cloud_wait mono_ms=%lld stream=%s (RX + PROCESSING LED)", (long long)t_cloud_req_ms,
-                 stream.stream_id);
+        ESP_LOGI(TAG, "phase=cloud_wait mono_ms=%lld stream=%s voice_target=%s (RX + PROCESSING LED)",
+                 (long long)t_cloud_req_ms, stream.stream_id, voice_target_agent ? "agent" : "openclaw");
         ESP_LOGI(TAG, "phase=cloud_wait_stack stream=%s stack_hw=%u", stream.stream_id,
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        /* Phase 4.5 — when routing to agent bus we don't want assistant
+         * deltas / TTS chunks piped into the openclaw chat surface. Pass
+         * NULL callbacks; finish->transcript is still populated, which is
+         * all we need. tts chunks land in finish->tts_chunks and get freed
+         * below. */
         esp_err_t finish_err =
-            bb_adapter_stream_finish_stream(&stream, finish, on_finish_stream_event, ui_stream);
+            bb_adapter_stream_finish_stream(&stream, finish,
+                                            voice_target_agent ? NULL : on_finish_stream_event,
+                                            voice_target_agent ? NULL : ui_stream);
         if (finish_err == ESP_OK) {
           int64_t t_cloud_done_ms = bb_now_ms();
           unsigned cloud_latency_ms = (unsigned)(t_cloud_done_ms - t_cloud_req_ms);
@@ -1717,47 +1861,81 @@ static void stream_task(void* arg) {
             log_phase_text_chunks("phase=assistant text=", reply_text);
           }
 
-          if (reply_text[0] != '\0') {
-            (void)bb_display_show_status(BB_STATUS_RESULT);
-            (void)bb_led_set_status(BB_LED_REPLY);
-          } else if (finish->transcript[0] != '\0') {
-            (void)bb_display_show_status(BB_STATUS_RESULT);
-            (void)bb_led_set_status(BB_LED_SUCCESS);
+          if (voice_target_agent) {
+            /* Phase 4.5 — feed transcript into the agent bus instead of the
+             * openclaw chat turn surface. Skip TTS playback; the agent reply
+             * will arrive as text frames on the chat overlay. */
+            char trimmed[sizeof(finish->transcript)];
+            strncpy(trimmed, finish->transcript, sizeof(trimmed) - 1);
+            trimmed[sizeof(trimmed) - 1] = '\0';
+            char* t = trim_ascii_inplace(trimmed);
+            if (t == NULL || t[0] == '\0') {
+              ESP_LOGW(TAG, "agent_chat: empty transcript, no send");
+              agent_chat_voice_post_error("no speech detected");
+              signal_error_haptic();
+            } else {
+              ESP_LOGI(TAG, "agent_chat: routing transcript len=%u", (unsigned)strlen(t));
+              agent_chat_voice_post_error(NULL);  /* clear listening hint only */
+              esp_err_t send_err = agent_chat_voice_send_locked(t);
+              if (send_err != ESP_OK) {
+                ESP_LOGW(TAG, "agent_chat: send failed err=%s", esp_err_to_name(send_err));
+                agent_chat_voice_post_error(esp_err_to_name(send_err));
+                signal_error_haptic();
+              }
+            }
           } else {
-            (void)bb_display_show_status(BB_STATUS_RESULT);
-            (void)bb_led_set_status(BB_LED_SUCCESS);
-          }
+            if (reply_text[0] != '\0') {
+              (void)bb_display_show_status(BB_STATUS_RESULT);
+              (void)bb_led_set_status(BB_LED_REPLY);
+            } else if (finish->transcript[0] != '\0') {
+              (void)bb_display_show_status(BB_STATUS_RESULT);
+              (void)bb_led_set_status(BB_LED_SUCCESS);
+            } else {
+              (void)bb_display_show_status(BB_STATUS_RESULT);
+              (void)bb_led_set_status(BB_LED_SUCCESS);
+            }
 
-          {
-            const char* line_you = finish->transcript[0] != '\0' ? finish->transcript : "(no speech)";
-            const char* line_ai = reply_text[0] != '\0' ? reply_text : "(no reply)";
-            int tts_active = (ui_stream != NULL && ui_stream->tts_playback_started && !ui_stream->tts_task_done);
-            (void)bb_display_upsert_chat_turn(line_you, line_ai, tts_active ? 0 : 1);
-          }
+            {
+              const char* line_you = finish->transcript[0] != '\0' ? finish->transcript : "(no speech)";
+              const char* line_ai = reply_text[0] != '\0' ? reply_text : "(no reply)";
+              int tts_active = (ui_stream != NULL && ui_stream->tts_playback_started && !ui_stream->tts_task_done);
+              (void)bb_display_upsert_chat_turn(line_you, line_ai, tts_active ? 0 : 1);
+            }
 
-          if (finish->transcript[0] != '\0' && reply_text[0] == '\0') {
-            (void)bb_gateway_node_send_voice_transcript(finish->transcript, BBCLAW_SESSION_KEY, stream.stream_id);
-          }
+            if (finish->transcript[0] != '\0' && reply_text[0] == '\0') {
+              (void)bb_gateway_node_send_voice_transcript(finish->transcript, BBCLAW_SESSION_KEY, stream.stream_id);
+            }
 #if BBCLAW_ENABLE_TTS_PLAYBACK
-          tts_text = reply_text[0] != '\0' ? reply_text : (finish->transcript[0] != '\0' ? finish->transcript : NULL);
-          tts_streamed = (ui_stream != NULL && ui_stream->tts_chunk_received > 0) || (finish->tts_chunks != NULL);
+            tts_text = reply_text[0] != '\0' ? reply_text : (finish->transcript[0] != '\0' ? finish->transcript : NULL);
+            tts_streamed = (ui_stream != NULL && ui_stream->tts_chunk_received > 0) || (finish->tts_chunks != NULL);
 #endif
+          }
         } else {
           ESP_LOGE(TAG,
                    "phase=finish_failed esp=%s http_status=%d error_code=%s stream=%s reply_wait_timed_out=%d",
                    esp_err_to_name(finish_err), finish->http_status,
                    finish->error_code[0] != '\0' ? finish->error_code : "(none)", stream.stream_id,
                    finish->reply_wait_timed_out);
-          {
+          if (voice_target_agent) {
+            /* Surface error in chat overlay; don't touch the hidden status surface. */
+            const char* ecode = finish->error_code[0] != '\0' ? finish->error_code : "stream finish failed";
+            agent_chat_voice_post_error(ecode);
+            signal_error_haptic();
+          } else {
             const char* ecode = finish->error_code[0] != '\0' ? finish->error_code : BB_STATUS_ERR;
             show_status_error(ecode);
             (void)bb_display_upsert_chat_turn("(error)", ecode, 1);
+            signal_error_haptic();
           }
-          signal_error_haptic();
         }
       } else {
-        show_idle_ready_or_locked();
-        (void)bb_display_show_chat_turn("(no voice)", "(no reply)");
+        if (voice_target_agent) {
+          /* skip_finish path (VAD blocked / alloc fail) under chat mode. */
+          agent_chat_voice_post_error("no speech detected");
+        } else {
+          show_idle_ready_or_locked();
+          (void)bb_display_show_chat_turn("(no voice)", "(no reply)");
+        }
       }
 #if BBCLAW_ENABLE_TTS_PLAYBACK
       {
@@ -1776,7 +1954,11 @@ static void stream_task(void* arg) {
       pending_pcm_len = 0;
 
 #if BBCLAW_ENABLE_TTS_PLAYBACK
-      if (!skip_finish && tts_text != NULL && tts_text[0] != '\0') {
+      /* Phase 4.5 — skip TTS entirely when this turn was routed to the agent
+       * bus. tts_text is NULL anyway for that path (we never assigned it),
+       * but keep the explicit guard so future edits don't reintroduce
+       * playback. */
+      if (!voice_target_agent && !skip_finish && tts_text != NULL && tts_text[0] != '\0') {
         if (ui_stream != NULL && ui_stream->tts_chunk_received > 0) {
           /* Streamed TTS is already being played asynchronously by the queue task. */
           ESP_LOGI(TAG, "phase=tts_stream_async chunks=%d done=%d", ui_stream->tts_chunk_received,
@@ -1895,16 +2077,24 @@ static void stream_task(void* arg) {
       }
       free(finish);
       free(ui_stream);
-      /* RESULT 停留：TTS 播放期间用户已经在听，只需短暂停留让屏幕文字可读 */
-      if (!skip_finish && !tts_interrupted) {
-        (void)bb_display_show_status(BB_STATUS_RESULT);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+      /* RESULT 停留：TTS 播放期间用户已经在听，只需短暂停留让屏幕文字可读。
+       * Phase 4.5：agent voice 路径下 chat overlay 已经在显示流式回复，不要
+       * 再去碰隐藏的 status 表面或 idle 屏。 */
+      if (!voice_target_agent) {
+        if (!skip_finish && !tts_interrupted) {
+          (void)bb_display_show_status(BB_STATUS_RESULT);
+          vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        s_tts_interrupt_requested = 0;
+        bb_audio_clear_playback_interrupt();
+        show_idle_ready_or_locked();
+      } else {
+        s_tts_interrupt_requested = 0;
+        bb_audio_clear_playback_interrupt();
       }
-      s_tts_interrupt_requested = 0;
-      bb_audio_clear_playback_interrupt();
-      show_idle_ready_or_locked();
       streaming = 0;
       session_busy = 0;
+      voice_target_agent = 0;
       capture_seed_clear();
       vTaskDelay(pdMS_TO_TICKS(120));
       continue;
@@ -1912,13 +2102,19 @@ static void stream_task(void* arg) {
 
     if (arming && !streaming && s_ptt_pressed) {
       if (BBCLAW_VAD_ARM_MAX_WAIT_MS > 0 && (bb_now_ms() - arm_started_ms) > BBCLAW_VAD_ARM_MAX_WAIT_MS) {
-        ESP_LOGW(TAG, "phase=arm_timeout mono_ms=%lld", (long long)bb_now_ms());
+        ESP_LOGW(TAG, "phase=arm_timeout mono_ms=%lld voice_target=%s", (long long)bb_now_ms(),
+                 voice_target_agent ? "agent" : "openclaw");
         arming = 0;
         (void)bb_audio_stop_tx();
         memset(&vad, 0, sizeof(vad));
         pending_pcm_len = 0;
-        show_idle_ready_or_locked();
-        (void)bb_display_show_chat_turn("(arm timeout)", "");
+        if (voice_target_agent) {
+          agent_chat_voice_post_error("no speech detected");
+          voice_target_agent = 0;
+        } else {
+          show_idle_ready_or_locked();
+          (void)bb_display_show_chat_turn("(arm timeout)", "");
+        }
         continue;
       }
       size_t pcm_read = 0;
@@ -1932,6 +2128,10 @@ static void stream_task(void* arg) {
         (void)bb_audio_stop_tx();
         memset(&vad, 0, sizeof(vad));
         pending_pcm_len = 0;
+        if (voice_target_agent) {
+          agent_chat_voice_post_error(NULL);
+          voice_target_agent = 0;
+        }
         continue;
       }
       if (pcm_read > 0U) {
@@ -1942,7 +2142,12 @@ static void stream_task(void* arg) {
           esp_err_t start_err = bb_adapter_stream_start(&stream);
           if (start_err != ESP_OK) {
             ESP_LOGE(TAG, "bb_adapter_stream_start failed esp=%s (after VAD arm)", esp_err_to_name(start_err));
-            show_status_error(BB_STATUS_ERR);
+            if (voice_target_agent) {
+              agent_chat_voice_post_error(esp_err_to_name(start_err));
+              voice_target_agent = 0;
+            } else {
+              show_status_error(BB_STATUS_ERR);
+            }
             signal_error_haptic();
             arming = 0;
             (void)bb_audio_stop_tx();
@@ -2005,7 +2210,12 @@ static void stream_task(void* arg) {
             stream_ingest_pcm(&stream, &vad, s_capture_seed_buf, s_capture_seed_len, &pending_pcm_len, &ingest_ok);
         if (ige != ESP_OK || !ingest_ok) {
           ESP_LOGE(TAG, "stream seed ingest failed");
-          show_status_error(BB_STATUS_ERR);
+          if (voice_target_agent) {
+            agent_chat_voice_post_error("stream ingest failed");
+            voice_target_agent = 0;
+          } else {
+            show_status_error(BB_STATUS_ERR);
+          }
           signal_error_haptic();
           s_capture_active = 0;
           capture_seed_clear();
@@ -2025,7 +2235,12 @@ static void stream_task(void* arg) {
                 ESP_OK ||
             !ingest_ok) {
           ESP_LOGE(TAG, "stream ingest failed");
-          show_status_error(BB_STATUS_ERR);
+          if (voice_target_agent) {
+            agent_chat_voice_post_error("stream ingest failed");
+            voice_target_agent = 0;
+          } else {
+            show_status_error(BB_STATUS_ERR);
+          }
           signal_error_haptic();
           s_capture_active = 0;
           capture_seed_clear();
