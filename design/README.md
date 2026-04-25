@@ -26,6 +26,7 @@ design/
 |------|------|
 | `STATE_MACHINE.md` | PTT状态机、App状态机、UI状态机等 |
 | `agent_bus.md` | adapter 作为 Agent 总线，多 AI CLI 接入架构 |
+| `firmware_agent_integration.md` | 固件侧接入 Agent Bus 的模块/UI/分阶段计划（Phase 4 蓝图）|
 
 ---
 
