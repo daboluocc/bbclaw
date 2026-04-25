@@ -6,8 +6,9 @@
 //   - one-shot per Send: spawn a fresh subprocess, carry session continuity
 //     via --resume using the session_id Claude emits in its init event
 //   - emit EvText for assistant text blocks, EvTurnEnd on result, EvError
-//     on failures. Tool-use events are logged but not yet surfaced as
-//     EvToolCall — approval plumbing lands in a later phase.
+//     on failures. tool_use frames are surfaced as EvToolCall *display-only*
+//     events — Capabilities().ToolApproval stays false because the
+//     approval round-trip (Phase 2) is not yet wired.
 package claudecode
 
 import (
@@ -257,10 +258,11 @@ type streamMessage struct {
 }
 
 type streamContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Name string `json:"name,omitempty"`
-	ID   string `json:"id,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type streamUsage struct {
@@ -299,7 +301,20 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 						s.emit(agent.Event{Type: agent.EvText, Text: c.Text})
 					}
 				case "tool_use":
-					log.Infof("claude-code: tool_use sid=%s tool=%s id=%s (EvToolCall not yet wired)", s.id, c.Name, c.ID)
+					// Display-only: we surface tool_use frames as EvToolCall
+					// so the playground / device UI can render them, but
+					// Capabilities().ToolApproval stays false because the
+					// approval round-trip is not yet implemented (Phase 2).
+					hint := summarizeToolInput(c.Name, c.Input)
+					log.Infof("claude-code: tool_use sid=%s tool=%s id=%s hint=%q", s.id, c.Name, c.ID, hint)
+					s.emit(agent.Event{
+						Type: agent.EvToolCall,
+						Tool: &agent.ToolCall{
+							ID:   agent.ToolID(c.ID),
+							Tool: c.Name,
+							Hint: hint,
+						},
+					})
 				}
 			}
 		case "user":
@@ -358,4 +373,32 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// summarizeToolInput renders a short, human-readable hint from a tool_use
+// input blob. Returns "" when no obvious field applies — the caller should
+// treat an empty hint as "no preview available".
+//
+// Hint length is capped at 80 chars: long enough to recognise a command or
+// file path at a glance on the playground / small device screen, short
+// enough to avoid wrapping in tight UI slots.
+func summarizeToolInput(name string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var fields struct {
+		Command  string `json:"command"`
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ""
+	}
+	switch name {
+	case "Bash":
+		return truncate(strings.TrimSpace(fields.Command), 80)
+	case "Edit", "Write", "Read":
+		return truncate(fields.FilePath, 80)
+	default:
+		return ""
+	}
 }

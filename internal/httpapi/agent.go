@@ -150,6 +150,49 @@ func (s *Server) sweepSessions(ttl time.Duration) {
 	}
 }
 
+// Shutdown stops the session sweeper and cleanly terminates every live
+// agent session. Safe to call more than once — subsequent calls are no-ops.
+// ctx is honoured for the per-driver Stop calls; if it expires the
+// remaining sessions are abandoned rather than blocked on.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.agentCancel == nil {
+		return nil
+	}
+	s.agentCancel()
+	s.agentCancel = nil
+
+	if s.agentSessions == nil || s.router == nil {
+		return nil
+	}
+	// Drain the registry atomically so handlers in flight don't resurrect
+	// sessions we're trying to stop.
+	s.agentSessions.mu.Lock()
+	entries := s.agentSessions.sessions
+	s.agentSessions.sessions = make(map[string]*sessionEntry)
+	s.agentSessions.mu.Unlock()
+
+	if len(entries) == 0 {
+		return nil
+	}
+	s.log.Infof("agent: shutdown stopping %d live session(s)", len(entries))
+	for id, e := range entries {
+		select {
+		case <-ctx.Done():
+			s.log.Warnf("agent: shutdown deadline reached, %d sessions not cleanly stopped", len(entries))
+			return ctx.Err()
+		default:
+		}
+		d, ok := s.router.Get(e.driverName)
+		if !ok {
+			continue
+		}
+		if err := d.Stop(e.sid); err != nil {
+			s.log.Warnf("agent: shutdown stop sid=%s driver=%s err=%v", id, e.driverName, err)
+		}
+	}
+	return nil
+}
+
 type agentMessageRequest struct {
 	Text      string `json:"text"`
 	SessionId string `json:"sessionId,omitempty"`

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -429,6 +430,41 @@ func TestHandleAgentMessage_DriverMismatch(t *testing.T) {
 	// mock2 must never have been invoked for this session.
 	if got := m2.receivedTexts(); len(got) != 0 {
 		t.Errorf("mock2 received=%v, want none (mismatch should short-circuit)", got)
+	}
+}
+
+func TestServerShutdown_StopsLiveSessions(t *testing.T) {
+	mock := newMockDriver()
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	srv.SetAgentDriver(mock)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Fire one request so the registry has a live session after the handler
+	// returns (Phase 1.5 does not Stop on turn_end).
+	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json",
+		bytes.NewBufferString(`{"text":"hi"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = readNDJSONFrames(t, resp.Body)
+	resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	mock.mu.Lock()
+	stopped := mock.stopped
+	mock.mu.Unlock()
+	if !stopped {
+		t.Error("driver.Stop was not called during Shutdown")
+	}
+
+	// Idempotent: a second Shutdown must not blow up.
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown (second call): %v", err)
 	}
 }
 

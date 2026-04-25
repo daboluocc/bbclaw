@@ -68,10 +68,9 @@ type Server struct {
 	log     *obs.Logger
 	metrics *obs.Metrics
 
-	// agentCtx is a long-lived context used for agent sessions so they can
-	// survive across individual HTTP requests. agentCancel is kept for a
-	// future shutdown hook; Phase 1.5 has no server shutdown plumbing, so
-	// in practice agentCtx lives until the process exits.
+	// agentCtx is a long-lived context for agent sessions so they can survive
+	// across HTTP requests. Cancelled via (*Server).Shutdown — main.go wires
+	// that into the SIGINT/SIGTERM graceful shutdown path.
 	agentCtx      context.Context
 	agentCancel   context.CancelFunc
 	agentSessions *sessionRegistry
@@ -102,6 +101,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
+	// Playground is unauthenticated on purpose — it's a dev-only single-page
+	// UI for dogfooding agent drivers. Protect your adapter by not exposing
+	// it to the internet.
+	mux.HandleFunc("GET /playground", s.handlePlayground)
 	return mux
 }
 

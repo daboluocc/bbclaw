@@ -81,7 +81,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -109,13 +109,13 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	if cfg.ASRReadinessProbe {
 		rp, ok := asrProvider.(asr.ReadinessProbe)
 		if !ok {
-			return nil, fmt.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
+			return nil, nil, fmt.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
 		}
 		pctx, pcancel := context.WithTimeout(context.Background(), cfg.ASRReadinessTimeout)
 		err := rp.Ping(pctx)
 		pcancel()
 		if err != nil {
-			return nil, fmt.Errorf("asr readiness probe failed: %w", err)
+			return nil, nil, fmt.Errorf("asr readiness probe failed: %w", err)
 		}
 		logger.Infof("asr readiness probe ok provider=%s", cfg.ASRProvider)
 	}
@@ -152,7 +152,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
-	}, nil
+	}, server, nil
 }
 
 // buildAgentRouter constructs the Router using these two env vars (both
@@ -269,7 +269,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		server, err := buildLocalServer(cfg, sink, cloudRelay, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)
@@ -277,7 +277,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		logger.Infof("starting bbclaw-adapter local_ingress=enabled addr=%s asr_provider=%s tts_provider=%s cloud_relay=%t",
 			cfg.Addr, cfg.ASRProvider, cfg.TTSProvider, cfg.EnableCloudRelay())
 		go func() {
-			err := server.ListenAndServe()
+			err := httpSrv.ListenAndServe()
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- err
 				return
@@ -288,7 +288,11 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			<-ctx.Done()
 			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancelShutdown()
-			_ = server.Shutdown(shutdownCtx)
+			// Tear down live agent sessions first so in-flight drivers get a
+			// chance to flush; then drop the HTTP listener. Both honour the
+			// 5-second deadline.
+			_ = agentSrv.Shutdown(shutdownCtx)
+			_ = httpSrv.Shutdown(shutdownCtx)
 		}()
 	}
 
