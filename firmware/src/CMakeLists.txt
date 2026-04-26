@@ -23,6 +23,7 @@ set(_bb_srcs
     "bb_theme_buddy_ascii.c"
     "bb_time.c"
     "bb_ui_agent_chat.c"
+    "bb_ui_settings.c"
     "bb_transport.c"
     "bb_wifi.c"
     "bb_xl9555.c"

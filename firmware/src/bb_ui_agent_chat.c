@@ -60,18 +60,8 @@ static const char* TAG = "bb_agent_ui";
 #define BB_CHAT_TTS_TASK_PRIO    4
 
 typedef enum {
-  BB_CHAT_MODE_PICKER = 0,  /* 默认：phrase 选择 */
-  BB_CHAT_MODE_SETTINGS,    /* settings sub-menu */
+  BB_CHAT_MODE_PICKER = 0,  /* 唯一模式：phrase 选择。Phase 4.7 后 Settings 已搬到独立 overlay。 */
 } bb_chat_mode_t;
-
-/* settings 行下标。顺序固定。Phase 4.5.1 在 THEME 与 BACK 之间插入 TTS 行。 */
-typedef enum {
-  BB_SETTINGS_ROW_AGENT = 0,
-  BB_SETTINGS_ROW_THEME,
-  BB_SETTINGS_ROW_TTS,
-  BB_SETTINGS_ROW_BACK,
-  BB_SETTINGS_ROW_COUNT,
-} bb_settings_row_t;
 
 typedef struct {
   int active;                 /* show 之后置 1，hide 后清 0 */
@@ -95,21 +85,14 @@ typedef struct {
   /* 当前模式：picker 或 settings */
   bb_chat_mode_t mode;
 
-  /* settings 状态（Phase 4.2.5） */
-  lv_obj_t* settings_root;
-  lv_obj_t* settings_rows[BB_SETTINGS_ROW_COUNT];
-  int settings_sel;            /* 当前高亮行（0..BB_SETTINGS_ROW_COUNT-1） */
-  /* drivers 列表懒加载缓存（Phase 4.2.5: 异步 HTTP，结果通过 lv_async_call 回到 LVGL 任务） */
+  /* drivers 列表缓存（Phase 4.2.5 / Phase 5：仅供 cycle_driver 使用，
+   * Phase 4.7 起 Settings 主菜单已经搬到独立 overlay 各自维护自己的 cache） */
   bb_agent_driver_info_t driver_cache[BB_CHAT_DRIVER_CACHE_MAX];
   int driver_cache_count;
-  int driver_cache_offline;    /* 1 = HTTP 失败，cache 是 fallback */
-  int driver_cache_idx;        /* 当前选中 driver 在 cache 中的 index */
-  volatile int driver_fetch_pending;        /* 1 = task in flight */
-  volatile uint32_t driver_fetch_generation; /* bumped on launch + on cancel */
-  /* themes 列表（指针来自 bb_agent_theme_list；生命期 = 程序生命期） */
-  const char* const* theme_list;
-  int theme_count;
-  int theme_idx;               /* 当前选中 theme 在 list 中的 index */
+  int driver_cache_offline;
+  int driver_cache_idx;
+  volatile int driver_fetch_pending;
+  volatile uint32_t driver_fetch_generation;
 
   /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator.
    * Phase 4.5.2 — sentence-level streaming + cancel-and-replace.
@@ -144,10 +127,9 @@ static void reply_buf_append(const char* delta);
 static void tts_kick_or_spawn(void);
 static void tts_cancel_in_flight(void);
 
-/* Forward decls for Phase 4.2.5 async driver fetch. */
+/* Forward decls for Phase 4.2.5 / Phase 5 async driver fetch (used by cycle_driver). */
 static void spawn_driver_fetch_task(void);
 static void apply_driver_cache_idx(void);
-static void settings_apply_rows(void);
 
 /* ── async payload 类型（agent 线程 → LVGL 线程） ── */
 
@@ -481,18 +463,6 @@ static void load_tts_enabled_from_nvs(void) {
     s_chat.tts_enabled = 1;
   }
   ESP_LOGI(TAG, "tts_enabled: loaded '%s'", buf);
-}
-
-static esp_err_t persist_tts_enabled(int enabled) {
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) return err;
-  err = nvs_set_str(h, BB_CHAT_NVS_KEY_TTS, enabled ? "on" : "off");
-  if (err == ESP_OK) {
-    err = nvs_commit(h);
-  }
-  nvs_close(h);
-  return err;
 }
 
 /* ── Phase 4.5.1/4.5.2 — reply accumulator (called from agent_task only) ── */
@@ -887,11 +857,6 @@ void bb_ui_agent_chat_hide(void) {
   s_chat.picker_phrases = NULL;
   s_chat.picker_count = 0;
   s_chat.picker_sel = 0;
-  s_chat.settings_root = NULL;
-  for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) {
-    s_chat.settings_rows[i] = NULL;
-  }
-  s_chat.settings_sel = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
 
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
@@ -1002,19 +967,15 @@ static void picker_apply_styles(void) {
   }
 }
 
-/* Phase 4.2.5: picker 首行固定为 "Settings"，剩下的 row 来自调用方 phrases。
- * 这个标签只是一个 ASCII 字符串；屏幕字体未必有 ⚙ glyph，所以保持纯 ASCII。 */
-#define BB_PICKER_SETTINGS_LABEL "Settings"
-
 void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
   if (!s_chat.active || s_chat.parent == NULL) {
     ESP_LOGW(TAG, "picker_show: chat not active");
     return;
   }
   if (phrases == NULL || count <= 0) return;
-  /* 内部首行是 Settings，所以调用方 phrases 最多 BB_CHAT_PICKER_MAX_ITEMS - 1 个。 */
-  if (count > BB_CHAT_PICKER_MAX_ITEMS - 1) count = BB_CHAT_PICKER_MAX_ITEMS - 1;
-  const int total = count + 1;  /* +1 for Settings row */
+  /* Phase 4.7: picker is just phrases now — Settings moved to standalone overlay. */
+  if (count > BB_CHAT_PICKER_MAX_ITEMS) count = BB_CHAT_PICKER_MAX_ITEMS;
+  const int total = count;
 
   /* Replace any prior picker. */
   if (s_chat.picker_root != NULL) {
@@ -1025,8 +986,7 @@ void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
 
   s_chat.picker_phrases = phrases;
   s_chat.picker_count = total;
-  /* 默认高亮第一条短语（index 1），Settings 在 index 0 旋上去就能看到。 */
-  s_chat.picker_sel = total > 1 ? 1 : 0;
+  s_chat.picker_sel = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
 
   const int picker_h = BB_PICKER_ROW_H * BB_PICKER_VISIBLE + 4;
@@ -1051,12 +1011,8 @@ void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG), 0);
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
-    if (i == 0) {
-      lv_label_set_text(row, BB_PICKER_SETTINGS_LABEL);
-    } else {
-      const char* p = phrases[i - 1];
-      lv_label_set_text(row, p != NULL ? p : "");
-    }
+    const char* p = phrases[i];
+    lv_label_set_text(row, p != NULL ? p : "");
     s_chat.picker_items[i] = row;
   }
   picker_apply_styles();
@@ -1072,9 +1028,6 @@ void bb_ui_agent_chat_picker_move(int delta) {
   picker_apply_styles();
 }
 
-/* Forward decl —— 在 settings 区段下面定义。 */
-static void settings_show(void);
-
 esp_err_t bb_ui_agent_chat_picker_send_selected(void) {
   if (!s_chat.active || s_chat.picker_root == NULL || s_chat.picker_count == 0) {
     return ESP_ERR_INVALID_STATE;
@@ -1082,138 +1035,32 @@ esp_err_t bb_ui_agent_chat_picker_send_selected(void) {
   if (s_chat.picker_sel < 0 || s_chat.picker_sel >= s_chat.picker_count) {
     return ESP_ERR_INVALID_STATE;
   }
-  /* index 0 是固定的 "Settings" 行，不发消息——切到 settings 子菜单。 */
-  if (s_chat.picker_sel == 0) {
-    settings_show();
-    return ESP_OK;
-  }
   if (s_chat.picker_phrases == NULL) return ESP_ERR_INVALID_STATE;
-  const char* phrase = s_chat.picker_phrases[s_chat.picker_sel - 1];
+  const char* phrase = s_chat.picker_phrases[s_chat.picker_sel];
   if (phrase == NULL || phrase[0] == '\0') return ESP_ERR_INVALID_ARG;
   return bb_ui_agent_chat_send(phrase);
 }
 
-/* ─────────────────────────────────────────────────────────────────────
- * Phase 4.2.5 — Settings overlay (Agent / Theme / Back)
+/* ── Phase 4.2.5 / Phase 5 async driver fetch (used by cycle_driver) ──
  *
- * Settings 复用 picker 的视觉语言（同一组配色、同一行高），但布局更紧凑：
- * 三行固定，每行内部还要显示当前选中的值，用 "Label: value" 格式。
- * 旋转改的是当前行内部光标（cycle 一个 driver 或 theme），不是行下标——
- * 行下标用 click 来推进（或者说：每次 click 提交当前行 + 进到下一行；
- * 不过依据 Phase 4.2.5 spec，更直接的语义是：
- *   行 0/1：rotate 切换值，click 提交（持久化 + 应用）
- *   行 2 (Back)：rotate 不响应，click 回到 picker
- * 这里采用 spec 语义。要切换"当前是哪一行"的概念目前用 ROTATE 也能做——
- * 选行 vs 改值用单一旋转轮做：限制只在 click 之后才接受 rotate 切行。
- * 但 spec 明确说 "rotate left/right cycles through the array"——也就是
- * rotate 始终改值。要改行只能 click。我们就这么做。
+ * The driver list is populated off-LVGL via a short-lived FreeRTOS task.
+ * Result is posted back via lv_async_call. Generation counter lets us drop
+ * stale results when chat hides between fetch start and finish.
  *
- * 兜底：万一只有 1 个 driver / 1 个 theme，rotate 不会有可视变化（cycle 等同
- * 不变），用户会困惑。我们在标签里附加 "(1/1)" 让它至少是 self-evident。
- * ───────────────────────────────────────────────────────────────────── */
+ * The Settings overlay (Phase 4.7) maintains its own independent cache —
+ * see bb_ui_settings.c. Two caches is wasteful but acceptable; cycle_driver
+ * (chat) and the Agent row (settings) are mutually exclusive in practice.
+ */
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int total;
+  bb_agent_driver_info_t entries[BB_CHAT_DRIVER_CACHE_MAX];
+} driver_fetch_result_t;
 
-#define BB_SETTINGS_ROW_H    16
-/* All 4 rows (Agent/Theme/TTS/Back) fit in 16*4+4 = 68 px on a 172-px-tall
- * panel — well under the chat overlay budget. Showing the whole menu in one
- * shot avoids the "where is Back?" confusion when the cursor is at the top. */
-#define BB_SETTINGS_VISIBLE  BB_SETTINGS_ROW_COUNT
-#define BB_DRIVER_LIST_TIMEOUT_MS 4000
+#define BB_CHAT_DRIVER_FETCH_TASK_STACK 4096
+#define BB_CHAT_DRIVER_FETCH_TASK_PRIO  4
 
-static const char* settings_active_driver_name(void) {
-  if (s_chat.driver_cache_count <= 0) return "(none)";
-  int idx = s_chat.driver_cache_idx;
-  if (idx < 0 || idx >= s_chat.driver_cache_count) return "(none)";
-  const char* n = s_chat.driver_cache[idx].name;
-  return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
-}
-
-static const char* settings_active_theme_name(void) {
-  if (s_chat.theme_list == NULL || s_chat.theme_count <= 0) return "(none)";
-  int idx = s_chat.theme_idx;
-  if (idx < 0 || idx >= s_chat.theme_count) return "(none)";
-  const char* n = s_chat.theme_list[idx];
-  return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
-}
-
-/* 重画三行的文字 + 高亮。 */
-static void settings_apply_rows(void) {
-  if (s_chat.settings_root == NULL) return;
-  char buf[64];
-
-  /* Row 0: Agent: <name> [(offline)] [(i/N)] [(loading…)] */
-  if (s_chat.settings_rows[BB_SETTINGS_ROW_AGENT] != NULL) {
-    const char* drv = settings_active_driver_name();
-    if (s_chat.driver_cache_count <= 0 && s_chat.driver_fetch_pending) {
-      /* Phase 4.2.5: cache is still being fetched off-LVGL. Show a hint so
-       * the row doesn't look frozen. on_driver_fetch_done re-renders us. */
-      snprintf(buf, sizeof(buf), "Agent: loading...");
-    } else if (s_chat.driver_cache_offline) {
-      snprintf(buf, sizeof(buf), "Agent: %s (offline)", drv);
-    } else if (s_chat.driver_cache_count > 1) {
-      snprintf(buf, sizeof(buf), "Agent: %s (%d/%d)", drv,
-               s_chat.driver_cache_idx + 1, s_chat.driver_cache_count);
-    } else {
-      snprintf(buf, sizeof(buf), "Agent: %s", drv);
-    }
-    lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_AGENT], buf);
-  }
-
-  /* Row 1: Theme: <name> [(i/N)] */
-  if (s_chat.settings_rows[BB_SETTINGS_ROW_THEME] != NULL) {
-    const char* th = settings_active_theme_name();
-    if (s_chat.theme_count > 1) {
-      snprintf(buf, sizeof(buf), "Theme: %s (%d/%d)", th, s_chat.theme_idx + 1,
-               s_chat.theme_count);
-    } else {
-      snprintf(buf, sizeof(buf), "Theme: %s", th);
-    }
-    lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_THEME], buf);
-  }
-
-  /* Row 2: TTS reply: On / Off (Phase 4.5.1) */
-  if (s_chat.settings_rows[BB_SETTINGS_ROW_TTS] != NULL) {
-    snprintf(buf, sizeof(buf), "TTS reply: %s", s_chat.tts_enabled ? "On" : "Off");
-    lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_TTS], buf);
-  }
-
-  /* Row 3: Back */
-  if (s_chat.settings_rows[BB_SETTINGS_ROW_BACK] != NULL) {
-    lv_label_set_text(s_chat.settings_rows[BB_SETTINGS_ROW_BACK], "Back");
-  }
-
-  /* 高亮 + 视口（行数 > BB_SETTINGS_VISIBLE 时只显示 selected 周围的窗口）。
-   * Phase 4.5.1 引入第 4 行后必需，否则面板高度装不下。 */
-  int first = s_chat.settings_sel - BB_SETTINGS_VISIBLE / 2;
-  if (first < 0) first = 0;
-  if (first + BB_SETTINGS_VISIBLE > BB_SETTINGS_ROW_COUNT) {
-    first = BB_SETTINGS_ROW_COUNT - BB_SETTINGS_VISIBLE;
-    if (first < 0) first = 0;
-  }
-  for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) {
-    lv_obj_t* row = s_chat.settings_rows[i];
-    if (row == NULL) continue;
-    int visible = (i >= first && i < first + BB_SETTINGS_VISIBLE);
-    if (visible) {
-      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (i == s_chat.settings_sel) {
-      lv_obj_set_style_bg_color(row, lv_color_hex(BB_PICKER_SEL_BG), 0);
-      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-      lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_SEL_FG), 0);
-    } else {
-      lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-      lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG_DIM), 0);
-    }
-  }
-}
-
-/* 第一次进 settings 时拉一次 adapter driver 列表；HTTP 失败 fallback 一个固定项。
- * 之后保持缓存（直到 hide）；不主动刷新。 */
-/* Phase 4.2.5 — map selected_driver / driver_name to a cache index.
- * Pulled out of the old synchronous settings_ensure_driver_cache so both
- * the async-result dispatch and any future direct cache mutator can call it. */
 static void apply_driver_cache_idx(void) {
   int idx = 0;
   const char* prefer = s_chat.selected_driver[0] != '\0' ? s_chat.selected_driver
@@ -1229,51 +1076,14 @@ static void apply_driver_cache_idx(void) {
   s_chat.driver_cache_idx = idx;
 }
 
-/* Phase 4.2.5 — async driver fetch.
- *
- * The synchronous bb_agent_list_drivers HTTP call could block the LVGL task
- * for several seconds (cold WiFi / cold adapter), freezing the UI. The new
- * pipeline:
- *   1. spawn_driver_fetch_task() (LVGL thread): mark pending, bump generation,
- *      spawn driver_fetch_task. Idempotent — skips if cache already populated
- *      or another task is in flight.
- *   2. driver_fetch_task (FreeRTOS task): does the blocking HTTP off-LVGL,
- *      packages result, posts via lv_async_call, self-deletes.
- *   3. on_driver_fetch_done (LVGL thread): drops the result if the chat
- *      overlay was closed or a newer fetch superseded this one; otherwise
- *      copies entries into the cache and refreshes settings UI if open.
- *
- * Cancellation: bb_ui_agent_chat_hide bumps driver_fetch_generation. Any
- * in-flight task's payload arrives in on_driver_fetch_done with stale gen
- * and gets dropped, no crash.
- *
- * Stack 4KB matches the agent task — same HTTP client, similar memory profile.
- */
-typedef struct {
-  uint32_t gen;
-  esp_err_t err;
-  int total;
-  bb_agent_driver_info_t entries[BB_CHAT_DRIVER_CACHE_MAX];
-} driver_fetch_result_t;
-
-#define BB_CHAT_DRIVER_FETCH_TASK_STACK 4096
-#define BB_CHAT_DRIVER_FETCH_TASK_PRIO  4
-
 static void on_driver_fetch_done(void* user_data) {
   driver_fetch_result_t* res = (driver_fetch_result_t*)user_data;
   if (res == NULL) return;
-  /* Always clear the pending flag (the task that ran is done, regardless of
-   * whether we use its result). */
   s_chat.driver_fetch_pending = 0;
-
   if (!s_chat.active || res->gen != s_chat.driver_fetch_generation) {
-    ESP_LOGD(TAG, "driver fetch dropped (gen=%u current=%u active=%d)",
-             (unsigned)res->gen, (unsigned)s_chat.driver_fetch_generation,
-             s_chat.active ? 1 : 0);
     free(res);
     return;
   }
-
   if (res->err != ESP_OK || res->total <= 0) {
     ESP_LOGW(TAG, "driver fetch failed (%s), fallback to '%s'",
              esp_err_to_name(res->err), BB_CHAT_DRIVER_FALLBACK);
@@ -1283,19 +1093,13 @@ static void on_driver_fetch_done(void* user_data) {
     s_chat.driver_cache_count = 1;
     s_chat.driver_cache_offline = 1;
   } else {
-    int total = res->total > BB_CHAT_DRIVER_CACHE_MAX ? BB_CHAT_DRIVER_CACHE_MAX : res->total;
+    int total = res->total > BB_CHAT_DRIVER_CACHE_MAX
+                  ? BB_CHAT_DRIVER_CACHE_MAX : res->total;
     memcpy(s_chat.driver_cache, res->entries, sizeof(res->entries[0]) * (size_t)total);
     s_chat.driver_cache_count = total;
     s_chat.driver_cache_offline = 0;
-    ESP_LOGI(TAG, "driver fetch ok: %d driver(s) cached", total);
   }
   apply_driver_cache_idx();
-
-  /* Refresh settings UI if it's open right now — the AGENT row was probably
-   * showing "loading…" while we waited. */
-  if (s_chat.mode == BB_CHAT_MODE_SETTINGS && s_chat.settings_root != NULL) {
-    settings_apply_rows();
-  }
   free(res);
 }
 
@@ -1303,21 +1107,19 @@ static void driver_fetch_task(void* arg) {
   uint32_t my_gen = (uint32_t)(uintptr_t)arg;
   driver_fetch_result_t* res = (driver_fetch_result_t*)calloc(1, sizeof(*res));
   if (res == NULL) {
-    ESP_LOGE(TAG, "driver_fetch_task: calloc failed");
     s_chat.driver_fetch_pending = 0;
     vTaskDelete(NULL);
     return;
   }
   res->gen = my_gen;
   res->err = bb_agent_list_drivers(res->entries, BB_CHAT_DRIVER_CACHE_MAX, &res->total);
-  /* lv_async_call enqueues into LVGL's pending list — safe from any task. */
   lv_async_call(on_driver_fetch_done, res);
   vTaskDelete(NULL);
 }
 
 static void spawn_driver_fetch_task(void) {
-  if (s_chat.driver_cache_count > 0) return;  /* already populated */
-  if (s_chat.driver_fetch_pending) return;     /* already in flight */
+  if (s_chat.driver_cache_count > 0) return;
+  if (s_chat.driver_fetch_pending) return;
   s_chat.driver_fetch_pending = 1;
   uint32_t gen = ++s_chat.driver_fetch_generation;
   TaskHandle_t t = NULL;
@@ -1328,95 +1130,7 @@ static void spawn_driver_fetch_task(void) {
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
     s_chat.driver_fetch_pending = 0;
-  } else {
-    ESP_LOGI(TAG, "driver fetch spawned (gen=%u)", (unsigned)gen);
   }
-}
-
-static void settings_ensure_theme_cache(void) {
-  if (s_chat.theme_list != NULL && s_chat.theme_count > 0) return;
-  int n = 0;
-  s_chat.theme_list = bb_agent_theme_list(&n);
-  s_chat.theme_count = n;
-  /* 把当前激活的 theme 映射到 idx */
-  const bb_agent_theme_t* cur = bb_agent_theme_get_active();
-  int idx = 0;
-  if (cur != NULL && cur->name != NULL && s_chat.theme_list != NULL) {
-    for (int i = 0; i < s_chat.theme_count; ++i) {
-      if (s_chat.theme_list[i] != NULL && strcmp(s_chat.theme_list[i], cur->name) == 0) {
-        idx = i;
-        break;
-      }
-    }
-  }
-  s_chat.theme_idx = idx;
-}
-
-/* 切回 picker；不重建 phrases（picker 还活着，被隐藏）。 */
-static void settings_back_to_picker(void) {
-  if (s_chat.settings_root != NULL) {
-    lv_obj_del(s_chat.settings_root);
-    s_chat.settings_root = NULL;
-    for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) s_chat.settings_rows[i] = NULL;
-  }
-  s_chat.mode = BB_CHAT_MODE_PICKER;
-  if (s_chat.picker_root != NULL) {
-    lv_obj_clear_flag(s_chat.picker_root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(s_chat.picker_root);
-  }
-}
-
-/* 进 settings：构建新覆盖层；隐藏 picker。 */
-static void settings_show(void) {
-  if (!s_chat.active || s_chat.parent == NULL) return;
-  /* 把 picker 暂时隐藏，避免两层叠在底部互相挡。 */
-  if (s_chat.picker_root != NULL) {
-    lv_obj_add_flag(s_chat.picker_root, LV_OBJ_FLAG_HIDDEN);
-  }
-
-  /* Phase 4.2.5 — driver cache is async now: kick a fetch off if not already
-   * cached/in-flight, then render the row immediately (it'll show "loading…"
-   * if the result hasn't arrived yet). on_driver_fetch_done re-renders when
-   * the data lands. Theme list is in-process, no HTTP, stays sync. */
-  spawn_driver_fetch_task();
-  settings_ensure_theme_cache();
-
-  s_chat.settings_sel = BB_SETTINGS_ROW_AGENT;
-
-  /* 已有 settings_root（连续 click？）：先拆。 */
-  if (s_chat.settings_root != NULL) {
-    lv_obj_del(s_chat.settings_root);
-    s_chat.settings_root = NULL;
-    for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) s_chat.settings_rows[i] = NULL;
-  }
-
-  const int settings_h = BB_SETTINGS_ROW_H * BB_SETTINGS_VISIBLE + 4;
-  s_chat.settings_root = lv_obj_create(s_chat.parent);
-  lv_obj_remove_style_all(s_chat.settings_root);
-  lv_obj_set_size(s_chat.settings_root, lv_pct(100), settings_h);
-  lv_obj_align(s_chat.settings_root, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  lv_obj_set_style_bg_color(s_chat.settings_root, lv_color_hex(BB_PICKER_BG), 0);
-  lv_obj_set_style_bg_opa(s_chat.settings_root, LV_OPA_COVER, 0);
-  lv_obj_set_style_pad_all(s_chat.settings_root, 2, 0);
-  lv_obj_set_flex_flow(s_chat.settings_root, LV_FLEX_FLOW_COLUMN);
-  lv_obj_clear_flag(s_chat.settings_root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_move_foreground(s_chat.settings_root);
-
-  for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) {
-    lv_obj_t* row = lv_label_create(s_chat.settings_root);
-    lv_obj_set_size(row, lv_pct(100), BB_SETTINGS_ROW_H);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_pad_right(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG), 0);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(row, "");
-    s_chat.settings_rows[i] = row;
-  }
-  s_chat.mode = BB_CHAT_MODE_SETTINGS;
-  settings_apply_rows();
-  ESP_LOGI(TAG, "settings: opened (drivers=%d, themes=%d)",
-           s_chat.driver_cache_count, s_chat.theme_count);
 }
 
 /* ── Phase 4.5 — voice bridge helpers ── */
@@ -1457,169 +1171,6 @@ void bb_ui_agent_chat_voice_listening(int begin) {
     /* Don't force IDLE here — caller follows up with bb_ui_agent_chat_send
      * which will drive BUSY → text → TURN_END. If we reset to IDLE here we
      * get a brief flicker; better to leave the previous state in place. */
-  }
-}
-
-/* 公开 API ──── 被 bb_radio_app.c 路由调用（在 LVGL 锁里调）。 */
-
-int bb_ui_agent_chat_in_settings(void) {
-  return (s_chat.active && s_chat.mode == BB_CHAT_MODE_SETTINGS) ? 1 : 0;
-}
-
-void bb_ui_agent_chat_settings_handle_rotate(int delta) {
-  if (!s_chat.active || s_chat.mode != BB_CHAT_MODE_SETTINGS) return;
-  if (delta == 0) return;
-  switch ((bb_settings_row_t)s_chat.settings_sel) {
-    case BB_SETTINGS_ROW_AGENT: {
-      if (s_chat.driver_cache_count <= 0) return;
-      int next = s_chat.driver_cache_idx + delta;
-      /* clamp 而非 wrap：与 picker 一致的反馈风格。 */
-      if (next < 0) next = 0;
-      if (next >= s_chat.driver_cache_count) next = s_chat.driver_cache_count - 1;
-      s_chat.driver_cache_idx = next;
-      break;
-    }
-    case BB_SETTINGS_ROW_THEME: {
-      if (s_chat.theme_count <= 0) return;
-      int next = s_chat.theme_idx + delta;
-      if (next < 0) next = 0;
-      if (next >= s_chat.theme_count) next = s_chat.theme_count - 1;
-      s_chat.theme_idx = next;
-      break;
-    }
-    case BB_SETTINGS_ROW_TTS: {
-      /* Phase 4.5.1 — binary toggle. Any rotate flips it; clamp not wrap so
-       * repeated rotates feel stable (matches the other rows' clamp UX). */
-      int next = s_chat.tts_enabled + delta;
-      if (next < 0) next = 0;
-      if (next > 1) next = 1;
-      s_chat.tts_enabled = next;
-      break;
-    }
-    case BB_SETTINGS_ROW_BACK:
-    case BB_SETTINGS_ROW_COUNT:
-    default:
-      /* Back 行：rotate 不切值，但允许"换行" —— 一次 rotate 把光标移回上一行。
-       * 不过这会破坏"rotate = cycle value" 的统一约定。简单起见：忽略。 */
-      return;
-  }
-  settings_apply_rows();
-}
-
-void bb_ui_agent_chat_settings_handle_click(void) {
-  if (!s_chat.active || s_chat.mode != BB_CHAT_MODE_SETTINGS) return;
-  switch ((bb_settings_row_t)s_chat.settings_sel) {
-    case BB_SETTINGS_ROW_AGENT: {
-      if (s_chat.driver_cache_count <= 0) {
-        /* 推进到下一行。 */
-        s_chat.settings_sel = BB_SETTINGS_ROW_THEME;
-        settings_apply_rows();
-        return;
-      }
-      const char* name = s_chat.driver_cache[s_chat.driver_cache_idx].name;
-      if (name == NULL || name[0] == '\0') return;
-      /* 持久化到 NVS + 同步 selected_driver + 立刻刷新 topbar。 */
-      esp_err_t err = persist_selected_driver(name);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "settings: persist driver '%s' failed (%s)", name, esp_err_to_name(err));
-      }
-      strncpy(s_chat.selected_driver, name, sizeof(s_chat.selected_driver) - 1);
-      s_chat.selected_driver[sizeof(s_chat.selected_driver) - 1] = '\0';
-      const bb_agent_theme_t* theme = bb_agent_theme_get_active();
-      if (theme != NULL && theme->set_driver != NULL) {
-        theme->set_driver(name);
-      }
-      ESP_LOGI(TAG, "settings: driver -> '%s'", name);
-      /* 推进光标到下一行，让 click 自然走完。 */
-      s_chat.settings_sel = BB_SETTINGS_ROW_THEME;
-      settings_apply_rows();
-      break;
-    }
-    case BB_SETTINGS_ROW_THEME: {
-      if (s_chat.theme_count <= 0 || s_chat.theme_list == NULL) {
-        s_chat.settings_sel = BB_SETTINGS_ROW_TTS;
-        settings_apply_rows();
-        return;
-      }
-      const char* name = s_chat.theme_list[s_chat.theme_idx];
-      if (name == NULL || name[0] == '\0') return;
-      /* 同主题：仍走一次 set_active 是幂等的；但 on_exit/on_enter 会闪——
-       * 跳过 rebuild。 */
-      const bb_agent_theme_t* cur = bb_agent_theme_get_active();
-      int same = (cur != NULL && cur->name != NULL && strcmp(cur->name, name) == 0);
-      esp_err_t err = bb_agent_theme_set_active(name);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "settings: theme set '%s' failed (%s)", name, esp_err_to_name(err));
-        return;
-      }
-      ESP_LOGI(TAG, "settings: theme -> '%s'", name);
-      if (!same) {
-        /* live rebuild：把 settings + picker overlay 都拆掉，重建主题，
-         * 再恢复 picker（settings 走完一次回到 picker 是合理的 UX）。 */
-        const bb_agent_theme_t* old_theme = cur;
-        const bb_agent_theme_t* new_theme = bb_agent_theme_get_active();
-        if (s_chat.settings_root != NULL) {
-          lv_obj_del(s_chat.settings_root);
-          s_chat.settings_root = NULL;
-          for (int i = 0; i < BB_SETTINGS_ROW_COUNT; ++i) s_chat.settings_rows[i] = NULL;
-        }
-        if (s_chat.picker_root != NULL) {
-          lv_obj_del(s_chat.picker_root);
-          s_chat.picker_root = NULL;
-          for (int i = 0; i < BB_CHAT_PICKER_MAX_ITEMS; ++i) s_chat.picker_items[i] = NULL;
-        }
-        if (old_theme != NULL && old_theme->on_exit != NULL) old_theme->on_exit();
-        if (new_theme != NULL && new_theme->on_enter != NULL) new_theme->on_enter(s_chat.parent);
-        /* 恢复 driver/session 显示。 */
-        if (new_theme != NULL && s_chat.driver_name[0] != '\0' && new_theme->set_driver != NULL) {
-          new_theme->set_driver(s_chat.driver_name);
-        }
-        if (new_theme != NULL && s_chat.session_id[0] != '\0' && new_theme->set_session != NULL) {
-          char shortbuf[16] = {0};
-          strncpy(shortbuf, s_chat.session_id, 8);
-          shortbuf[8] = '\0';
-          new_theme->set_session(shortbuf);
-        }
-        /* 重新挂回 picker（用 caller 持有的 phrases 指针）—— 但在 settings 内部
-         * 我们没有 caller phrases handle 了；picker_show 把指针存了 s_chat.picker_phrases
-         * 然而那个 NULL 的可能性存在（picker_show 把它清空过了？没有，只有 hide 才清）。
-         * 只要 chat 当前 active，picker_phrases 还指着 caller 的 static 数组。 */
-        if (s_chat.picker_phrases != NULL && s_chat.picker_count > 1) {
-          /* 把"包了 Settings 行"的 count 还原成 caller_count，再让 picker_show
-           * 重新加 Settings。 */
-          int caller_count = s_chat.picker_count - 1;
-          const char* const* phrases = s_chat.picker_phrases;
-          /* picker_show 会重置 mode=PICKER，下面提前 set 没必要。 */
-          bb_ui_agent_chat_picker_show(phrases, caller_count);
-        } else {
-          s_chat.mode = BB_CHAT_MODE_PICKER;
-        }
-        return;
-      }
-      /* same theme：推进光标到下一行 (TTS)。 */
-      s_chat.settings_sel = BB_SETTINGS_ROW_TTS;
-      settings_apply_rows();
-      break;
-    }
-    case BB_SETTINGS_ROW_TTS: {
-      /* Phase 4.5.1 — commit current toggle value to NVS, then advance to BACK
-       * (matches the existing per-row click UX: click = persist + step). */
-      esp_err_t err = persist_tts_enabled(s_chat.tts_enabled);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "settings: persist tts '%s' failed (%s)",
-                 s_chat.tts_enabled ? "on" : "off", esp_err_to_name(err));
-      }
-      ESP_LOGI(TAG, "settings: tts -> %s", s_chat.tts_enabled ? "on" : "off");
-      s_chat.settings_sel = BB_SETTINGS_ROW_BACK;
-      settings_apply_rows();
-      break;
-    }
-    case BB_SETTINGS_ROW_BACK:
-      settings_back_to_picker();
-      break;
-    case BB_SETTINGS_ROW_COUNT:
-    default:
-      break;
   }
 }
 

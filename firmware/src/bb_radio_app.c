@@ -22,6 +22,7 @@
 #include "bb_transport.h"
 #include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_settings.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
 #include "bb_ota.h"
@@ -355,23 +356,13 @@ static void agent_chat_exit(void) {
 /** Wrapper around lvgl_port_lock for picker ops invoked from the stream task. */
 static void agent_chat_picker_move_locked(int delta) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    /* Phase 4.2.5: route rotate to settings sub-mode when active. */
-    if (bb_ui_agent_chat_in_settings()) {
-      bb_ui_agent_chat_settings_handle_rotate(delta);
-    } else {
-      bb_ui_agent_chat_picker_move(delta);
-    }
+    bb_ui_agent_chat_picker_move(delta);
     lvgl_port_unlock();
   }
 }
 
 static void agent_chat_picker_send_locked(void) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    if (bb_ui_agent_chat_in_settings()) {
-      bb_ui_agent_chat_settings_handle_click();
-      lvgl_port_unlock();
-      return;
-    }
     esp_err_t err = bb_ui_agent_chat_picker_send_selected();
     lvgl_port_unlock();
     if (err != ESP_OK) {
@@ -380,15 +371,9 @@ static void agent_chat_picker_send_locked(void) {
   }
 }
 
-/* Phase 5: LEFT/RIGHT shortcut → cycle agent driver in-place (no Settings dive).
- * Silently skipped when settings is open (LEFT/RIGHT are reserved there for
- * future row-value scrub) or when the cache has < 2 entries. */
+/* Phase 5: LEFT/RIGHT shortcut → cycle agent driver in-place (no Settings dive). */
 static void agent_chat_cycle_driver_locked(int delta) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    if (bb_ui_agent_chat_in_settings()) {
-      lvgl_port_unlock();
-      return;
-    }
     esp_err_t err = bb_ui_agent_chat_cycle_driver(delta);
     lvgl_port_unlock();
     if (err == ESP_ERR_NOT_FOUND) {
@@ -400,17 +385,99 @@ static void agent_chat_cycle_driver_locked(int delta) {
 }
 
 /* Phase 4.5 — true when PTT presses should route into the agent voice bridge:
- * chat is open, settings sub-mode is closed, and no agent turn is in flight.
- * The third clause prevents the user from kicking off a second ASR while a
- * previous send is still streaming text on screen. */
+ * chat is open and no agent turn is in flight. (Settings is its own overlay
+ * now and is mutually exclusive with chat.) */
 static int agent_chat_voice_capture_active(void) {
-  if (!s_agent_chat_active) return 0;
-  int in_settings = 0;
-  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
-    in_settings = bb_ui_agent_chat_in_settings();
+  return s_agent_chat_active ? 1 : 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Phase 4.7 — Settings overlay (standalone)
+ *
+ * Mutually exclusive with the Agent Chat overlay. Triggered by short OK on
+ * the main radio screen. The overlay is its own full-screen lv_obj_t parent
+ * (no chat transcript / no theme rendering underneath) so the menu is the
+ * only thing on screen.
+ * ───────────────────────────────────────────────────────────────────── */
+static volatile int s_settings_active;
+static lv_obj_t* s_settings_root;
+
+static int settings_overlay_is_active(void) {
+  return s_settings_active != 0;
+}
+
+static int settings_overlay_enter(void) {
+  if (s_settings_active) return 0;
+  if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
+    ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
+    return -1;
+  }
+  lv_obj_t* scr = lv_screen_active();
+  if (scr == NULL) {
+    lvgl_port_unlock();
+    return -1;
+  }
+  s_settings_root = lv_obj_create(scr);
+  lv_obj_remove_style_all(s_settings_root);
+  lv_obj_set_size(s_settings_root, lv_pct(100), lv_pct(100));
+  lv_obj_set_pos(s_settings_root, 0, 0);
+  lv_obj_clear_flag(s_settings_root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_color(s_settings_root, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_bg_opa(s_settings_root, LV_OPA_COVER, 0);
+  lv_obj_move_foreground(s_settings_root);
+  bb_ui_settings_show(s_settings_root);
+  lvgl_port_unlock();
+  s_settings_active = 1;
+  ESP_LOGI(TAG, "settings: ENTER");
+  return 0;
+}
+
+static void settings_overlay_exit(void) {
+  if (!s_settings_active) return;
+  s_settings_active = 0;
+  if (lvgl_port_lock(pdMS_TO_TICKS(500))) {
+    bb_ui_settings_hide();
+    if (s_settings_root != NULL) {
+      lv_obj_del(s_settings_root);
+      s_settings_root = NULL;
+    }
+    lvgl_port_unlock();
+  } else {
+    ESP_LOGW(TAG, "settings_exit: lvgl_port_lock timeout, leaking overlay");
+  }
+  ESP_LOGI(TAG, "settings: EXIT");
+  /* Repaint the radio's normal status. */
+  if (bb_wifi_is_connected()) {
+    show_status_idle(radio_app_is_locked() ? BB_STATUS_LOCKED : BB_STATUS_READY);
+  } else {
+    show_status_idle("NO WIFI");
+  }
+}
+
+/* Wrapper helpers for nav events under lvgl lock. */
+static void settings_rotate_locked(int delta) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    bb_ui_settings_handle_rotate(delta);
     lvgl_port_unlock();
   }
-  return in_settings ? 0 : 1;
+}
+static void settings_value_locked(int delta) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    bb_ui_settings_handle_value(delta);
+    lvgl_port_unlock();
+  }
+}
+static void settings_click_locked(void) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    bb_ui_settings_handle_click();
+    int still_active = bb_ui_settings_is_active();
+    lvgl_port_unlock();
+    /* Click on Back row asks bb_ui_settings to hide itself; mirror that here
+     * so the radio_app overlay state stays in sync. */
+    if (!still_active && s_settings_active) {
+      settings_overlay_exit();
+    }
+  }
 }
 
 /* Wrapper that grabs lvgl lock + queries chat-busy state, used to reject PTT
@@ -572,12 +639,12 @@ static void log_pin_summary(void) {
 }
 
 static void on_ptt_changed(int pressed) {
-  /* Phase 4.5: when the agent-chat overlay is up AND the user is NOT in the
-   * settings sub-mode, PTT routes audio capture into the agent voice bridge
-   * (ASR transcript → bb_ui_agent_chat_send). If the user is inside the
-   * settings overlay, keep PTT silently dropped (settings is encoder-only).
-   * Phase 4.2 default: drop PTT entirely while chat is active. */
-  if (s_agent_chat_active && bb_ui_agent_chat_in_settings()) {
+  /* Phase 4.5: when the agent-chat overlay is up, PTT routes audio capture
+   * into the agent voice bridge (ASR transcript → bb_ui_agent_chat_send).
+   * Phase 4.7: settings is its own overlay (mutually exclusive with chat) —
+   * drop PTT silently while settings is up so accidental presses don't
+   * trigger voice capture. */
+  if (s_settings_active) {
     return;
   }
   s_ptt_pressed = pressed > 0 ? 1 : 0;
@@ -1376,7 +1443,7 @@ static void stream_task(void* arg) {
   int adapter_health_fail_streak = 0;
   /** 按住 PTT 且处于门户配对门闸时，降低 UI/日志刷新频率 */
   int64_t pairing_ptt_ui_last_ms = 0;
-  int nav_focus_ai = 1;
+  /* Phase 4.7: ME/AI focus toggle removed; OK now opens Settings overlay. */
   int nav_history_mode = 0;
   unsigned nav_handled_versions[BB_NAV_EVENT_COUNT] = {0};
   /* Phase 4.5: when the current arming/streaming turn was kicked off while
@@ -1394,83 +1461,75 @@ static void stream_task(void* arg) {
     for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
-        if (agent_chat_is_active()) {
-          /* Phase 4.2: while agent chat overlay is up, UP/DOWN scroll the
-           * preset picker (or the settings cursor when settings is open),
-           * OK selects, BACK exits. Phase 5: LEFT/RIGHT cycle the active
-           * agent driver in-place — no need to dive into the Settings menu
-           * just to switch between claude-code/openclaw/ollama. */
+
+        /* Phase 4.7 — Settings overlay takes nav events first when active.
+         * Mutually exclusive with Agent Chat. */
+        if (settings_overlay_is_active()) {
           switch ((bb_nav_event_t)event) {
-            case BB_NAV_EVENT_UP:
-              agent_chat_picker_move_locked(-1);
-              break;
-            case BB_NAV_EVENT_DOWN:
-              agent_chat_picker_move_locked(+1);
-              break;
-            case BB_NAV_EVENT_LEFT:
-              agent_chat_cycle_driver_locked(-1);
-              break;
-            case BB_NAV_EVENT_RIGHT:
-              agent_chat_cycle_driver_locked(+1);
-              break;
-            case BB_NAV_EVENT_OK:
-              agent_chat_picker_send_locked();
-              break;
-            case BB_NAV_EVENT_BACK:
-              agent_chat_exit();
-              break;
+            case BB_NAV_EVENT_UP:    settings_rotate_locked(-1); break;
+            case BB_NAV_EVENT_DOWN:  settings_rotate_locked(+1); break;
+            case BB_NAV_EVENT_LEFT:  settings_value_locked(-1);  break;
+            case BB_NAV_EVENT_RIGHT: settings_value_locked(+1);  break;
+            case BB_NAV_EVENT_OK:    settings_click_locked();    break;
+            case BB_NAV_EVENT_BACK:  settings_overlay_exit();    break;
             case BB_NAV_EVENT_COUNT:
-            default:
-              break;
+            default: break;
           }
           continue;
         }
+
+        if (agent_chat_is_active()) {
+          /* Phase 4.2 + Phase 5: Agent Chat picker is now phrases-only.
+           * UP/DOWN scroll picker, OK sends selected phrase, BACK exits.
+           * LEFT/RIGHT cycle the active driver in-place. */
+          switch ((bb_nav_event_t)event) {
+            case BB_NAV_EVENT_UP:    agent_chat_picker_move_locked(-1);  break;
+            case BB_NAV_EVENT_DOWN:  agent_chat_picker_move_locked(+1);  break;
+            case BB_NAV_EVENT_LEFT:  agent_chat_cycle_driver_locked(-1); break;
+            case BB_NAV_EVENT_RIGHT: agent_chat_cycle_driver_locked(+1); break;
+            case BB_NAV_EVENT_OK:    agent_chat_picker_send_locked();    break;
+            case BB_NAV_EVENT_BACK:  agent_chat_exit();                  break;
+            case BB_NAV_EVENT_COUNT:
+            default: break;
+          }
+          continue;
+        }
+
+        /* Main radio screen — chat history view. Phase 4.7: OK opens the
+         * Settings overlay (was: toggle ME/AI focus, removed). */
         switch ((bb_nav_event_t)event) {
           case BB_NAV_EVENT_UP:
-            if (nav_history_mode) {
-              (void)bb_display_chat_prev_turn();
-            } else {
-              (void)bb_display_chat_scroll_up();
-            }
+            if (nav_history_mode) (void)bb_display_chat_prev_turn();
+            else                  (void)bb_display_chat_scroll_up();
             break;
           case BB_NAV_EVENT_DOWN:
-            if (nav_history_mode) {
-              (void)bb_display_chat_next_turn();
-            } else {
-              (void)bb_display_chat_scroll_down();
-            }
+            if (nav_history_mode) (void)bb_display_chat_next_turn();
+            else                  (void)bb_display_chat_scroll_down();
             break;
           case BB_NAV_EVENT_OK:
-            nav_focus_ai = !nav_focus_ai;
-            if (nav_focus_ai) {
-              bb_display_chat_focus_ai();
-            } else {
-              bb_display_chat_focus_me();
+            if (!radio_app_is_locked() && settings_overlay_enter() == 0) {
+              ESP_LOGI(TAG, "nav OK -> settings enter");
             }
-            ESP_LOGI(TAG, "nav click focus=%s", nav_focus_ai ? "ai" : "me");
             break;
           case BB_NAV_EVENT_BACK:
-            /* Phase 4.2: BACK (or legacy long-press) from the unlocked home
-             * enters Agent Chat. Locked devices stay locked (voice unlock
-             * first). If we couldn't enter (e.g. lvgl lock timeout), fall
-             * back to the prior history toggle so the gesture still does
-             * something visible. */
+            /* Phase 4.2: BACK from the unlocked home enters Agent Chat.
+             * Locked devices stay locked (voice unlock first). If we
+             * couldn't enter (e.g. lvgl lock timeout), fall back to the
+             * prior history toggle so the gesture still does something. */
             if (!radio_app_is_locked() && agent_chat_enter() == 0) {
               ESP_LOGI(TAG, "nav back -> agent_chat enter");
             } else {
               nav_history_mode = !nav_history_mode;
-              ESP_LOGI(TAG, "nav back mode=%s", nav_history_mode ? "history" : "scroll");
+              ESP_LOGI(TAG, "nav back mode=%s",
+                       nav_history_mode ? "history" : "scroll");
             }
             break;
           case BB_NAV_EVENT_LEFT:
           case BB_NAV_EVENT_RIGHT:
-            /* Phase 5: reserved on the main radio screen (Flipper-only events).
-             * Future use: page back/forward through chat history, or jump
-             * between transcript paragraphs. For now, no-op. */
+            /* Phase 5: reserved (future: page-back/forward in transcript). */
             break;
           case BB_NAV_EVENT_COUNT:
-          default:
-            break;
+          default: break;
         }
       }
     }
