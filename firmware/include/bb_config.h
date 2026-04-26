@@ -277,18 +277,19 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC 0
 #endif
 
-/* Flipper 6-button layout (Option A: maps to existing 4 events).
+/* Flipper 6-button layout (Phase 5 / Option B: full dedicated events).
  * When BBCLAW_NAV_FLIPPER_6BUTTON=1, bb_nav_input.c reads UP/DOWN/
  * LEFT/RIGHT/OK/BACK as 6 individual edge-detected buttons.
  * Mutually exclusive with BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC.
  *
- * Event mapping in Option A (events themselves unchanged):
- *   UP    → BB_NAV_EVENT_ROTATE_CCW (press edge)
- *   DOWN  → BB_NAV_EVENT_ROTATE_CW  (press edge)
- *   OK    → BB_NAV_EVENT_CLICK      (release edge, like the legacy KEY)
- *   BACK  → BB_NAV_EVENT_LONG_PRESS (press edge — explicit "exit overlay" key)
- *   LEFT  → no event yet (debounced + logged; reserved for Phase 5 Option B)
- *   RIGHT → no event yet (debounced + logged; reserved for Phase 5 Option B)
+ * Event mapping (each button has a dedicated event; the legacy
+ * ROTATE_CCW / ROTATE_CW / CLICK / LONG_PRESS names remain as aliases):
+ *   UP    → BB_NAV_EVENT_UP    (press edge)
+ *   DOWN  → BB_NAV_EVENT_DOWN  (press edge)
+ *   LEFT  → BB_NAV_EVENT_LEFT  (press edge — Phase 5: cycle agent driver -1)
+ *   RIGHT → BB_NAV_EVENT_RIGHT (press edge — Phase 5: cycle agent driver +1)
+ *   OK    → BB_NAV_EVENT_OK    (release edge, like the legacy KEY)
+ *   BACK  → BB_NAV_EVENT_BACK  (press edge — explicit "exit overlay" key)
  *
  * All 6 share BBCLAW_NAV_KEY_ACTIVE_LEVEL / BBCLAW_NAV_PULL_UP. Set the
  * GPIO macro to -1 to skip wiring an individual button. */

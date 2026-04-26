@@ -83,6 +83,25 @@ void bb_ui_agent_chat_settings_handle_rotate(int delta);
 void bb_ui_agent_chat_settings_handle_click(void);
 
 /**
+ * Phase 5 — quick driver cycle from picker mode (LEFT/RIGHT shortcut).
+ *
+ * Cycles the active agent driver by `delta` (-1 = previous, +1 = next) without
+ * entering Settings. Persists to NVS, refreshes the theme topbar, and shows a
+ * brief transient hint so the user knows what they switched to. Wraps around
+ * the cached driver list.
+ *
+ * Cache is lazily populated on first call via the same blocking HTTP path as
+ * Settings entry (Phase 4.2.5 will make this async). When the cache is empty
+ * and the HTTP fetch fails, this is a no-op (offline fallback only has the
+ * single default driver, nothing to cycle through).
+ *
+ * Must be called inside the LVGL lock and only when chat overlay is active.
+ * Returns ESP_OK on success, ESP_ERR_INVALID_STATE if not in picker mode,
+ * ESP_ERR_NOT_FOUND if the cache is empty / single-entry.
+ */
+esp_err_t bb_ui_agent_chat_cycle_driver(int delta);
+
+/**
  * Phase 4.5 — voice bridge helpers.
  *
  * Used by bb_radio_app.c to drive the PTT-as-text-input flow when the chat

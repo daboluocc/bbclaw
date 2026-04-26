@@ -1321,3 +1321,53 @@ void bb_ui_agent_chat_settings_handle_click(void) {
       break;
   }
 }
+
+esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
+  /* Phase 5 — LEFT/RIGHT quick driver switch from picker mode.
+   *
+   * Reuses the Settings driver_cache: lazily populated on first call via the
+   * same (currently blocking) HTTP fetch Settings entry uses. Phase 4.2.5 will
+   * make that path async — when it does, this function automatically benefits.
+   *
+   * Behavior diverges from Settings in one place: we WRAP at the cache
+   * boundaries instead of clamping, so the LEFT/RIGHT gesture feels like a
+   * carousel rather than a slider that bonks at the ends.
+   */
+  if (!s_chat.active || s_chat.mode != BB_CHAT_MODE_PICKER) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (delta == 0) return ESP_OK;
+
+  settings_ensure_driver_cache();
+  const int n = s_chat.driver_cache_count;
+  if (n <= 1) {
+    /* Single (or zero) entry: nothing to cycle through. The offline-fallback
+     * branch ends up here too — that's correct, switching to the only known
+     * driver is a no-op. */
+    ESP_LOGD(TAG, "cycle_driver: cache has %d entries, nothing to do", n);
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  /* Positive-modulo wrap (handles delta=-1 going from 0 -> n-1). */
+  int next = ((s_chat.driver_cache_idx + delta) % n + n) % n;
+  s_chat.driver_cache_idx = next;
+
+  const char* name = s_chat.driver_cache[next].name;
+  if (name == NULL || name[0] == '\0') return ESP_ERR_INVALID_RESPONSE;
+
+  esp_err_t err = persist_selected_driver(name);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "cycle_driver: persist '%s' failed (%s)", name, esp_err_to_name(err));
+    /* Fall through — still update in-memory + topbar so the gesture is
+     * visibly responsive even if NVS is misbehaving. */
+  }
+  strncpy(s_chat.selected_driver, name, sizeof(s_chat.selected_driver) - 1);
+  s_chat.selected_driver[sizeof(s_chat.selected_driver) - 1] = '\0';
+
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL && theme->set_driver != NULL) {
+    theme->set_driver(name);
+  }
+  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d)", name, delta, next, n);
+  return ESP_OK;
+}

@@ -30,19 +30,20 @@
 #define BBCLAW_PTT_PULL_UP      1
 
 /*
- * Navigation: Flipper Zero 6-button layout (Phase 4.x Option A — events unchanged).
- * Six independent push-buttons replace the bbclaw PCB rotary encoder. The
- * existing 4 nav events are reused; LEFT/RIGHT are wired and debounced
- * but emit no event yet (reserved for Phase 5 Option B).
+ * Navigation: Flipper Zero 6-button layout (Phase 5 / Option B — full events).
+ * Six independent push-buttons replace the bbclaw PCB rotary encoder. Each
+ * direction now has its own dedicated nav event; the legacy ROTATE_CCW /
+ * ROTATE_CW / CLICK / LONG_PRESS names are aliases for UP / DOWN / OK / BACK
+ * so the encoder mode keeps working unchanged.
  *
- *   GPIO 6  UP    → BB_NAV_EVENT_ROTATE_CCW (press edge, replaces left rotate)
- *   GPIO 8  DOWN  → BB_NAV_EVENT_ROTATE_CW  (press edge, replaces right rotate)
- *   GPIO 1  OK    → BB_NAV_EVENT_CLICK      (release edge, like the legacy KEY)
- *   GPIO 0  BACK  → BB_NAV_EVENT_LONG_PRESS (press edge — explicit "exit" key;
+ *   GPIO 6  UP    → BB_NAV_EVENT_UP    (press edge, picker scroll up)
+ *   GPIO 8  DOWN  → BB_NAV_EVENT_DOWN  (press edge, picker scroll down)
+ *   GPIO 38 LEFT  → BB_NAV_EVENT_LEFT  (press edge — Phase 5 cycle driver -1)
+ *   GPIO 39 RIGHT → BB_NAV_EVENT_RIGHT (press edge — Phase 5 cycle driver +1)
+ *   GPIO 1  OK    → BB_NAV_EVENT_OK    (release edge, like the legacy KEY)
+ *   GPIO 0  BACK  → BB_NAV_EVENT_BACK  (press edge — explicit "exit" key;
  *                   GPIO0 is the BOOT strap, post-boot it's a free input;
  *                   ESP32-S3 modules have an external pull-up on GPIO0)
- *   GPIO 38 LEFT  → no event yet (Option A); set to -1 if not wired
- *   GPIO 39 RIGHT → no event yet (Option A); set to -1 if not wired
  *
  * Press = active LOW with internal pull-up. BBCLAW_NAV_FLIPPER_6BUTTON=1
  * routes bb_nav_input.c through the 6-button branch; the legacy

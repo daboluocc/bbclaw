@@ -141,35 +141,37 @@ static void nav_poll_cb(void* arg) {
   const int eff_debounce = debounce_samples > 0 ? debounce_samples : 1;
 
 #if BBCLAW_NAV_FLIPPER_6BUTTON
-  /* Flipper 6-button mode (Option A). Press-edge for UP/DOWN/BACK,
-   * release-edge for OK to preserve the legacy KEY click semantics.
-   * LEFT/RIGHT are debounced + logged but emit nothing — Phase 5 (Option B)
-   * will introduce dedicated events and rework picker code to consume them.
+  /* Flipper 6-button mode (Phase 5 / Option B).
+   *
+   * Each direction now has its own dedicated event. UP/DOWN/LEFT/RIGHT/BACK
+   * fire on the press edge; OK fires on the release edge so a quick tap is
+   * treated as a click, matching the legacy KEY semantics that picker /
+   * settings code was originally written against.
+   *
+   * The encoder/legacy modes still emit ROTATE_CCW / ROTATE_CW / CLICK /
+   * LONG_PRESS — those names are aliases for UP / DOWN / OK / BACK, so the
+   * same downstream switch/case handles both input families.
    */
   if (poll_btn(&s_btn_up, eff_debounce) > 0) {
-    emit_event(BB_NAV_EVENT_ROTATE_CCW);
+    emit_event(BB_NAV_EVENT_UP);
   }
   if (poll_btn(&s_btn_down, eff_debounce) > 0) {
-    emit_event(BB_NAV_EVENT_ROTATE_CW);
+    emit_event(BB_NAV_EVENT_DOWN);
   }
-  /* OK: emit on RELEASE edge to mirror the legacy KEY click behavior. */
+  if (poll_btn(&s_btn_left, eff_debounce) > 0) {
+    emit_event(BB_NAV_EVENT_LEFT);
+  }
+  if (poll_btn(&s_btn_right, eff_debounce) > 0) {
+    emit_event(BB_NAV_EVENT_RIGHT);
+  }
+  /* OK: release edge → click (so a quick tap doesn't fire on press too). */
   if (poll_btn(&s_btn_ok, eff_debounce) < 0) {
-    emit_event(BB_NAV_EVENT_CLICK);
+    emit_event(BB_NAV_EVENT_OK);
   }
-  /* BACK: explicit "exit overlay" gesture — emit LONG_PRESS on press edge,
-   * no actual hold timing required since BACK has its own dedicated key. */
+  /* BACK: explicit dedicated key — press edge maps to the "exit overlay"
+   * gesture that was previously a long-press hold on the encoder click. */
   if (poll_btn(&s_btn_back, eff_debounce) > 0) {
-    emit_event(BB_NAV_EVENT_LONG_PRESS);
-  }
-  /* TODO(phase5/optionB): emit dedicated LEFT/RIGHT events and rework
-   * picker code to consume them; for now they are debounced + logged only. */
-  int left_edge = poll_btn(&s_btn_left, eff_debounce);
-  int right_edge = poll_btn(&s_btn_right, eff_debounce);
-  if (left_edge > 0) {
-    ESP_LOGI(TAG, "btn LEFT pressed (no event in option A)");
-  }
-  if (right_edge > 0) {
-    ESP_LOGI(TAG, "btn RIGHT pressed (no event in option A)");
+    emit_event(BB_NAV_EVENT_BACK);
   }
 #elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
   if (debounce_step(&s_a_raw, &s_a_stable, &s_a_stable_count, read_a_pressed(), eff_debounce) > 0) {

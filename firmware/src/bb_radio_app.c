@@ -380,6 +380,25 @@ static void agent_chat_picker_send_locked(void) {
   }
 }
 
+/* Phase 5: LEFT/RIGHT shortcut → cycle agent driver in-place (no Settings dive).
+ * Silently skipped when settings is open (LEFT/RIGHT are reserved there for
+ * future row-value scrub) or when the cache has < 2 entries. */
+static void agent_chat_cycle_driver_locked(int delta) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    if (bb_ui_agent_chat_in_settings()) {
+      lvgl_port_unlock();
+      return;
+    }
+    esp_err_t err = bb_ui_agent_chat_cycle_driver(delta);
+    lvgl_port_unlock();
+    if (err == ESP_ERR_NOT_FOUND) {
+      ESP_LOGD(TAG, "agent_chat: cycle_driver no-op (single driver)");
+    } else if (err != ESP_OK) {
+      ESP_LOGW(TAG, "agent_chat: cycle_driver err=%s", esp_err_to_name(err));
+    }
+  }
+}
+
 /* Phase 4.5 — true when PTT presses should route into the agent voice bridge:
  * chat is open, settings sub-mode is closed, and no agent turn is in flight.
  * The third clause prevents the user from kicking off a second ASR while a
@@ -1376,19 +1395,28 @@ static void stream_task(void* arg) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
         if (agent_chat_is_active()) {
-          /* Phase 4.2: while agent chat overlay is up, the encoder + click
-           * drive the preset picker and long-press exits. */
+          /* Phase 4.2: while agent chat overlay is up, UP/DOWN scroll the
+           * preset picker (or the settings cursor when settings is open),
+           * OK selects, BACK exits. Phase 5: LEFT/RIGHT cycle the active
+           * agent driver in-place — no need to dive into the Settings menu
+           * just to switch between claude-code/openclaw/ollama. */
           switch ((bb_nav_event_t)event) {
-            case BB_NAV_EVENT_ROTATE_CCW:
+            case BB_NAV_EVENT_UP:
               agent_chat_picker_move_locked(-1);
               break;
-            case BB_NAV_EVENT_ROTATE_CW:
+            case BB_NAV_EVENT_DOWN:
               agent_chat_picker_move_locked(+1);
               break;
-            case BB_NAV_EVENT_CLICK:
+            case BB_NAV_EVENT_LEFT:
+              agent_chat_cycle_driver_locked(-1);
+              break;
+            case BB_NAV_EVENT_RIGHT:
+              agent_chat_cycle_driver_locked(+1);
+              break;
+            case BB_NAV_EVENT_OK:
               agent_chat_picker_send_locked();
               break;
-            case BB_NAV_EVENT_LONG_PRESS:
+            case BB_NAV_EVENT_BACK:
               agent_chat_exit();
               break;
             case BB_NAV_EVENT_COUNT:
@@ -1398,21 +1426,21 @@ static void stream_task(void* arg) {
           continue;
         }
         switch ((bb_nav_event_t)event) {
-          case BB_NAV_EVENT_ROTATE_CCW:
+          case BB_NAV_EVENT_UP:
             if (nav_history_mode) {
               (void)bb_display_chat_prev_turn();
             } else {
               (void)bb_display_chat_scroll_up();
             }
             break;
-          case BB_NAV_EVENT_ROTATE_CW:
+          case BB_NAV_EVENT_DOWN:
             if (nav_history_mode) {
               (void)bb_display_chat_next_turn();
             } else {
               (void)bb_display_chat_scroll_down();
             }
             break;
-          case BB_NAV_EVENT_CLICK:
+          case BB_NAV_EVENT_OK:
             nav_focus_ai = !nav_focus_ai;
             if (nav_focus_ai) {
               bb_display_chat_focus_ai();
@@ -1421,17 +1449,24 @@ static void stream_task(void* arg) {
             }
             ESP_LOGI(TAG, "nav click focus=%s", nav_focus_ai ? "ai" : "me");
             break;
-          case BB_NAV_EVENT_LONG_PRESS:
-            /* Phase 4.2: long-press from the unlocked home enters Agent Chat.
-             * Locked devices stay locked (voice unlock first). If we couldn't
-             * enter (e.g. lvgl lock timeout), fall back to the prior history
-             * toggle so the gesture still does something visible. */
+          case BB_NAV_EVENT_BACK:
+            /* Phase 4.2: BACK (or legacy long-press) from the unlocked home
+             * enters Agent Chat. Locked devices stay locked (voice unlock
+             * first). If we couldn't enter (e.g. lvgl lock timeout), fall
+             * back to the prior history toggle so the gesture still does
+             * something visible. */
             if (!radio_app_is_locked() && agent_chat_enter() == 0) {
-              ESP_LOGI(TAG, "nav long_press -> agent_chat enter");
+              ESP_LOGI(TAG, "nav back -> agent_chat enter");
             } else {
               nav_history_mode = !nav_history_mode;
-              ESP_LOGI(TAG, "nav long_press mode=%s", nav_history_mode ? "history" : "scroll");
+              ESP_LOGI(TAG, "nav back mode=%s", nav_history_mode ? "history" : "scroll");
             }
+            break;
+          case BB_NAV_EVENT_LEFT:
+          case BB_NAV_EVENT_RIGHT:
+            /* Phase 5: reserved on the main radio screen (Flipper-only events).
+             * Future use: page back/forward through chat history, or jump
+             * between transcript paragraphs. For now, no-op. */
             break;
           case BB_NAV_EVENT_COUNT:
           default:
