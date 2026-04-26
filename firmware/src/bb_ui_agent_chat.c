@@ -443,6 +443,54 @@ static esp_err_t persist_selected_driver(const char* name) {
   return err;
 }
 
+/* Phase 4.8.x: deferred-persist worker. Writing NVS while the LVGL lock is
+ * held + audio is playing + agent stream is active triggered an
+ * spi_flash_disable_interrupts_caches assertion (cache_utils.c:127) on the
+ * cycle_driver hot path. Solution: hand the persist off to a one-shot
+ * FreeRTOS task that runs without any of those locks, so the SPI-flash
+ * driver can safely disable caches/interrupts to do its write.
+ *
+ * Stack: 4 KB matches the agent task — NVS write opens partition, possibly
+ * creates the namespace (small flash erase), writes one short key-value.
+ */
+typedef struct {
+  char name[24];
+} persist_driver_arg_t;
+
+static void persist_driver_task(void* arg) {
+  persist_driver_arg_t* a = (persist_driver_arg_t*)arg;
+  if (a == NULL) {
+    vTaskDelete(NULL);
+    return;
+  }
+  esp_err_t err = persist_selected_driver(a->name);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "persist_driver_task: '%s' failed: %s", a->name, esp_err_to_name(err));
+  } else {
+    ESP_LOGI(TAG, "persist_driver_task: '%s' committed to nvs", a->name);
+  }
+  free(a);
+  vTaskDelete(NULL);
+}
+
+static void spawn_persist_driver_task(const char* name) {
+  if (name == NULL || name[0] == '\0') return;
+  persist_driver_arg_t* arg = (persist_driver_arg_t*)calloc(1, sizeof(*arg));
+  if (arg == NULL) {
+    ESP_LOGW(TAG, "spawn persist task: calloc failed");
+    return;
+  }
+  strncpy(arg->name, name, sizeof(arg->name) - 1);
+  arg->name[sizeof(arg->name) - 1] = '\0';
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(persist_driver_task, "persist_drv",
+                              4096, arg, 4, &t);
+  if (ok != pdPASS) {
+    ESP_LOGW(TAG, "spawn persist task: xTaskCreate failed");
+    free(arg);
+  }
+}
+
 /* ── Phase 4.5.1 — TTS reply toggle persistence ── */
 
 /* Load NVS string at "agent/tts"; missing or unparseable → default ON. */
@@ -1189,7 +1237,12 @@ static void post_listening_topbar(int begin) {
 }
 
 void bb_ui_agent_chat_voice_listening(int begin) {
-  if (!s_chat.active) return;
+  if (!s_chat.active) {
+    ESP_LOGW(TAG, "voice_listening(%d) called while chat inactive", begin);
+    return;
+  }
+  ESP_LOGI(TAG, "voice_listening(%s) → %s", begin ? "begin" : "end",
+           begin ? "BUSY topbar=LISTEN" : "topbar=restore");
   if (begin) {
     post_state(BB_AGENT_STATE_BUSY);
     post_listening_topbar(1);
@@ -1241,12 +1294,13 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   const char* name = s_chat.driver_cache[next].name;
   if (name == NULL || name[0] == '\0') return ESP_ERR_INVALID_RESPONSE;
 
-  esp_err_t err = persist_selected_driver(name);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "cycle_driver: persist '%s' failed (%s)", name, esp_err_to_name(err));
-    /* Fall through — still update in-memory + topbar so the gesture is
-     * visibly responsive even if NVS is misbehaving. */
-  }
+  /* Phase 4.8.x: in-memory update + UI refresh stay on the LVGL-locked
+   * caller path (cheap, no flash IO). The actual NVS write is offloaded
+   * to a background task so the SPI-flash subsystem can safely disable
+   * caches without colliding with the audio/agent stream that's likely
+   * still running on the LVGL task. Worst case if the task fails to
+   * spawn: in-memory state still updated → driver works for THIS
+   * session, just doesn't survive reboot (logged). */
   strncpy(s_chat.selected_driver, name, sizeof(s_chat.selected_driver) - 1);
   s_chat.selected_driver[sizeof(s_chat.selected_driver) - 1] = '\0';
 
@@ -1254,6 +1308,8 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   if (theme != NULL && theme->set_driver != NULL) {
     theme->set_driver(name);
   }
-  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d)", name, delta, next, n);
+  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) — deferring NVS write",
+           name, delta, next, n);
+  spawn_persist_driver_task(name);
   return ESP_OK;
 }
