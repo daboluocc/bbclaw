@@ -103,6 +103,13 @@ int bb_ui_agent_chat_is_busy(void);
 void bb_ui_agent_chat_cancel(void);
 
 /**
+ * Phase 4.9 — scroll the agent chat transcript by `lines`.
+ * lines < 0 scrolls up, lines > 0 scrolls down.
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_scroll(int lines);
+
+/**
  * Light visual hint that the device is recording PTT for an agent turn.
  * begin=1 → topbar shows "LISTEN…" + state goes LISTENING.
  * begin=0 → restore the cached session id (or clear if none).

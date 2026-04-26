@@ -156,6 +156,13 @@ static void scroll_to_bottom(void) {
   }
 }
 
+/* Phase 4.9: manual scroll by N lines. lines<0 = up, lines>0 = down. */
+static void theme_scroll_transcript(int lines) {
+  if (s_st.transcript == NULL || lines == 0) return;
+  int32_t step = lv_font_get_line_height(theme_font()) * lines;
+  lv_obj_scroll_by_bounded(s_st.transcript, 0, step, LV_ANIM_OFF);
+}
+
 static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color, lv_text_align_t align,
                                 int italic) {
   lv_obj_t* lbl = lv_label_create(s_st.transcript);
@@ -370,6 +377,7 @@ static const bb_agent_theme_t s_buddy_ascii_theme = {
     .append_error = theme_append_error,
     .set_driver = theme_set_driver,
     .set_session = theme_set_session,
+    .scroll_transcript = theme_scroll_transcript,
 };
 
 /* 显式 init（与 text-only 同样的 DCE-defeating 模式）。

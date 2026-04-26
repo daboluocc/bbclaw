@@ -44,6 +44,7 @@ typedef struct bb_agent_theme {
   void (*append_error)(const char* msg);
   void (*set_driver)(const char* driver_name);            /* 顶部状态栏更新 */
   void (*set_session)(const char* sid_short);             /* 显示 session 前 8 位 */
+  void (*scroll_transcript)(int lines);                   /* Phase 4.9: UP/DOWN 滚动对话; <0=up >0=down */
 } bb_agent_theme_t;
 
 /**

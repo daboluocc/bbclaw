@@ -1517,17 +1517,24 @@ static void stream_task(void* arg) {
         }
 
         if (agent_chat_is_active()) {
-          /* Phase 4.9 voice-first: UP/DOWN exits chat so the underlying
-           * history becomes visible, then falls through to the main-screen
-           * handler below which scrolls. LEFT/RIGHT cycles driver (blocked
-           * while agent turn is in flight). OK/BACK cancel the current turn
+          /* Phase 4.9 voice-first: UP/DOWN scrolls the chat transcript
+           * (2 lines per press). LEFT/RIGHT cycles driver (blocked while
+           * agent turn is in flight). OK/BACK cancel the current turn
            * when busy, otherwise open the Settings overlay. */
           int busy = agent_chat_is_busy_locked();
           switch ((bb_nav_event_t)event) {
             case BB_NAV_EVENT_UP:
+              if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                bb_ui_agent_chat_scroll(-2);
+                lvgl_port_unlock();
+              }
+              continue;
             case BB_NAV_EVENT_DOWN:
-              agent_chat_exit();
-              break;
+              if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                bb_ui_agent_chat_scroll(+2);
+                lvgl_port_unlock();
+              }
+              continue;
             case BB_NAV_EVENT_LEFT:
             case BB_NAV_EVENT_RIGHT:
               if (busy) {

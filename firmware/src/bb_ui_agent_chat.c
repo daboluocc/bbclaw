@@ -1368,6 +1368,14 @@ void bb_ui_agent_chat_cancel(void) {
   ESP_LOGI(TAG, "cancel: user cancelled in-flight turn");
 }
 
+void bb_ui_agent_chat_scroll(int lines) {
+  if (!s_chat.active || lines == 0) return;
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL && theme->scroll_transcript != NULL) {
+    theme->scroll_transcript(lines);
+  }
+}
+
 /* When true, the topbar's session field shows the listening hint instead of
  * the cached short session id. Cleared by voice_listening(0) so that future
  * SESSION frames (post-send) restore the real id. */
