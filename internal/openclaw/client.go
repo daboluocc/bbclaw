@@ -603,7 +603,8 @@ func (c *Client) forwardSessionToolEvents(ctx context.Context, conn *websocket.C
 		} else if evtName == "session.message" {
 			payload, _ := frame["payload"].(map[string]any)
 			message, _ := payload["message"].(map[string]any)
-			if content, ok := message["content"].([]any); ok {
+			role, _ := message["role"].(string)
+			if content, ok := message["content"].([]any); ok && role == "assistant" {
 				for _, item := range content {
 					obj, _ := item.(map[string]any)
 					itemType, _ := obj["type"].(string)
@@ -824,7 +825,8 @@ func (c *Client) waitChatFinalText(
 			} else if evtName == "session.message" {
 				payload, _ := frame["payload"].(map[string]any)
 				message, _ := payload["message"].(map[string]any)
-				if content, ok := message["content"].([]any); ok {
+				role, _ := message["role"].(string)
+				if content, ok := message["content"].([]any); ok && role == "assistant" {
 					for _, item := range content {
 						obj, _ := item.(map[string]any)
 						itemType, _ := obj["type"].(string)
