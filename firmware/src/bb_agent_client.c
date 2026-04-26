@@ -17,17 +17,31 @@ static const char* TAG = "bb_agent";
 
 /*
  * Mirror bb_adapter_client.c::active_base_url(): cloud_saas profile uses
- * the cloud URL, otherwise the local adapter. The cloud side currently
- * does NOT yet expose the agent endpoints (/v1/agent/message and
- * /v1/agent/drivers) — for end-to-end on cloud_saas to work, cloud needs
- * to proxy those routes through to a home adapter. Tracked as followup;
- * device-side selector lands now so we don't have to re-flash later.
+ * the cloud URL, otherwise the local adapter. Phase 4.8 wired the cloud-side
+ * /v1/agent/... reverse proxy through to the paired home adapter; the cloud
+ * picks the target device by deviceId query param (see ADR-004). Local mode
+ * needs no deviceId — the home adapter only serves one device.
  */
+static int agent_is_cloud_mode(void) {
+  return strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0 ? 1 : 0;
+}
+
 static const char* agent_base_url(void) {
-  if (strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0) {
-    return BBCLAW_CLOUD_BASE_URL;
+  return agent_is_cloud_mode() ? BBCLAW_CLOUD_BASE_URL : BBCLAW_ADAPTER_BASE_URL;
+}
+
+/* Build a fully-qualified agent endpoint URL. In cloud_saas mode appends
+ * "?deviceId=<BBCLAW_DEVICE_ID>" so the cloud proxy can route to the right
+ * home adapter; in local mode the path is left bare. Path must start with
+ * '/' (we don't add the slash). */
+static void agent_build_url(char* out, size_t out_len, const char* path) {
+  if (out == NULL || out_len == 0) return;
+  const char* base = agent_base_url();
+  if (agent_is_cloud_mode()) {
+    snprintf(out, out_len, "%s%s?deviceId=%s", base, path, BBCLAW_DEVICE_ID);
+  } else {
+    snprintf(out, out_len, "%s%s", base, path);
   }
-  return BBCLAW_ADAPTER_BASE_URL;
 }
 
 /* ── 通用 HTTP 配置：复制自 bb_adapter_client.c 的 bb_http_cfg_init 风格 ── */
@@ -269,7 +283,7 @@ esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* 
   }
 
   char url[256] = {0};
-  snprintf(url, sizeof(url), "%s%s", agent_base_url(), "/v1/agent/drivers");
+  agent_build_url(url, sizeof(url), "/v1/agent/drivers");
 
   bb_http_dyn_accum_t accum = {0};
   esp_http_client_config_t cfg;
@@ -373,7 +387,7 @@ esp_err_t bb_agent_send_message(const char* text, const char* session_id, const 
   }
 
   char url[256] = {0};
-  snprintf(url, sizeof(url), "%s%s", agent_base_url(), "/v1/agent/message");
+  agent_build_url(url, sizeof(url), "/v1/agent/message");
 
   bb_agent_stream_accum_t accum = {
       .on_event = on_event,
