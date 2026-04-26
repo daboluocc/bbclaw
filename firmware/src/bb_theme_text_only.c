@@ -29,9 +29,14 @@ static const char* TAG = "bb_agent_theme";
 #define UI_TOOL_FG     0x9aa5a1
 #define UI_ERROR_FG    0xe66f6f
 
-/* 布局 */
+/* 布局
+ * 显示 320x172 (landscape). 不能用 lv_pct(100) - TOPBAR_H 这种表达式
+ * （lv_pct 是特殊编码值不能减整数），改用绝对像素：
+ *   middle = 172 - 18 - 20 = 134 px
+ */
 #define TOPBAR_H       18
 #define INPUT_H        20
+#define MIDDLE_H       (172 - TOPBAR_H - INPUT_H)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
 #define MSG_HMARGIN    8
@@ -143,10 +148,10 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_pad_right(s_st.topbar_lbl, 4, 0);
   lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
 
-  /* Transcript（中央可滚动） */
+  /* Transcript（中央可滚动）— 绝对像素高度，避免 lv_pct - int 的坑 */
   s_st.transcript = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.transcript);
-  lv_obj_set_size(s_st.transcript, lv_pct(100), lv_pct(100) - TOPBAR_H - INPUT_H);
+  lv_obj_set_size(s_st.transcript, lv_pct(100), MIDDLE_H);
   lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0, TOPBAR_H);
   lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
   lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);

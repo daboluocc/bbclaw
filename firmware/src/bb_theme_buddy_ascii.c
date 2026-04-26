@@ -45,10 +45,23 @@ static const char* TAG = "bb_theme_buddy";
 #define UI_BUDDY_FG    0xf0e6c8  /* 暖色调突出角色 */
 #define UI_BUDDY_DIM   0xa49a83
 
-/* 布局 */
+/* 布局
+ *
+ * 显示是 320x172 (landscape, 来自 BBCLAW_ST7789_WIDTH/HEIGHT). 我们用绝对像素
+ * 布局 buddy_panel 和 transcript —— LVGL 的 lv_pct() 是特殊编码值，不能跟整数
+ * 做加减（lv_pct(100) - TOPBAR_H 会算出垃圾尺寸），导致 buddy 角色看不到。
+ * 这里直接算好：
+ *   topbar      = 18 px
+ *   input       = 20 px
+ *   middle area = 172 - 18 - 20 = 134 px (= MIDDLE_H)
+ *   buddy panel = 110 x 134 (右栏)
+ *   transcript  = 210 x 134 (左栏 = 320 - 110)
+ */
 #define TOPBAR_H       18
 #define INPUT_H        20
 #define BUDDY_W        110
+#define MIDDLE_H       (172 - TOPBAR_H - INPUT_H)
+#define TRANSCRIPT_W   (320 - BUDDY_W)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
 #define MSG_HMARGIN    6
@@ -189,10 +202,11 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_pad_right(s_st.topbar_lbl, 4, 0);
   lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
 
-  /* Buddy panel (right column) */
+  /* Buddy panel (right column).
+   * Absolute pixel size — see header comment about LVGL lv_pct arithmetic. */
   s_st.buddy_panel = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.buddy_panel);
-  lv_obj_set_size(s_st.buddy_panel, BUDDY_W, lv_pct(100) - TOPBAR_H - INPUT_H);
+  lv_obj_set_size(s_st.buddy_panel, BUDDY_W, MIDDLE_H);
   lv_obj_align(s_st.buddy_panel, LV_ALIGN_TOP_RIGHT, 0, TOPBAR_H);
   lv_obj_set_style_bg_color(s_st.buddy_panel, lv_color_hex(UI_SCR_BG), 0);
   lv_obj_set_style_bg_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
@@ -217,11 +231,10 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
   lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_CENTER, 0);
 
-  /* Transcript (left column, takes remaining width) */
+  /* Transcript (left column). Absolute pixel size — see header comment. */
   s_st.transcript = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.transcript);
-  lv_obj_set_size(s_st.transcript, lv_pct(100) - BUDDY_W,
-                  lv_pct(100) - TOPBAR_H - INPUT_H);
+  lv_obj_set_size(s_st.transcript, TRANSCRIPT_W, MIDDLE_H);
   lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0, TOPBAR_H);
   lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
   lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);
