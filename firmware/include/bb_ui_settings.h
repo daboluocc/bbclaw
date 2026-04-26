@@ -15,14 +15,21 @@
  *     TTS reply:  On / Off
  *     Back
  *
- * UX (Phase 4.7.1 — auto-save model):
+ * UX (Phase 4.7.2 — preview/commit model):
  *   UP/DOWN  : move row cursor
- *   LEFT/RIGHT : on rows 0..2, cycle the row's value AND persist to NVS
- *                immediately (auto-save). On Theme row also calls
- *                bb_agent_theme_set_active so subsequent chat-show picks it up.
- *   OK       : just advance the row cursor (values already auto-saved); on
- *                Back row, exit the overlay.
- *   BACK     : exit immediately (changes are already saved).
+ *   LEFT/RIGHT : on rows 0..2, preview the row's value (no NVS write).
+ *                The displayed name updates so the user can see what's
+ *                pending, but nothing is persisted yet.
+ *   OK       : commit the previewed value for the current row (NVS write +
+ *                bb_agent_theme_set_active for theme), then advance cursor.
+ *                On Back row, OK exits the overlay.
+ *   BACK     : exit immediately. Pending un-committed previews are
+ *                discarded (next entry shows the actual saved values).
+ *
+ * Why this is the model: an earlier auto-save attempt (4.7.1) wrote NVS on
+ * every LEFT/RIGHT, which caused device restarts when users cycled rapidly
+ * (likely flash IO contending with LVGL drawing under the LVGL lock).
+ * Explicit OK-to-commit avoids the rapid NVS write storm.
  *
  * Lifecycle:
  *   bb_ui_settings_show(parent)  ── builds the overlay, kicks off async driver
