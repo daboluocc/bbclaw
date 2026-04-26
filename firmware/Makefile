@@ -29,13 +29,14 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash flash-ota0 erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
+.PHONY: help idf-env init set-target reconfigure build flash flash-ota0 boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
 	@echo "  make init          # set esp32s3 target + reconfigure"
 	@echo "  make build         # idf.py build"
-	@echo "  make flash         # build + flash to ota_0 partition"
+	@echo "  make flash         # build + flash to ota_0 partition (writes proper otadata)"
+	@echo "  make boot-recover  # rewrite otadata only, recover from boot-loop after bad flash"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
 	@echo "  make list-ports    # list USB serial devices (pick one for PORT=...)"
@@ -90,15 +91,26 @@ build:
 
 flash: flash-ota0
 
-# Flash to ota_0 partition (firmware 2.2MB > factory 1MB)
-# Partition layout:
-#   0x00000-0x0FFFF: bootloader
-#   0x10000-0x11FFF: otadata (8KB)
-#   0x20000-0x11FFFF: factory app (1MB)
-#   0x120000-0x39FFFF: ota_0 (2.5MB)
-#   0x3A0000-0x61FFFF: ota_1 (2.5MB)
-#   0x620000-0x71FFFF: resources (1MB)
-flash-ota0: build
+# Flash to ota_0 partition (firmware 2.36MB > factory 1MB).
+# Partition layout (actual, see partitions_ota.csv):
+#   0x00000 - 0x07FFF : bootloader     (~21 KB used)
+#   0x08000 - 0x08FFF : partition table
+#   0x09000 - 0x0EFFF : nvs            (24 KB)
+#   0x0F000 - 0x0FFFF : phy_init       (4 KB)
+#   0x10000 - 0x11FFF : otadata        (8 KB)
+#   0x20000 - 0x11FFFF: factory app    (1 MB — TOO SMALL for our binary, never used)
+#   0x120000 - 0x39FFFF: ota_0         (2.5 MB — primary slot, where we flash)
+#   0x3A0000 - 0x61FFFF: ota_1         (2.5 MB — OTA-update target)
+#   0x620000 - 0x71FFFF: resources     (1 MB)
+#
+# WHY we generate otadata pointing at ota_0 instead of using the IDF default
+# (build/ota_data_initial.bin which is all 0xFF = "boot factory"): the factory
+# partition is too small to hold our 2.36 MB firmware, so a freshly-FF otadata
+# wedges the bootloader into a fail-loop. The runtime esp_ota_set_boot_partition
+# logic produces the right CRC; we just have to do the same at flash time.
+# CRC algorithm matches IDF's bootloader_common_ota_select_crc:
+#   crc = binascii.crc32(struct.pack('I', ota_seq), 0xFFFFFFFF)
+flash-ota0: build build/otadata_ota0.bin
 	@echo "Flashing to ota_0 partition (0x120000)... port=$(if $(PORT),$(PORT),auto)"
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
 	@sleep 1
@@ -107,8 +119,32 @@ flash-ota0: build
 		--flash_mode dio --flash_size 8MB --flash_freq 80m \
 		0x0 build/bootloader/bootloader.bin \
 		0x8000 build/partition_table/partition-table.bin \
-		0x10000 build/ota_data_initial.bin \
+		0x10000 build/otadata_ota0.bin \
 		0x120000 build/bbclaw_firmware.bin
+
+# Generate an otadata image that selects ota_0 (seq=1).
+# Re-runs whenever bootloader.bin changes (proxy for "build was redone").
+build/otadata_ota0.bin: build/bootloader/bootloader.bin
+	@python3 -c "import binascii, struct; \
+seq = 1; \
+label = b'\xff' * 20; \
+state = 0xFFFFFFFF; \
+crc = binascii.crc32(struct.pack('I', seq), 0xFFFFFFFF) % (1 << 32); \
+entry = struct.pack('<I20sII', seq, label, state, crc); \
+sec1 = entry + b'\xff' * (4096 - len(entry)); \
+sec2 = b'\xff' * 4096; \
+open('build/otadata_ota0.bin', 'wb').write(sec1 + sec2); \
+print('[otadata] wrote build/otadata_ota0.bin (seq=%d crc=0x%08x -> ota_0)' % (seq, crc))"
+
+# Emergency: device boot-loops in factory after a bad otadata write
+# (e.g. ran `idf.py flash` or older `make flash` that wrote ota_data_initial.bin).
+# Rewrites just the otadata partition to point at ota_0, no app reflash needed.
+boot-recover: build/otadata_ota0.bin
+	@echo "Recovering otadata to point at ota_0... port=$(if $(PORT),$(PORT),auto)"
+	@pkill -f "idf_monitor.py" 2>/dev/null || true
+	@sleep 1
+	@python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
+		write_flash 0x10000 build/otadata_ota0.bin
 
 erase:
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
