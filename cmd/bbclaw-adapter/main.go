@@ -183,7 +183,10 @@ func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 
 	registerOpencode := enabled == nil || enabled["opencode"]
 	if registerOpencode {
-		router.Register(opencode.New(opencode.Options{}, logger), logger)
+		router.Register(opencode.New(opencode.Options{
+			Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
+			ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
+		}, logger), logger)
 	}
 
 	// openclaw: registered when an openclaw URL is configured. We reuse the
@@ -262,6 +265,24 @@ func parseEnabledDrivers(raw string) map[string]bool {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// parseArgList splits a comma-separated string into a string slice, trimming
+// whitespace and dropping empty segments. Used for CLI extra-args env vars.
+func parseArgList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
 	}
 	return out
 }

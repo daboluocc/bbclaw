@@ -63,6 +63,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 	if bin == "" {
 		bin = defaultBin
 	}
+	resolved, err := exec.LookPath(bin)
+	if err != nil {
+		log.Warnf("claude-code: binary %q not on PATH, will use as-is (%v)", bin, err)
+	} else {
+		bin = resolved
+		log.Infof("claude-code: resolved binary %q", bin)
+	}
 	return &Driver{
 		bin:      bin,
 		log:      log,
@@ -120,13 +127,22 @@ func (d *Driver) Events(sid agent.SessionID) <-chan agent.Event {
 // stream-json output onto the session's event channel. Blocks until the
 // subprocess exits (caller should invoke Send in a goroutine if they want
 // to keep reading Events concurrently; events are buffered anyway).
-func (d *Driver) Send(sid agent.SessionID, text string) error {
+func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	d.mu.Lock()
 	s, ok := d.sessions[sid]
 	d.mu.Unlock()
 	if !ok {
 		return agent.ErrUnknownSession
 	}
+
+	// On early exit the handler is blocked on <-events waiting for
+	// EvTurnEnd — emit it so the handler can tear down cleanly.
+	defer func() {
+		if sendErr != nil {
+			s.emit(agent.Event{Type: agent.EvError, Text: sendErr.Error()})
+			s.emit(agent.Event{Type: agent.EvTurnEnd})
+		}
+	}()
 
 	args := []string{"-p", text, "--output-format", "stream-json", "--verbose"}
 	if s.resumeID != "" {

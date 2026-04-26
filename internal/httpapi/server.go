@@ -301,8 +301,9 @@ func (s *Server) handleFinish(w http.ResponseWriter, r *http.Request) {
 	s.log.Infof("phase=asr_start stream=%s elapsed_s=%.3f pcm_bytes=%d asr_timeout_s=%.3f",
 		stream.StreamID, time.Since(t0).Seconds(), len(pcmAudio), s.asrTranscribeTimeout().Seconds())
 
-	if strings.EqualFold(strings.TrimSpace(req.ReplyMode), "stream") {
-		s.handleFinishStream(w, r, stream, pcmAudio, inputSavedPath, t0)
+	mode := strings.ToLower(strings.TrimSpace(req.ReplyMode))
+	if mode == "stream" || mode == "asr" {
+		s.handleFinishStream(w, r, stream, pcmAudio, inputSavedPath, t0, mode == "asr")
 		return
 	}
 
@@ -428,6 +429,7 @@ func (s *Server) handleFinishStream(
 	pcmAudio []byte,
 	inputSavedPath string,
 	t0 time.Time,
+	asrOnly bool,
 ) {
 	sw, ok := newFinishStreamWriter(w)
 	if !ok {
@@ -476,11 +478,15 @@ func (s *Server) handleFinishStream(
 		stream.StreamID, time.Since(t0).Seconds(), time.Since(tASR).Seconds(), trChars, result.Text)
 	_ = sw.write(map[string]any{"type": "asr.final", "text": result.Text})
 
-	if strings.TrimSpace(result.Text) == "" {
+	if strings.TrimSpace(result.Text) == "" || asrOnly {
+		if asrOnly {
+			s.log.Infof("phase=asr_only stream=%s elapsed_s=%.3f (skip openclaw delivery)",
+				stream.StreamID, time.Since(t0).Seconds())
+		}
 		_ = sw.write(map[string]any{
 			"type":              "done",
 			"streamId":          stream.StreamID,
-			"text":              "",
+			"text":              result.Text,
 			"replyText":         "",
 			"replyWaitTimedOut": false,
 			"savedInputPath":    inputSavedPath,

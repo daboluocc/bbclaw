@@ -71,6 +71,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 	if bin == "" {
 		bin = defaultBin
 	}
+	resolved, err := exec.LookPath(bin)
+	if err != nil {
+		log.Warnf("opencode: binary %q not on PATH, will use as-is (%v)", bin, err)
+	} else {
+		bin = resolved
+		log.Infof("opencode: resolved binary %q", bin)
+	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -134,13 +141,22 @@ func (d *Driver) Events(sid agent.SessionID) <-chan agent.Event {
 //
 // --dangerously-skip-permissions is always passed because the driver
 // advertises ToolApproval=false and cannot serve approval prompts.
-func (d *Driver) Send(sid agent.SessionID, text string) error {
+func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	d.mu.Lock()
 	s, ok := d.sessions[sid]
 	d.mu.Unlock()
 	if !ok {
 		return agent.ErrUnknownSession
 	}
+
+	// On early exit the handler is blocked on <-events waiting for
+	// EvTurnEnd — emit it so the handler can tear down cleanly.
+	defer func() {
+		if sendErr != nil {
+			s.emit(agent.Event{Type: agent.EvError, Text: sendErr.Error()})
+			s.emit(agent.Event{Type: agent.EvTurnEnd})
+		}
+	}()
 
 	args := []string{"run", "--format", "json", "--print-logs", "--thinking", "--dangerously-skip-permissions"}
 	if s.resumeID != "" {
