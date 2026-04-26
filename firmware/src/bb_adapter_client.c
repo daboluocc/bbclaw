@@ -1586,8 +1586,12 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
   memset(out_result, 0, sizeof(*out_result));
 
   char body[384] = {0};
-  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"sessionKey\":\"%s\",\"streamId\":\"%s\",\"replyMode\":\"stream\"}",
-           BBCLAW_DEVICE_ID, BBCLAW_SESSION_KEY, ctx->stream_id);
+  /* When no event callback is provided (voice_target_agent mode) the caller
+   * only needs the ASR transcript — send replyMode=asr so the adapter skips
+   * the OpenClaw delivery round-trip, saving ~5-20 s of latency. */
+  const char* reply_mode = (on_event != NULL) ? "stream" : "asr";
+  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"sessionKey\":\"%s\",\"streamId\":\"%s\",\"replyMode\":\"%s\"}",
+           BBCLAW_DEVICE_ID, BBCLAW_SESSION_KEY, ctx->stream_id, reply_mode);
 
   char url[256] = {0};
   snprintf(url, sizeof(url), "%s%s", active_base_url(), "/v1/stream/finish");

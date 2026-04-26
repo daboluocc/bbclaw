@@ -95,9 +95,19 @@ int bb_ui_agent_chat_is_busy(void);
 
 /**
  * Light visual hint that the device is recording PTT for an agent turn.
- * begin=1 → topbar shows "LISTEN…" + state goes BUSY.
+ * begin=1 → topbar shows "LISTEN…" + state goes LISTENING.
  * begin=0 → restore the cached session id (or clear if none).
  *
  * Safe to call from any task; internally posts via lv_async_call.
  */
 void bb_ui_agent_chat_voice_listening(int begin);
+
+/**
+ * Transition from LISTENING → BUSY when PTT is released and the device
+ * enters the ASR upload / cloud-wait phase. Clears the listening topbar
+ * hint and posts BUSY so the buddy shows "thinking..." during the
+ * (potentially long) blocking stream-finish HTTP call.
+ *
+ * Safe to call from any task; internally posts via lv_async_call.
+ */
+void bb_ui_agent_chat_voice_processing(void);

@@ -527,6 +527,16 @@ static void agent_chat_voice_post_error(const char* msg) {
   }
 }
 
+/* Phase 4.8.x — transition chat UI from LISTENING → BUSY the moment PTT is
+ * released and we enter the blocking cloud-wait (ASR upload + response). This
+ * eliminates the long "listening..." hang while the cloud processes audio. */
+static void agent_chat_voice_processing_locked(void) {
+  if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+    bb_ui_agent_chat_voice_processing();
+    lvgl_port_unlock();
+  }
+}
+
 /* utf-8-safe trim of leading/trailing ASCII whitespace. Returns pointer into
  * buf and trims tail in place by writing '\0'. ASR transcripts come back with
  * stray spaces / newlines occasionally; we don't need full unicode trimming. */
@@ -1981,6 +1991,12 @@ static void stream_task(void* arg) {
         }
       }
       if (!skip_finish) {
+        /* Phase 4.8.x: PTT just released — transition buddy from "listening..."
+         * to "thinking..." before the blocking cloud-wait. Without this the
+         * buddy stays in LISTENING for the entire ASR round-trip (~1–20 s). */
+        if (voice_target_agent) {
+          agent_chat_voice_processing_locked();
+        }
         int64_t t_cloud_req_ms = bb_now_ms();
         ESP_LOGI(TAG, "phase=cloud_wait mono_ms=%lld stream=%s voice_target=%s (RX + PROCESSING LED)",
                  (long long)t_cloud_req_ms, stream.stream_id, voice_target_agent ? "agent" : "openclaw");
@@ -2007,7 +2023,7 @@ static void stream_task(void* arg) {
             ESP_LOGI(TAG, "phase=asr_saved path=%s", finish->saved_input_path);
           }
           log_phase_text_chunks("phase=asr text=", asr_text);
-          if (reply_text[0] != '\0') {
+          if (!voice_target_agent && reply_text[0] != '\0') {
             log_phase_text_chunks("phase=assistant text=", reply_text);
           }
 

@@ -56,11 +56,12 @@ static const char* TAG = "bb_agent_ui";
 /* Phase 4.5.1 — TTS reply playback. The accumulator caps at 4 KiB; cloud
  * replies longer than that fall back to truncated TTS (we log a warn). */
 #define BB_CHAT_REPLY_BUF_CAP    4096
-/* 4 KB was enough for the Phase 4.5.1 single-shot TTS task (one synth +
- * one playback then exit). The Phase 4.5.2 streaming pipeline keeps the
- * task alive across multiple sentence-level synth+play cycles, with cJSON
- * parsing for the synth response sitting alongside the I2S playback path
- * — observed stack overflow at 4 KB. Bumped to 8 KB with headroom. */
+/* Phase 4.5.2 streaming pipeline: the task persists across multiple
+ * sentence-level synth + play cycles, with cJSON parsing + I2S playback
+ * on the stack — observed overflow at 4 KB, so 8 KB with headroom.
+ * Allocated from PSRAM via xTaskCreateWithCaps; internal heap largest
+ * contiguous block drops to ~7.6 KB after PTT/voice loop, making
+ * xTaskCreate(8192) unreliable (ESP_LOGW "xTaskCreate failed"). */
 #define BB_CHAT_TTS_TASK_STACK   8192
 #define BB_CHAT_TTS_TASK_PRIO    4
 
@@ -126,6 +127,28 @@ typedef struct {
 
 static bb_chat_state_t s_chat = {0};
 
+/* ── Chunk coalesce double-buffer (agent task -> LVGL task) ─────────────────
+ *
+ * Problem: every streaming token calls post_assistant_chunk() -> lv_async_call()
+ * -> queues a new 0ms LVGL timer.  For an N-token response the lv_timer_handler
+ * do-while loop restarts from the list head on every deletion, producing O(N^2)
+ * traversals without yielding -> taskLVGL starves IDLE1 -> Task WDT fires.
+ *
+ * Fix: coalesce all tokens arriving between two LVGL dispatches into one
+ * lv_async_call().  Double-buffer lets the LVGL drain happen without memcpy
+ * inside the critical section (only a few integer assignments).
+ *
+ * Write side (agent task):  append to buf[widx], gate lv_async_call on flag.
+ * Read side  (LVGL task):   swap widx, drain old buf, reset flag.
+ */
+#define BB_CHAT_CHUNK_COALESCE_CAP 1024  /* per-buffer cap (bytes, excl. NUL) */
+
+static char         s_chunk_buf[2][BB_CHAT_CHUNK_COALESCE_CAP + 1];
+static size_t       s_chunk_len[2]  = {0, 0};
+static int          s_chunk_widx    = 0;   /* write-buffer index (0 or 1) */
+static volatile int s_chunk_queued  = 0;   /* 1 = lv_async_call already pending */
+static portMUX_TYPE s_chunk_mux     = portMUX_INITIALIZER_UNLOCKED;
+
 /* Forward decls for Phase 4.5.1/4.5.2 TTS pipeline (defined further down). */
 static void reply_buf_reset(void);
 static void reply_buf_append(const char* delta);
@@ -174,6 +197,31 @@ static char* dup_str(const char* s) {
 }
 
 /* 在 LVGL 任务里执行；结束 free payload。*/
+
+/* Drains the coalesced chunk buffer. Runs in LVGL task via lv_async_call(). */
+static void on_lvgl_chunk_dispatch(void* unused) {
+  (void)unused;
+  /* Atomically swap write buffer so agent task continues filling the other slot
+   * while we drain this one.  Critical section is only integer assignments. */
+  int drain_idx;
+  size_t drain_len;
+  taskENTER_CRITICAL(&s_chunk_mux);
+  drain_idx                    = s_chunk_widx;
+  drain_len                    = s_chunk_len[drain_idx];
+  s_chunk_widx                 = drain_idx ^ 1;   /* agent writes here next */
+  s_chunk_len[s_chunk_widx]    = 0;               /* reset new write slot */
+  s_chunk_buf[s_chunk_widx][0] = '\0';
+  s_chunk_queued               = 0;               /* allow next post to requeue */
+  taskEXIT_CRITICAL(&s_chunk_mux);
+
+  if (!s_chat.active || drain_len == 0) return;
+  s_chunk_buf[drain_idx][drain_len] = '\0';       /* ensure NUL-termination */
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL && theme->append_assistant_chunk != NULL) {
+    theme->append_assistant_chunk(s_chunk_buf[drain_idx]);
+  }
+}
+
 static void on_lvgl_dispatch(void* user_data) {
   bb_async_payload_t* p = (bb_async_payload_t*)user_data;
   if (p == NULL) return;
@@ -243,10 +291,31 @@ static void post_user(const char* text) {
 }
 
 static void post_assistant_chunk(const char* delta) {
-  bb_async_payload_t* p = async_alloc(BB_ASYNC_APPEND_ASSISTANT_CHUNK);
-  if (p == NULL) return;
-  p->s1 = dup_str(delta);
-  async_post(p);
+  /* Coalesce: append to the double-buffer and only queue one lv_async_call per
+   * LVGL tick instead of one per streaming token.  Eliminates the O(N^2)
+   * lv_timer_handler restart behavior that starves IDLE1 causing Task WDT. */
+  if (delta == NULL) return;
+  size_t dlen = strlen(delta);
+  if (dlen == 0) return;
+
+  int need_queue = 0;
+  taskENTER_CRITICAL(&s_chunk_mux);
+  size_t avail = BB_CHAT_CHUNK_COALESCE_CAP - s_chunk_len[s_chunk_widx];
+  if (avail > 0) {
+    size_t copy = dlen < avail ? dlen : avail;
+    memcpy(s_chunk_buf[s_chunk_widx] + s_chunk_len[s_chunk_widx], delta, copy);
+    s_chunk_len[s_chunk_widx] += copy;
+    /* NUL-termination deferred to drain side for speed; buf is [CAP+1] */
+  }
+  if (!s_chunk_queued) {
+    s_chunk_queued = 1;
+    need_queue     = 1;
+  }
+  taskEXIT_CRITICAL(&s_chunk_mux);
+
+  if (need_queue) {
+    lv_async_call(on_lvgl_chunk_dispatch, NULL);
+  }
 }
 
 static void post_tool_call(const char* tool, const char* hint) {
@@ -831,10 +900,12 @@ static void tts_kick_or_spawn(void) {
   if (!reply_buf_has_content()) return;
 
   TaskHandle_t handle = NULL;
-  BaseType_t ok = xTaskCreate(tts_playback_task, "bb_chat_tts", BB_CHAT_TTS_TASK_STACK,
-                              NULL, BB_CHAT_TTS_TASK_PRIO, &handle);
+  BaseType_t ok = xTaskCreateWithCaps(tts_playback_task, "bb_chat_tts", BB_CHAT_TTS_TASK_STACK,
+                                     NULL, BB_CHAT_TTS_TASK_PRIO, &handle,
+                                     BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGW(TAG, "tts: xTaskCreate failed, skip");
+    ESP_LOGW(TAG, "tts: xTaskCreateWithCaps failed (stack=%u), skip",
+             (unsigned)BB_CHAT_TTS_TASK_STACK);
     return;
   }
   s_chat.tts_task = handle;
@@ -1284,6 +1355,13 @@ void bb_ui_agent_chat_voice_listening(int begin) {
      * which will drive BUSY → text → TURN_END. If we reset to IDLE here we
      * get a brief flicker; better to leave the previous state in place. */
   }
+}
+
+void bb_ui_agent_chat_voice_processing(void) {
+  if (!s_chat.active) return;
+  ESP_LOGI(TAG, "voice_processing → BUSY (ASR/cloud wait)");
+  post_listening_topbar(0);
+  post_state(BB_AGENT_STATE_BUSY);
 }
 
 esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {

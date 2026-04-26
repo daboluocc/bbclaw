@@ -12,8 +12,12 @@ TEXT="$1"
 OUT="$2"
 SPEED="${3:-1.00}"
 
-TMP_AIFF="$(mktemp /tmp/macos-say-XXXXXX.aiff)"
-trap 'rm -f "$TMP_AIFF"' EXIT
+# Use a temp directory so the AIFF path is always unique and cleanup is atomic.
+# Plain `mktemp /tmp/name-XXXXXX.aiff` can fail with "File exists" if a stale
+# literal /tmp/name-XXXXXX.aiff survives from a previously killed run.
+TMP_DIR="$(mktemp -d)"
+TMP_AIFF="${TMP_DIR}/out.aiff"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 RATE="185"
 if [[ "$SPEED" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
