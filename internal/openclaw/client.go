@@ -381,6 +381,9 @@ func (c *Client) sendVoiceTranscriptWS(
 
 	// Operator connection: subscribes to session events (session.tool, session.message)
 	var opConn *websocket.Conn
+	// opReplyCh receives the text reply forwarded from the operator connection when
+	// the gateway sends it via session.message rather than via the node connection.
+	opReplyCh := make(chan string, 1)
 	waitChatReply := strings.TrimSpace(event.SessionKey) != ""
 	if waitChatReply {
 		oc, _, dialErr := c.dialer.DialContext(ctx, c.endpoint, nil)
@@ -403,7 +406,7 @@ func (c *Client) sendVoiceTranscriptWS(
 						opConn = oc
 						log.Printf("[openclaw] operator connection ready, forwarding session events for %s", event.SessionKey)
 						// Forward session.tool events in background
-						go c.forwardSessionToolEvents(ctx, opConn, event.SessionKey, onEvent)
+						go c.forwardSessionToolEvents(ctx, opConn, event.SessionKey, onEvent, opReplyCh)
 					}
 				}
 			}
@@ -463,9 +466,29 @@ func (c *Client) sendVoiceTranscriptWS(
 		delivery.ReplyText = initialReplyText
 	}
 	if waitChatReply && strings.TrimSpace(delivery.ReplyText) == "" {
-		replyText, timedOut := c.waitChatFinalText(ctx, conn, event.SessionKey, onEvent)
-		delivery.ReplyText = replyText
-		delivery.ReplyWaitTimedOut = timedOut && strings.TrimSpace(replyText) == ""
+		// Race: wait for either the node-connection final reply OR the operator-
+		// connection session.message text (whichever arrives first).
+		type nodeResult struct {
+			text    string
+			timedOut bool
+		}
+		nodeCh := make(chan nodeResult, 1)
+		go func() {
+			text, timedOut := c.waitChatFinalText(ctx, conn, event.SessionKey, onEvent)
+			nodeCh <- nodeResult{text, timedOut}
+		}()
+
+		select {
+		case r := <-nodeCh:
+			delivery.ReplyText = r.text
+			delivery.ReplyWaitTimedOut = r.timedOut && strings.TrimSpace(r.text) == ""
+		case text := <-opReplyCh:
+			delivery.ReplyText = text
+			// unblock the waitChatFinalText goroutine by closing its connection
+			conn.Close()
+		case <-ctx.Done():
+			conn.Close()
+		}
 	}
 	return delivery, nil
 }
@@ -554,7 +577,7 @@ func (c *Client) buildOperatorConnectParams(nonce string) (map[string]any, error
 	return params, nil
 }
 
-func (c *Client) forwardSessionToolEvents(ctx context.Context, conn *websocket.Conn, sessionKey string, onEvent func(VoiceTranscriptStreamEvent)) {
+func (c *Client) forwardSessionToolEvents(ctx context.Context, conn *websocket.Conn, sessionKey string, onEvent func(VoiceTranscriptStreamEvent), replyCh chan<- string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -597,6 +620,18 @@ func (c *Client) forwardSessionToolEvents(ctx context.Context, conn *websocket.C
 							args, _ := json.Marshal(obj["arguments"])
 							log.Printf("[openclaw] tool_call: %s %s", name, string(args))
 							onEvent(VoiceTranscriptStreamEvent{Type: "tool_call", Text: name})
+						}
+					case "text":
+						text, _ := obj["text"].(string)
+						if text = strings.TrimSpace(text); text != "" {
+							log.Printf("[openclaw] op reply text: %.80s", text)
+							if onEvent != nil {
+								onEvent(VoiceTranscriptStreamEvent{Type: "reply.delta", Text: text})
+							}
+							select {
+							case replyCh <- text:
+							default:
+							}
 						}
 					}
 				}
