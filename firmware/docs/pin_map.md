@@ -1,6 +1,6 @@
 # BBClaw 固件引脚映射（Pin Map）
 
-更新时间：2026-04-26
+更新时间：2026-04-27
 
 本文档是固件接线的单一基线，包含信号线与供电线（`3V3` / `5V`）建议。
 
@@ -8,6 +8,10 @@
 > 风 6 个独立按键** 布局（Phase 5 / Option B，见 [ADR-006](../../design/decisions/ADR-006-flipper-full-nav-events.md)）。
 > 每个方向有专属事件：UP / DOWN / LEFT / RIGHT / OK / BACK。
 > 详见 §1.7。bbclaw 自研 PCB（§2）仍用旋转编码器，未变化。
+>
+> **2026-04-27 更新**：breadboard 推荐用 **5 向按钮模块** 替代 6 个独立按键
+> （集成 5 向摇杆 + 2 个侧键），布线更紧凑、UX 一致。GPIO 映射不变 →
+> 不用改固件。详见 §1.7。
 
 ## 1. Breadboard 默认配置（v0：INMP441 + MAX98357A）
 
@@ -149,7 +153,53 @@ breadboard 与 bbclaw PCB 的屏幕引脚一致（IO9–14 连续）。
 
 ### 1.7 导航按键（Flipper Zero 6-button 布局，Phase 5 / Option B）
 
-breadboard 默认采用 6 个独立按键替代旋转编码器，灵感来自 Flipper Zero。每个按键
+#### 1.7.A 推荐方案：5-向按钮模块（2026-04-27 起）
+
+集成模块：1 颗 5-向摇杆（UP/DOWN/LEFT/RIGHT/MID 中间按）+ 2 颗侧键（SET/RST），
+共 7 个按键 + 1 个公共端，物理上替代之前的 6 颗独立按键。GPIO 分配与旧 6-button
+方案完全一致（见下表），所以**不用改 firmware**。
+
+| 模块引脚 | 接到开发板    | 触发事件                  | 说明                                    |
+| ------- | ----------- | ----------------------- | -------------------------------------- |
+| `COM`   | `GND`       | —                       | 所有按键的公共端；按下后下拉到 GND          |
+| `UP`    | `GPIO 6`    | `BB_NAV_EVENT_UP`       | 5 向上                                |
+| `DWN`   | `GPIO 8`    | `BB_NAV_EVENT_DOWN`     | 5 向下                                |
+| `LFT`   | `GPIO 38`   | `BB_NAV_EVENT_LEFT`     | 5 向左（Phase 5：在 chat picker 切 driver） |
+| `RHT`   | `GPIO 39`   | `BB_NAV_EVENT_RIGHT`    | 5 向右                                |
+| `MID`   | `GPIO 1`    | `BB_NAV_EVENT_OK`       | 摇杆中间按下（释放边沿）                  |
+| `RST`   | `GPIO 0`    | `BB_NAV_EVENT_BACK`     | 红色侧键（**注意 GPIO 0 是 BOOT strap，插 USB / 上电时不要按住**） |
+| `SET`   | （悬空）     | —                       | 黄色侧键，保留备用                        |
+
+接线示意：
+
+```
+  ┌──────────┐                ┌──────────────┐
+  │  5-way   │                │  ESP32-S3    │
+  │  module  │                │              │
+  │   COM    │───────────────│ GND          │
+  │   UP     │───────────────│ GPIO 6       │
+  │   DWN    │───────────────│ GPIO 8       │
+  │   LFT    │───────────────│ GPIO 38      │
+  │   RHT    │───────────────│ GPIO 39      │
+  │   MID    │───────────────│ GPIO 1       │
+  │   RST    │───────────────│ GPIO 0       │
+  │   SET    │     (悬空)     │              │
+  └──────────┘                └──────────────┘
+```
+
+**SET 键的可选用法**（要用就得加 firmware event；目前未接）：
+- 长按 OK 等价物：MID 短按 = OK、SET = 跳过 picker 直接进 Settings
+- PTT 备用脚：把 PTT 从独立键 GPIO 7 移到 SET 上
+- 音量 / 静音切换
+
+要启用：选一个空闲 GPIO（GPIO 3 / 47 / 48 任一）拉到 SET 上，加事件枚举到
+`bb_nav_event_t`，路由到 `bb_radio_app.c` 的 nav 分发表。
+
+PTT 不在此模块上：PTT 仍是独立 push-button 接 `GPIO 7 + GND`。
+
+#### 1.7.B 兼容方案：6 个独立按键（旧版 breadboard）
+
+之前用 6 颗散装的 push-button 接同样的 GPIO，依然 work（GPIO 映射不变）。每个按键
 单端接 GPIO，另一端接 GND；内部上拉，按下拉低（ACTIVE_LEVEL=0、PULL_UP=1）。
 
 | 按键 | 接到开发板  | 触发事件                | 边沿     | 主屏语义              | Agent Chat picker 语义                | Settings overlay 语义 |
