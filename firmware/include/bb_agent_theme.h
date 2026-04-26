@@ -59,6 +59,12 @@ void bb_agent_theme_register(const bb_agent_theme_t* theme);
 void bb_theme_text_only_init(void);
 
 /**
+ * Phase 4.6 — 显式注册 "buddy-ascii" 主题（七态 ASCII 角色）。
+ * 与 text-only_init 同样的 DCE 规避模式：bb_radio_app_start 调一次。
+ */
+void bb_theme_buddy_ascii_init(void);
+
+/**
  * 当前激活主题；首次调用时从 NVS（namespace=bbclaw, key=agent/theme）加载，缺省 fallback 到 "text-only"。
  * 永不返回 NULL（只要至少注册过一个主题；text-only 通过 constructor 自动注册）。
  */

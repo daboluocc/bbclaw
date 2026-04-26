@@ -2434,11 +2434,13 @@ static void stream_task(void* arg) {
 }
 
 esp_err_t bb_radio_app_start(void) {
-  /* Eagerly register the built-in agent chat theme so the registry isn't
+  /* Eagerly register the built-in agent chat themes so the registry isn't
    * empty when the user enters the Agent Chat overlay. The constructor
    * approach gets DCE'd on ESP-IDF static-archive links; explicit init
-   * ensures the symbol is force-linked. */
+   * ensures the symbols are force-linked. Phase 4.6: also register
+   * buddy-ascii so it's available in Settings → Theme. */
   bb_theme_text_only_init();
+  bb_theme_buddy_ascii_init();
 
   bb_gateway_node_config_t node_cfg = {
       .node_id = BBCLAW_NODE_ID,
