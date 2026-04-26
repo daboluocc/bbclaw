@@ -39,6 +39,12 @@ type Adapter struct {
 	mu          sync.Mutex
 	lastRegCode string
 	status      Status
+
+	// agentSessions holds long-lived agent sessions reused across cloud-
+	// proxied turns (Phase 4.8). Lazily initialised the first time an
+	// agent.message request arrives, so existing test fixtures that build
+	// an Adapter literal keep working without changes.
+	agentSessions *agentProxyRegistry
 }
 
 type Status struct {
@@ -104,6 +110,13 @@ func (a *Adapter) Run(ctx context.Context) error {
 	pollCtx, cancelPoll := context.WithCancel(ctx)
 	defer cancelPoll()
 	go a.pairingPollLoop(pollCtx)
+
+	// Sweeper for cloud-proxied agent sessions (Phase 4.8). Cheap to run
+	// even if no proxied request ever arrives — sweepAgentSessions is a
+	// no-op until handleAgentMessageRequest lazily creates the registry.
+	if a.router != nil {
+		go a.runAgentSessionSweeper(pollCtx, agentSessionTTL)
+	}
 
 	dialURL, err := resolveCloudDialURL(a.cfg.CloudWSURL, a.cfg.HomeSiteID, a.cfg.CloudAuthToken)
 	if err != nil {
@@ -258,6 +271,14 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		return a.handleChatTextRequest(ctx, write, env)
 	case "chat.drivers":
 		return a.handleChatDriversRequest(write, env)
+	case "agent.drivers":
+		// Phase 4.8 cloud agent proxy: cloud reverse-proxies firmware
+		// /v1/agent/drivers requests through this kind.
+		return a.handleAgentDriversRequest(write, env)
+	case "agent.message":
+		// Phase 4.8 cloud agent proxy: cloud reverse-proxies firmware
+		// /v1/agent/message NDJSON streams through this kind.
+		return a.handleAgentMessageRequest(ctx, write, env)
 	default:
 		return nil
 	}
