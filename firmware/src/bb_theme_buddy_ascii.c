@@ -99,6 +99,8 @@ static const char* state_short(bb_agent_state_t s) {
     case BB_AGENT_STATE_CELEBRATE: return "yay";
     case BB_AGENT_STATE_DIZZY:     return "dizzy";
     case BB_AGENT_STATE_HEART:     return "heart";
+    case BB_AGENT_STATE_LISTENING: return "listen";
+    case BB_AGENT_STATE_SPEAKING:  return "speak";
   }
   return "?";
 }
@@ -119,6 +121,8 @@ static const buddy_glyph_t k_glyphs[] = {
     [BB_AGENT_STATE_CELEBRATE] = {.face = "\\(^o^)/", .mood = "yay!"},
     [BB_AGENT_STATE_DIZZY]     = {.face = "(X_X)",   .mood = "oops..."},
     [BB_AGENT_STATE_HEART]     = {.face = "(^_^)",   .mood = "<3"},
+    [BB_AGENT_STATE_LISTENING] = {.face = "(o.o)\"",  .mood = "listening..."},
+    [BB_AGENT_STATE_SPEAKING]  = {.face = "(^o^)~",  .mood = "speaking..."},
 };
 
 #define K_GLYPH_COUNT ((int)(sizeof(k_glyphs) / sizeof(k_glyphs[0])))

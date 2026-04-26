@@ -129,6 +129,7 @@ static bb_chat_state_t s_chat = {0};
 /* Forward decls for Phase 4.5.1/4.5.2 TTS pipeline (defined further down). */
 static void reply_buf_reset(void);
 static void reply_buf_append(const char* delta);
+static int  reply_buf_has_content(void);
 static void tts_kick_or_spawn(void);
 static void tts_cancel_in_flight(void);
 
@@ -327,19 +328,27 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       break;
 
     case BB_AGENT_EVENT_TURN_END: {
-      int64_t now = bb_now_ms();
-      int64_t elapsed = now - s_chat.turn_start_ms;
-      if (s_chat.turn_start_ms > 0 && elapsed >= 0 && elapsed < BB_CHAT_HEART_THRESHOLD_MS) {
-        post_state(BB_AGENT_STATE_HEART);
-      } else {
-        post_state(BB_AGENT_STATE_IDLE);
-      }
       /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
        * Phase 4.5.2 — set turn_complete so the streaming task will flush the
        * tail (any text after the last sentence boundary) and then exit. The
-       * task may already be running mid-stream; if not, kick spawns it now. */
+       * task may already be running mid-stream; if not, kick spawns it now.
+       * Phase 4.8.x — only post the final IDLE/HEART here when we know TTS
+       * will NOT play (toggle off OR no spoken content). When TTS will play,
+       * the streaming task posts SPEAKING on entry and IDLE/HEART on exit,
+       * so posting IDLE here would just cause a brief flicker. */
       s_chat.reply_turn_complete = 1;
-      tts_kick_or_spawn();
+      const int will_speak = s_chat.tts_enabled && reply_buf_has_content();
+      if (will_speak) {
+        tts_kick_or_spawn();  /* TTS task will handle final state. */
+      } else {
+        int64_t now = bb_now_ms();
+        int64_t elapsed = now - s_chat.turn_start_ms;
+        if (s_chat.turn_start_ms > 0 && elapsed >= 0 && elapsed < BB_CHAT_HEART_THRESHOLD_MS) {
+          post_state(BB_AGENT_STATE_HEART);
+        } else {
+          post_state(BB_AGENT_STATE_IDLE);
+        }
+      }
       break;
     }
 
@@ -760,7 +769,13 @@ static esp_err_t tts_synth_and_play(const char* text) {
 
 static void tts_playback_task(void* arg) {
   (void)arg;
-  ESP_LOGI(TAG, "tts: streaming task start");
+  ESP_LOGI(TAG, "tts: streaming task start → SPEAKING");
+  /* Phase 4.8.x: dedicated SPEAKING state while the audio is being
+   * synthesized + played. Buddy shows "(^o^)~ speaking..." through the
+   * whole reply playback (overrides any IDLE/HEART that EvTurnEnd might
+   * have posted milliseconds earlier). */
+  post_state(BB_AGENT_STATE_SPEAKING);
+
   /* Outer loop: drain reply_buf one sentence at a time. */
   while (!tts_should_abort()) {
     int turn_done = s_chat.reply_turn_complete ? 1 : 0;
@@ -785,7 +800,21 @@ static void tts_playback_task(void* arg) {
     /* ESP_FAIL / synth-fail: drop this sentence, keep going (next sentence
      * may still be useful). */
   }
-  ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d)",
+  /* Phase 4.8.x: TTS done — transition out of SPEAKING. Pick HEART if the
+   * end-to-end turn was fast (< BB_CHAT_HEART_THRESHOLD_MS), otherwise
+   * IDLE. We can't tell from inside the TTS task whether EvTurnEnd already
+   * landed (it definitely did, that's how reply_turn_complete became 1),
+   * so just compute from turn_start_ms. */
+  {
+    int64_t now = bb_now_ms();
+    int64_t elapsed = (s_chat.turn_start_ms > 0) ? (now - s_chat.turn_start_ms) : -1;
+    if (elapsed >= 0 && elapsed < BB_CHAT_HEART_THRESHOLD_MS) {
+      post_state(BB_AGENT_STATE_HEART);
+    } else {
+      post_state(BB_AGENT_STATE_IDLE);
+    }
+  }
+  ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d) → IDLE/HEART",
            s_chat.tts_cancel_requested ? 1 : 0,
            s_chat.reply_turn_complete ? 1 : 0);
   s_chat.tts_task = NULL;
@@ -1242,9 +1271,12 @@ void bb_ui_agent_chat_voice_listening(int begin) {
     return;
   }
   ESP_LOGI(TAG, "voice_listening(%s) → %s", begin ? "begin" : "end",
-           begin ? "BUSY topbar=LISTEN" : "topbar=restore");
+           begin ? "LISTENING" : "topbar=restore");
   if (begin) {
-    post_state(BB_AGENT_STATE_BUSY);
+    /* Phase 4.8.x: dedicated LISTENING state — buddy shows "listening..."
+     * while user holds PTT. Agent's "thinking..." (BUSY) only kicks in
+     * once agent_task starts after PTT release + ASR. */
+    post_state(BB_AGENT_STATE_LISTENING);
     post_listening_topbar(1);
   } else {
     post_listening_topbar(0);

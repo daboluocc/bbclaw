@@ -71,6 +71,8 @@ static const char* state_name(bb_agent_state_t s) {
     case BB_AGENT_STATE_CELEBRATE: return "yay";
     case BB_AGENT_STATE_DIZZY:     return "dizzy";
     case BB_AGENT_STATE_HEART:     return "heart";
+    case BB_AGENT_STATE_LISTENING: return "listen";
+    case BB_AGENT_STATE_SPEAKING:  return "speak";
   }
   return "?";
 }

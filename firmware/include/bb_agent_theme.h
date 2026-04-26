@@ -22,11 +22,15 @@
 typedef enum {
   BB_AGENT_STATE_SLEEP = 0,
   BB_AGENT_STATE_IDLE,
-  BB_AGENT_STATE_BUSY,
+  BB_AGENT_STATE_BUSY,        /* agent 在算（ASR / 回复生成中） */
   BB_AGENT_STATE_ATTENTION,
   BB_AGENT_STATE_CELEBRATE,
   BB_AGENT_STATE_DIZZY,
   BB_AGENT_STATE_HEART,
+  /* Phase 4.8.x — 区分"用户在说"和"agent 在思考"和"在播 TTS"
+   * 加在 enum 末尾保留旧值（不破坏既有 switch / 主题表）。 */
+  BB_AGENT_STATE_LISTENING,   /* PTT 按住时：mic 录音中 */
+  BB_AGENT_STATE_SPEAKING,    /* TTS 播放中 */
 } bb_agent_state_t;
 
 typedef struct bb_agent_theme {
