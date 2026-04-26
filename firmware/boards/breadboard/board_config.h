@@ -31,19 +31,21 @@
 
 /*
  * Navigation: Flipper Zero 6-button layout (Phase 5 / Option B — full events).
- * Six independent push-buttons replace the bbclaw PCB rotary encoder. Each
- * direction now has its own dedicated nav event; the legacy ROTATE_CCW /
- * ROTATE_CW / CLICK / LONG_PRESS names are aliases for UP / DOWN / OK / BACK
- * so the encoder mode keeps working unchanged.
+ * Now wired to a 5-way joystick + 2 side keys integrated module (2026-04-27);
+ * the GPIO mapping is identical to the previous 6-discrete-button setup, so
+ * firmware sees no difference.
  *
  *   GPIO 6  UP    → BB_NAV_EVENT_UP    (press edge, picker scroll up)
  *   GPIO 8  DOWN  → BB_NAV_EVENT_DOWN  (press edge, picker scroll down)
  *   GPIO 38 LEFT  → BB_NAV_EVENT_LEFT  (press edge — Phase 5 cycle driver -1)
  *   GPIO 39 RIGHT → BB_NAV_EVENT_RIGHT (press edge — Phase 5 cycle driver +1)
  *   GPIO 1  OK    → BB_NAV_EVENT_OK    (release edge, like the legacy KEY)
- *   GPIO 0  BACK  → BB_NAV_EVENT_BACK  (press edge — explicit "exit" key;
- *                   GPIO0 is the BOOT strap, post-boot it's a free input;
- *                   ESP32-S3 modules have an external pull-up on GPIO0)
+ *   GPIO 47 BACK  → BB_NAV_EVENT_BACK  (press edge — explicit "exit" key)
+ *
+ * Was on GPIO 0 (BOOT strap) historically — moved to GPIO 47 on 2026-04-27
+ * because GPIO 0 must be HIGH at boot for the chip to enter normal run mode,
+ * and an accidental BACK press during USB plug-in would drop the chip into
+ * download mode. GPIO 47 is a free, non-strapping pin.
  *
  * Press = active LOW with internal pull-up. BBCLAW_NAV_FLIPPER_6BUTTON=1
  * routes bb_nav_input.c through the 6-button branch; the legacy
@@ -55,7 +57,7 @@
 #define BBCLAW_NAV_BTN_UP_GPIO              6
 #define BBCLAW_NAV_BTN_DOWN_GPIO            8
 #define BBCLAW_NAV_BTN_OK_GPIO              1
-#define BBCLAW_NAV_BTN_BACK_GPIO            0
+#define BBCLAW_NAV_BTN_BACK_GPIO            47
 #define BBCLAW_NAV_BTN_LEFT_GPIO            38
 #define BBCLAW_NAV_BTN_RIGHT_GPIO           39
 #define BBCLAW_NAV_PULL_UP                  1

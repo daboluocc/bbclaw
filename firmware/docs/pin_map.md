@@ -167,7 +167,7 @@ breadboard 与 bbclaw PCB 的屏幕引脚一致（IO9–14 连续）。
 | `LFT`   | `GPIO 38`   | `BB_NAV_EVENT_LEFT`     | 5 向左（Phase 5：在 chat picker 切 driver） |
 | `RHT`   | `GPIO 39`   | `BB_NAV_EVENT_RIGHT`    | 5 向右                                |
 | `MID`   | `GPIO 1`    | `BB_NAV_EVENT_OK`       | 摇杆中间按下（释放边沿）                  |
-| `RST`   | `GPIO 0`    | `BB_NAV_EVENT_BACK`     | 红色侧键（**注意 GPIO 0 是 BOOT strap，插 USB / 上电时不要按住**） |
+| `RST`   | `GPIO 47`   | `BB_NAV_EVENT_BACK`     | 红色侧键（之前用 GPIO 0，但 GPIO 0 是 BOOT strap，2026-04-27 改到 GPIO 47） |
 | `SET`   | （悬空）     | —                       | 黄色侧键，保留备用                        |
 
 接线示意：
@@ -182,7 +182,7 @@ breadboard 与 bbclaw PCB 的屏幕引脚一致（IO9–14 连续）。
   │   LFT    │───────────────│ GPIO 38      │
   │   RHT    │───────────────│ GPIO 39      │
   │   MID    │───────────────│ GPIO 1       │
-  │   RST    │───────────────│ GPIO 0       │
+  │   RST    │───────────────│ GPIO 47      │
   │   SET    │     (悬空)     │              │
   └──────────┘                └──────────────┘
 ```
