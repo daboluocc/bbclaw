@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-27
+
+### Added
+- **Multi-Driver Agent Bus**: support CLI-based agent drivers — Claude Code, OpenCode, Ollama — alongside original OpenClaw
+- **LEFT/RIGHT quick driver switching**: carousel-style driver cycling from chat overlay with session auto-reset
+- **Agent Chat as home screen**: boot directly into Agent Chat overlay; 90s idle timeout exits to standby
+- **Cancel in-flight turn**: OK/BACK during agent thinking cancels the turn (discard events, kill TTS, show IDLE)
+- **Chat transcript scrolling**: UP/DOWN scrolls the agent chat transcript (2 lines/press) within the overlay
+- **PTT voice bridge**: PTT-to-Agent-Bus pipeline — record → ASR → agent → streaming TTS reply
+- **Streaming TTS**: sentence-level TTS with cancel-and-replace on new user turn
+- **Buddy-ASCII theme**: seven-state animated character alongside chat transcript
+- **Flipper 6-button navigation**: UP/DOWN/LEFT/RIGHT/OK/BACK mapped to 5-way nav module
+- **Standalone Settings overlay**: OK opens Settings from chat; driver/theme/TTS toggle persisted to NVS
+- **Async driver fetch**: pre-warm driver list on chat entry; non-blocking HTTP cache
+- **Device identity in Agent Bus URLs**: deviceId query param for cloud proxy routing
+
+### Fixed
+- **PSRAM-stack NVS crash**: NVS reads spawned on internal-RAM task to avoid `cache_utils` assert when `stream_task` (PSRAM stack) triggers SPI flash
+- **Driver switch HTTP 400**: clear `session_id` on driver cycle so adapter creates fresh session
+- **NVS write deferred**: `cycle_driver` NVS persist offloaded to background task (avoids SPI-flash cache collision)
+- **TTS task stack**: bumped 4K → 8K for Phase 4.5.2 streaming pipeline
+- **PTT → BUSY transition**: immediate BUSY state on PTT release before cloud-wait
+- **Block driver cycling while busy**: LEFT/RIGHT blocked during agent turn in flight
+
 ## [0.3.5] - 2026-04-16
 
 ### Added
