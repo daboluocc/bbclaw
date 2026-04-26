@@ -52,8 +52,13 @@ static const char* TAG = "bb_ui_settings";
 #define UI_ROW_SEL_BG  0x2ec4a0
 #define UI_HINT_FG     0x7a9a8c
 
+/* Display is 320x172. Layout budget:
+ *   header: 22 px
+ *   rows  : 4 * 26 = 104 px (rows_h)
+ *   total : 126 px (well under 172) */
 #define HEADER_H 22
-#define ROW_H    24
+#define ROW_H    26
+#define ROWS_BOX_H (ROW_H * ROW_COUNT + 6)
 
 typedef enum {
   ROW_AGENT = 0,
@@ -352,10 +357,12 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   lv_obj_set_style_pad_top(s_st.header_lbl, 4, 0);
   lv_label_set_text(s_st.header_lbl, "Settings");
 
-  /* Rows container */
+  /* Rows container — absolute height so the 4 rows always fit. lv_pct minus
+   * an integer is NOT supported in LVGL 9 (lv_pct returns a special-encoded
+   * coord, not a regular pixel count), so use ROWS_BOX_H directly. */
   lv_obj_t* rows_box = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(rows_box);
-  lv_obj_set_size(rows_box, lv_pct(100), lv_pct(100) - HEADER_H);
+  lv_obj_set_size(rows_box, lv_pct(100), ROWS_BOX_H);
   lv_obj_align(rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
   lv_obj_set_flex_flow(rows_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(rows_box, 4, 0);

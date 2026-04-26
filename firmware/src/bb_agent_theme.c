@@ -13,7 +13,10 @@ static const char* TAG = "bb_agent_theme";
 
 #define BB_THEME_NVS_NS   "bbclaw"
 #define BB_THEME_NVS_KEY  "agent/theme"
-#define BB_THEME_FALLBACK "text-only"
+/* Phase 4.7.2: default to buddy-ascii so a fresh device has a visible
+ * "character" out of the box and the user can immediately tell which theme
+ * is active without entering Settings. text-only is still selectable. */
+#define BB_THEME_FALLBACK "buddy-ascii"
 #define BB_THEME_NAME_MAX 24
 #define BB_THEME_CAP      8
 
@@ -117,6 +120,7 @@ static void load_active_from_nvs_locked(void) {
     int idx = find_index_locked(BB_THEME_FALLBACK);
     if (idx >= 0) {
       picked = s_reg.themes[idx];
+      ESP_LOGI(TAG, "active = fallback '%s'", BB_THEME_FALLBACK);
     } else if (s_reg.count > 0) {
       /* 连 fallback 都没注册——拿第一个，至少有东西用。 */
       picked = s_reg.themes[0];
