@@ -15,11 +15,14 @@
  *     TTS reply:  On / Off
  *     Back
  *
- * UX:
+ * UX (Phase 4.7.1 — auto-save model):
  *   UP/DOWN  : move row cursor
- *   LEFT/RIGHT : on rows 0..2, cycle the row's value (e.g. previous/next driver)
- *   OK       : commit current row's value (persist NVS + apply); on Back row, exit
- *   BACK     : exit immediately (without committing in-flight value changes)
+ *   LEFT/RIGHT : on rows 0..2, cycle the row's value AND persist to NVS
+ *                immediately (auto-save). On Theme row also calls
+ *                bb_agent_theme_set_active so subsequent chat-show picks it up.
+ *   OK       : just advance the row cursor (values already auto-saved); on
+ *                Back row, exit the overlay.
+ *   BACK     : exit immediately (changes are already saved).
  *
  * Lifecycle:
  *   bb_ui_settings_show(parent)  ── builds the overlay, kicks off async driver

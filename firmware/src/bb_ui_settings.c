@@ -413,14 +413,31 @@ void bb_ui_settings_handle_rotate(int delta) {
   apply_rows();
 }
 
+/* LEFT/RIGHT — change the current row's value AND auto-commit to NVS.
+ *
+ * Phase 4.7.1: switched from "press OK to commit" to "auto-save on every
+ * value change" because the OK-commit pattern was a footgun — users
+ * naturally expect that what they see on screen is what's saved. With
+ * auto-save, BACK can safely exit at any time without losing changes.
+ */
 void bb_ui_settings_handle_value(int delta) {
   if (!s_st.active || delta == 0) return;
   switch ((settings_row_t)s_st.sel) {
     case ROW_AGENT: {
       if (s_st.driver_cache_count <= 1) return;
       int n = s_st.driver_cache_count;
-      int next = ((s_st.driver_idx + delta) % n + n) % n;  /* wrap */
+      int next = ((s_st.driver_idx + delta) % n + n) % n;
       s_st.driver_idx = next;
+      const char* name = s_st.driver_cache[next].name;
+      if (name != NULL && name[0] != '\0') {
+        esp_err_t err = persist_selected_driver(name);
+        if (err != ESP_OK) {
+          ESP_LOGW(TAG, "persist driver '%s' failed (%s)", name, esp_err_to_name(err));
+        }
+        strncpy(s_st.selected_driver, name, sizeof(s_st.selected_driver) - 1);
+        s_st.selected_driver[sizeof(s_st.selected_driver) - 1] = '\0';
+        ESP_LOGI(TAG, "driver -> '%s' (auto-saved)", name);
+      }
       break;
     }
     case ROW_THEME: {
@@ -428,10 +445,27 @@ void bb_ui_settings_handle_value(int delta) {
       int n = s_st.theme_count;
       int next = ((s_st.theme_idx + delta) % n + n) % n;
       s_st.theme_idx = next;
+      const char* name = s_st.theme_list[next];
+      if (name != NULL && name[0] != '\0') {
+        /* bb_agent_theme_set_active writes NVS namespace "bbclaw" key
+         * "agent/theme" AND updates the in-memory active theme pointer. */
+        esp_err_t err = bb_agent_theme_set_active(name);
+        if (err != ESP_OK) {
+          ESP_LOGW(TAG, "theme set '%s' failed (%s)", name, esp_err_to_name(err));
+        } else {
+          ESP_LOGI(TAG, "theme -> '%s' (auto-saved)", name);
+        }
+      }
       break;
     }
     case ROW_TTS: {
       s_st.tts_enabled = !s_st.tts_enabled;
+      esp_err_t err = persist_tts_enabled(s_st.tts_enabled);
+      if (err != ESP_OK) {
+        ESP_LOGW(TAG, "persist tts '%s' failed (%s)",
+                 s_st.tts_enabled ? "on" : "off", esp_err_to_name(err));
+      }
+      ESP_LOGI(TAG, "tts -> %s (auto-saved)", s_st.tts_enabled ? "on" : "off");
       break;
     }
     case ROW_BACK:
@@ -442,68 +476,17 @@ void bb_ui_settings_handle_value(int delta) {
   apply_rows();
 }
 
+/* OK — Phase 4.7.1: pure cursor advance. Values are already auto-saved by
+ * handle_value(), so OK doesn't need commit logic. On the Back row, OK exits
+ * (same as BACK key) — keeps either gesture working. */
 void bb_ui_settings_handle_click(void) {
   if (!s_st.active) return;
   switch ((settings_row_t)s_st.sel) {
-    case ROW_AGENT: {
-      if (s_st.driver_cache_count <= 0) {
-        s_st.sel = ROW_THEME;
-        apply_rows();
-        return;
-      }
-      const char* name = s_st.driver_cache[s_st.driver_idx].name;
-      if (name == NULL || name[0] == '\0') return;
-      esp_err_t err = persist_selected_driver(name);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "persist driver '%s' failed (%s)", name, esp_err_to_name(err));
-      }
-      strncpy(s_st.selected_driver, name, sizeof(s_st.selected_driver) - 1);
-      s_st.selected_driver[sizeof(s_st.selected_driver) - 1] = '\0';
-      ESP_LOGI(TAG, "driver -> '%s'", name);
-      s_st.sel = ROW_THEME;
-      apply_rows();
-      break;
-    }
-    case ROW_THEME: {
-      if (s_st.theme_count <= 0 || s_st.theme_list == NULL) {
-        s_st.sel = ROW_TTS;
-        apply_rows();
-        return;
-      }
-      const char* name = s_st.theme_list[s_st.theme_idx];
-      if (name == NULL || name[0] == '\0') return;
-      /* bb_agent_theme_set_active also persists to NVS. */
-      esp_err_t err = bb_agent_theme_set_active(name);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "theme set '%s' failed (%s)", name, esp_err_to_name(err));
-      } else {
-        ESP_LOGI(TAG, "theme -> '%s'", name);
-      }
-      s_st.sel = ROW_TTS;
-      apply_rows();
-      break;
-    }
-    case ROW_TTS: {
-      esp_err_t err = persist_tts_enabled(s_st.tts_enabled);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "persist tts '%s' failed (%s)",
-                 s_st.tts_enabled ? "on" : "off", esp_err_to_name(err));
-      }
-      ESP_LOGI(TAG, "tts -> %s", s_st.tts_enabled ? "on" : "off");
-      s_st.sel = ROW_BACK;
-      apply_rows();
-      break;
-    }
-    case ROW_BACK:
-      /* Caller (radio_app) sees we're done by checking is_active() after
-       * dispatching click — but to make that work we need to flip active
-       * off here. Easier: emit a "request close" via a static flag the
-       * radio_app polls. For now, just hide ourselves; radio_app's nav
-       * dispatch will see is_active=0 next iteration. */
-      bb_ui_settings_hide();
-      break;
+    case ROW_AGENT: s_st.sel = ROW_THEME; apply_rows(); break;
+    case ROW_THEME: s_st.sel = ROW_TTS;   apply_rows(); break;
+    case ROW_TTS:   s_st.sel = ROW_BACK;  apply_rows(); break;
+    case ROW_BACK:  bb_ui_settings_hide();              break;
     case ROW_COUNT:
-    default:
-      break;
+    default: break;
   }
 }
