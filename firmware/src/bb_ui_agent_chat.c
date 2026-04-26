@@ -1113,7 +1113,10 @@ esp_err_t bb_ui_agent_chat_picker_send_selected(void) {
  * ───────────────────────────────────────────────────────────────────── */
 
 #define BB_SETTINGS_ROW_H    16
-#define BB_SETTINGS_VISIBLE  3
+/* All 4 rows (Agent/Theme/TTS/Back) fit in 16*4+4 = 68 px on a 172-px-tall
+ * panel — well under the chat overlay budget. Showing the whole menu in one
+ * shot avoids the "where is Back?" confusion when the cursor is at the top. */
+#define BB_SETTINGS_VISIBLE  BB_SETTINGS_ROW_COUNT
 #define BB_DRIVER_LIST_TIMEOUT_MS 4000
 
 static const char* settings_active_driver_name(void) {
