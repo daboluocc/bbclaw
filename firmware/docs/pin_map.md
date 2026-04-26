@@ -152,14 +152,14 @@ breadboard 与 bbclaw PCB 的屏幕引脚一致（IO9–14 连续）。
 breadboard 默认采用 6 个独立按键替代旋转编码器，灵感来自 Flipper Zero。每个按键
 单端接 GPIO，另一端接 GND；内部上拉，按下拉低（ACTIVE_LEVEL=0、PULL_UP=1）。
 
-| 按键 | 接到开发板  | 触发事件                | 边沿     | 主屏 / 历史滚动语义       | Agent Chat picker 语义                |
-| -- | ------- | ------------------- | ------ | ------------------ | ----------------------------------- |
-| UP | `GPIO6` | `BB_NAV_EVENT_UP`   | 按下     | 历史滚 / 上一条 turn       | picker 上移                          |
-| DOWN | `GPIO8` | `BB_NAV_EVENT_DOWN` | 按下     | 历史滚 / 下一条 turn       | picker 下移                          |
-| LEFT | `GPIO38` | `BB_NAV_EVENT_LEFT` | 按下     | 保留（未来翻页 / 段落跳转） | **快捷切上一个 driver**（不进 Settings） |
-| RIGHT | `GPIO39` | `BB_NAV_EVENT_RIGHT` | 按下    | 保留                | **快捷切下一个 driver**（不进 Settings） |
-| OK | `GPIO1` | `BB_NAV_EVENT_OK`   | **释放** | 切换 ME / AI 焦点       | 选中并发送当前 picker 行；Settings 行内确认 |
-| BACK | `GPIO0` | `BB_NAV_EVENT_BACK` | 按下     | 进 Agent Chat       | 退出 Agent Chat overlay              |
+| 按键 | 接到开发板  | 触发事件                | 边沿     | 主屏语义              | Agent Chat picker 语义                | Settings overlay 语义 |
+| -- | ------- | ------------------- | ------ | ------------------ | ----------------------------------- | --------------------- |
+| UP | `GPIO6` | `BB_NAV_EVENT_UP`   | 按下     | 历史滚 / 上一条 turn       | picker 上移                          | 行光标上移              |
+| DOWN | `GPIO8` | `BB_NAV_EVENT_DOWN` | 按下     | 历史滚 / 下一条 turn       | picker 下移                          | 行光标下移              |
+| LEFT | `GPIO38` | `BB_NAV_EVENT_LEFT` | 按下     | 保留（未来翻页 / 段落跳转） | **快捷切上一个 driver**（不进 Settings） | 当前行值 -1（cycle）  |
+| RIGHT | `GPIO39` | `BB_NAV_EVENT_RIGHT` | 按下    | 保留                | **快捷切下一个 driver**（不进 Settings） | 当前行值 +1（cycle）  |
+| OK | `GPIO1` | `BB_NAV_EVENT_OK`   | **释放** | **弹 Settings overlay**（Phase 4.7） | 发送当前 picker 行 | 提交当前行 + 推进光标；Back 行 = 退出 |
+| BACK | `GPIO0` | `BB_NAV_EVENT_BACK` | 按下     | 进 Agent Chat       | 退出 Agent Chat overlay              | 退出 Settings        |
 
 > **关于 GPIO0 (BOOT)**：post-boot 是空闲输入，可作为按键。ESP32-S3 模组板上 GPIO0
 > 已有外部上拉。开发板复位后这个键就是 BACK，不影响使用。
