@@ -203,30 +203,41 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
 
   /* Buddy panel (right column).
-   * Absolute pixel size — see header comment about LVGL lv_pct arithmetic. */
+   *
+   * 2026-04-27 DEBUG: explicit absolute positioning of face/mood labels
+   * (no flex), with a bright magenta border so it's blindingly obvious
+   * that the panel is being created. If the user STILL doesn't see this,
+   * the bug is upstream (overlay parent, theme dispatch, etc.), not in
+   * buddy's layout code. */
+  ESP_LOGI(TAG, "buddy on_enter: parent=%p root=%p building panel %dx%d at right",
+           (void*)parent, (void*)s_st.root, BUDDY_W, MIDDLE_H);
   s_st.buddy_panel = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.buddy_panel);
   lv_obj_set_size(s_st.buddy_panel, BUDDY_W, MIDDLE_H);
   lv_obj_align(s_st.buddy_panel, LV_ALIGN_TOP_RIGHT, 0, TOPBAR_H);
   lv_obj_set_style_bg_color(s_st.buddy_panel, lv_color_hex(UI_SCR_BG), 0);
   lv_obj_set_style_bg_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
-  /* Subtle left border to visually separate from transcript */
-  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_obj_set_style_border_width(s_st.buddy_panel, 0, 0);
-  lv_obj_set_style_border_side(s_st.buddy_panel, LV_BORDER_SIDE_LEFT, 0);
-  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_30, 0);
-  lv_obj_set_flex_flow(s_st.buddy_panel, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(s_st.buddy_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
+  /* DEBUG: 2-px magenta border around the entire buddy panel so we can
+   * visually confirm the panel exists and where it sits. */
+  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(0xff00ff), 0);
+  lv_obj_set_style_border_width(s_st.buddy_panel, 2, 0);
+  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_st.buddy_panel, LV_OBJ_FLAG_SCROLLABLE);
 
+  /* Face label — explicit position, big enough to read at arm's length.
+   * Centered horizontally inside the 110-px panel, vertically at the top
+   * third (so picker can't easily occlude it). */
   s_st.face_lbl = lv_label_create(s_st.buddy_panel);
+  lv_obj_set_size(s_st.face_lbl, BUDDY_W - 8, 28);
+  lv_obj_align(s_st.face_lbl, LV_ALIGN_TOP_MID, 0, 30);
   lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
   lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_margin_bottom(s_st.face_lbl, 4, 0);
 
+  /* Mood label — sits below face. */
   s_st.mood_lbl = lv_label_create(s_st.buddy_panel);
+  lv_obj_set_size(s_st.mood_lbl, BUDDY_W - 8, 24);
+  lv_obj_align(s_st.mood_lbl, LV_ALIGN_TOP_MID, 0, 64);
   lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
   lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_CENTER, 0);

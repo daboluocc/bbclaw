@@ -2496,9 +2496,12 @@ esp_err_t bb_radio_app_start(void) {
   /* Eagerly register the built-in agent chat themes so the registry isn't
    * empty when the user enters the Agent Chat overlay. The constructor
    * approach gets DCE'd on ESP-IDF static-archive links; explicit init
-   * ensures the symbols are force-linked. Phase 4.6: also register
-   * buddy-ascii so it's available in Settings → Theme. */
-  bb_theme_text_only_init();
+   * ensures the symbols are force-linked.
+   *
+   * 2026-04-27 DEBUG: text-only init is disabled so only buddy-ascii is
+   * registered. Helps isolate "is buddy rendering broken?" from "is the
+   * theme switch logic broken?". Re-enable once buddy is confirmed visible. */
+  /* bb_theme_text_only_init(); */
   bb_theme_buddy_ascii_init();
   /* Phase 4.7.2: eagerly resolve the active theme at boot so the log
    * immediately reveals which theme will render — saves users from "what
