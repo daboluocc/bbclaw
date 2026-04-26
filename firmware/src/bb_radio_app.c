@@ -2500,6 +2500,12 @@ esp_err_t bb_radio_app_start(void) {
    * buddy-ascii so it's available in Settings → Theme. */
   bb_theme_text_only_init();
   bb_theme_buddy_ascii_init();
+  /* Phase 4.7.2: eagerly resolve the active theme at boot so the log
+   * immediately reveals which theme will render — saves users from "what
+   * theme am I on?" guesswork after a restart. */
+  const bb_agent_theme_t* boot_theme = bb_agent_theme_get_active();
+  ESP_LOGI(TAG, "boot active theme: %s",
+           (boot_theme != NULL && boot_theme->name != NULL) ? boot_theme->name : "(none)");
 
   bb_gateway_node_config_t node_cfg = {
       .node_id = BBCLAW_NODE_ID,
