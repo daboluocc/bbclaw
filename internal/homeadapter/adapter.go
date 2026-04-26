@@ -389,9 +389,15 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 	streamID, _ := env.Payload["streamId"].(string)
 	source, _ := env.Payload["source"].(string)
 	nodeID, _ := env.Payload["nodeId"].(string)
+	driverName, _ := env.Payload["driver"].(string)
+	driverName = strings.TrimSpace(driverName)
 	routeStart := time.Now()
-	a.log.Infof("phase=transcript_request_recv device=%s session=%s stream=%s text_chars=%d",
-		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
+	a.log.Infof("phase=transcript_request_recv device=%s session=%s stream=%s text_chars=%d driver=%s",
+		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text), driverName)
+
+	if a.router != nil && driverName != "" {
+		return a.handleChatTextViaAgent(ctx, write, env, text, sessionKey, streamID, driverName, routeStart)
+	}
 
 	a.metrics.Inc("voice_transcript_forwarded")
 	writeEvent := func(kind string, payload map[string]any) {
