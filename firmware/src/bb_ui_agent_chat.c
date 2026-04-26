@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "nvs.h"
@@ -72,6 +73,7 @@ typedef enum {
 typedef struct {
   int active;                 /* show 之后置 1，hide 后清 0 */
   int sending;                /* agent 任务在跑期间置 1 */
+  volatile int agent_cancel_requested;  /* Phase 4.9: user cancelled turn */
   TaskHandle_t agent_task;
   lv_obj_t* parent;
   bb_agent_state_t state;
@@ -352,6 +354,10 @@ static void post_session(const char* sid_short) {
 static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
   (void)user_ctx;
   if (evt == NULL) return;
+  /* Phase 4.9: user cancelled the turn — discard all remaining events.
+   * The HTTP stream keeps running in agent_task until turn_end/error,
+   * but UI and TTS are no longer updated. */
+  if (s_chat.agent_cancel_requested) return;
 
   switch (evt->type) {
     case BB_AGENT_EVENT_SESSION:
@@ -469,7 +475,7 @@ static void agent_task(void* arg) {
       on_agent_event,
       NULL);
 
-  if (err != ESP_OK) {
+  if (err != ESP_OK && !s_chat.agent_cancel_requested) {
     ESP_LOGW(TAG, "agent send failed: %s", esp_err_to_name(err));
     /* 没有 ERROR 帧的失败（比如 HTTP 层）：手动派发一次错误 + DIZZY。 */
     if (s_chat.state != BB_AGENT_STATE_DIZZY) {
@@ -477,10 +483,14 @@ static void agent_task(void* arg) {
       post_error(esp_err_to_name(err));
     }
   }
+  if (s_chat.agent_cancel_requested) {
+    ESP_LOGI(TAG, "agent_task: turn was cancelled, discarding result");
+  }
 
   free(args->text);
   free(args);
 
+  s_chat.agent_cancel_requested = 0;
   s_chat.sending = 0;
   s_chat.agent_task = NULL;
   vTaskDelete(NULL);
@@ -567,6 +577,39 @@ static void spawn_persist_driver_task(const char* name) {
     ESP_LOGW(TAG, "spawn persist task: xTaskCreate failed");
     free(arg);
   }
+}
+
+/* Phase 4.9: NVS reads must run on a task whose stack lives in internal
+ * RAM.  stream_task's stack is PSRAM-backed; during SPI-flash reads
+ * (required by NVS) the cache is disabled, making PSRAM inaccessible
+ * and triggering the esp_task_stack_is_sane_cache_disabled assert.
+ * Solution: spawn a one-shot task on internal heap, wait for it.
+ * Forward-declare load_tts_enabled_from_nvs (defined below). */
+static void load_tts_enabled_from_nvs(void);
+
+static void load_nvs_task(void* arg) {
+  load_selected_driver_from_nvs();
+  load_tts_enabled_from_nvs();
+  SemaphoreHandle_t sem = (SemaphoreHandle_t)arg;
+  xSemaphoreGive(sem);
+  vTaskDelete(NULL);
+}
+
+static void load_nvs_on_internal_stack(void) {
+  SemaphoreHandle_t sem = xSemaphoreCreateBinary();
+  if (sem == NULL) {
+    ESP_LOGW(TAG, "load_nvs: semaphore alloc failed, skipping");
+    return;
+  }
+  BaseType_t ok = xTaskCreate(load_nvs_task, "load_nvs", 4096, sem, 5, NULL);
+  if (ok != pdPASS) {
+    ESP_LOGW(TAG, "load_nvs: task create failed, skipping");
+    vSemaphoreDelete(sem);
+    return;
+  }
+  /* 2 s is generous — NVS read is typically < 1 ms. */
+  xSemaphoreTake(sem, pdMS_TO_TICKS(2000));
+  vSemaphoreDelete(sem);
 }
 
 /* ── Phase 4.5.1 — TTS reply toggle persistence ── */
@@ -950,8 +993,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.turn_start_ms = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
-  load_selected_driver_from_nvs();
-  load_tts_enabled_from_nvs();
+  load_nvs_on_internal_stack();
 
   /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
    * RIGHT cycle don't have to wait for HTTP. Cheap if cache already populated
@@ -1058,7 +1100,7 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
    * Without this reload, chat captured selected_driver only at show-time
    * (= boot for the auto-entered chat home), so user-picked driver
    * changes would be ignored until reboot. */
-  load_selected_driver_from_nvs();
+  load_nvs_on_internal_stack();
   /* 在调用线程的视角下 session/driver 是稳定字符串，复制进任务参数。
    * 注意：driver 优先用用户在 settings 里选的 selected_driver；
    * 为空时（首次启动 / NVS 没值）退回 driver_name（来自上次 SESSION 帧），
@@ -1311,7 +1353,19 @@ static void spawn_driver_fetch_task(void) {
 /* ── Phase 4.5 — voice bridge helpers ── */
 
 int bb_ui_agent_chat_is_busy(void) {
-  return (s_chat.active && s_chat.sending) ? 1 : 0;
+  return (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) ? 1 : 0;
+}
+
+/* Phase 4.9: cancel an in-flight agent turn. The HTTP stream continues to
+ * drain in the background (agent_task), but on_agent_event discards all
+ * events, TTS is killed, and the UI goes back to IDLE immediately. */
+void bb_ui_agent_chat_cancel(void) {
+  if (!s_chat.active || !s_chat.sending) return;
+  if (s_chat.agent_cancel_requested) return;  /* already cancelled */
+  s_chat.agent_cancel_requested = 1;
+  tts_cancel_in_flight();
+  post_state(BB_AGENT_STATE_IDLE);
+  ESP_LOGI(TAG, "cancel: user cancelled in-flight turn");
 }
 
 /* When true, the topbar's session field shows the listening hint instead of
@@ -1378,6 +1432,11 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   if (!s_chat.active || s_chat.mode != BB_CHAT_MODE_PICKER) {
     return ESP_ERR_INVALID_STATE;
   }
+  /* Phase 4.9: block driver switching while an agent turn is in flight. */
+  if (s_chat.sending) {
+    ESP_LOGI(TAG, "cycle_driver: blocked (agent turn in flight)");
+    return ESP_ERR_INVALID_STATE;
+  }
   if (delta == 0) return ESP_OK;
 
   /* Phase 4.2.5 — async cache: if it's still loading, spawn (idempotent) and
@@ -1414,11 +1473,19 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   strncpy(s_chat.selected_driver, name, sizeof(s_chat.selected_driver) - 1);
   s_chat.selected_driver[sizeof(s_chat.selected_driver) - 1] = '\0';
 
+  /* Phase 4.9: driver changed — invalidate the current session so the next
+   * send creates a fresh session with the new driver. Without this, the
+   * adapter rejects the message (HTTP 400) because the existing session_id
+   * is bound to the previous driver. Also clear driver_name (server-assigned
+   * from the last SESSION frame) so it doesn't shadow the new selection. */
+  s_chat.session_id[0] = '\0';
+  s_chat.driver_name[0] = '\0';
+
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->set_driver != NULL) {
     theme->set_driver(name);
   }
-  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) — deferring NVS write",
+  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session reset — deferring NVS write",
            name, delta, next, n);
   spawn_persist_driver_task(name);
   return ESP_OK;

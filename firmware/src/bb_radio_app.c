@@ -279,15 +279,7 @@ static void show_status_idle(const char* status); /* fwd: defined later in file 
 static volatile int s_agent_chat_active;
 static lv_obj_t* s_agent_chat_root;
 
-static const char* const k_agent_chat_phrases[] = {
-    "Hello, who are you?",
-    "What is the weather like?",
-    "Show me current git status",
-    "/status",
-    "/new",
-};
-#define K_AGENT_CHAT_PHRASE_COUNT \
-    (int)(sizeof(k_agent_chat_phrases) / sizeof(k_agent_chat_phrases[0]))
+/* Phase 4.9: Picker phrases removed — input is via PTT voice only. */
 
 static int agent_chat_is_active(void) {
   return s_agent_chat_active != 0;
@@ -319,11 +311,11 @@ static int agent_chat_enter(void) {
   lv_obj_move_foreground(s_agent_chat_root);
 
   bb_ui_agent_chat_show(s_agent_chat_root);
-  bb_ui_agent_chat_picker_show(k_agent_chat_phrases, K_AGENT_CHAT_PHRASE_COUNT);
+  /* Picker removed — input is via PTT voice only. */
 
   lvgl_port_unlock();
   s_agent_chat_active = 1;
-  ESP_LOGI(TAG, "agent_chat: ENTER (phrases=%d)", K_AGENT_CHAT_PHRASE_COUNT);
+  ESP_LOGI(TAG, "agent_chat: ENTER");
   /* LED hint that we're in a different mode. */
   (void)bb_led_set_status(BB_LED_PROCESSING);
   return 0;
@@ -356,23 +348,8 @@ static void agent_chat_exit(void) {
   }
 }
 
-/** Wrapper around lvgl_port_lock for picker ops invoked from the stream task. */
-static void agent_chat_picker_move_locked(int delta) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    bb_ui_agent_chat_picker_move(delta);
-    lvgl_port_unlock();
-  }
-}
-
-static void agent_chat_picker_send_locked(void) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-    esp_err_t err = bb_ui_agent_chat_picker_send_selected();
-    lvgl_port_unlock();
-    if (err != ESP_OK) {
-      ESP_LOGI(TAG, "agent_chat: send refused err=%s (still streaming?)", esp_err_to_name(err));
-    }
-  }
-}
+/* Phase 4.9: Picker removed — scroll functions kept for potential
+ * future use but are not currently wired. */
 
 /* Phase 5: LEFT/RIGHT shortcut → cycle agent driver in-place (no Settings dive). */
 static void agent_chat_cycle_driver_locked(int delta) {
@@ -1512,12 +1489,15 @@ static void stream_task(void* arg) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
 
-        /* Phase 4.8.x: any nav press = activity. Auto-enter chat from
-         * standby so the next press lands inside the proper UI. */
+        /* Phase 4.9: any nav press = activity. Auto-enter chat from
+         * standby — BUT skip UP/DOWN: they scroll the visible chat
+         * history on main screen instead. */
         last_activity_ms = now_ms;
         if (!agent_chat_is_active() && !settings_overlay_is_active() &&
             !radio_app_is_locked()) {
-          (void)agent_chat_enter();  /* best-effort; handled-as-no-op if it fails */
+          if (event != BB_NAV_EVENT_UP && event != BB_NAV_EVENT_DOWN) {
+            (void)agent_chat_enter();  /* best-effort */
+          }
         }
 
         /* Phase 4.7 — Settings overlay takes nav events first when active.
@@ -1537,28 +1517,40 @@ static void stream_task(void* arg) {
         }
 
         if (agent_chat_is_active()) {
-          /* Phase 4.2 + Phase 5 + Phase 4.8: Agent Chat is now the home
-           * screen, so BACK no longer exits — it opens Settings (since
-           * there's no separate "main" screen to return to). The picker
-           * + cycle_driver shortcut + voice bridge are unchanged. */
+          /* Phase 4.9 voice-first: UP/DOWN exits chat so the underlying
+           * history becomes visible, then falls through to the main-screen
+           * handler below which scrolls. LEFT/RIGHT cycles driver (blocked
+           * while agent turn is in flight). OK/BACK cancel the current turn
+           * when busy, otherwise open the Settings overlay. */
+          int busy = agent_chat_is_busy_locked();
           switch ((bb_nav_event_t)event) {
-            case BB_NAV_EVENT_UP:    agent_chat_picker_move_locked(-1);  break;
-            case BB_NAV_EVENT_DOWN:  agent_chat_picker_move_locked(+1);  break;
-            case BB_NAV_EVENT_LEFT:  agent_chat_cycle_driver_locked(-1); break;
-            case BB_NAV_EVENT_RIGHT: agent_chat_cycle_driver_locked(+1); break;
-            case BB_NAV_EVENT_OK:    agent_chat_picker_send_locked();    break;
-            case BB_NAV_EVENT_BACK:
-              /* Was: agent_chat_exit(). Phase 4.8: open Settings on top of
-               * chat. settings_overlay_exit returns user to chat (still
-               * underneath). */
-              if (settings_overlay_enter() != 0) {
-                ESP_LOGW(TAG, "BACK in chat: settings_overlay_enter failed");
-              }
+            case BB_NAV_EVENT_UP:
+            case BB_NAV_EVENT_DOWN:
+              agent_chat_exit();
               break;
+            case BB_NAV_EVENT_LEFT:
+            case BB_NAV_EVENT_RIGHT:
+              if (busy) {
+                ESP_LOGI(TAG, "agent_chat: LEFT/RIGHT blocked (turn in flight)");
+              } else {
+                agent_chat_cycle_driver_locked(
+                    event == BB_NAV_EVENT_RIGHT ? +1 : -1);
+              }
+              continue;
+            case BB_NAV_EVENT_OK:
+            case BB_NAV_EVENT_BACK:
+              if (busy) {
+                bb_ui_agent_chat_cancel();
+              } else {
+                if (settings_overlay_enter() != 0) {
+                  ESP_LOGW(TAG, "%s in chat: settings_overlay_enter failed",
+                           event == BB_NAV_EVENT_OK ? "OK" : "BACK");
+                }
+              }
+              continue;
             case BB_NAV_EVENT_COUNT:
-            default: break;
+            default: continue;
           }
-          continue;
         }
 
         /* Main radio screen — chat history view. Phase 4.7: OK opens the

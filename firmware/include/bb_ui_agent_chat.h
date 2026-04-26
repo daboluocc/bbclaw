@@ -94,6 +94,15 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta);
 int bb_ui_agent_chat_is_busy(void);
 
 /**
+ * Phase 4.9 — cancel an in-flight agent turn (thinking/streaming).
+ *
+ * The HTTP stream continues draining in the background, but events are
+ * discarded, TTS is killed, and the UI goes back to IDLE immediately.
+ * No-op if no turn is in flight.
+ */
+void bb_ui_agent_chat_cancel(void);
+
+/**
  * Light visual hint that the device is recording PTT for an agent turn.
  * begin=1 → topbar shows "LISTEN…" + state goes LISTENING.
  * begin=0 → restore the cached session id (or clear if none).
