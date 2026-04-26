@@ -330,9 +330,10 @@ static int agent_chat_enter(void) {
 }
 
 /** Tear the overlay down, restore radio state. Safe to call when not active. */
-/* Phase 4.8: chat is the home screen, no longer exited via nav. Kept here
- * for potential future callers (lock state transitions, fatal-error reset). */
-static void __attribute__((unused)) agent_chat_exit(void) {
+/* Phase 4.8.x: called by the idle-timeout path in the stream task to drop
+ * back to the legacy standby (chat-history) view. Also wired for future
+ * lock-state transitions / fatal-error reset. */
+static void agent_chat_exit(void) {
   if (!s_agent_chat_active) return;
   s_agent_chat_active = 0;
 
@@ -1459,21 +1460,55 @@ static void stream_task(void* arg) {
     nav_handled_versions[i] = s_nav_event_versions[i];
   }
 
-  /* Phase 4.8: Agent Chat is the home screen now. Auto-enter at boot so the
-   * theme + transcript + buddy panel are the user's default view. PTT inside
-   * chat routes through the Phase 4.5 voice bridge to Agent Bus, so voice
-   * speaks to whichever driver the user picked in Settings (was: PTT outside
-   * chat went to legacy openclaw via cloud gateway, hardcoded). */
-  if (agent_chat_enter() == 0) {
-    ESP_LOGI(TAG, "stream task: auto-entered agent chat (home screen)");
-  } else {
-    ESP_LOGW(TAG, "stream task: auto agent_chat_enter failed (will retry on first nav event)");
-  }
+  /* Phase 4.8.x activity / idle tracking ─────────────────────────────────
+   * Boot lands on the legacy standby (chat-history) screen. ANY user input
+   * (PTT press OR a nav event) auto-enters Agent Chat and resets the idle
+   * clock. After IDLE_TIMEOUT_MS of nothing happening, chat exits back to
+   * standby — preserving the chat-history view underneath while freeing
+   * the buddy/theme overlay so the screen looks like "off-duty". */
+  const int64_t IDLE_TIMEOUT_MS = 90 * 1000;  /* 90 s */
+  int64_t last_activity_ms = bb_now_ms();
+  unsigned ptt_version_seen = s_ptt_change_version;
 
   while (1) {
+    int64_t now_ms = bb_now_ms();
+
+    /* Phase 4.8.x: any PTT edge transition counts as activity. Refresh
+     * idle clock + summon Agent Chat from standby on the press edge. */
+    if (s_ptt_change_version != ptt_version_seen) {
+      ptt_version_seen = s_ptt_change_version;
+      last_activity_ms = now_ms;
+      if (s_ptt_pressed && !agent_chat_is_active() && !settings_overlay_is_active() &&
+          !radio_app_is_locked()) {
+        if (agent_chat_enter() == 0) {
+          ESP_LOGI(TAG, "PTT activity: entered chat from standby");
+        }
+      }
+    }
+
+    /* Idle exit: if chat is up, no overlay turn in flight, no settings
+     * panel open, and no activity for IDLE_TIMEOUT_MS — drop back to
+     * standby. The legacy chat-history view underneath becomes visible. */
+    if (agent_chat_is_active() && !settings_overlay_is_active() &&
+        !agent_chat_is_busy_locked() &&
+        (now_ms - last_activity_ms) > IDLE_TIMEOUT_MS) {
+      ESP_LOGI(TAG, "idle %lld ms: exiting chat to standby",
+               (long long)(now_ms - last_activity_ms));
+      agent_chat_exit();
+      last_activity_ms = now_ms;  /* avoid re-firing every tick */
+    }
+
     for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
+
+        /* Phase 4.8.x: any nav press = activity. Auto-enter chat from
+         * standby so the next press lands inside the proper UI. */
+        last_activity_ms = now_ms;
+        if (!agent_chat_is_active() && !settings_overlay_is_active() &&
+            !radio_app_is_locked()) {
+          (void)agent_chat_enter();  /* best-effort; handled-as-no-op if it fails */
+        }
 
         /* Phase 4.7 — Settings overlay takes nav events first when active.
          * Mutually exclusive with Agent Chat. */

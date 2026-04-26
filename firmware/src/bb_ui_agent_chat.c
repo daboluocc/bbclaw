@@ -904,6 +904,13 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
     free(args);
     return ESP_ERR_NO_MEM;
   }
+  /* Phase 4.8.x: re-read selected_driver from NVS before each send so that
+   * a Settings-side change (`bb_ui_settings` persists driver to NVS) takes
+   * effect on the next send without needing chat to be hidden + reshown.
+   * Without this reload, chat captured selected_driver only at show-time
+   * (= boot for the auto-entered chat home), so user-picked driver
+   * changes would be ignored until reboot. */
+  load_selected_driver_from_nvs();
   /* 在调用线程的视角下 session/driver 是稳定字符串，复制进任务参数。
    * 注意：driver 优先用用户在 settings 里选的 selected_driver；
    * 为空时（首次启动 / NVS 没值）退回 driver_name（来自上次 SESSION 帧），
@@ -914,6 +921,8 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
   } else {
     strncpy(args->driver_name, s_chat.driver_name, sizeof(args->driver_name) - 1);
   }
+  ESP_LOGI(TAG, "send: text='%.40s' driver=%s", text,
+           args->driver_name[0] != '\0' ? args->driver_name : "(default)");
 
   /* 立刻在 transcript 里渲染用户那行（不等回包）。这步是 LVGL 操作，
    * 但 send() 既可能在 LVGL 任务也可能在按键任务里被调；统一走 async。 */
