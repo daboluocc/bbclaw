@@ -1,8 +1,13 @@
 # BBClaw 固件引脚映射（Pin Map）
 
-更新时间：2026-04-25
+更新时间：2026-04-26
 
 本文档是固件接线的单一基线，包含信号线与供电线（`3V3` / `5V`）建议。
+
+> **2026-04-26 更新**：breadboard 默认导航从"按键当编码器"切到 **Flipper Zero
+> 风 6 个独立按键** 布局（Phase 5 / Option B，见 [ADR-006](../../design/decisions/ADR-006-flipper-full-nav-events.md)）。
+> 每个方向有专属事件：UP / DOWN / LEFT / RIGHT / OK / BACK。
+> 详见 §1.7。bbclaw 自研 PCB（§2）仍用旋转编码器，未变化。
 
 ## 1. Breadboard 默认配置（v0：INMP441 + MAX98357A）
 
@@ -112,17 +117,19 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 
 ### 1.5 ST7789 屏幕接线（按模块规格 3.3V/5V）
 
+breadboard 与 bbclaw PCB 的屏幕引脚一致（IO9–14 连续）。
+
 
 | 模块引脚     | 接到开发板     | 说明               |
 | -------- | --------- | ---------------- |
 | `VCC`    | `3V3`（优先） | 若模块明确支持 5V 再接 5V |
 | `GND`    | `GND`     | 共地               |
-| `SCLK`   | `GPIO12`  | SPI 时钟           |
-| `MOSI`   | `GPIO11`  | SPI 数据           |
-| `CS`     | `GPIO10`  | 片选               |
-| `DC`     | `GPIO9`   | 数据/命令            |
-| `RST`    | `GPIO14`  | 复位               |
-| `BLK/BL` | `GPIO13`  | 背光控制             |
+| `SCLK`   | `GPIO9`   | SPI 时钟           |
+| `MOSI`   | `GPIO10`  | SPI 数据           |
+| `RST`    | `GPIO11`  | 复位               |
+| `DC`     | `GPIO12`  | 数据/命令            |
+| `CS`     | `GPIO13`  | 片选               |
+| `BLK/BL` | `GPIO14`  | 背光控制             |
 
 
 ### 1.6 PTT 按键接线
@@ -139,6 +146,49 @@ menuconfig 中默认 **R/Y/G = GPIO 2 / 4 / 5**。
 - 最新 breadboard 上 PTT 已改为**普通按键接地**，与 `bbclaw` PCB 上 `GPIO1` 导航按键语义相同：ACTIVE\_LEVEL=0、PULL\_UP=1。
 - 旧版“按下接 3V3”接法仍然兼容：在对应 `boards/*/board_config.h` 里把 `BBCLAW_PTT_ACTIVE_LEVEL` 改回 `1`、`BBCLAW_PTT_PULL_UP` 改回 `0` 即可。
 - 若你的板子把 PTT 接到了别的脚，需同步改 `BBCLAW_PTT_GPIO`。
+
+### 1.7 导航按键（Flipper Zero 6-button 布局，Phase 5 / Option B）
+
+breadboard 默认采用 6 个独立按键替代旋转编码器，灵感来自 Flipper Zero。每个按键
+单端接 GPIO，另一端接 GND；内部上拉，按下拉低（ACTIVE_LEVEL=0、PULL_UP=1）。
+
+| 按键 | 接到开发板  | 触发事件                | 边沿     | 主屏 / 历史滚动语义       | Agent Chat picker 语义                |
+| -- | ------- | ------------------- | ------ | ------------------ | ----------------------------------- |
+| UP | `GPIO6` | `BB_NAV_EVENT_UP`   | 按下     | 历史滚 / 上一条 turn       | picker 上移                          |
+| DOWN | `GPIO8` | `BB_NAV_EVENT_DOWN` | 按下     | 历史滚 / 下一条 turn       | picker 下移                          |
+| LEFT | `GPIO38` | `BB_NAV_EVENT_LEFT` | 按下     | 保留（未来翻页 / 段落跳转） | **快捷切上一个 driver**（不进 Settings） |
+| RIGHT | `GPIO39` | `BB_NAV_EVENT_RIGHT` | 按下    | 保留                | **快捷切下一个 driver**（不进 Settings） |
+| OK | `GPIO1` | `BB_NAV_EVENT_OK`   | **释放** | 切换 ME / AI 焦点       | 选中并发送当前 picker 行；Settings 行内确认 |
+| BACK | `GPIO0` | `BB_NAV_EVENT_BACK` | 按下     | 进 Agent Chat       | 退出 Agent Chat overlay              |
+
+> **关于 GPIO0 (BOOT)**：post-boot 是空闲输入，可作为按键。ESP32-S3 模组板上 GPIO0
+> 已有外部上拉。开发板复位后这个键就是 BACK，不影响使用。
+>
+> **关于 OK 释放边沿**：与"Tap-to-fire"语义一致，避免按下瞬间触发；同时给长按
+> 留余地（未来可加 long-OK = 高级菜单）。
+
+每个 GPIO 都可设为 -1 跳过（如不焊 LEFT/RIGHT 仍可用 4 键基本操作）。完整宏在
+[`bb_config.h`](/Volumes/1TB/github/bbclaw/firmware/include/bb_config.h)：
+
+```c
+#define BBCLAW_NAV_FLIPPER_6BUTTON 1
+#define BBCLAW_NAV_BTN_UP_GPIO     6
+#define BBCLAW_NAV_BTN_DOWN_GPIO   8
+#define BBCLAW_NAV_BTN_LEFT_GPIO  38
+#define BBCLAW_NAV_BTN_RIGHT_GPIO 39
+#define BBCLAW_NAV_BTN_OK_GPIO     1
+#define BBCLAW_NAV_BTN_BACK_GPIO   0
+#define BBCLAW_NAV_PULL_UP         1
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL 0
+```
+
+设计说明（详见 [ADR-006](../../design/decisions/ADR-006-flipper-full-nav-events.md)）：
+
+- 对编码器/3 键模式向后兼容：旧的 `BB_NAV_EVENT_ROTATE_CCW / ROTATE_CW / CLICK / LONG_PRESS`
+  是 UP / DOWN / OK / BACK 的别名（同数值），既有 switch/case 不用改。
+- LEFT/RIGHT 是 6-button 模式独有的"水平方向"事件，主屏上保留为未来手势。
+- bbclaw 自研 PCB（§2）仍用编码器（A/B 相 + KEY），同一份 firmware 二选一编译时
+  通过 `BBCLAW_NAV_FLIPPER_6BUTTON=0/1` 切换。
 
 ## 2. BBClaw 自研 PCB 扩展配置
 
