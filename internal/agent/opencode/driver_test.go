@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -274,5 +275,65 @@ func TestDriverName(t *testing.T) {
 	d := New(Options{}, obs.NewLogger())
 	if d.Name() != "opencode" {
 		t.Errorf("Name: want 'opencode', got %q", d.Name())
+	}
+}
+
+func TestDefaultTimeout(t *testing.T) {
+	d := New(Options{}, obs.NewLogger())
+	if d.timeout != defaultTimeout {
+		t.Errorf("defaultTimeout: want %v, got %v", defaultTimeout, d.timeout)
+	}
+}
+
+func TestCustomTimeout(t *testing.T) {
+	d := New(Options{Timeout: 30 * time.Second}, obs.NewLogger())
+	if d.timeout != 30*time.Second {
+		t.Errorf("custom timeout: want 30s, got %v", d.timeout)
+	}
+}
+
+func TestTimeoutCapsTurn(t *testing.T) {
+	// Use `yes` which ignores extra args and prints 'y' forever. The
+	// 10ms timeout will fire and kill the process.
+	d := New(Options{Timeout: 10 * time.Millisecond}, obs.NewLogger())
+	ctx := context.Background()
+	sid, err := d.Start(ctx, agent.StartOpts{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	d.bin = "yes"
+	err = d.Send(sid, "")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	ch := d.Events(sid)
+	d.Stop(sid)
+
+	var got []agent.Event
+	for ev := range ch {
+		got = append(got, ev)
+	}
+	if len(got) < 2 {
+		t.Fatalf("want >=2 events (error + turn_end), got %d: %+v", len(got), got)
+	}
+	last := got[len(got)-1]
+	if last.Type != agent.EvTurnEnd {
+		t.Errorf("last event: want EvTurnEnd, got %v", last.Type)
+	}
+	hasError := false
+	for _, ev := range got {
+		if ev.Type == agent.EvError && strings.Contains(ev.Text, "timed out") {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		var texts []string
+		for _, ev := range got {
+			texts = append(texts, string(ev.Type)+":"+ev.Text)
+		}
+		t.Errorf("expected 'timed out' error, got events: %v", texts)
 	}
 }

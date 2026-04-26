@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -33,16 +34,18 @@ import (
 )
 
 const (
-	driverName   = "opencode"
-	defaultBin   = "opencode"
-	eventBufSize = 64
+	driverName    = "opencode"
+	defaultBin    = "opencode"
+	defaultTimeout = 5 * time.Minute
+	eventBufSize  = 64
 )
 
 // Driver is the opencode AgentDriver implementation.
 type Driver struct {
-	bin   string
-	log   *obs.Logger
-	extra []string
+	bin     string
+	timeout time.Duration
+	log     *obs.Logger
+	extra   []string
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
@@ -55,8 +58,11 @@ type Options struct {
 	Bin string
 	// ExtraArgs appended after the fixed args (e.g. "--model",
 	// "opencode/deepseek-v4-pro"). Do not include `run`, `--format json`,
-	// `--print-logs`, or `--thinking` — the driver sets those itself.
+	// `--print-logs`, `--thinking`, or `--dangerously-skip-permissions` —
+	// the driver sets those itself.
 	ExtraArgs []string
+	// Timeout is the per-turn deadline. Zero means defaultTimeout (5 min).
+	Timeout time.Duration
 }
 
 // New constructs a Driver. The logger is required.
@@ -65,8 +71,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 	if bin == "" {
 		bin = defaultBin
 	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
 	return &Driver{
 		bin:      bin,
+		timeout:  timeout,
 		log:      log,
 		extra:    append([]string(nil), opts.ExtraArgs...),
 		sessions: make(map[agent.SessionID]*session),
@@ -118,7 +129,11 @@ func (d *Driver) Events(sid agent.SessionID) <-chan agent.Event {
 }
 
 // Send spawns `opencode run` for this turn and streams its NDJSON output
-// onto the session's event channel. Blocks until the subprocess exits.
+// onto the session's event channel. Blocks until the subprocess exits or
+// the per-turn timeout fires.
+//
+// --dangerously-skip-permissions is always passed because the driver
+// advertises ToolApproval=false and cannot serve approval prompts.
 func (d *Driver) Send(sid agent.SessionID, text string) error {
 	d.mu.Lock()
 	s, ok := d.sessions[sid]
@@ -127,14 +142,18 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 		return agent.ErrUnknownSession
 	}
 
-	args := []string{"run", "--format", "json", "--print-logs", "--thinking"}
+	args := []string{"run", "--format", "json", "--print-logs", "--thinking", "--dangerously-skip-permissions"}
 	if s.resumeID != "" {
 		args = append(args, "--session", s.resumeID)
 	}
 	args = append(args, text)
 	args = append(args, d.extra...)
 
-	ctx, cancel := context.WithCancel(s.rootCtx)
+	// Per-turn timeout context derived from session root context so Stop()
+	// can still cancel early.
+	ctx, perTurnCancel := context.WithTimeout(s.rootCtx, d.timeout)
+	defer perTurnCancel()
+
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	cmd.Dir = s.cwd
 	if len(s.env) > 0 {
@@ -142,31 +161,32 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		cancel()
 		return fmt.Errorf("opencode: stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		cancel()
 		return fmt.Errorf("opencode: stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		cancel()
 		return fmt.Errorf("opencode: start %s: %w", d.bin, err)
 	}
 
 	s.mu.Lock()
-	s.cancel = cancel
+	s.cancel = perTurnCancel
 	s.mu.Unlock()
 
-	d.log.Infof("opencode: spawned sid=%s resume=%q pid=%d", sid, s.resumeID, cmd.Process.Pid)
+	d.log.Infof("opencode: spawned sid=%s resume=%q pid=%d timeout=%v", sid, s.resumeID, cmd.Process.Pid, d.timeout)
 
 	go drainStderr(stderr, d.log, sid)
 
 	parseStream(stdout, s, d.log)
 
 	if err := cmd.Wait(); err != nil {
-		s.emit(agent.Event{Type: agent.EvError, Text: fmt.Sprintf("opencode exit: %v", err)})
+		msg := fmt.Sprintf("opencode exit: %v", err)
+		if ctx.Err() == context.DeadlineExceeded {
+			msg = fmt.Sprintf("opencode timed out after %v", d.timeout)
+		}
+		s.emit(agent.Event{Type: agent.EvError, Text: msg})
 	}
 	s.emit(agent.Event{Type: agent.EvTurnEnd})
 	return nil
