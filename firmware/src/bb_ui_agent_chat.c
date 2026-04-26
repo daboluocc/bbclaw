@@ -808,8 +808,21 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
-  if (s_chat.driver_name[0] != '\0' && theme->set_driver != NULL) {
-    theme->set_driver(s_chat.driver_name);
+  /* Phase 4.8 (post-Phase-5): show the effective driver in the topbar
+   * immediately on chat entry, before any agent SESSION frame arrives.
+   * Priority: server-provided driver_name (sticky between turns) > user's
+   * NVS-stored selected_driver > the hardcoded fallback. The SESSION frame
+   * that lands later will overwrite this via post_driver -> SET_DRIVER. */
+  if (theme->set_driver != NULL) {
+    const char* effective_driver = NULL;
+    if (s_chat.driver_name[0] != '\0') {
+      effective_driver = s_chat.driver_name;
+    } else if (s_chat.selected_driver[0] != '\0') {
+      effective_driver = s_chat.selected_driver;
+    } else {
+      effective_driver = BB_CHAT_DRIVER_FALLBACK;
+    }
+    theme->set_driver(effective_driver);
   }
   if (s_chat.session_id[0] != '\0' && theme->set_session != NULL) {
     char shortbuf[16] = {0};

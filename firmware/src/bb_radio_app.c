@@ -330,7 +330,9 @@ static int agent_chat_enter(void) {
 }
 
 /** Tear the overlay down, restore radio state. Safe to call when not active. */
-static void agent_chat_exit(void) {
+/* Phase 4.8: chat is the home screen, no longer exited via nav. Kept here
+ * for potential future callers (lock state transitions, fatal-error reset). */
+static void __attribute__((unused)) agent_chat_exit(void) {
   if (!s_agent_chat_active) return;
   s_agent_chat_active = 0;
 
@@ -1457,6 +1459,17 @@ static void stream_task(void* arg) {
     nav_handled_versions[i] = s_nav_event_versions[i];
   }
 
+  /* Phase 4.8: Agent Chat is the home screen now. Auto-enter at boot so the
+   * theme + transcript + buddy panel are the user's default view. PTT inside
+   * chat routes through the Phase 4.5 voice bridge to Agent Bus, so voice
+   * speaks to whichever driver the user picked in Settings (was: PTT outside
+   * chat went to legacy openclaw via cloud gateway, hardcoded). */
+  if (agent_chat_enter() == 0) {
+    ESP_LOGI(TAG, "stream task: auto-entered agent chat (home screen)");
+  } else {
+    ESP_LOGW(TAG, "stream task: auto agent_chat_enter failed (will retry on first nav event)");
+  }
+
   while (1) {
     for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
@@ -1479,16 +1492,24 @@ static void stream_task(void* arg) {
         }
 
         if (agent_chat_is_active()) {
-          /* Phase 4.2 + Phase 5: Agent Chat picker is now phrases-only.
-           * UP/DOWN scroll picker, OK sends selected phrase, BACK exits.
-           * LEFT/RIGHT cycle the active driver in-place. */
+          /* Phase 4.2 + Phase 5 + Phase 4.8: Agent Chat is now the home
+           * screen, so BACK no longer exits — it opens Settings (since
+           * there's no separate "main" screen to return to). The picker
+           * + cycle_driver shortcut + voice bridge are unchanged. */
           switch ((bb_nav_event_t)event) {
             case BB_NAV_EVENT_UP:    agent_chat_picker_move_locked(-1);  break;
             case BB_NAV_EVENT_DOWN:  agent_chat_picker_move_locked(+1);  break;
             case BB_NAV_EVENT_LEFT:  agent_chat_cycle_driver_locked(-1); break;
             case BB_NAV_EVENT_RIGHT: agent_chat_cycle_driver_locked(+1); break;
             case BB_NAV_EVENT_OK:    agent_chat_picker_send_locked();    break;
-            case BB_NAV_EVENT_BACK:  agent_chat_exit();                  break;
+            case BB_NAV_EVENT_BACK:
+              /* Was: agent_chat_exit(). Phase 4.8: open Settings on top of
+               * chat. settings_overlay_exit returns user to chat (still
+               * underneath). */
+              if (settings_overlay_enter() != 0) {
+                ESP_LOGW(TAG, "BACK in chat: settings_overlay_enter failed");
+              }
+              break;
             case BB_NAV_EVENT_COUNT:
             default: break;
           }
@@ -2496,12 +2517,9 @@ esp_err_t bb_radio_app_start(void) {
   /* Eagerly register the built-in agent chat themes so the registry isn't
    * empty when the user enters the Agent Chat overlay. The constructor
    * approach gets DCE'd on ESP-IDF static-archive links; explicit init
-   * ensures the symbols are force-linked.
-   *
-   * 2026-04-27 DEBUG: text-only init is disabled so only buddy-ascii is
-   * registered. Helps isolate "is buddy rendering broken?" from "is the
-   * theme switch logic broken?". Re-enable once buddy is confirmed visible. */
-  /* bb_theme_text_only_init(); */
+   * ensures the symbols are force-linked. Phase 4.6: also register
+   * buddy-ascii so it's available in Settings → Theme. */
+  bb_theme_text_only_init();
   bb_theme_buddy_ascii_init();
   /* Phase 4.7.2: eagerly resolve the active theme at boot so the log
    * immediately reveals which theme will render — saves users from "what

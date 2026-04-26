@@ -202,26 +202,21 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_pad_right(s_st.topbar_lbl, 4, 0);
   lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
 
-  /* Buddy panel (right column).
-   *
-   * 2026-04-27 DEBUG: explicit absolute positioning of face/mood labels
-   * (no flex), with a bright magenta border so it's blindingly obvious
-   * that the panel is being created. If the user STILL doesn't see this,
-   * the bug is upstream (overlay parent, theme dispatch, etc.), not in
-   * buddy's layout code. */
-  ESP_LOGI(TAG, "buddy on_enter: parent=%p root=%p building panel %dx%d at right",
-           (void*)parent, (void*)s_st.root, BUDDY_W, MIDDLE_H);
+  /* Buddy panel (right column). Absolute pixel size + absolute label
+   * positions (no flex) — see the layout block at the top of this file
+   * for why we don't use lv_pct arithmetic. */
+  ESP_LOGI(TAG, "buddy on_enter: building panel %dx%d at right", BUDDY_W, MIDDLE_H);
   s_st.buddy_panel = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.buddy_panel);
   lv_obj_set_size(s_st.buddy_panel, BUDDY_W, MIDDLE_H);
   lv_obj_align(s_st.buddy_panel, LV_ALIGN_TOP_RIGHT, 0, TOPBAR_H);
   lv_obj_set_style_bg_color(s_st.buddy_panel, lv_color_hex(UI_SCR_BG), 0);
   lv_obj_set_style_bg_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
-  /* DEBUG: 2-px magenta border around the entire buddy panel so we can
-   * visually confirm the panel exists and where it sits. */
-  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(0xff00ff), 0);
-  lv_obj_set_style_border_width(s_st.buddy_panel, 2, 0);
-  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
+  /* Subtle 1-px left border to visually separate from transcript. */
+  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(UI_TEXT_DIM), 0);
+  lv_obj_set_style_border_width(s_st.buddy_panel, 1, 0);
+  lv_obj_set_style_border_side(s_st.buddy_panel, LV_BORDER_SIDE_LEFT, 0);
+  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_50, 0);
   lv_obj_clear_flag(s_st.buddy_panel, LV_OBJ_FLAG_SCROLLABLE);
 
   /* Face label — explicit position, big enough to read at arm's length.
