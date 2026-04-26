@@ -111,21 +111,38 @@ typedef struct {
   int theme_count;
   int theme_idx;               /* 当前选中 theme 在 list 中的 index */
 
-  /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator. */
+  /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator.
+   * Phase 4.5.2 — sentence-level streaming + cancel-and-replace.
+   *
+   * Pipeline: reply_buf is the canonical accumulator, written by the agent task
+   * as text chunks arrive. reply_synth_offset tracks how much of reply_buf has
+   * already been handed to the TTS task. The TTS task drains reply_buf one
+   * sentence at a time (or the whole tail at turn end), so the speaker starts
+   * playing the first sentence while the agent is still streaming the rest.
+   *
+   * Concurrency: reply_buf and its companions are touched by the agent task
+   * (writer) and the TTS task (reader). reply_len / reply_synth_offset /
+   * reply_turn_complete are size_t / int — single-word reads are atomic on
+   * ESP32-S3, and any race produces at worst a one-iteration lag, never a
+   * crash. tts_cancel_requested is a soft-kill flag the TTS task polls.
+   */
   int tts_enabled;             /* 1 = synth reply via adapter TTS; default ON */
   char* reply_buf;             /* heap, capacity BB_CHAT_REPLY_BUF_CAP */
   size_t reply_len;            /* bytes used (excl. terminating NUL) */
+  size_t reply_synth_offset;   /* bytes already extracted for synthesis */
   int reply_truncated;         /* 1 once we've logged the truncation warn */
+  volatile int reply_turn_complete; /* 1 once EvTurnEnd seen — TTS may flush tail */
+  volatile int tts_cancel_requested; /* 1 to ask TTS task to abort + exit */
   TaskHandle_t tts_task;       /* non-NULL while a TTS playback task is alive */
 } bb_chat_state_t;
 
 static bb_chat_state_t s_chat = {0};
 
-/* Forward decls for Phase 4.5.1 helpers (defined further down so they live
- * next to the rest of the NVS / settings glue). */
+/* Forward decls for Phase 4.5.1/4.5.2 TTS pipeline (defined further down). */
 static void reply_buf_reset(void);
 static void reply_buf_append(const char* delta);
-static void maybe_spawn_tts_task(void);
+static void tts_kick_or_spawn(void);
+static void tts_cancel_in_flight(void);
 
 /* Forward decls for Phase 4.2.5 async driver fetch. */
 static void spawn_driver_fetch_task(void);
@@ -331,8 +348,11 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         post_state(BB_AGENT_STATE_IDLE);
       }
       /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
-       * One-shot decision: a mid-turn toggle change won't affect this turn. */
-      maybe_spawn_tts_task();
+       * Phase 4.5.2 — set turn_complete so the streaming task will flush the
+       * tail (any text after the last sentence boundary) and then exit. The
+       * task may already be running mid-stream; if not, kick spawns it now. */
+      s_chat.reply_turn_complete = 1;
+      tts_kick_or_spawn();
       break;
     }
 
@@ -362,6 +382,10 @@ static void agent_task(void* arg) {
 
   s_chat.turn_start_ms = bb_now_ms();
   s_chat.saw_text_in_turn = 0;
+  /* Phase 4.5.2 — cancel-and-replace: if a previous turn's TTS is still
+   * playing, kill it before resetting the buffer (otherwise the streaming
+   * task would continue reading reply_buf as we wipe it from under it). */
+  tts_cancel_in_flight();
   /* Phase 4.5.1 — fresh per-turn accumulator; reused buffer if already alloc. */
   reply_buf_reset();
 
@@ -471,24 +495,63 @@ static esp_err_t persist_tts_enabled(int enabled) {
   return err;
 }
 
-/* ── Phase 4.5.1 — reply accumulator (called from agent_task only) ── */
+/* ── Phase 4.5.1/4.5.2 — reply accumulator (called from agent_task only) ── */
 
-/* Reset (or lazily allocate) the 4 KiB reply buffer. Called at turn start. */
+/* UTF-8 lead-byte test: 0xxxxxxx (ASCII) or 11xxxxxx (multi-byte start).
+ * Continuation bytes are 10xxxxxx and never lead. Used by the truncation
+ * helper to avoid splitting a multi-byte codepoint when we hit the cap. */
+static inline int is_utf8_lead(unsigned char c) {
+  return (c & 0xC0U) != 0x80U;
+}
+
+/* Walk back at most 3 bytes from `len` to find a UTF-8 lead boundary.
+ * Returns a length <= the input that ends on a clean codepoint boundary.
+ * If no lead is found in the window, falls back to the input length
+ * (safer to return slightly malformed than to lose data). */
+static size_t utf8_safe_truncate(const char* buf, size_t len) {
+  if (buf == NULL || len == 0U) return 0;
+  size_t lookback = len < 4U ? len : 4U;
+  for (size_t i = 0; i < lookback; ++i) {
+    if (is_utf8_lead((unsigned char)buf[len - 1U - i])) {
+      /* If this lead byte starts a multi-byte char, only keep it if the full
+       * char fits inside our window. UTF-8 char length from lead byte:
+       *   0xxxxxxx -> 1, 110xxxxx -> 2, 1110xxxx -> 3, 11110xxx -> 4. */
+      unsigned char lead = (unsigned char)buf[len - 1U - i];
+      size_t char_len;
+      if ((lead & 0x80U) == 0U)        char_len = 1;
+      else if ((lead & 0xE0U) == 0xC0U) char_len = 2;
+      else if ((lead & 0xF0U) == 0xE0U) char_len = 3;
+      else if ((lead & 0xF8U) == 0xF0U) char_len = 4;
+      else                              char_len = 1;  /* malformed lead */
+      size_t end = (len - 1U - i) + char_len;
+      return end <= len ? end : (len - 1U - i);
+    }
+  }
+  return len;
+}
+
+/* Reset (or lazily allocate) the reply buffer. Called at turn start. */
 static void reply_buf_reset(void) {
   if (s_chat.reply_buf == NULL) {
     s_chat.reply_buf = (char*)malloc(BB_CHAT_REPLY_BUF_CAP);
     if (s_chat.reply_buf == NULL) {
       ESP_LOGW(TAG, "reply_buf: malloc failed; TTS will be skipped this turn");
       s_chat.reply_len = 0;
+      s_chat.reply_synth_offset = 0;
       return;
     }
   }
   s_chat.reply_buf[0] = '\0';
   s_chat.reply_len = 0;
+  s_chat.reply_synth_offset = 0;
   s_chat.reply_truncated = 0;
+  s_chat.reply_turn_complete = 0;
+  s_chat.tts_cancel_requested = 0;
 }
 
-/* Append a delta; truncates at cap and warns once. */
+/* Append a delta; truncates at cap (UTF-8-safe) and warns once. After
+ * appending, kicks the TTS task if the new bytes contain a sentence boundary
+ * — that's how Phase 4.5.2 starts speaking before turn-end. */
 static void reply_buf_append(const char* delta) {
   if (delta == NULL || s_chat.reply_buf == NULL) return;
   size_t add = strlen(delta);
@@ -502,12 +565,42 @@ static void reply_buf_append(const char* delta) {
     return;
   }
   size_t copy = add < room ? add : room;
-  memcpy(s_chat.reply_buf + s_chat.reply_len, delta, copy);
-  s_chat.reply_len += copy;
+  /* When we have to truncate, walk back to a UTF-8 char boundary so we don't
+   * leave a torn multi-byte char dangling at the end (causes box glyphs in
+   * transcript and garbled audio in TTS). */
+  if (copy < add) {
+    copy = utf8_safe_truncate(delta, copy);
+    if (copy == 0U) {
+      /* Nothing fits cleanly — drop this chunk's tail and warn. */
+      if (!s_chat.reply_truncated) {
+        ESP_LOGW(TAG, "reply_buf: cap %d reached at multi-byte boundary",
+                 BB_CHAT_REPLY_BUF_CAP);
+        s_chat.reply_truncated = 1;
+      }
+      return;
+    }
+  }
+  size_t before = s_chat.reply_len;
+  memcpy(s_chat.reply_buf + before, delta, copy);
+  s_chat.reply_len = before + copy;
   s_chat.reply_buf[s_chat.reply_len] = '\0';
   if (copy < add && !s_chat.reply_truncated) {
     ESP_LOGW(TAG, "reply_buf: cap %d reached, TTS will use truncated text", BB_CHAT_REPLY_BUF_CAP);
     s_chat.reply_truncated = 1;
+  }
+
+  /* Phase 4.5.2 — if the new bytes crossed a sentence boundary, kick TTS so
+   * it starts speaking the first sentence right away instead of waiting for
+   * EvTurnEnd. ASCII boundary chars are sufficient — Chinese 。！？ are
+   * multi-byte but a typical assistant reply has plenty of ASCII boundaries. */
+  if (s_chat.tts_enabled) {
+    for (size_t i = before; i < s_chat.reply_len; ++i) {
+      char c = s_chat.reply_buf[i];
+      if (c == '.' || c == '!' || c == '?' || c == '\n') {
+        tts_kick_or_spawn();
+        break;
+      }
+    }
   }
 }
 
@@ -523,27 +616,88 @@ static int reply_buf_has_content(void) {
   return 0;
 }
 
-/* ── Phase 4.5.1 — TTS playback task ──
+/* Phase 4.5.2 — extract the next chunk for synthesis.
  *
- * Lifecycle:
- *   - agent_task spawns this on EvTurnEnd when toggle ON + buffer non-empty.
- *   - Task owns the heap-strdup'd text passed in arg; frees on exit.
- *   - Synth via adapter, play via bb_audio_play_pcm_blocking, stop, free.
- *   - On exit: clears s_chat.tts_task and self-deletes.
- *   - Re-entrance: if a previous task is still alive when agent_task wants to
- *     spawn, the new turn's TTS is dropped (skip-not-replace policy for 4.5.1).
- *   - Hide-during-play: bb_ui_agent_chat_hide requests playback interrupt via
- *     bb_audio_request_playback_interrupt(); play_pcm_blocking returns and the
- *     task winds down. */
-static void tts_playback_task(void* arg) {
-  char* text = (char*)arg;
-  if (text == NULL || text[0] == '\0') {
-    free(text);
-    s_chat.tts_task = NULL;
-    vTaskDelete(NULL);
-    return;
+ * Modes:
+ *   - flush_tail=0: scan forward from reply_synth_offset for a sentence
+ *     boundary (. ! ? \n). If found, return [synth_offset .. boundary+1)
+ *     and advance synth_offset. If no boundary, return NULL.
+ *   - flush_tail=1: return everything remaining [synth_offset .. reply_len),
+ *     advance synth_offset to reply_len. Used when EvTurnEnd has fired.
+ *
+ * Returns a heap-allocated NUL-terminated string (caller frees), or NULL if
+ * nothing to emit. Skips emitting if the chunk is whitespace-only.
+ */
+static char* extract_pending_chunk(int flush_tail) {
+  if (s_chat.reply_buf == NULL) return NULL;
+  size_t start = s_chat.reply_synth_offset;
+  size_t end = start;
+  if (flush_tail) {
+    end = s_chat.reply_len;
+  } else {
+    for (size_t i = start; i < s_chat.reply_len; ++i) {
+      char c = s_chat.reply_buf[i];
+      if (c == '.' || c == '!' || c == '?' || c == '\n') {
+        end = i + 1;
+        break;
+      }
+    }
+    if (end == start) return NULL;  /* no boundary found */
   }
+  if (end <= start) return NULL;
+  size_t n = end - start;
+  /* Skip whitespace-only chunks (saves a pointless TTS round-trip). */
+  int has_content = 0;
+  for (size_t i = start; i < end; ++i) {
+    if ((unsigned char)s_chat.reply_buf[i] > 0x20U) {
+      has_content = 1;
+      break;
+    }
+  }
+  if (!has_content) {
+    s_chat.reply_synth_offset = end;
+    return NULL;
+  }
+  char* out = (char*)malloc(n + 1);
+  if (out == NULL) {
+    ESP_LOGW(TAG, "extract_pending_chunk: OOM (%u bytes)", (unsigned)n);
+    return NULL;
+  }
+  memcpy(out, s_chat.reply_buf + start, n);
+  out[n] = '\0';
+  s_chat.reply_synth_offset = end;
+  return out;
+}
 
+/* ── Phase 4.5.2 — sentence-level streaming TTS playback task ──
+ *
+ * Lifecycle (single long-running task per turn):
+ *   - Spawned by tts_kick_or_spawn() the first time a sentence boundary
+ *     is detected mid-stream (or at EvTurnEnd if no boundaries appeared).
+ *   - Loop: extract next sentence from reply_buf, synth, play, repeat.
+ *   - When extract returns NULL: if reply_turn_complete is set we're done
+ *     (no more text coming); otherwise sleep briefly waiting for more chunks.
+ *   - tts_cancel_requested aborts both the wait and the in-progress playback
+ *     (via bb_audio_request_playback_interrupt).
+ *   - On exit: clears s_chat.tts_task, self-deletes.
+ *
+ * Hide / cancel-and-replace: callers set tts_cancel_requested + interrupt
+ * audio. The task drains current playback (if any), then exits next loop iter.
+ *
+ * Re-entrance after exit: agent_task at new turn calls tts_cancel_in_flight()
+ * (waits for old task to die) before reply_buf_reset, then a fresh task is
+ * spawned when the new turn's first sentence arrives. */
+
+/* Returns 1 if we should bail right now (overlay closed or cancel requested). */
+static int tts_should_abort(void) {
+  return (!s_chat.active || s_chat.tts_cancel_requested) ? 1 : 0;
+}
+
+/* Synth + play a single chunk. Returns ESP_OK on a clean play, otherwise the
+ * caller should treat as "skip and continue" (typically an interrupt or
+ * synth failure — neither is fatal to the loop). */
+static esp_err_t tts_synth_and_play(const char* text) {
+  if (text == NULL || text[0] == '\0') return ESP_OK;
   ESP_LOGI(TAG, "tts: synth start len=%u", (unsigned)strlen(text));
   bb_tts_audio_t audio = {0};
   esp_err_t syn = bb_adapter_tts_synthesize_pcm16(text, &audio);
@@ -551,75 +705,106 @@ static void tts_playback_task(void* arg) {
     ESP_LOGW(TAG, "tts: synth failed err=%s pcm=%p len=%u", esp_err_to_name(syn),
              (void*)audio.pcm_data, (unsigned)audio.pcm_len);
     bb_adapter_tts_audio_free(&audio);
-    free(text);
-    s_chat.tts_task = NULL;
-    vTaskDelete(NULL);
-    return;
+    return syn != ESP_OK ? syn : ESP_FAIL;
   }
-
-  /* If the overlay was hidden between EvTurnEnd and now, abort cleanly. */
-  if (!s_chat.active) {
-    ESP_LOGI(TAG, "tts: chat inactive, skipping playback");
+  if (tts_should_abort()) {
+    ESP_LOGI(TAG, "tts: aborted before playback (active=%d cancel=%d)",
+             s_chat.active ? 1 : 0, s_chat.tts_cancel_requested ? 1 : 0);
     bb_adapter_tts_audio_free(&audio);
-    free(text);
-    s_chat.tts_task = NULL;
-    vTaskDelete(NULL);
-    return;
+    return ESP_ERR_INVALID_STATE;
   }
-
   esp_err_t tx = bb_audio_start_playback();
   if (tx != ESP_OK) {
     ESP_LOGW(TAG, "tts: start_playback failed err=%s", esp_err_to_name(tx));
     bb_adapter_tts_audio_free(&audio);
-    free(text);
-    s_chat.tts_task = NULL;
-    vTaskDelete(NULL);
-    return;
+    return tx;
   }
   if (audio.sample_rate > 0 && audio.sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
     (void)bb_audio_set_playback_sample_rate(audio.sample_rate);
   }
   ESP_LOGI(TAG, "tts: play pcm_bytes=%u rate=%d ch=%d", (unsigned)audio.pcm_len,
            audio.sample_rate, audio.channels);
-  if (bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len) != ESP_OK) {
-    ESP_LOGW(TAG, "tts: play_pcm failed (likely interrupted by hide/PTT)");
+  esp_err_t play_err = bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len);
+  if (play_err != ESP_OK) {
+    ESP_LOGW(TAG, "tts: play_pcm failed (likely interrupted)");
   }
   (void)bb_audio_stop_playback();
   (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
   bb_audio_clear_playback_interrupt();
   bb_adapter_tts_audio_free(&audio);
-  free(text);
-  ESP_LOGI(TAG, "tts: done");
+  return play_err;
+}
+
+static void tts_playback_task(void* arg) {
+  (void)arg;
+  ESP_LOGI(TAG, "tts: streaming task start");
+  /* Outer loop: drain reply_buf one sentence at a time. */
+  while (!tts_should_abort()) {
+    int turn_done = s_chat.reply_turn_complete ? 1 : 0;
+    char* chunk = extract_pending_chunk(turn_done);
+    if (chunk == NULL) {
+      if (turn_done) {
+        /* No more text and turn ended → clean exit. */
+        break;
+      }
+      /* No sentence boundary yet — wait for more chunks. Light poll: 80 ms
+       * is short enough that the user-perceived gap between sentences stays
+       * tiny while still avoiding a busy loop. */
+      vTaskDelay(pdMS_TO_TICKS(80));
+      continue;
+    }
+    esp_err_t err = tts_synth_and_play(chunk);
+    free(chunk);
+    if (err == ESP_ERR_INVALID_STATE) {
+      /* Aborted mid-flight. Don't try the next sentence. */
+      break;
+    }
+    /* ESP_FAIL / synth-fail: drop this sentence, keep going (next sentence
+     * may still be useful). */
+  }
+  ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d)",
+           s_chat.tts_cancel_requested ? 1 : 0,
+           s_chat.reply_turn_complete ? 1 : 0);
   s_chat.tts_task = NULL;
   vTaskDelete(NULL);
 }
 
-/* Spawn a TTS task if (a) toggle on, (b) reply has content, (c) no prior
- * task alive. Returns silently otherwise. Called from agent_task. */
-static void maybe_spawn_tts_task(void) {
+/* Idempotent kick: if the streaming task is already running, do nothing
+ * (its loop will pick up the new chunk on the next iteration). Otherwise
+ * spawn it. Called from reply_buf_append (mid-stream sentence boundary)
+ * and from EvTurnEnd (flush tail). */
+static void tts_kick_or_spawn(void) {
   if (!s_chat.tts_enabled) return;
+  if (s_chat.tts_task != NULL) return;
   if (!reply_buf_has_content()) return;
-  if (s_chat.tts_task != NULL) {
-    /* Phase 4.5.2 will support cancel-and-replace; for now, drop the new turn's TTS. */
-    ESP_LOGW(TAG, "tts: prior playback still active, skipping this turn");
-    return;
-  }
-  /* Hand off a heap copy so the task is independent of s_chat.reply_buf
-   * (which we'll reset at the next turn). */
-  char* snapshot = dup_str(s_chat.reply_buf);
-  if (snapshot == NULL) {
-    ESP_LOGW(TAG, "tts: snapshot OOM, skip");
-    return;
-  }
+
   TaskHandle_t handle = NULL;
   BaseType_t ok = xTaskCreate(tts_playback_task, "bb_chat_tts", BB_CHAT_TTS_TASK_STACK,
-                              snapshot, BB_CHAT_TTS_TASK_PRIO, &handle);
+                              NULL, BB_CHAT_TTS_TASK_PRIO, &handle);
   if (ok != pdPASS) {
     ESP_LOGW(TAG, "tts: xTaskCreate failed, skip");
-    free(snapshot);
     return;
   }
   s_chat.tts_task = handle;
+}
+
+/* Cancel-and-replace: ask the streaming task to abort + interrupt audio, then
+ * wait briefly for it to clean up. Used when a new user turn arrives mid-
+ * playback so the old reply doesn't keep speaking over the new question. */
+static void tts_cancel_in_flight(void) {
+  if (s_chat.tts_task == NULL) return;
+  ESP_LOGI(TAG, "tts: cancel-and-replace requested");
+  s_chat.tts_cancel_requested = 1;
+  bb_audio_request_playback_interrupt();
+  /* Wait up to ~500 ms for the task to self-delete. If it doesn't, something
+   * is stuck deep in synth — accept the leak rather than block agent_task
+   * forever. The cancel flag stays set; the old task will eventually exit. */
+  for (int i = 0; i < 50 && s_chat.tts_task != NULL; ++i) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (s_chat.tts_task != NULL) {
+    ESP_LOGW(TAG, "tts: cancel timeout, in-flight task still alive (will exit lazily)");
+  }
 }
 
 void bb_ui_agent_chat_show(lv_obj_t* parent) {
@@ -676,11 +861,13 @@ void bb_ui_agent_chat_hide(void) {
    * on_driver_fetch_done. The task itself self-deletes; we just refuse its
    * result. */
   s_chat.driver_fetch_generation++;
-  /* Phase 4.5.1 — if a TTS playback task is still running, ask the audio
-   * layer to break out of bb_audio_play_pcm_blocking. The task's cleanup will
-   * still run, free the audio buffer, and clear s_chat.tts_task. */
+  /* Phase 4.5.1/4.5.2 — if a TTS streaming task is still running, mark it
+   * cancelled and break out of any blocking playback. The task's loop sees
+   * the cancel flag (or the active=0 we already set), exits cleanly, and
+   * nulls s_chat.tts_task. */
   if (s_chat.tts_task != NULL) {
     ESP_LOGI(TAG, "hide: interrupting in-flight TTS playback");
+    s_chat.tts_cancel_requested = 1;
     bb_audio_request_playback_interrupt();
   }
   /* Free the per-overlay reply accumulator. The TTS task already owns its
