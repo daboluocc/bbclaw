@@ -99,11 +99,13 @@ typedef struct {
   lv_obj_t* settings_root;
   lv_obj_t* settings_rows[BB_SETTINGS_ROW_COUNT];
   int settings_sel;            /* 当前高亮行（0..BB_SETTINGS_ROW_COUNT-1） */
-  /* drivers 列表懒加载缓存（首次进 settings 时拉取 adapter） */
+  /* drivers 列表懒加载缓存（Phase 4.2.5: 异步 HTTP，结果通过 lv_async_call 回到 LVGL 任务） */
   bb_agent_driver_info_t driver_cache[BB_CHAT_DRIVER_CACHE_MAX];
   int driver_cache_count;
   int driver_cache_offline;    /* 1 = HTTP 失败，cache 是 fallback */
   int driver_cache_idx;        /* 当前选中 driver 在 cache 中的 index */
+  volatile int driver_fetch_pending;        /* 1 = task in flight */
+  volatile uint32_t driver_fetch_generation; /* bumped on launch + on cancel */
   /* themes 列表（指针来自 bb_agent_theme_list；生命期 = 程序生命期） */
   const char* const* theme_list;
   int theme_count;
@@ -124,6 +126,11 @@ static bb_chat_state_t s_chat = {0};
 static void reply_buf_reset(void);
 static void reply_buf_append(const char* delta);
 static void maybe_spawn_tts_task(void);
+
+/* Forward decls for Phase 4.2.5 async driver fetch. */
+static void spawn_driver_fetch_task(void);
+static void apply_driver_cache_idx(void);
+static void settings_apply_rows(void);
 
 /* ── async payload 类型（agent 线程 → LVGL 线程） ── */
 
@@ -638,6 +645,11 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   load_selected_driver_from_nvs();
   load_tts_enabled_from_nvs();
 
+  /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
+   * RIGHT cycle don't have to wait for HTTP. Cheap if cache already populated
+   * from an earlier session. */
+  spawn_driver_fetch_task();
+
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
@@ -659,6 +671,11 @@ void bb_ui_agent_chat_hide(void) {
   /* 把 active 先清，让任何 in-flight 的 async dispatch 直接丢弃。
    * 在跑的 agent task 不强 kill；它结束后 self-delete。 */
   s_chat.active = 0;
+  /* Phase 4.2.5 — bump the generation so any in-flight driver_fetch_task's
+   * lv_async_call payload arrives stale and gets dropped in
+   * on_driver_fetch_done. The task itself self-deletes; we just refuse its
+   * result. */
+  s_chat.driver_fetch_generation++;
   /* Phase 4.5.1 — if a TTS playback task is still running, ask the audio
    * layer to break out of bb_audio_play_pcm_blocking. The task's cleanup will
    * still run, free the audio buffer, and clear s_chat.tts_task. */
@@ -933,10 +950,14 @@ static void settings_apply_rows(void) {
   if (s_chat.settings_root == NULL) return;
   char buf[64];
 
-  /* Row 0: Agent: <name> [(offline)] [(i/N)] */
+  /* Row 0: Agent: <name> [(offline)] [(i/N)] [(loading…)] */
   if (s_chat.settings_rows[BB_SETTINGS_ROW_AGENT] != NULL) {
     const char* drv = settings_active_driver_name();
-    if (s_chat.driver_cache_offline) {
+    if (s_chat.driver_cache_count <= 0 && s_chat.driver_fetch_pending) {
+      /* Phase 4.2.5: cache is still being fetched off-LVGL. Show a hint so
+       * the row doesn't look frozen. on_driver_fetch_done re-renders us. */
+      snprintf(buf, sizeof(buf), "Agent: loading...");
+    } else if (s_chat.driver_cache_offline) {
       snprintf(buf, sizeof(buf), "Agent: %s (offline)", drv);
     } else if (s_chat.driver_cache_count > 1) {
       snprintf(buf, sizeof(buf), "Agent: %s (%d/%d)", drv,
@@ -1000,27 +1021,10 @@ static void settings_apply_rows(void) {
 
 /* 第一次进 settings 时拉一次 adapter driver 列表；HTTP 失败 fallback 一个固定项。
  * 之后保持缓存（直到 hide）；不主动刷新。 */
-static void settings_ensure_driver_cache(void) {
-  if (s_chat.driver_cache_count > 0) return;
-  int total = 0;
-  esp_err_t err = bb_agent_list_drivers(s_chat.driver_cache, BB_CHAT_DRIVER_CACHE_MAX, &total);
-  if (err != ESP_OK || total <= 0) {
-    ESP_LOGW(TAG, "settings: list_drivers failed (%s), fallback to '%s'",
-             esp_err_to_name(err), BB_CHAT_DRIVER_FALLBACK);
-    memset(&s_chat.driver_cache[0], 0, sizeof(s_chat.driver_cache[0]));
-    strncpy(s_chat.driver_cache[0].name, BB_CHAT_DRIVER_FALLBACK,
-            sizeof(s_chat.driver_cache[0].name) - 1);
-    s_chat.driver_cache_count = 1;
-    s_chat.driver_cache_offline = 1;
-  } else {
-    /* total 可能 > BB_CHAT_DRIVER_CACHE_MAX；list api 仍会按 cap 写入。 */
-    if (total > BB_CHAT_DRIVER_CACHE_MAX) total = BB_CHAT_DRIVER_CACHE_MAX;
-    s_chat.driver_cache_count = total;
-    s_chat.driver_cache_offline = 0;
-    ESP_LOGI(TAG, "settings: %d driver(s) cached", total);
-  }
-
-  /* 把 selected_driver / driver_name 映射到 cache 里的 idx */
+/* Phase 4.2.5 — map selected_driver / driver_name to a cache index.
+ * Pulled out of the old synchronous settings_ensure_driver_cache so both
+ * the async-result dispatch and any future direct cache mutator can call it. */
+static void apply_driver_cache_idx(void) {
   int idx = 0;
   const char* prefer = s_chat.selected_driver[0] != '\0' ? s_chat.selected_driver
                        : (s_chat.driver_name[0] != '\0' ? s_chat.driver_name : NULL);
@@ -1033,6 +1037,110 @@ static void settings_ensure_driver_cache(void) {
     }
   }
   s_chat.driver_cache_idx = idx;
+}
+
+/* Phase 4.2.5 — async driver fetch.
+ *
+ * The synchronous bb_agent_list_drivers HTTP call could block the LVGL task
+ * for several seconds (cold WiFi / cold adapter), freezing the UI. The new
+ * pipeline:
+ *   1. spawn_driver_fetch_task() (LVGL thread): mark pending, bump generation,
+ *      spawn driver_fetch_task. Idempotent — skips if cache already populated
+ *      or another task is in flight.
+ *   2. driver_fetch_task (FreeRTOS task): does the blocking HTTP off-LVGL,
+ *      packages result, posts via lv_async_call, self-deletes.
+ *   3. on_driver_fetch_done (LVGL thread): drops the result if the chat
+ *      overlay was closed or a newer fetch superseded this one; otherwise
+ *      copies entries into the cache and refreshes settings UI if open.
+ *
+ * Cancellation: bb_ui_agent_chat_hide bumps driver_fetch_generation. Any
+ * in-flight task's payload arrives in on_driver_fetch_done with stale gen
+ * and gets dropped, no crash.
+ *
+ * Stack 4KB matches the agent task — same HTTP client, similar memory profile.
+ */
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int total;
+  bb_agent_driver_info_t entries[BB_CHAT_DRIVER_CACHE_MAX];
+} driver_fetch_result_t;
+
+#define BB_CHAT_DRIVER_FETCH_TASK_STACK 4096
+#define BB_CHAT_DRIVER_FETCH_TASK_PRIO  4
+
+static void on_driver_fetch_done(void* user_data) {
+  driver_fetch_result_t* res = (driver_fetch_result_t*)user_data;
+  if (res == NULL) return;
+  /* Always clear the pending flag (the task that ran is done, regardless of
+   * whether we use its result). */
+  s_chat.driver_fetch_pending = 0;
+
+  if (!s_chat.active || res->gen != s_chat.driver_fetch_generation) {
+    ESP_LOGD(TAG, "driver fetch dropped (gen=%u current=%u active=%d)",
+             (unsigned)res->gen, (unsigned)s_chat.driver_fetch_generation,
+             s_chat.active ? 1 : 0);
+    free(res);
+    return;
+  }
+
+  if (res->err != ESP_OK || res->total <= 0) {
+    ESP_LOGW(TAG, "driver fetch failed (%s), fallback to '%s'",
+             esp_err_to_name(res->err), BB_CHAT_DRIVER_FALLBACK);
+    memset(&s_chat.driver_cache[0], 0, sizeof(s_chat.driver_cache[0]));
+    strncpy(s_chat.driver_cache[0].name, BB_CHAT_DRIVER_FALLBACK,
+            sizeof(s_chat.driver_cache[0].name) - 1);
+    s_chat.driver_cache_count = 1;
+    s_chat.driver_cache_offline = 1;
+  } else {
+    int total = res->total > BB_CHAT_DRIVER_CACHE_MAX ? BB_CHAT_DRIVER_CACHE_MAX : res->total;
+    memcpy(s_chat.driver_cache, res->entries, sizeof(res->entries[0]) * (size_t)total);
+    s_chat.driver_cache_count = total;
+    s_chat.driver_cache_offline = 0;
+    ESP_LOGI(TAG, "driver fetch ok: %d driver(s) cached", total);
+  }
+  apply_driver_cache_idx();
+
+  /* Refresh settings UI if it's open right now — the AGENT row was probably
+   * showing "loading…" while we waited. */
+  if (s_chat.mode == BB_CHAT_MODE_SETTINGS && s_chat.settings_root != NULL) {
+    settings_apply_rows();
+  }
+  free(res);
+}
+
+static void driver_fetch_task(void* arg) {
+  uint32_t my_gen = (uint32_t)(uintptr_t)arg;
+  driver_fetch_result_t* res = (driver_fetch_result_t*)calloc(1, sizeof(*res));
+  if (res == NULL) {
+    ESP_LOGE(TAG, "driver_fetch_task: calloc failed");
+    s_chat.driver_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  res->gen = my_gen;
+  res->err = bb_agent_list_drivers(res->entries, BB_CHAT_DRIVER_CACHE_MAX, &res->total);
+  /* lv_async_call enqueues into LVGL's pending list — safe from any task. */
+  lv_async_call(on_driver_fetch_done, res);
+  vTaskDelete(NULL);
+}
+
+static void spawn_driver_fetch_task(void) {
+  if (s_chat.driver_cache_count > 0) return;  /* already populated */
+  if (s_chat.driver_fetch_pending) return;     /* already in flight */
+  s_chat.driver_fetch_pending = 1;
+  uint32_t gen = ++s_chat.driver_fetch_generation;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(driver_fetch_task, "drv_fetch",
+                              BB_CHAT_DRIVER_FETCH_TASK_STACK,
+                              (void*)(uintptr_t)gen,
+                              BB_CHAT_DRIVER_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
+    s_chat.driver_fetch_pending = 0;
+  } else {
+    ESP_LOGI(TAG, "driver fetch spawned (gen=%u)", (unsigned)gen);
+  }
 }
 
 static void settings_ensure_theme_cache(void) {
@@ -1076,8 +1184,11 @@ static void settings_show(void) {
     lv_obj_add_flag(s_chat.picker_root, LV_OBJ_FLAG_HIDDEN);
   }
 
-  /* 拉/同步缓存。 */
-  settings_ensure_driver_cache();
+  /* Phase 4.2.5 — driver cache is async now: kick a fetch off if not already
+   * cached/in-flight, then render the row immediately (it'll show "loading…"
+   * if the result hasn't arrived yet). on_driver_fetch_done re-renders when
+   * the data lands. Theme list is in-process, no HTTP, stays sync. */
+  spawn_driver_fetch_task();
   settings_ensure_theme_cache();
 
   s_chat.settings_sel = BB_SETTINGS_ROW_AGENT;
@@ -1338,7 +1449,14 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   }
   if (delta == 0) return ESP_OK;
 
-  settings_ensure_driver_cache();
+  /* Phase 4.2.5 — async cache: if it's still loading, spawn (idempotent) and
+   * let the user know via the return code. The radio_app wrapper logs at
+   * DEBUG so the gesture isn't a silent no-op forever — typically the next
+   * press a moment later succeeds. */
+  if (s_chat.driver_cache_count <= 0) {
+    spawn_driver_fetch_task();
+    return s_chat.driver_fetch_pending ? ESP_ERR_INVALID_STATE : ESP_ERR_NOT_FOUND;
+  }
   const int n = s_chat.driver_cache_count;
   if (n <= 1) {
     /* Single (or zero) entry: nothing to cycle through. The offline-fallback
