@@ -56,7 +56,12 @@ static const char* TAG = "bb_agent_ui";
 /* Phase 4.5.1 — TTS reply playback. The accumulator caps at 4 KiB; cloud
  * replies longer than that fall back to truncated TTS (we log a warn). */
 #define BB_CHAT_REPLY_BUF_CAP    4096
-#define BB_CHAT_TTS_TASK_STACK   4096
+/* 4 KB was enough for the Phase 4.5.1 single-shot TTS task (one synth +
+ * one playback then exit). The Phase 4.5.2 streaming pipeline keeps the
+ * task alive across multiple sentence-level synth+play cycles, with cJSON
+ * parsing for the synth response sitting alongside the I2S playback path
+ * — observed stack overflow at 4 KB. Bumped to 8 KB with headroom. */
+#define BB_CHAT_TTS_TASK_STACK   8192
 #define BB_CHAT_TTS_TASK_PRIO    4
 
 typedef enum {
