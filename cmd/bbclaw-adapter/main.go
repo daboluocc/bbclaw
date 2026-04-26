@@ -15,6 +15,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/openclawdriver"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
@@ -178,6 +179,11 @@ func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 	registerClaude := enabled == nil || enabled["claude-code"]
 	if registerClaude {
 		router.Register(claudecode.New(claudecode.Options{}, logger), logger)
+	}
+
+	registerOpencode := enabled == nil || enabled["opencode"]
+	if registerOpencode {
+		router.Register(opencode.New(opencode.Options{}, logger), logger)
 	}
 
 	// openclaw: registered when an openclaw URL is configured. We reuse the
