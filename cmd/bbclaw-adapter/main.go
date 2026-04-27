@@ -157,82 +157,162 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	}, server, nil
 }
 
+// driverReg is one row in k_driver_registry. Each row knows everything
+// needed to decide whether to register a driver and how to construct it.
+//
+//   - name        : the Driver.Name() this entry will register under. Used
+//                   both for the AGENT_ENABLED_DRIVERS comma-list match and
+//                   for log messages.
+//   - construct   : builds the actual driver. Allowed to fail (e.g. invalid
+//                   config); on error the row is skipped with a warning.
+//   - autoEnable  : in auto mode (AGENT_ENABLED_DRIVERS empty), should this
+//                   row be registered? Lets each driver carry its own
+//                   gating predicate (cfg field set, TCP probe, etc.).
+//   - forceEnv    : optional env var name. If set to a non-empty value,
+//                   forces registration even when autoEnable would skip
+//                   (used to bypass a flaky probe on developer machines).
+type driverReg struct {
+	name       string
+	construct  func(cfg config.Config, logger *obs.Logger) (agent.Driver, error)
+	autoEnable func(cfg config.Config) bool
+	forceEnv   string
+}
+
+// ollamaProbeAddr is the TCP endpoint probed in auto mode to decide if
+// ollama should be registered. Exposed as a package var so tests can
+// redirect it to a deterministic address; production code keeps the
+// default 127.0.0.1:11434.
+var ollamaProbeAddr = "127.0.0.1:11434"
+
+// ollamaProbeTimeout is the per-probe TCP dial timeout. Same rationale as
+// ollamaProbeAddr — overridable from tests.
+var ollamaProbeTimeout = 500 * time.Millisecond
+
+// k_driver_registry is the static list of all known agent drivers, in the
+// order they are registered (which is also the AGENT_DEFAULT_DRIVER fallback
+// order: the first successfully-registered driver wins). Adding a new
+// driver = adding one row here.
+var k_driver_registry = []driverReg{
+	{
+		name: "claude-code",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return claudecode.New(claudecode.Options{}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool { return true },
+	},
+	{
+		name: "opencode",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return opencode.New(opencode.Options{
+				Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
+				ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
+			}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool { return true },
+	},
+	{
+		name: "openclaw",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return openclawdriver.New(openclawdriver.Options{
+				URL:                strings.TrimSpace(cfg.OpenClawURL),
+				AuthToken:          cfg.OpenClawAuthToken,
+				NodeID:             cfg.OpenClawNodeID,
+				DeviceIdentityPath: cfg.OpenClawIdentityPath,
+				ReplyWaitTimeout:   cfg.OpenClawReplyWait,
+				HTTPTimeout:        cfg.HTTPTimeout,
+			}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool {
+			return strings.TrimSpace(cfg.OpenClawURL) != ""
+		},
+		forceEnv: "AGENT_OPENCLAW_FORCE",
+	},
+	{
+		name: "ollama",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return ollama.New(ollama.Options{}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool {
+			return probeTCP(ollamaProbeAddr, ollamaProbeTimeout)
+		},
+		forceEnv: "AGENT_OLLAMA_FORCE",
+	},
+}
+
 // buildAgentRouter constructs the Router using these two env vars (both
 // optional; zero-config means "auto-detect what's available"):
 //
 //   AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,openclaw,ollama");
-//                          empty = auto mode — claude-code always
-//                          registered, openclaw registered when an openclaw
-//                          URL is configured (cfg.OpenClawURL), ollama
-//                          registered only if 127.0.0.1:11434 is listening.
+//                          empty = auto mode — each driver's autoEnable
+//                          predicate decides (claude-code/opencode always,
+//                          openclaw only when cfg.OpenClawURL is set,
+//                          ollama only when 127.0.0.1:11434 listens).
 //   AGENT_DEFAULT_DRIVER   request without explicit driver routes to this
 //                          one; empty = first registered driver.
 //
 // Registration order (which determines the default when AGENT_DEFAULT_DRIVER
-// is unset): claude-code, openclaw, ollama.
+// is unset) is the order of k_driver_registry above.
 //
-// Everything else is hardcoded by design (see feedback_config_minimalism).
+// Each driver may also expose a forceEnv (e.g. AGENT_OLLAMA_FORCE=1) to
+// bypass its autoEnable predicate when the auto-detect heuristic is wrong
+// on a developer machine. Everything else is hardcoded by design (see
+// feedback_config_minimalism).
 func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
+	return buildAgentRouterFromRegistry(cfg, logger, k_driver_registry, os.Getenv)
+}
+
+// buildAgentRouterFromRegistry is the testable core of buildAgentRouter. It
+// takes the registry slice and an env-getter as parameters so unit tests
+// can drive it deterministically without touching the real environment or
+// the production registry.
+func buildAgentRouterFromRegistry(cfg config.Config, logger *obs.Logger, registry []driverReg, getenv func(string) string) *agent.Router {
 	router := agent.NewRouter()
-	enabled := parseEnabledDrivers(os.Getenv("AGENT_ENABLED_DRIVERS"))
+	enabled := parseEnabledDrivers(getenv("AGENT_ENABLED_DRIVERS"))
 
-	registerClaude := enabled == nil || enabled["claude-code"]
-	if registerClaude {
-		router.Register(claudecode.New(claudecode.Options{}, logger), logger)
-	}
-
-	registerOpencode := enabled == nil || enabled["opencode"]
-	if registerOpencode {
-		router.Register(opencode.New(opencode.Options{
-			Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
-			ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
-		}, logger), logger)
-	}
-
-	// openclaw: registered when an openclaw URL is configured. We reuse the
-	// same env knobs as buildSink — there is no separate AGENT_OPENCLAW_URL
-	// — so the agent driver and the legacy PTT path always talk to the same
-	// gateway.
-	openclawURL := strings.TrimSpace(cfg.OpenClawURL)
-	registerOpenclaw := false
-	switch {
-	case openclawURL == "":
-		logger.Infof("agent router: openclaw driver skipped (no URL configured)")
-	case enabled == nil:
-		registerOpenclaw = true
-	case enabled["openclaw"]:
-		registerOpenclaw = true
-	}
-	if registerOpenclaw {
-		router.Register(openclawdriver.New(openclawdriver.Options{
-			URL:                openclawURL,
-			AuthToken:          cfg.OpenClawAuthToken,
-			NodeID:             cfg.OpenClawNodeID,
-			DeviceIdentityPath: cfg.OpenClawIdentityPath,
-			ReplyWaitTimeout:   cfg.OpenClawReplyWait,
-			HTTPTimeout:        cfg.HTTPTimeout,
-		}, logger), logger)
-		logger.Infof("agent router: openclaw driver registered url=%s", openclawURL)
-	}
-
-	registerOllama := false
-	switch {
-	case enabled == nil:
-		registerOllama = probeTCP("127.0.0.1:11434", 500*time.Millisecond)
-		if registerOllama {
-			logger.Infof("ollama: auto-detected on 127.0.0.1:11434, registering")
-		} else {
-			logger.Infof("ollama: 127.0.0.1:11434 not reachable, skipping (set AGENT_ENABLED_DRIVERS to force)")
+	for _, reg := range registry {
+		// Decide enabled in priority order:
+		//   1. explicit AGENT_ENABLED_DRIVERS list — wins if non-nil
+		//   2. forceEnv set to non-empty — bypasses autoEnable
+		//   3. auto mode — autoEnable predicate
+		var (
+			enable bool
+			reason string
+		)
+		switch {
+		case enabled != nil:
+			if enabled[reg.name] {
+				enable = true
+				reason = "explicitly enabled via AGENT_ENABLED_DRIVERS"
+			} else {
+				reason = "not listed in AGENT_ENABLED_DRIVERS"
+			}
+		case reg.forceEnv != "" && strings.TrimSpace(getenv(reg.forceEnv)) != "":
+			enable = true
+			reason = fmt.Sprintf("forced via %s", reg.forceEnv)
+		default:
+			if reg.autoEnable != nil && reg.autoEnable(cfg) {
+				enable = true
+				reason = "auto-detected"
+			} else {
+				reason = "auto-detect predicate false"
+			}
 		}
-	case enabled["ollama"]:
-		registerOllama = true
-		logger.Infof("ollama: explicitly enabled via AGENT_ENABLED_DRIVERS")
-	}
-	if registerOllama {
-		router.Register(ollama.New(ollama.Options{}, logger), logger)
+
+		if !enable {
+			logger.Infof("agent router: %s skipped (%s)", reg.name, reason)
+			continue
+		}
+
+		drv, err := reg.construct(cfg, logger)
+		if err != nil {
+			logger.Warnf("agent router: %s construct failed: %v", reg.name, err)
+			continue
+		}
+		router.Register(drv, logger)
+		logger.Infof("agent router: %s registered (%s)", reg.name, reason)
 	}
 
-	if want := strings.TrimSpace(os.Getenv("AGENT_DEFAULT_DRIVER")); want != "" {
+	if want := strings.TrimSpace(getenv("AGENT_DEFAULT_DRIVER")); want != "" {
 		if !router.SetDefault(want) {
 			logger.Warnf("AGENT_DEFAULT_DRIVER=%q is not a registered driver; keeping %q", want, router.DefaultName())
 		} else {
