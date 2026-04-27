@@ -70,6 +70,11 @@ void bb_theme_text_only_init(void);
 void bb_theme_buddy_ascii_init(void);
 
 /**
+ * Phase 4.6.x — 显式注册 "buddy-anim" 主题（九态 ASCII + LVGL 动效）。
+ */
+void bb_theme_buddy_anim_init(void);
+
+/**
  * 当前激活主题；首次调用时从 NVS（namespace=bbclaw, key=agent/theme）加载，缺省 fallback 到 "text-only"。
  * 永不返回 NULL（只要至少注册过一个主题；text-only 通过 constructor 自动注册）。
  */

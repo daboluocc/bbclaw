@@ -2578,6 +2578,7 @@ esp_err_t bb_radio_app_start(void) {
    * buddy-ascii so it's available in Settings → Theme. */
   bb_theme_text_only_init();
   bb_theme_buddy_ascii_init();
+  bb_theme_buddy_anim_init();
   /* Phase 4.7.2: eagerly resolve the active theme at boot so the log
    * immediately reveals which theme will render — saves users from "what
    * theme am I on?" guesswork after a restart. */

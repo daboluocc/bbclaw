@@ -254,7 +254,9 @@ type ToolCall struct {
 | 4.8.x | Chat 作为 standby + idle 自动退出 + LISTENING/SPEAKING 九态 state flow · 见 ADR-008、ADR-009 | ✅ commits `57da618`, `bf7f228` |
 | 4.9 | openclaw 作为 AgentDriver（adapter 内置） · 见 [ADR-005](decisions/ADR-005-openclaw-as-driver.md) | ✅ commit `7356eda`（bbclaw-reference） |
 | 5 | Flipper 6-button 完整 nav events Option B（UP/DOWN/LEFT/RIGHT/OK/BACK 全语义） · 见 ADR-006 | ✅ commit `99dd2ec` |
-| (后续) | Codex / Aider / Gemini driver、buddy GIF 主题、tool_use 真审批闭环 | 按需加 |
+| 4.6.x | `buddy-anim` 主题（LVGL anim 驱动 9 态 ASCII 表情：呼吸 / 弹跳 / 抖动 / 心跳 / 闪烁） | ✅ post-v0.4.0 |
+| 4.10 | `aider` 作为第 5 个 AgentDriver（plain-text stdout，`--chat-history-file` 续接） | ✅ post-v0.4.0 |
+| (后续) | Codex / Gemini driver、buddy 像素图主题、tool_use 真审批闭环 | 按需加 |
 
 ### Phase 1 验收记录
 
