@@ -10,13 +10,61 @@ via a unified [Agent Bus](../design/agent_bus.md).
 > Module path is unchanged: `github.com/daboluocc/bbclaw/adapter`.
 > Cloud backend and web portal stay closed.
 
-## Build from source
+## Quickstart — first successful run in 60 seconds
+
+This is the minimum that gets the adapter listening, lists registered
+drivers, and proves an end-to-end agent call. No ASR/TTS, no cloud,
+no OpenClaw — just the agent endpoints. Verified clean on 2026-04-27.
 
 ```bash
 cd adapter
+make build                  # → bin/bbclaw-adapter (with version ldflags)
+
+cat > .env <<'EOF'
+ADAPTER_MODE=local
+ADAPTER_ADDR=:18080
+OPENCLAW_WS_URL=
+ASR_PROVIDER=openai_compatible
+ASR_BASE_URL=http://127.0.0.1:1
+ASR_API_KEY=dummy
+ASR_MODEL=dummy
+ASR_READINESS_PROBE=0
+TTS_PROVIDER=mock
+AGENT_DEFAULT_DRIVER=claude-code
+EOF
+
+set -a && source .env && set +a && ./bin/bbclaw-adapter &
+sleep 1
+
+curl -sS http://127.0.0.1:18080/healthz
+# → {"ok":true,"data":{"local":{"enabled":true,"ready":true},"status":"ok"}}
+
+curl -sS http://127.0.0.1:18080/v1/agent/drivers
+# → {"ok":true,"data":{"drivers":[{"name":"claude-code", ...}, ...]}}
+
+# Real end-to-end agent call (requires `claude` CLI on PATH and credentials).
+# Streams NDJSON: {session} → {text}* → {tokens} → {turn_end}.
+curl -N -d '{"text":"reply with the single word: hello","driver":"claude-code"}' \
+  http://127.0.0.1:18080/v1/agent/message
+```
+
+Which drivers register depends on your local environment:
+- `claude-code` always tries; needs `claude` CLI on PATH for actual calls
+- `opencode` always tries; needs `opencode` CLI on PATH
+- `openclaw` registers when `OPENCLAW_WS_URL` is set (or `AGENT_OPENCLAW_FORCE=1`)
+- `ollama` registers when `127.0.0.1:11434` is listening (or `AGENT_OLLAMA_FORCE=1`)
+- `aider` registers when `aider` CLI is on PATH (or `AGENT_AIDER_FORCE=1`)
+
+For voice (PTT) endpoints (`/v1/stream/*`) you also need real ASR and TTS
+providers — see the full env reference in `.env.example`.
+
+## Build from source — full build/test/dev
+
+```bash
 make build           # binary at bin/bbclaw-adapter
-make test            # full unit-test suite
-make run             # reads ./.env, hot-reloadable via `make dev` (Air)
+make test            # full unit-test suite (~7 packages)
+make run             # reads ./.env and runs in foreground
+make dev             # hot-reload via Air (requires `air` on PATH)
 ```
 
 Or as a Go install for casual use:
