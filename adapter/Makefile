@@ -33,6 +33,8 @@ help:
 	@echo ""
 	@echo "  make sync-env       # 扫描本地 driver + 抽 ~/.openclaw 配置 → 合并写 .env"
 	@echo "  make sync-env-reset # 同上，但放弃当前 .env，全新生成（自动备份）"
+	@echo "  make sync-env DOUBAO_ENV=~/github/sales-apis/.env"
+	@echo "                      # 同时从指定 .env 导入 Doubao/Volcano ASR 密钥"
 	@echo "  make run            # 运行 bbclaw-adapter，配置: $(ENV_FILE)"
 	@echo "  make log            # tail -f 运行日志"
 	@echo "  make build          # 构建到 $(BIN_DIR)/bbclaw-adapter"
@@ -42,10 +44,12 @@ help:
 	@echo "示例文件: .env.example"
 
 sync-env:
-	@python3 "$(CURDIR)/scripts/sync_env.py"
+	@python3 "$(CURDIR)/scripts/sync_env.py" \
+		$(if $(DOUBAO_ENV),--doubao-env "$(DOUBAO_ENV)")
 
 sync-env-reset:
-	@python3 "$(CURDIR)/scripts/sync_env.py" --reset
+	@python3 "$(CURDIR)/scripts/sync_env.py" --reset \
+		$(if $(DOUBAO_ENV),--doubao-env "$(DOUBAO_ENV)")
 
 build:
 	@mkdir -p "$(BIN_DIR)"

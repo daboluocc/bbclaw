@@ -11,13 +11,24 @@ needs to override its built-in defaults:
   ollama       127.0.0.1:11434 reachable      OLLAMA_MODEL = first installed
   aider        `aider` on PATH                (no env needed — auto-registered)
 
+Optional ASR/TTS import:
+  Pass --doubao-env <path> (or set DOUBAO_ENV_FILE) to import Doubao /
+  Volcano ASR keys from another project's .env (e.g. sales-apis). Source
+  field names differ from bbclaw's; the script translates:
+    ASR_TOKEN     → ASR_API_KEY
+    ASR_CLUSTER   → ASR_RESOURCE_ID (informational; see note below)
+    ASR_APP_ID    → ASR_APP_ID
+    TTS_TOKEN     → TTS_TOKEN
+    TTS_APP_ID    → TTS_APP_ID
+
 By default merges into an existing adapter/.env (keys you've already set are
 preserved). Use --reset to discard the file and write fresh.
 
 Usage:
-    python3 scripts/sync_env.py             # detect + merge into adapter/.env
-    python3 scripts/sync_env.py --dry-run   # show what would change, write nothing
-    python3 scripts/sync_env.py --reset     # overwrite adapter/.env entirely
+    python3 scripts/sync_env.py
+    python3 scripts/sync_env.py --dry-run
+    python3 scripts/sync_env.py --reset
+    python3 scripts/sync_env.py --doubao-env ~/github/sales-apis/.env
 """
 from __future__ import annotations
 
@@ -93,6 +104,41 @@ def detect_aider() -> dict:
     return {"present": bin_path is not None, "bin": bin_path}
 
 
+def detect_doubao(source_path: Path | None) -> dict:
+    """Read a sales-apis-style .env and translate Volcano ASR/TTS keys to
+    bbclaw adapter's naming convention. The source file is untracked,
+    user-specific; we only read it if the user explicitly points at one
+    (CLI arg or DOUBAO_ENV_FILE)."""
+    if source_path is None:
+        return {"present": False, "reason": "no source path (pass --doubao-env or set DOUBAO_ENV_FILE)"}
+    if not source_path.is_file():
+        return {"present": False, "reason": f"{source_path} not a file"}
+    try:
+        raw = parse_env(source_path)
+    except OSError as e:
+        return {"present": False, "reason": str(e)}
+
+    # Map sales-apis style → bbclaw adapter style.
+    out: dict[str, str] = {}
+    if v := raw.get("ASR_APP_ID"):
+        out["ASR_APP_ID"] = v
+    if v := raw.get("ASR_TOKEN") or raw.get("ASR_API_KEY"):
+        out["ASR_API_KEY"] = v
+    cluster = raw.get("ASR_CLUSTER", "")
+    if v := raw.get("TTS_APP_ID"):
+        out["TTS_APP_ID"] = v
+    if v := raw.get("TTS_TOKEN"):
+        out["TTS_TOKEN"] = v
+
+    return {
+        "present": bool(out),
+        "source": source_path,
+        "mapped": out,
+        "cluster_hint": cluster,
+        "raw_provider": raw.get("ASR_PROVIDER", ""),
+    }
+
+
 def detect_ollama() -> dict:
     if not tcp_open(*OLLAMA_DEFAULT_HOST):
         return {"present": False, "reason": f"{OLLAMA_DEFAULT_HOST[0]}:{OLLAMA_DEFAULT_HOST[1]} not listening"}
@@ -158,9 +204,9 @@ def render_env(values: dict[str, str], detected: dict) -> str:
          ["AGENT_DEFAULT_DRIVER"])
     emit("# Ollama (auto-detected installed model)",
          ["OLLAMA_MODEL"])
-    emit("# Voice path — placeholder providers so the adapter validates;\n# replace with real ASR/TTS keys to enable PTT (see .env.example).",
+    emit("# Voice path — ASR + TTS providers. Replace placeholders with real\n# keys to enable PTT (see .env.example for full provider docs).",
          ["ASR_PROVIDER", "ASR_LOCAL_BIN", "ASR_LOCAL_TEXT_PATH", "ASR_READINESS_PROBE",
-          "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
+          "ASR_APP_ID", "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
           "TTS_PROVIDER", "TTS_APP_ID", "TTS_TOKEN"])
     emit("# Cloud relay (set both to enable cloud_saas firmware support)",
          ["CLOUD_WS_URL", "CLOUD_AUTH_TOKEN"])
@@ -172,7 +218,7 @@ def render_env(values: dict[str, str], detected: dict) -> str:
         "OPENCLAW_AUTH_TOKEN", "OPENCLAW_WS_URL", "AGENT_DEFAULT_DRIVER",
         "OLLAMA_MODEL",
         "ASR_PROVIDER", "ASR_LOCAL_BIN", "ASR_LOCAL_TEXT_PATH", "ASR_READINESS_PROBE",
-        "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
+        "ASR_APP_ID", "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
         "TTS_PROVIDER", "TTS_APP_ID", "TTS_TOKEN",
         "CLOUD_WS_URL", "CLOUD_AUTH_TOKEN", "ADAPTER_AUTH_TOKEN",
     }
@@ -212,7 +258,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="print the new .env to stdout, do not touch the file")
     ap.add_argument("--reset", action="store_true",
                     help="discard existing .env, write a fresh one (backup first)")
+    ap.add_argument("--doubao-env", default=os.environ.get("DOUBAO_ENV_FILE"),
+                    help="path to a sales-apis-style .env to import Doubao/Volcano "
+                         "ASR/TTS keys from (env var: DOUBAO_ENV_FILE)")
     args = ap.parse_args(argv)
+
+    doubao_src = Path(args.doubao_env).expanduser() if args.doubao_env else None
 
     detected = {
         "openclaw": detect_openclaw(),
@@ -220,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         "opencode": detect_opencode(),
         "aider": detect_aider(),
         "ollama": detect_ollama(),
+        "doubao": detect_doubao(doubao_src),
     }
 
     print("Driver scan:")
@@ -233,6 +285,9 @@ def main(argv: list[str] | None = None) -> int:
             elif name == "ollama":
                 models = info.get("models") or []
                 extra = f"  models={','.join(models[:3]) or '(none installed)'}"
+            elif name == "doubao":
+                keys = list(info.get("mapped", {}).keys())
+                extra = f"  from {info['source']}  keys={','.join(keys) or '(none)'}"
             elif info.get("bin"):
                 extra = f"  {info['bin']}"
         else:
@@ -267,6 +322,21 @@ def main(argv: list[str] | None = None) -> int:
     # Ollama model
     if detected["ollama"]["present"] and detected["ollama"].get("models"):
         set_if_unset("OLLAMA_MODEL", detected["ollama"]["models"][0])
+
+    # Doubao import (--doubao-env): translate sales-apis-style ASR keys.
+    # Promote the imported keys into our values dict before falling back to
+    # placeholder providers, so a Doubao-enabled run wins over the mock path.
+    if detected["doubao"]["present"]:
+        for k, v in detected["doubao"]["mapped"].items():
+            set_if_unset(k, v)
+        if "ASR_APP_ID" in values and "ASR_API_KEY" in values:
+            # Override any leftover ASR_PROVIDER=local (placeholder) — we have
+            # real Doubao credentials now.
+            values["ASR_PROVIDER"] = "doubao_native"
+            for k in ("ASR_LOCAL_BIN", "ASR_LOCAL_TEXT_PATH", "ASR_READINESS_PROBE"):
+                values.pop(k, None)
+        if "TTS_APP_ID" in values and "TTS_TOKEN" in values:
+            values["TTS_PROVIDER"] = "doubao_native"
 
     # ASR/TTS placeholders so the adapter passes config.Validate() with zero
     # voice configuration. /v1/stream/* will fail with a clean error at runtime
@@ -305,6 +375,18 @@ def main(argv: list[str] | None = None) -> int:
         print("\nManual follow-up needed for these:")
         for t in todo:
             print(f"  - {t}")
+
+    # Doubao cluster sanity-check: sales-apis uses volc_auc_meeting (a different
+    # ASR cluster than bbclaw's default bigmodel). Flag it so the user knows
+    # auth might still fail even though keys imported cleanly.
+    db = detected.get("doubao", {})
+    if db.get("present"):
+        cluster = db.get("cluster_hint", "")
+        if cluster and cluster != "volc.bigasr.sauc.duration":
+            print(f"\nNote: imported ASR_CLUSTER={cluster!r} differs from bbclaw default "
+                  f"(volc.bigasr.sauc.duration). If you hit auth errors, your Volcengine "
+                  f"app may not have access to the bigmodel cluster — open a ticket or "
+                  f"override ASR_RESOURCE_ID/ASR_WS_URL manually.")
 
     return 0
 
