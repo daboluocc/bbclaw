@@ -206,10 +206,19 @@ static uint8_t s_stream_encoded_chunk_buf[sizeof(s_stream_pcm_chunk_buf) + 64];
  * stream_task pulls from the ring buffer and does (slow) HTTP uploads.
  * This prevents I2S DMA overflow when upload is slow (e.g. low bandwidth).
  *
- * Size: 8 chunks worth of PCM ≈ 80KB, covers ~2.5s of upload latency.
+ * Sizing: each chunk is BBCLAW_STREAM_CHUNK_MS (~60ms) of mono int16 PCM
+ * ≈ 1.9 KiB at 16 kHz. Audio rate is therefore ~32 KiB/s; the ring buffer
+ * must absorb the worst-case stream_task stall while uploading.
+ *
+ * The first HTTP chunk routinely takes 500–700 ms (TCP connect + first send
+ * over a possibly-warm-but-not-keepalive WiFi link). 8 chunks (~480 ms) was
+ * just under that ceiling and dropped audio on every cold start. 32 chunks
+ * (~60 KiB / ~1.9 s) gives comfortable headroom for the cold-start spike
+ * and the occasional WiFi hiccup mid-utterance. PSRAM is plentiful (8 MiB)
+ * so the cost is negligible.
  */
 #ifndef BBCLAW_CAPTURE_RINGBUF_CHUNKS
-#define BBCLAW_CAPTURE_RINGBUF_CHUNKS 8
+#define BBCLAW_CAPTURE_RINGBUF_CHUNKS 32
 #endif
 #define CAPTURE_RINGBUF_SIZE (sizeof(s_stream_pcm_chunk_buf) * BBCLAW_CAPTURE_RINGBUF_CHUNKS)
 
