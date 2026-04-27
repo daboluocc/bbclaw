@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Double-OK kills settings**: rapid OK presses no longer cause the settings
   overlay to flash open then immediately close. The nav-event drain skips
   buffered OK/BACK events for one tick after `settings_overlay_enter()` succeeds.
+- **Settings overlay panic-rebooted from chat**: `bb_ui_settings_show()` did
+  synchronous NVS reads from the caller's task. The chat→OK→settings path
+  runs on `stream_task`, which is allocated on PSRAM stack; NVS internally
+  disables SPI flash cache and asserts the stack is in internal RAM, so
+  the device hard-rebooted the moment the user opened settings from chat.
+  Fix: new `bb_ui_settings_preload_nvs()` is called once from
+  `bb_radio_app_start()` (internal-RAM stack), and `load_*_from_nvs()` are
+  now idempotent — later calls from any task become pure memory reads.
 
 ## [0.4.0] - 2026-04-27
 
