@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -105,6 +106,19 @@ def detect_aider() -> dict:
     return {"present": bin_path is not None, "bin": bin_path}
 
 
+def detect_say_tts() -> dict:
+    """macOS ships `say` (NSSpeechSynthesizer) on every install, with
+    Chinese voices auto-selected from the input text. Use it as the
+    zero-config default TTS so the agent loop has audible output without
+    requiring API keys. Linux/Windows users keep getting the silent mock."""
+    if sys.platform != "darwin":
+        return {"present": False, "reason": "say is macOS-only"}
+    bin_path = which("say")
+    if not bin_path:
+        return {"present": False, "reason": "say not on PATH"}
+    return {"present": True, "bin": bin_path}
+
+
 def detect_doubao(source_path: Path | None) -> dict:
     """Read a sales-apis-style .env and translate Volcano ASR/TTS keys to
     bbclaw adapter's naming convention. The source file is untracked,
@@ -163,6 +177,20 @@ def detect_ollama() -> dict:
 # ─── env file plumbing ─────────────────────────────────────────────────────
 
 
+_SHELL_SAFE = re.compile(r"^[A-Za-z0-9_./:@,=+-]*$")
+
+
+def _shell_quote(v: str) -> str:
+    """Quote a .env value so `set -a; source .env; set +a` preserves it
+    literally. Bare values with `{`, spaces, `$`, etc. would otherwise be
+    re-interpreted by bash (brace expansion, glob, var substitution).
+    Conservatively wraps anything outside a known-safe charset in single
+    quotes; embedded single quotes are escape-rebuilt the standard way."""
+    if _SHELL_SAFE.match(v):
+        return v
+    return "'" + v.replace("'", "'\\''") + "'"
+
+
 def parse_env(path: Path) -> "OrderedDict[str, str]":
     out: OrderedDict[str, str] = OrderedDict()
     if not path.is_file():
@@ -174,7 +202,12 @@ def parse_env(path: Path) -> "OrderedDict[str, str]":
         if "=" not in line:
             continue
         k, _, v = line.partition("=")
-        out[k.strip()] = v.strip()
+        v = v.strip()
+        # Strip a single layer of matching quotes (we may have written them
+        # ourselves via _shell_quote, or the user/source file may use them).
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        out[k.strip()] = v
     return out
 
 
@@ -195,8 +228,9 @@ def render_env(values: dict[str, str], detected: dict) -> str:
             return
         lines.append(comment)
         for k in keys:
-            if values.get(k):
-                lines.append(f"{k}={values[k]}")
+            v = values.get(k)
+            if v:
+                lines.append(f"{k}={_shell_quote(v)}")
         lines.append("")
 
     emit("# OpenClaw gateway (auto-extracted from ~/.openclaw/openclaw.json)",
@@ -208,7 +242,8 @@ def render_env(values: dict[str, str], detected: dict) -> str:
     emit("# Voice path — ASR + TTS providers. Replace placeholders with real\n# keys to enable PTT (see .env.example for full provider docs).",
          ["ASR_PROVIDER", "ASR_LOCAL_BIN", "ASR_LOCAL_TEXT_PATH", "ASR_READINESS_PROBE",
           "ASR_APP_ID", "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
-          "TTS_PROVIDER", "TTS_APP_ID", "TTS_TOKEN"])
+          "TTS_PROVIDER", "TTS_APP_ID", "TTS_TOKEN",
+          "TTS_LOCAL_BIN", "TTS_LOCAL_ARGS", "TTS_LOCAL_OUTPUT_FORMAT"])
     emit("# Cloud relay (set both to enable cloud_saas firmware support)",
          ["CLOUD_WS_URL", "CLOUD_AUTH_TOKEN"])
     emit("# Production hardening",
@@ -221,6 +256,7 @@ def render_env(values: dict[str, str], detected: dict) -> str:
         "ASR_PROVIDER", "ASR_LOCAL_BIN", "ASR_LOCAL_TEXT_PATH", "ASR_READINESS_PROBE",
         "ASR_APP_ID", "ASR_API_KEY", "ASR_BASE_URL", "ASR_MODEL",
         "TTS_PROVIDER", "TTS_APP_ID", "TTS_TOKEN",
+        "TTS_LOCAL_BIN", "TTS_LOCAL_ARGS", "TTS_LOCAL_OUTPUT_FORMAT",
         "CLOUD_WS_URL", "CLOUD_AUTH_TOKEN", "ADAPTER_AUTH_TOKEN",
     }
     extras = [(k, v) for k, v in values.items() if k not in grouped]
@@ -272,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         "opencode": detect_opencode(),
         "aider": detect_aider(),
         "ollama": detect_ollama(),
+        "say-tts": detect_say_tts(),
     }
     # Doubao is opt-in only — never list it unless the user pointed at a source.
     if doubao_src is not None:
@@ -350,8 +387,26 @@ def main(argv: list[str] | None = None) -> int:
         set_if_unset("ASR_LOCAL_BIN", "/usr/bin/true")
         set_if_unset("ASR_LOCAL_TEXT_PATH", "/dev/null")
         set_if_unset("ASR_READINESS_PROBE", "0")
+    # TTS default selection (in order of preference):
+    #   1. User already configured TTS_TOKEN or TTS_LOCAL_BIN → keep it
+    #   2. macOS `say` available → local_command + say (audible Chinese voice,
+    #      no API keys, ships on every Mac)
+    #   3. Fall back to silent mock so the agent loop still terminates
     if not values.get("TTS_TOKEN") and not values.get("TTS_LOCAL_BIN"):
-        set_if_unset("TTS_PROVIDER", "mock")
+        if detected["say-tts"]["present"]:
+            values["TTS_PROVIDER"] = "local_command"
+            values["TTS_LOCAL_BIN"] = detected["say-tts"]["bin"]
+            # `say` infers the voice from input text language; AIFF is
+            # ffmpeg-decodable so the adapter resamples to whatever the device
+            # asks for. {out} expands to a temp file, {text} to the assistant
+            # reply.
+            # Adapter splits TTS_LOCAL_ARGS on whitespace (config.splitLocalArgs
+            # uses strings.Fields), so spaces — not commas — separate args.
+            # {text} is substituted as a single token even if it contains spaces.
+            values["TTS_LOCAL_ARGS"] = "-o {out} {text}"
+            values["TTS_LOCAL_OUTPUT_FORMAT"] = "aiff"
+        else:
+            set_if_unset("TTS_PROVIDER", "mock")
 
     rendered = render_env(values, detected)
 
@@ -370,9 +425,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # Hint: anything the user still needs to fill manually?
     todo = []
-    if "ASR_API_KEY" not in values:
+    if not values.get("ASR_API_KEY"):
         todo.append("ASR_API_KEY (for voice path)")
-    if "TTS_TOKEN" not in values:
+    # TTS is satisfied by either a real token (doubao_native) or local_command.
+    if not values.get("TTS_TOKEN") and not values.get("TTS_LOCAL_BIN"):
         todo.append("TTS_TOKEN (for voice path)")
     if todo:
         print("\nManual follow-up needed for these:")
