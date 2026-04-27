@@ -11,16 +11,35 @@
 
 ## Release & Tag Policy
 
-**Only create git tags and GitHub releases in the main `daboluocc/bbclaw` repo when:**
-- There is a user-facing new feature in the **firmware** (ESP32), OR
-- There is a fix or new feature in the **adapter** binary (new binary needs to be published)
+**One tag, one release, both artifacts.** Pushing a `v*` tag to this repo
+triggers `.github/workflows/release.yml` which builds the firmware `.bin`
+**and** the adapter binary across 5 platforms in parallel, then publishes
+a single GitHub Release with all artifacts + SHA256SUMS, and pushes the
+firmware to the OTA server in one go.
 
-**Do NOT create a tag or release for:**
-- Cloud-only fixes (backend logic, API changes)
-- Web portal-only fixes (UI, CSS, React changes)
-- Internal refactors with no adapter binary change
+```bash
+# Cut a release:
+git tag v0.4.1
+git push origin v0.4.1
+# → workflow builds, publishes daboluocc/bbclaw releases v0.4.1
+# → firmware auto-uploaded to OTA so devices can pull
+```
 
-**Why:** Releases in `daboluocc/bbclaw` are public-facing and contain adapter binaries for end users. A release implies users need to download something new. If only cloud/web changed (deployed server-side), there is nothing for users to download.
+**Only create git tags when:**
+- There is a user-facing new feature in the **firmware**, OR
+- There is a fix or new feature in the **adapter** binary
+
+**Do NOT tag for:**
+- Cloud-only fixes (deployed server-side from `bbclaw-reference`)
+- Web portal-only fixes (deployed server-side)
+- Internal refactors with no firmware/adapter user-visible change
+
+**Why a single tag:** firmware and adapter ship as a coordinated pair —
+device-side (firmware) and host-side (adapter) protocol changes need to
+land together so devices and adapters at the same version are guaranteed
+compatible. The closed-repo "two separate tag patterns" model
+(`v*` for firmware, `adapter/v*` for adapter) was retired with the
+adapter migration on 2026-04-27 (ADR-011).
 
 ## Project Layout
 

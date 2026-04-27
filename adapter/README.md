@@ -21,9 +21,9 @@ cd adapter
 make build                  # → bin/bbclaw-adapter (with version ldflags)
 
 cat > .env <<'EOF'
-ADAPTER_MODE=local
+# ADAPTER_MODE unset → "auto":
+#   local HTTP always on + cloud relay starts iff CLOUD_WS_URL is set.
 ADAPTER_ADDR=:18080
-OPENCLAW_WS_URL=
 ASR_PROVIDER=openai_compatible
 ASR_BASE_URL=http://127.0.0.1:1
 ASR_API_KEY=dummy
@@ -38,6 +38,7 @@ sleep 1
 
 curl -sS http://127.0.0.1:18080/healthz
 # → {"ok":true,"data":{"local":{"enabled":true,"ready":true},"status":"ok"}}
+#   (with CLOUD_WS_URL set, also includes cloud relay status)
 
 curl -sS http://127.0.0.1:18080/v1/agent/drivers
 # → {"ok":true,"data":{"drivers":[{"name":"claude-code", ...}, ...]}}
@@ -47,6 +48,26 @@ curl -sS http://127.0.0.1:18080/v1/agent/drivers
 curl -N -d '{"text":"reply with the single word: hello","driver":"claude-code"}' \
   http://127.0.0.1:18080/v1/agent/message
 ```
+
+### Local + Cloud at the same time
+
+In auto mode the adapter runs both ingress paths concurrently — HTTP on the
+LAN for `local_home` firmware, and a Cloud WebSocket relay for `cloud_saas`
+firmware that lives on the wider internet. Add to `.env`:
+
+```bash
+CLOUD_WS_URL=wss://your.cloud.host/ws
+CLOUD_AUTH_TOKEN=...
+HOME_SITE_ID=...     # optional; cloud picks one of your home_site_ids if omitted
+```
+
+`/healthz` will then expose a `cloud` block alongside `local`, with
+`status=ok` when both are connected and `status=degraded` when local is
+serving but cloud is reconnecting. Use `ADAPTER_MODE=local` only to
+explicitly opt out of cloud relay (e.g. on a dev machine that should never
+phone home).
+
+### Driver registration
 
 Which drivers register depends on your local environment:
 - `claude-code` always tries; needs `claude` CLI on PATH for actual calls
