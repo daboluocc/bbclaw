@@ -606,14 +606,21 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 		if ch <= 0 {
 			ch = 1
 		}
-		decoded, decodeErr := audio.DecodeMediaToPCM16LE(r.Context(), ttsFormat, sr, ch, audioBytes)
-		if decodeErr != nil {
-			s.metrics.Inc("tts_failed")
-			s.log.Errorf("tts pcm transcode failed err=%v", decodeErr)
-			writeJSON(w, http.StatusBadGateway, response{OK: false, Error: "TTS_TRANSCODE_FAILED"})
-			return
+		// Skip ffmpeg when the provider already emits PCM16. Mock TTS does;
+		// real backends like doubao_native emit MP3 and need the transcode.
+		ttsFormatNorm := strings.ToLower(strings.TrimSpace(ttsFormat))
+		if ttsFormatNorm == "pcm16" || ttsFormatNorm == "pcm_s16le" {
+			outAudio = audioBytes
+		} else {
+			decoded, decodeErr := audio.DecodeMediaToPCM16LE(r.Context(), ttsFormat, sr, ch, audioBytes)
+			if decodeErr != nil {
+				s.metrics.Inc("tts_failed")
+				s.log.Errorf("tts pcm transcode failed err=%v", decodeErr)
+				writeJSON(w, http.StatusBadGateway, response{OK: false, Error: "TTS_TRANSCODE_FAILED"})
+				return
+			}
+			outAudio = decoded
 		}
-		outAudio = decoded
 		outFormat = "pcm16"
 		outSampleRate = sr
 		outChannels = ch
