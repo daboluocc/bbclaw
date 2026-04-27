@@ -63,3 +63,11 @@ void bb_ui_settings_handle_click(void);
  * loaded at chat-show. Themes use this accessor to render an indicator
  * in the topbar. Returns 0 or 1. */
 int bb_ui_settings_tts_enabled(void);
+
+/* Eagerly load NVS-backed settings into the in-memory cache. MUST be called
+ * from a task with an internal-RAM stack (e.g. app_main / bb_radio_app_start)
+ * — NVS reads disable SPI flash cache, which makes PSRAM stacks unreachable
+ * and traps esp_task_stack_is_sane_cache_disabled. After this returns, all
+ * later reads in bb_ui_settings_show / bb_ui_settings_tts_enabled are pure
+ * memory reads safe from any task. Idempotent (subsequent calls are no-ops). */
+void bb_ui_settings_preload_nvs(void);

@@ -100,6 +100,14 @@ static settings_state_t s_st = {0};
  * if a theme reads the value before the user has ever opened Settings. */
 static int s_tts_loaded = 0;
 
+/* Same idea for the persisted driver name. Phase 4.8.x crash fix: NVS reads
+ * happen on whatever task calls them; stream_task has a PSRAM stack and
+ * NVS internally calls spi_flash_disable_interrupts_caches_and_other_cpu,
+ * which asserts when the caller's stack is in PSRAM. We eager-load both
+ * NVS values from app_main (internal-RAM stack) so settings_overlay_enter
+ * → bb_ui_settings_show never has to touch NVS from PSRAM-stack callers. */
+static int s_driver_loaded = 0;
+
 /* ── NVS helpers ── */
 
 static esp_err_t persist_selected_driver(const char* name) {
@@ -114,9 +122,11 @@ static esp_err_t persist_selected_driver(const char* name) {
 }
 
 static void load_selected_driver_from_nvs(void) {
+  if (s_driver_loaded) return;
   s_st.selected_driver[0] = '\0';
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
+  s_driver_loaded = 1;  /* mark loaded even if open failed: empty default is in place */
   if (err != ESP_OK) return;
   size_t sz = sizeof(s_st.selected_driver);
   err = nvs_get_str(h, BB_SETTINGS_NVS_KEY_DRIVER, s_st.selected_driver, &sz);
@@ -137,6 +147,7 @@ static esp_err_t persist_tts_enabled(int v) {
 }
 
 static void load_tts_enabled_from_nvs(void) {
+  if (s_tts_loaded) return;
   s_st.tts_enabled = 1;  /* default ON */
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
@@ -149,6 +160,11 @@ static void load_tts_enabled_from_nvs(void) {
     s_st.tts_enabled = v ? 1 : 0;
   }
   nvs_close(h);
+}
+
+void bb_ui_settings_preload_nvs(void) {
+  load_selected_driver_from_nvs();
+  load_tts_enabled_from_nvs();
 }
 
 /* ── Driver fetch (async pipeline; mirrors Phase 4.2.5) ── */

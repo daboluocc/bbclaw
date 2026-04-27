@@ -2586,6 +2586,13 @@ esp_err_t bb_radio_app_start(void) {
   ESP_LOGI(TAG, "boot active theme: %s",
            (boot_theme != NULL && boot_theme->name != NULL) ? boot_theme->name : "(none)");
 
+  /* Pre-load Settings NVS values from this internal-RAM stack so later
+   * bb_ui_settings_show() calls (triggered from stream_task on PSRAM stack)
+   * never have to issue an nvs_get_str — that would disable SPI flash cache
+   * and trip esp_task_stack_is_sane_cache_disabled, panic-rebooting the
+   * device the moment the user tries to open Settings from chat. */
+  bb_ui_settings_preload_nvs();
+
   bb_gateway_node_config_t node_cfg = {
       .node_id = BBCLAW_NODE_ID,
       .gateway_url = BBCLAW_GATEWAY_URL,
