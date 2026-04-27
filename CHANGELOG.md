@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fix: new `bb_ui_settings_preload_nvs()` is called once from
   `bb_radio_app_start()` (internal-RAM stack), and `load_*_from_nvs()` are
   now idempotent — later calls from any task become pure memory reads.
+- **Capture ringbuf overflow on cold-start**: the first HTTP chunk of a PTT
+  utterance takes 500–700 ms (TCP connect + first write); the 8-chunk
+  (~480 ms) capture ringbuf was just under that ceiling and dropped audio
+  at the start of every utterance. Bumped to 32 chunks (~1.9 s in PSRAM).
 
 ## [0.4.0] - 2026-04-27
 
