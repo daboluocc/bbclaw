@@ -58,9 +58,18 @@ jobs:
           make set-target BOARD=bbclaw
           make build
 
-      - name: Stage firmware artifact
+      - name: Stage firmware artifacts
+        # Stage all four bins needed for first-time serial flashing (browser
+        # / esptool flow) plus the app bin that single-app OTA already used.
+        # Filenames are versioned so Release downloads are unambiguous.
         run: |
           mkdir -p release-stage/firmware
+          cp firmware/build/bootloader/bootloader.bin \
+             "release-stage/firmware/bootloader-${RELEASE_VERSION}.bin"
+          cp firmware/build/partition_table/partition-table.bin \
+             "release-stage/firmware/partition-table-${RELEASE_VERSION}.bin"
+          cp firmware/build/ota_data_initial.bin \
+             "release-stage/firmware/ota-data-${RELEASE_VERSION}.bin"
           cp firmware/build/bbclaw_firmware.bin \
              "release-stage/firmware/bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
 
@@ -70,21 +79,64 @@ jobs:
           name: firmware-bin
           path: release-stage/firmware/
 
-      - name: Push firmware to OTA server
+      - name: Push flash bundle to OTA server
+        # Reads ESP-IDF's flasher_args.json so the offsets always match whichever
+        # partition layout was actually built (factory vs OTA), then POSTs the
+        # multi-part bundle to /v1/ota/flash-bundle. The bundle is what the
+        # portal's /flash page consumes via esp-web-tools.
         env:
           OTA_KEY: ${{ secrets.OTA_ADMIN_KEY }}
           OTA_URL: ${{ vars.OTA_SERVER_URL }}
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
         run: |
+          set -euo pipefail
           if [ -z "$OTA_KEY" ] || [ -z "$OTA_URL" ]; then
             echo "::warning::OTA_ADMIN_KEY / OTA_SERVER_URL not configured — skipping OTA push (release artifact still produced)"
             exit 0
           fi
-          curl -fSs -X POST "$OTA_URL/v1/ota/firmware" \
+
+          STAGE="release-stage/firmware"
+          # Map each flasher_args.json source path → versioned staged filename.
+          # The bundle endpoint receives files keyed by their target manifest filename.
+          declare -A SRC_TO_STAGED=(
+            ["bootloader/bootloader.bin"]="bootloader-${RELEASE_VERSION}.bin"
+            ["partition_table/partition-table.bin"]="partition-table-${RELEASE_VERSION}.bin"
+            ["ota_data_initial.bin"]="ota-data-${RELEASE_VERSION}.bin"
+            ["bbclaw_firmware.bin"]="bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
+          )
+
+          # Build manifest JSON: [{offset, filename} ...] sorted by offset.
+          MANIFEST_PARTS=$(jq -c --argjson map "$(
+            jq -n --arg b "bootloader-${RELEASE_VERSION}.bin" \
+                  --arg p "partition-table-${RELEASE_VERSION}.bin" \
+                  --arg o "ota-data-${RELEASE_VERSION}.bin" \
+                  --arg a "bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin" \
+              '{"bootloader/bootloader.bin":$b,"partition_table/partition-table.bin":$p,"ota_data_initial.bin":$o,"bbclaw_firmware.bin":$a}'
+          )" '
+            .flash_files
+            | to_entries
+            | map({offset: .key, filename: $map[.value]})
+          ' firmware/build/flasher_args.json)
+
+          MANIFEST=$(jq -nc \
+            --arg version "$RELEASE_VERSION" \
+            --argjson parts "$MANIFEST_PARTS" \
+            '{version:$version, platform:"esp32s3", chipFamily:"ESP32-S3", parts:$parts}')
+
+          echo "Manifest:"
+          echo "$MANIFEST" | jq .
+
+          # Build curl -F args: one per part keyed by the bundle filename.
+          CURL_FILE_ARGS=()
+          while IFS= read -r staged; do
+            CURL_FILE_ARGS+=(-F "${staged}=@${STAGE}/${staged}")
+          done < <(echo "$MANIFEST" | jq -r '.parts[].filename')
+
+          curl -fSs -X POST "$OTA_URL/v1/ota/flash-bundle" \
             -H "X-OTA-Admin-Key: $OTA_KEY" \
-            -F "version=${RELEASE_VERSION}" \
-            -F "platform=esp32s3" \
-            -F "releaseNotes=Firmware ${RELEASE_VERSION}" \
-            -F "file=@firmware/build/bbclaw_firmware.bin"
+            -F "manifest=$MANIFEST" \
+            "${CURL_FILE_ARGS[@]}"
+          echo "Flash bundle pushed: $RELEASE_VERSION"
 
   # ───────────────────────────────────────────────────────────────────────
   # Adapter (Go matrix: 5 platforms)
