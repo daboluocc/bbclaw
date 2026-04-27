@@ -121,13 +121,20 @@ iwr -useb https://raw.githubusercontent.com/daboluocc/bbclaw/main/scripts/instal
 
 ```text
 bbclaw/
-├── firmware/        # ESP32-S3 固件源码（C/C++）
-├── docs/            # 架构、协议、硬件文档
+├── firmware/        # ESP32-S3 固件源码（C / ESP-IDF）
+├── adapter/         # 本地 Agent Bridge 守护进程（Go） — 2026-04-27 从闭源仓搬入
+├── design/          # 架构 / ADR 决策记录
+├── docs/            # 用户手册、协议、硬件文档
 ├── scripts/         # Adapter 一键安装、烧录、调试脚本
 ├── tools/           # 本地 ASR/TTS 工具
 ├── CHANGELOG.md     # 版本历史
 └── LICENSE          # Apache 2.0
 ```
+
+**Adapter 源码现在在本仓**（commit `bf24299`，参见 [ADR-011](design/decisions/ADR-011-adapter-open-source.md)）。
+若你只想跑预编译 binary，仍可用上面的「[Adapter 一键安装](#adapter-一键安装自动识别系统)」脚本；若你想从源码构建或贡献新 driver，参见 [adapter/README.md](adapter/README.md)。
+
+Cloud（云端 SaaS：账户、计费、ASR/TTS 路由）和 Web（用户面板）仍闭源在 `bbclaw-reference` 仓 —— 那是 ToC 服务的护城河，与本仓的开放硬件 + 开放本地代理叙事互补。
 
 ## 文档
 

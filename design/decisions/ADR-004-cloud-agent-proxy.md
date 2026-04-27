@@ -20,6 +20,10 @@ Phase 4.0–4.2 把固件 Agent Chat 通路打通：设备 ↔ adapter HTTP `/v1
 
 ## 决策
 
+> **2026-04-27 注**：本 ADR 写于 adapter 还在 `bbclaw-reference/adapter` 时。
+> Adapter 已搬到本仓 `adapter/`（commit `bf24299`），下文路径里的
+> `bbclaw-reference/adapter/...` 均对应当前的 `adapter/...`。Cloud 仍在闭源仓。
+
 **云端（`bbclaw-reference/cloud`）新增 Agent Bus 反向代理**：
 
 - 暴露 `POST /v1/agent/message` 和 `GET /v1/agent/drivers` 端点

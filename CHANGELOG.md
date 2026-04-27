@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-interactive mode (`--message ... --yes-always --no-pretty --no-stream`),
   with per-session `--chat-history-file` for multi-turn continuity. Auto-enabled
   when `aider` is on PATH; overridable via `AGENT_AIDER_FORCE`.
+- **Adapter source open-sourced** (ADR-011): the Go adapter moved from
+  `bbclaw-reference/adapter` to this repo at `adapter/`, preserving git
+  history (subtree split). Module path `github.com/daboluocc/bbclaw/adapter`
+  is unchanged. Cloud backend and web portal stay closed.
 
 ### Fixed
 - **PTT → LISTENING state**: pressing PTT now reliably transitions the buddy face
@@ -38,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   utterance takes 500–700 ms (TCP connect + first write); the 8-chunk
   (~480 ms) capture ringbuf was just under that ceiling and dropped audio
   at the start of every utterance. Bumped to 32 chunks (~1.9 s in PSRAM).
+- **Adapter Makefile ldflags** silently failed to inject build tag/time —
+  the `-X` package path was the wrong module name. Pre-existing bug in the
+  closed repo, fixed during the migration.
 
 ## [0.4.0] - 2026-04-27
 

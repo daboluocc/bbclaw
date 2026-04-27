@@ -24,9 +24,15 @@
 
 ## Project Layout
 
-- `daboluocc/bbclaw` — main public repo: firmware, docs, CHANGELOG, GitHub releases with adapter binaries
-- `references/bbclaw-reference/` — private repo (gitignored in main repo): adapter (Go), cloud (Go), web (React)
-  - Adapter binaries are built from `bbclaw-reference/adapter` and published as releases in `daboluocc/bbclaw`
+- `daboluocc/bbclaw` — main public repo:
+  - `firmware/` — ESP32 firmware (C, ESP-IDF)
+  - `adapter/` — local agent-bridge daemon (Go). Imported from bbclaw-reference 2026-04-27 (commit `bf24299`); module path `github.com/daboluocc/bbclaw/adapter` unchanged.
+  - `docs/`, `design/`, `CHANGELOG.md` — public design docs and ADRs
+  - GitHub releases ship the adapter binary alongside firmware OTA bins
+- `bbclaw-reference` — private repo (gitignored in main repo at `references/bbclaw-reference/`):
+  - `cloud/` — cloud backend (Go): auth, billing, multi-tenant routing, ASR/TTS upstream, OTA channels
+  - `web/` — web portal (React): account, device dashboard, billing
+  - `promo/` — landing/marketing site
 
 ## Versioning
 
@@ -158,4 +164,4 @@ fatal error: xxx.h: No such file or directory
 ### OTA 说明
 - **仅支持 `cloud_saas` 模式**，`local_home` 不支持 OTA
 - 固件启动后通过 `GET /v1/ota/check` 查询更新
-- OTA API 在 `references/bbclaw-reference/cloud/internal/ota/`
+- OTA API 在 `references/bbclaw-reference/cloud/internal/ota/`（cloud 仍在闭源仓）

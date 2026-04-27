@@ -19,7 +19,7 @@ REPO_ROOT ?= $(abspath $(CURDIR)/..)
 # 与仓库根 Makefile 一致的注入版本信息
 BBCLAW_BUILD_TAG  ?= $(shell git -C "$(REPO_ROOT)" describe --tags --always --dirty 2>/dev/null || echo dev)
 BBCLAW_BUILD_TIME ?= $(shell date -u +%Y%m%d-%H%M)
-GO_LDFLAGS := -X github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/zhoushoujianwork/bbclaw/adapter/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
+GO_LDFLAGS := -X github.com/daboluocc/bbclaw/adapter/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/daboluocc/bbclaw/adapter/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
 
 LOG_DIR  ?= $(CURDIR)/tmp
 LOG_FILE ?= $(LOG_DIR)/adapter-runtime.log

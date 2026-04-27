@@ -1,6 +1,53 @@
 # BBClaw Adapter (Go)
 
-`bbclaw-adapter` is a decoupled HTTP streaming adapter for BBClaw voice ingestion.
+`bbclaw-adapter` is the local agent-bridge daemon for BBClaw devices: it
+takes the ESP32's PTT audio stream, runs ASR/TTS, and routes the transcript
+to a chosen agent CLI (claude-code, opencode, openclaw, ollama, aider, …)
+via a unified [Agent Bus](../design/agent_bus.md).
+
+> **Open-source as of 2026-04-27.** The source moved here from
+> `bbclaw-reference/adapter` (see [ADR-011](../design/decisions/ADR-011-adapter-open-source.md)).
+> Module path is unchanged: `github.com/daboluocc/bbclaw/adapter`.
+> Cloud backend and web portal stay closed.
+
+## Build from source
+
+```bash
+cd adapter
+make build           # binary at bin/bbclaw-adapter
+make test            # full unit-test suite
+make run             # reads ./.env, hot-reloadable via `make dev` (Air)
+```
+
+Or as a Go install for casual use:
+
+```bash
+go install github.com/daboluocc/bbclaw/adapter/cmd/bbclaw-adapter@latest
+```
+
+Pre-built binaries (recommended for non-developers): see
+[the install script](../scripts/install-adapter.sh) or the
+[GitHub Releases](https://github.com/daboluocc/bbclaw/releases) page.
+
+## Adding an agent driver
+
+Each driver wraps one CLI behind the `agent.Driver` interface
+(`internal/agent/driver.go`). The full interface is six methods plus a
+`Capabilities` declaration; see existing drivers as templates:
+
+| Driver | File | Best as template if your CLI… |
+|---|---|---|
+| `opencode` | `internal/agent/opencode/driver.go` | …emits NDJSON, has `--session` resume |
+| `claude-code` | `internal/agent/claudecode/driver.go` | …emits NDJSON with tool-use frames |
+| `aider` | `internal/agent/aider/driver.go` | …emits plain text, resume via history file |
+| `ollama` | `internal/agent/ollama/driver.go` | …is HTTP, not a subprocess |
+
+Steps:
+1. Create `internal/agent/<name>/driver.go` (≈400 lines, mirror a template above).
+2. Add a `driver_test.go` covering: stdout/stream parser, session lifecycle, capabilities, `Approve→ErrUnsupported` if no approval.
+3. Register in `cmd/bbclaw-adapter/main.go`'s `k_driver_registry` with an `autoEnable` predicate (PATH probe / cfg field / TCP probe) and an optional `forceEnv`.
+4. `go test ./... && go build ./...`.
+5. Open a PR — driver-only changes are reviewed quickly.
 
 Pipeline:
 

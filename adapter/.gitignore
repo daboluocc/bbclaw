@@ -1,0 +1,10 @@
+# adapter build artifacts and runtime data — none of these belong in git
+bin/
+dist/
+releases/
+tmp/
+*.tmp
+.env
+
+# the binary itself, in case someone builds in adapter/ root
+bbclaw-adapter

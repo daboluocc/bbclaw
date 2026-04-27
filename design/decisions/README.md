@@ -27,3 +27,4 @@
 | [ADR-008](ADR-008-chat-as-standby-and-idle-exit.md) | Chat 作为待机首页 + 90s 空闲退出（Phase 4.8.x） | 2026-04-27 | 已接受 |
 | [ADR-009](ADR-009-agent-state-machine.md) | Agent 9 态状态机：LISTENING / BUSY / SPEAKING（Phase 4.8.x） | 2026-04-27 | 已接受 |
 | [ADR-010](ADR-010-per-device-agentdriver-cloud-config.md) | Per-device AgentDriver 作为云配置（v0.4.0 多 driver） | 2026-04-27 | 已接受 |
+| [ADR-011](ADR-011-adapter-open-source.md) | Adapter 开源（搬到主仓） | 2026-04-27 | 已接受 |
