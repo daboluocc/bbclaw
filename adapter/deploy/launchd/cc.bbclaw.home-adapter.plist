@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>cc.bbclaw.home-adapter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABS/PATH/TO/bbclaw-home-adapter</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLOUD_WS_URL</key>
+        <string>https://&lt;cloud-host&gt;</string>
+        <key>CLOUD_AUTH_TOKEN</key>
+        <string>&lt;cloud-auth-token&gt;</string>
+        <key>HOME_SITE_ID</key>
+        <string>&lt;home-site-id&gt;</string>
+        <key>OPENCLAW_WS_URL</key>
+        <string>ws://127.0.0.1:18789</string>
+        <key>OPENCLAW_AUTH_TOKEN</key>
+        <string>&lt;openclaw-auth-token&gt;</string>
+        <key>OPENCLAW_NODE_ID</key>
+        <string>bbclaw-home-adapter</string>
+        <key>OPENCLAW_REPLY_WAIT_SECONDS</key>
+        <string>25</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/bbclaw-home-adapter.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/bbclaw-home-adapter.log</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

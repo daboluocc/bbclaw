@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BBClaw Agent Playground</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #242833;
+    --text: #e8ebf0;
+    --dim: #8b92a2;
+    --accent: #7ab8ff;
+    --user: #2a3342;
+    --assistant: #1a2028;
+    --error: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; min-height: 100vh;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+    background: var(--bg); color: var(--text);
+    display: grid; grid-template-rows: auto 1fr auto; height: 100vh;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); display: flex; gap: 16px; align-items: center;
+    font-size: 13px;
+  }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header .grow { flex: 1; }
+  header select, header button {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 6px; font: inherit;
+  }
+  header select:focus { outline: 1px solid var(--accent); }
+  header button { cursor: pointer; }
+  header button:hover { border-color: var(--accent); color: var(--accent); }
+  header .meta { color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; }
+
+  #log { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 10px 14px; border-radius: 10px; max-width: 800px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { background: var(--user); align-self: flex-end; }
+  .msg.assistant { background: var(--assistant); border: 1px solid var(--border); align-self: flex-start; }
+  .msg.system { background: transparent; color: var(--dim); font-family: ui-monospace, monospace; font-size: 12px; align-self: center; padding: 4px 8px; }
+  .msg.error { background: #2a1a1a; color: var(--error); border: 1px solid #4a2a2a; align-self: flex-start; }
+  .msg small { color: var(--dim); font-size: 11px; display: block; margin-bottom: 4px; }
+
+  /* tool_call display-only style — distinct dashed border + amber accent */
+  .msg.tool {
+    align-self: flex-start;
+    background: transparent;
+    color: #e0b86b;
+    border: 1px dashed #5a4830;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .msg.tool .toolname { color: #ffcc66; font-weight: 600; }
+
+  /* typing indicator — three pulsing dots that show until first text frame */
+  .msg.typing {
+    background: var(--assistant);
+    border: 1px solid var(--border);
+    align-self: flex-start;
+    color: var(--dim);
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    min-height: 28px;
+  }
+  .msg.typing span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--dim);
+    display: inline-block;
+    animation: typingPulse 1.2s ease-in-out infinite;
+  }
+  .msg.typing span:nth-child(2) { animation-delay: .15s; }
+  .msg.typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes typingPulse {
+    0%, 80%, 100% { opacity: .25; transform: scale(.85); }
+    40%           { opacity: 1;   transform: scale(1);   }
+  }
+
+  form {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid var(--border); background: var(--panel);
+  }
+  textarea {
+    flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font: inherit; resize: none; min-height: 40px; max-height: 160px;
+  }
+  textarea:focus { outline: 1px solid var(--accent); }
+  button.send {
+    background: var(--accent); color: #0b1220; border: 0; padding: 0 18px;
+    border-radius: 8px; font-weight: 600; cursor: pointer;
+  }
+  button.send:disabled { opacity: .4; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Playground</h1>
+  <label>driver <select id="driver"></select></label>
+  <button id="resetBtn" title="Start a fresh session">reset session</button>
+  <div class="grow"></div>
+  <span class="meta" id="sessionMeta">session: —</span>
+</header>
+<div id="log"></div>
+<form id="form">
+  <textarea id="input" placeholder="type a message, shift+enter for newline, enter to send" rows="1"></textarea>
+  <button class="send" id="send" type="submit">send</button>
+</form>
+<script>
+"use strict";
+
+const log = document.getElementById("log");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const driverSel = document.getElementById("driver");
+const sessionMeta = document.getElementById("sessionMeta");
+const resetBtn = document.getElementById("resetBtn");
+
+let sessionId = "";
+let pinnedDriver = "";
+
+function addMsg(cls, text, meta) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  if (meta) {
+    const m = document.createElement("small");
+    m.textContent = meta;
+    el.appendChild(m);
+  }
+  const body = document.createTextNode(text);
+  el.appendChild(body);
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return body;
+}
+
+function updateSessionMeta() {
+  sessionMeta.textContent = sessionId
+    ? `session: ${sessionId.slice(0, 12)}… driver: ${pinnedDriver || "—"}`
+    : "session: —";
+}
+
+function resetSession() {
+  sessionId = "";
+  pinnedDriver = "";
+  updateSessionMeta();
+  addMsg("system", "— session cleared —");
+}
+
+resetBtn.addEventListener("click", resetSession);
+
+async function loadDrivers() {
+  try {
+    const r = await fetch("/v1/agent/drivers");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const body = await r.json();
+    const drivers = (body.data && body.data.drivers) || [];
+    if (drivers.length === 0) {
+      driverSel.innerHTML = "<option value=''>(none)</option>";
+      return;
+    }
+    driverSel.innerHTML = drivers.map(d =>
+      `<option value="${d.name}">${d.name}${d.capabilities && d.capabilities.resume ? "" : " (no-resume)"}</option>`
+    ).join("");
+  } catch (e) {
+    addMsg("error", "failed to load drivers: " + e.message);
+  }
+}
+
+form.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+
+  // If driver changed mid-session, force a fresh session to avoid
+  // SESSION_DRIVER_MISMATCH.
+  const wantDriver = driverSel.value;
+  if (sessionId && pinnedDriver && wantDriver !== pinnedDriver) {
+    resetSession();
+  }
+
+  addMsg("user", text);
+  input.value = "";
+  input.style.height = "auto";
+  sendBtn.disabled = true;
+
+  // Typing indicator: shown until the first text or tool_call frame arrives.
+  const typingEl = document.createElement("div");
+  typingEl.className = "msg typing";
+  typingEl.innerHTML = "<span></span><span></span><span></span>";
+  log.appendChild(typingEl);
+  log.scrollTop = log.scrollHeight;
+  function dropTyping() {
+    if (typingEl && typingEl.parentNode) {
+      typingEl.parentNode.removeChild(typingEl);
+    }
+  }
+
+  const body = { text };
+  if (sessionId) body.sessionId = sessionId;
+  if (wantDriver) body.driver = wantDriver;
+
+  try {
+    const resp = await fetch("/v1/agent/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}));
+      addMsg("error", `HTTP ${resp.status} ${errBody.error || ""} ${errBody.detail || ""}`.trim());
+      return;
+    }
+    if (!resp.body) {
+      addMsg("error", "no response body");
+      return;
+    }
+
+    let assistantText = null; // text node we append to
+    let tokenMeta = null;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let frame;
+        try { frame = JSON.parse(line); } catch { continue; }
+        handleFrame(frame);
+      }
+    }
+
+    function handleFrame(f) {
+      switch (f.type) {
+        case "session":
+          sessionId = f.sessionId;
+          pinnedDriver = f.driver || wantDriver;
+          updateSessionMeta();
+          break;
+        case "text":
+          dropTyping();
+          if (!assistantText) {
+            assistantText = addMsg("assistant", "", `driver: ${pinnedDriver}`);
+          }
+          assistantText.nodeValue += f.text;
+          log.scrollTop = log.scrollHeight;
+          break;
+        case "tool_call": {
+          // display-only: claude-code emits these after running a tool.
+          // Format:  ⚙ <Tool> → <hint>
+          dropTyping();
+          const el = document.createElement("div");
+          el.className = "msg tool";
+          const name = document.createElement("span");
+          name.className = "toolname";
+          name.textContent = "\u2699 " + (f.tool || "tool");
+          el.appendChild(name);
+          if (f.hint) {
+            el.appendChild(document.createTextNode("  \u2192  " + f.hint));
+          }
+          log.appendChild(el);
+          log.scrollTop = log.scrollHeight;
+          break;
+        }
+        case "tokens":
+          tokenMeta = `in=${f.in} out=${f.out}`;
+          break;
+        case "turn_end":
+          dropTyping();
+          if (tokenMeta) addMsg("system", tokenMeta);
+          break;
+        case "error":
+          dropTyping();
+          addMsg("error", f.error || f.text || "unknown error");
+          break;
+      }
+    }
+  } catch (e) {
+    dropTyping();
+    addMsg("error", "request failed: " + e.message);
+  } finally {
+    dropTyping();
+    sendBtn.disabled = false;
+    input.focus();
+  }
+});
+
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    form.requestSubmit();
+  }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(160, input.scrollHeight) + "px";
+});
+
+loadDrivers();
+input.focus();
+</script>
+</body>
+</html>
