@@ -7,16 +7,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/aider"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
-	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/openclawdriver"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
@@ -161,16 +163,16 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 // needed to decide whether to register a driver and how to construct it.
 //
 //   - name        : the Driver.Name() this entry will register under. Used
-//                   both for the AGENT_ENABLED_DRIVERS comma-list match and
-//                   for log messages.
+//     both for the AGENT_ENABLED_DRIVERS comma-list match and
+//     for log messages.
 //   - construct   : builds the actual driver. Allowed to fail (e.g. invalid
-//                   config); on error the row is skipped with a warning.
+//     config); on error the row is skipped with a warning.
 //   - autoEnable  : in auto mode (AGENT_ENABLED_DRIVERS empty), should this
-//                   row be registered? Lets each driver carry its own
-//                   gating predicate (cfg field set, TCP probe, etc.).
+//     row be registered? Lets each driver carry its own
+//     gating predicate (cfg field set, TCP probe, etc.).
 //   - forceEnv    : optional env var name. If set to a non-empty value,
-//                   forces registration even when autoEnable would skip
-//                   (used to bypass a flaky probe on developer machines).
+//     forces registration even when autoEnable would skip
+//     (used to bypass a flaky probe on developer machines).
 type driverReg struct {
 	name       string
 	construct  func(cfg config.Config, logger *obs.Logger) (agent.Driver, error)
@@ -237,18 +239,32 @@ var k_driver_registry = []driverReg{
 		},
 		forceEnv: "AGENT_OLLAMA_FORCE",
 	},
+	{
+		name: "aider",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return aider.New(aider.Options{
+				Bin:       os.Getenv("AGENT_AIDER_BIN"),
+				ExtraArgs: parseArgList(os.Getenv("AGENT_AIDER_EXTRA_ARGS")),
+			}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool {
+			_, err := exec.LookPath("aider")
+			return err == nil
+		},
+		forceEnv: "AGENT_AIDER_FORCE",
+	},
 }
 
 // buildAgentRouter constructs the Router using these two env vars (both
 // optional; zero-config means "auto-detect what's available"):
 //
-//   AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,openclaw,ollama");
-//                          empty = auto mode — each driver's autoEnable
-//                          predicate decides (claude-code/opencode always,
-//                          openclaw only when cfg.OpenClawURL is set,
-//                          ollama only when 127.0.0.1:11434 listens).
-//   AGENT_DEFAULT_DRIVER   request without explicit driver routes to this
-//                          one; empty = first registered driver.
+//	AGENT_ENABLED_DRIVERS  comma list (e.g. "claude-code,openclaw,ollama");
+//	                       empty = auto mode — each driver's autoEnable
+//	                       predicate decides (claude-code/opencode always,
+//	                       openclaw only when cfg.OpenClawURL is set,
+//	                       ollama only when 127.0.0.1:11434 listens).
+//	AGENT_DEFAULT_DRIVER   request without explicit driver routes to this
+//	                       one; empty = first registered driver.
 //
 // Registration order (which determines the default when AGENT_DEFAULT_DRIVER
 // is unset) is the order of k_driver_registry above.
