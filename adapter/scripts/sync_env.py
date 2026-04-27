@@ -11,15 +11,16 @@ needs to override its built-in defaults:
   ollama       127.0.0.1:11434 reachable      OLLAMA_MODEL = first installed
   aider        `aider` on PATH                (no env needed — auto-registered)
 
-Optional ASR/TTS import:
-  Pass --doubao-env <path> (or set DOUBAO_ENV_FILE) to import Doubao /
-  Volcano ASR keys from another project's .env (e.g. sales-apis). Source
-  field names differ from bbclaw's; the script translates:
+Optional Volcano-ASR key import (--doubao-env):
+  If you happen to have another project with Volcano/Doubao ASR keys in a
+  .env file, point at it and the script will pull the credentials over,
+  translating field names to bbclaw's convention:
     ASR_TOKEN     → ASR_API_KEY
-    ASR_CLUSTER   → ASR_RESOURCE_ID (informational; see note below)
+    ASR_CLUSTER   → (informational; warns if not bigmodel)
     ASR_APP_ID    → ASR_APP_ID
     TTS_TOKEN     → TTS_TOKEN
     TTS_APP_ID    → TTS_APP_ID
+  This step is opt-in only; the script never reads files you didn't ask for.
 
 By default merges into an existing adapter/.env (keys you've already set are
 preserved). Use --reset to discard the file and write fresh.
@@ -28,7 +29,7 @@ Usage:
     python3 scripts/sync_env.py
     python3 scripts/sync_env.py --dry-run
     python3 scripts/sync_env.py --reset
-    python3 scripts/sync_env.py --doubao-env ~/github/sales-apis/.env
+    python3 scripts/sync_env.py --doubao-env <path>
 """
 from __future__ import annotations
 
@@ -271,8 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         "opencode": detect_opencode(),
         "aider": detect_aider(),
         "ollama": detect_ollama(),
-        "doubao": detect_doubao(doubao_src),
     }
+    # Doubao is opt-in only — never list it unless the user pointed at a source.
+    if doubao_src is not None:
+        detected["doubao"] = detect_doubao(doubao_src)
 
     print("Driver scan:")
     for name, info in detected.items():
@@ -326,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     # Doubao import (--doubao-env): translate sales-apis-style ASR keys.
     # Promote the imported keys into our values dict before falling back to
     # placeholder providers, so a Doubao-enabled run wins over the mock path.
-    if detected["doubao"]["present"]:
+    if detected.get("doubao", {}).get("present"):
         for k, v in detected["doubao"]["mapped"].items():
             set_if_unset(k, v)
         if "ASR_APP_ID" in values and "ASR_API_KEY" in values:
@@ -379,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     # Doubao cluster sanity-check: sales-apis uses volc_auc_meeting (a different
     # ASR cluster than bbclaw's default bigmodel). Flag it so the user knows
     # auth might still fail even though keys imported cleanly.
-    db = detected.get("doubao", {})
+    db = detected.get("doubao") or {}
     if db.get("present"):
         cluster = db.get("cluster_hint", "")
         if cluster and cluster != "volc.bigasr.sauc.duration":
