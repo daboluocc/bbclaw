@@ -41,9 +41,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ESP-IDF
+      - name: Install ESP-IDF v5.5
+        # Pin to release/v5.5 branch — local dev runs on v5.5.2 (see CLAUDE.md).
+        # ESP-IDF master (currently 6.1.0) dropped the legacy `json` component
+        # which our `src/` REQUIRES, so unpinned clones break the build.
         run: |
-          git clone --depth 1 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf
+          git clone --depth 1 --branch release/v5.5 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf
           ~/esp/esp-idf/install.sh esp32s3
 
       - name: Build firmware
