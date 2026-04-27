@@ -23,3 +23,7 @@
 | [ADR-004](ADR-004-cloud-agent-proxy.md) | cloud_saas 模式下的 Agent Bus 代理 | 2026-04-25 | 已接受 |
 | [ADR-005](ADR-005-openclaw-as-driver.md) | openclaw 接入 AgentDriver（重评 ADR-001） | 2026-04-26 | 已接受 |
 | [ADR-006](ADR-006-flipper-full-nav-events.md) | Flipper 6-button 完整事件 + LEFT/RIGHT 语义 | 2026-04-26 | 已接受 |
+| [ADR-007](ADR-007-standalone-settings-overlay.md) | 独立 Settings overlay（Phase 4.7） | 2026-04-27 | 已接受 |
+| [ADR-008](ADR-008-chat-as-standby-and-idle-exit.md) | Chat 作为待机首页 + 90s 空闲退出（Phase 4.8.x） | 2026-04-27 | 已接受 |
+| [ADR-009](ADR-009-agent-state-machine.md) | Agent 9 态状态机：LISTENING / BUSY / SPEAKING（Phase 4.8.x） | 2026-04-27 | 已接受 |
+| [ADR-010](ADR-010-per-device-agentdriver-cloud-config.md) | Per-device AgentDriver 作为云配置（v0.4.0 多 driver） | 2026-04-27 | 已接受 |
