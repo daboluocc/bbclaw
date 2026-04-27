@@ -57,3 +57,9 @@ int  bb_ui_settings_is_active(void);
 void bb_ui_settings_handle_rotate(int delta);
 void bb_ui_settings_handle_value(int delta);
 void bb_ui_settings_handle_click(void);
+
+/* Phase 4.8.x — read the persisted TTS-reply toggle. Source of truth lives
+ * in bb_ui_settings (NVS-backed); chat module has a local copy that's
+ * loaded at chat-show. Themes use this accessor to render an indicator
+ * in the topbar. Returns 0 or 1. */
+int bb_ui_settings_tts_enabled(void);

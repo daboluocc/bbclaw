@@ -2,6 +2,8 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
+#include "bb_ui_settings.h"
+#include "bb_wifi.h"
 #include "esp_log.h"
 #include "lvgl.h"
 
@@ -129,12 +131,33 @@ static const buddy_glyph_t k_glyphs[] = {
 
 static void refresh_topbar(void) {
   if (s_st.topbar_lbl == NULL) return;
-  char buf[96];
-  snprintf(buf, sizeof(buf), "%s | %s | %s",
+  char buf[128];
+  /* ASCII-only flag suffix for TTS toggle + WiFi connectivity. The buddy
+   * topbar spans the full screen width (the right column is the buddy
+   * panel below TOPBAR_H, not beside it), so the layout matches text-only.
+   * Long-mode DOTS guarantees graceful truncation if a driver name is
+   * unusually long. */
+  snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
            s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)",
            s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------",
-           state_short(s_st.state));
+           state_short(s_st.state),
+           bb_ui_settings_tts_enabled() ? "T+" : "T-",
+           bb_wifi_is_connected()       ? "W+" : "W-");
   lv_label_set_text(s_st.topbar_lbl, buf);
+}
+
+/* ADR-009 appendix: for the "neutral" states (IDLE / BUSY / HEART) the face
+ * varies by active driver, so the device subtly signals who's answering.
+ * LISTENING / SPEAKING / DIZZY / CELEBRATE / ATTENTION / SLEEP convey
+ * action/emotion semantics and keep their distinctive faces regardless of
+ * driver. The mood text is always the state-defined mood. */
+static const char* per_driver_face(const char* driver_name) {
+  if (driver_name == NULL || driver_name[0] == '\0') return "(^_^)";
+  if (strcmp(driver_name, "claude-code") == 0) return "(^_^)";
+  if (strcmp(driver_name, "openclaw")    == 0) return "(O_O)";
+  if (strcmp(driver_name, "ollama")      == 0) return "(v_v)";
+  if (strcmp(driver_name, "opencode")    == 0) return "(._.)";
+  return "(^_^)";  /* fallback to claude face for unknown drivers */
 }
 
 static void refresh_buddy(void) {
@@ -142,7 +165,12 @@ static void refresh_buddy(void) {
   int idx = (int)s_st.state;
   if (idx < 0 || idx >= K_GLYPH_COUNT) idx = BB_AGENT_STATE_IDLE;
   const buddy_glyph_t* g = &k_glyphs[idx];
-  lv_label_set_text(s_st.face_lbl, g->face);
+  const char* face = g->face;
+  if (idx == BB_AGENT_STATE_IDLE || idx == BB_AGENT_STATE_BUSY ||
+      idx == BB_AGENT_STATE_HEART) {
+    face = per_driver_face(s_st.driver_buf);
+  }
+  lv_label_set_text(s_st.face_lbl, face);
   lv_label_set_text(s_st.mood_lbl, g->mood);
 }
 
@@ -356,7 +384,11 @@ static void theme_set_driver(const char* driver_name) {
   if (driver_name == NULL) return;
   strncpy(s_st.driver_buf, driver_name, sizeof(s_st.driver_buf) - 1);
   s_st.driver_buf[sizeof(s_st.driver_buf) - 1] = '\0';
-  if (s_st.built) refresh_topbar();
+  if (s_st.built) {
+    refresh_topbar();
+    /* Driver change can flip the IDLE/BUSY/HEART face per ADR-009. */
+    refresh_buddy();
+  }
 }
 
 static void theme_set_session(const char* sid_short) {

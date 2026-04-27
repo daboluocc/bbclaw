@@ -2,6 +2,8 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
+#include "bb_ui_settings.h"
+#include "bb_wifi.h"
 #include "esp_log.h"
 #include "lvgl.h"
 
@@ -79,11 +81,16 @@ static const char* state_name(bb_agent_state_t s) {
 
 static void refresh_topbar(void) {
   if (s_st.topbar_lbl == NULL) return;
-  char buf[96];
-  snprintf(buf, sizeof(buf), "%s | %s | %s",
+  char buf[128];
+  /* ASCII-only flag suffix for TTS toggle + WiFi connectivity. Long-mode is
+   * DOTS on the topbar label, so overflow truncates with "..." rather than
+   * wrapping. */
+  snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
            s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)",
            s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------",
-           state_name(s_st.state));
+           state_name(s_st.state),
+           bb_ui_settings_tts_enabled() ? "T+" : "T-",
+           bb_wifi_is_connected()       ? "W+" : "W-");
   lv_label_set_text(s_st.topbar_lbl, buf);
 }
 

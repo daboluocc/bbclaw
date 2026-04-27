@@ -95,6 +95,11 @@ typedef struct {
 
 static settings_state_t s_st = {0};
 
+/* Phase 4.8.x — tracks whether load_tts_enabled_from_nvs() has populated
+ * s_st.tts_enabled at least once. The accessor uses this to lazily load
+ * if a theme reads the value before the user has ever opened Settings. */
+static int s_tts_loaded = 0;
+
 /* ── NVS helpers ── */
 
 static esp_err_t persist_selected_driver(const char* name) {
@@ -134,7 +139,11 @@ static esp_err_t persist_tts_enabled(int v) {
 static void load_tts_enabled_from_nvs(void) {
   s_st.tts_enabled = 1;  /* default ON */
   nvs_handle_t h;
-  if (nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+  esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
+  /* Mark loaded even if NVS open failed — the default value is now in place
+   * and the accessor shouldn't keep retrying on every topbar refresh. */
+  s_tts_loaded = 1;
+  if (err != ESP_OK) return;
   uint8_t v = 1;
   if (nvs_get_u8(h, BB_SETTINGS_NVS_KEY_TTS, &v) == ESP_OK) {
     s_st.tts_enabled = v ? 1 : 0;
@@ -515,4 +524,15 @@ void bb_ui_settings_handle_click(void) {
     case ROW_COUNT:
     default: break;
   }
+}
+
+int bb_ui_settings_tts_enabled(void) {
+  /* Lazy-load: if the user hasn't opened Settings yet this boot, s_st.tts_enabled
+   * was never explicitly loaded from NVS. Populate it now (load also sets the
+   * default ON if no NVS entry exists). After the first call this is a single
+   * read of the cached value. */
+  if (!s_tts_loaded) {
+    load_tts_enabled_from_nvs();
+  }
+  return s_st.tts_enabled ? 1 : 0;
 }
