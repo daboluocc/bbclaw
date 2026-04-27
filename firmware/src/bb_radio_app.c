@@ -1549,7 +1549,12 @@ static void stream_task(void* arg) {
               if (busy) {
                 bb_ui_agent_chat_cancel();
               } else {
-                if (settings_overlay_enter() != 0) {
+                if (settings_overlay_enter() == 0) {
+                  /* Settings just opened — drain any buffered OK/BACK events so
+                   * a double-press doesn't immediately fire a click and close the
+                   * overlay before the user sees it. */
+                  nav_handled_versions[event] = s_nav_event_versions[event];
+                } else {
                   ESP_LOGW(TAG, "%s in chat: settings_overlay_enter failed",
                            event == BB_NAV_EVENT_OK ? "OK" : "BACK");
                 }
@@ -1631,20 +1636,22 @@ static void stream_task(void* arg) {
       int chat_voice = (s_ptt_pressed && agent_chat_voice_capture_active() && !arming &&
                         !streaming && !verifying && !radio_app_is_locked());
       if (chat_voice) {
-        if (!bb_wifi_is_connected()) {
-          signal_error_haptic();
-        } else if (s_tts_playback_active) {
-          tts_request_interrupt();
-        } else if (session_busy) {
+        if (session_busy) {
           signal_error_haptic();
         } else if (agent_chat_is_busy_locked()) {
-          /* Existing chat reply still streaming; refuse log-only (matches
-           * picker's ESP_ERR_INVALID_STATE behaviour). */
           ESP_LOGI(TAG, "agent_chat: PTT press refused (chat send in flight)");
           signal_error_haptic();
         } else {
+          /* Show LISTENING immediately so the buddy face updates on every PTT
+           * press. WiFi/TTS are not hard blockers: the arm path below starts
+           * recording regardless, and the stream will surface an error if the
+           * adapter is unreachable. TTS interrupt was already requested in
+           * on_ptt_changed(); no need to duplicate it here. */
           agent_chat_voice_listening_locked(1);
           (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
+          if (!bb_wifi_is_connected()) {
+            signal_error_haptic();
+          }
         }
       } else if (s_ptt_pressed) {
         if (!bb_wifi_is_connected()) {
