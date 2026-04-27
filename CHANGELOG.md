@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-27
+
+First release using the unified `release.yml` workflow — firmware OTA bin
+and adapter binaries (5 platforms) ship together from a single `v*` tag.
+
 ### Added
 - **Buddy-anim theme** (Phase 4.6.x): LVGL-driven 9-state animations on top of the
   existing ASCII faces — opacity pulse for SLEEP, y-bob for IDLE/LISTENING,
