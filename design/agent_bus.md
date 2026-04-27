@@ -230,14 +230,31 @@ type ToolCall struct {
 
 ## 9. 落地路径
 
+> **状态**：Phase 1 → 5 全部 ✅ 落地，**v0.4.0 于 2026-04-27 发布**。下表是事后回顾，
+> 子阶段编号沿用历史顺序（1 → 1.5 → 2 → 3 → 3.5 → 4 → 5），便于回查 commit。
+
 | Phase | 内容 | 状态 |
 |---|---|---|
 | 1 | adapter 加 `driver/claude_code` + `AgentDriver` 接口 + `POST /v1/agent/message` NDJSON 端点 | ✅ 完成（2026-04-25） |
 | 1.5 | 多轮 session 续接（`sessionId` 复用 + sweeper）· [ADR-002](decisions/ADR-002-multi-turn-session-lifecycle.md) | ✅ 完成（2026-04-25） |
-| 3 | `Router` 抽象 + 第二个 driver（Ollama）+ `GET /v1/agent/drivers` · [ADR-003](decisions/ADR-003-router-and-multi-driver.md) | 🔄 进行中 |
-| 2 | `tool_use` 审批闭环：`EvToolCall` + `Approve()` + 设备 ack 帧（需持久子进程 + `--input-format stream-json` 双向流） | 暂缓（等 Router 稳定后） |
-| 4 | 固件接入 Agent Bus（设备端聊天 / driver 切换 / NVS 持久化）· 详细子阶段见 [firmware_agent_integration.md](firmware_agent_integration.md) | 🔄 4.0 进行中 |
-| 5 | Codex / Aider / Gemini driver | 按需加 |
+| 2 | playground / web 调试入口（HTML 直连 NDJSON、tool_use 显示） | ✅ 完成（2026-04-26） |
+| 3 | `Router` 抽象 + 第二个 driver（Ollama）+ `GET /v1/agent/drivers` · [ADR-003](decisions/ADR-003-router-and-multi-driver.md) | ✅ 完成（2026-04-26） |
+| 3.5 | adapter env 收敛（删多余 env，只留 3 个必需变量） | ✅ 完成（2026-04-26） |
+| 4 | 固件接入 Agent Bus（设备端聊天 / driver 切换 / NVS 持久化 / 语音桥 / TTS 流 / openclaw driver / cloud 反代）· 详细子阶段见 [firmware_agent_integration.md](firmware_agent_integration.md) §7 | ✅ 完成（2026-04-27，v0.4.0）|
+| 4.0 | `bb_agent_client` 模块（HTTP NDJSON 流式 + cJSON 解析） | ✅ commit `0535218` |
+| 4.1 | LVGL Agent Chat 屏幕 + 主题接口 + `text-only` 默认主题 | ✅ commit `6a18b71` |
+| 4.2 | Settings 子菜单（driver / theme / TTS toggle） | ✅ commit `43097f1`（被 4.7 取代为独立 overlay） |
+| 4.2.5 | 异步 driver 列表拉取 + Loading 占位 + cancel | ✅ commit `970e8bf` |
+| 4.5 | PTT → ASR → Agent Bus 语音桥 | ✅ commit `080e43e` |
+| 4.5.1 | TTS reply toggle（end-of-turn 一次性合成） | ✅ commit `a3a17a1` |
+| 4.5.2 | 句级流式 TTS + cancel-and-replace + UTF-8 截断 | ✅ commit `fb3df9c` |
+| 4.6 | `buddy-ascii` 七态主题（移植 claude-desktop-buddy 角色） | ✅ commit `2e47346` |
+| 4.7 | 独立 Settings overlay（脱离 picker，全屏覆盖式）· 见 ADR-007 | ✅ commit `763fd0a` |
+| 4.8 | cloud `/v1/agent/*` 反向代理 + 固件 deviceId 透传（cloud_saas 设备解锁 Agent Chat） | ✅ commits `efc8588`, `877f206`（bbclaw-reference）/ `3539137`（firmware） |
+| 4.8.x | Chat 作为 standby + idle 自动退出 + LISTENING/SPEAKING 九态 state flow · 见 ADR-008、ADR-009 | ✅ commits `57da618`, `bf7f228` |
+| 4.9 | openclaw 作为 AgentDriver（adapter 内置） · 见 [ADR-005](decisions/ADR-005-openclaw-as-driver.md) | ✅ commit `7356eda`（bbclaw-reference） |
+| 5 | Flipper 6-button 完整 nav events Option B（UP/DOWN/LEFT/RIGHT/OK/BACK 全语义） · 见 ADR-006 | ✅ commit `99dd2ec` |
+| (后续) | Codex / Aider / Gemini driver、buddy GIF 主题、tool_use 真审批闭环 | 按需加 |
 
 ### Phase 1 验收记录
 

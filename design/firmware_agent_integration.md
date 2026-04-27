@@ -235,19 +235,29 @@ adapter URL 已在现有 `bb_config.h` 里。无需新增。
 
 | Phase | 内容 | 验收 |
 |---|---|---|
-| 4.0 | `bb_agent_client.c/h` + 最简 CLI 测试（串口命令触发 send）| ✅ 模块已落地（commit `0535218`）；串口测试待补 |
-| 4.1 | 主题接口 + `text-only` 默认主题 + LVGL Agent Chat 骨架 | 设备屏幕能流式显示助手回复（极简风格）|
-| 4.2 | driver picker 菜单 + NVS 持久化 session + 主题切换菜单 | 切 driver / 切主题 / 重启后继续 |
-| 4.3 | tool_call toast + tokens 角标（在 text-only 主题里实现）| UI 完整 |
-| 4.4 | 软键盘或拼音输入法（如果硬件支持） | 用户能真·自由输入 |
-| 4.5 | 语音输入桥：长按 PTT → ASR → agent_bus（复用 `bb_adapter_client` 的 ASR，拿到文字后喂给 `bb_agent_client`）| 一键说话给 claude-code |
-| 4.6 | `buddy-ascii` 主题：移植 [claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) 的七态 ASCII 角色，状态机绑到 Agent Bus 事件 | 选 buddy 主题 → 屏幕变 buddy 风 |
-| 4.7 | 角色包推送：adapter 实现 buddy 同款 `char_begin/file/chunk/file_end` folder push 协议，bbclaw LittleFS 存 GIF 包 + LVGL GIF 解码 | 拖拽角色包到 web playground / 桌面工具，设备上自动切到自定义角色 |
+| 4.0 | `bb_agent_client.c/h` + 最简 CLI 测试（串口命令触发 send）| ✅ commit `0535218` |
+| 4.1 | 主题接口 + `text-only` 默认主题 + LVGL Agent Chat 骨架 | ✅ commit `6a18b71` — 设备屏幕能流式显示助手回复 |
+| 4.2 | driver picker 菜单 + NVS 持久化 session + 主题切换菜单 | ✅ commit `43097f1`（后被 4.7 独立 overlay 取代为最终形态） |
+| 4.2.5 | 异步 driver 列表拉取 + Loading 占位 + cancel-while-fetching | ✅ commit `970e8bf` — 进入 Settings 不再卡住 LVGL 任务 |
+| 4.3 | tool_call toast + tokens 角标 | 跳过——`tool_call` UX 待 Phase 2 真审批一起做；tokens 暂不显示在小屏（噪音 > 价值） |
+| 4.4 | 软键盘 / 自由输入 | 跳过——4.5 语音桥落地后，键盘场景被替代；预置短语 + 语音覆盖 95% 用例 |
+| 4.5 | 语音输入桥：长按 PTT → ASR → agent_bus | ✅ commit `080e43e` — PTT 录音直接灌给当前 driver |
+| 4.5.1 | TTS reply toggle（end-of-turn 一次性合成） | ✅ commit `a3a17a1` — Settings 里 On/Off |
+| 4.5.2 | 句级流式 TTS + cancel-and-replace + UTF-8 截断 | ✅ commit `fb3df9c` — 第一句 ~1s 内出声，新轮启动时自动打断旧 TTS |
+| 4.6 | `buddy-ascii` 七态主题（移植 claude-desktop-buddy 的 ASCII 角色）| ✅ commit `2e47346` — 七态 face/mood 表见 [bb_theme_buddy_ascii.c](../firmware/src/bb_theme_buddy_ascii.c) |
+| 4.7 | 独立 Settings overlay（脱离 picker，全屏覆盖式） | ✅ commit `763fd0a` — 见 [ADR-007](decisions/ADR-007-standalone-settings-overlay.md) |
+| 4.8 | cloud `/v1/agent/*` 反向代理 + 固件 deviceId 透传 | ✅ commits `efc8588`, `877f206`（bbclaw-reference） + `3539137`（firmware） — cloud_saas 设备也能 Agent Chat |
+| 4.8.x | Chat 作为 standby + idle 自动退出 + LISTENING/SPEAKING 九态 state flow | ✅ commits `57da618`, `bf7f228` — 见 [ADR-008](decisions/ADR-008-chat-as-standby-and-idle-exit.md)、[ADR-009](decisions/ADR-009-agent-state-machine.md) |
+| 4.9 | openclaw 作为 AgentDriver | ✅ commit `7356eda`（bbclaw-reference） — 见 [ADR-005](decisions/ADR-005-openclaw-as-driver.md) |
+| 4.6.x（后续） | buddy GIF 升级（LVGL GIF 或自定义绘制取代 ASCII） | 留作 v0.5 polish |
+| 4.7+（后续） | 角色包推送（adapter 推 GIF 包到 LittleFS） | 等 4.6.x 验证 GIF 渲染稳定再决定 |
 
-**先做 4.1 + 4.2 + 4.3**（MVP，纯文字流就足够交付一次完整 UX）。
-**4.4–4.5** 按 UX 反馈节奏。
-**4.6** 是"可选 polish"——先做完文字流主线，再考虑 buddy 风格。
-**4.7** 是大头，等 4.6 验证 ASCII 角色 OK 之后再决定要不要再投入实现 GIF。
+**Phase 4 已全部完成并随 v0.4.0（2026-04-27）发布。** 7 大子阶段（4.0–4.9）全部真机验证通过。
+
+`AGENT_STATE_MACHINE.md`（与本文档同级）记录了九态机的完整转移图、触发表与日志样本。
+[ADR-007](decisions/ADR-007-standalone-settings-overlay.md)、
+[ADR-008](decisions/ADR-008-chat-as-standby-and-idle-exit.md)、
+[ADR-009](decisions/ADR-009-agent-state-machine.md) 三份 ADR 锁定 4.7/4.8.x 的设计决策。
 
 ## 8. 测试策略
 
