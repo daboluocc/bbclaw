@@ -58,6 +58,25 @@ jobs:
           make set-target BOARD=bbclaw
           make build
 
+      - name: Generate OTA data (ota_0 boot)
+        # The default ota_data_initial.bin (all 0xFF) points to factory which
+        # is too small for our 2.36 MB firmware.  Generate a custom otadata
+        # that boots ota_0 (seq=1).  CRC matches IDF's bootloader_common_ota_select_crc.
+        run: |
+          python3 -c "
+          import binascii, struct
+          seq = 1
+          label = b'\xff' * 20
+          state = 0xFFFFFFFF
+          crc = binascii.crc32(struct.pack('I', seq), 0xFFFFFFFF) % (1 << 32)
+          entry = struct.pack('<I20sII', seq, label, state, crc)
+          sec1 = entry + b'\xff' * (4096 - len(entry))
+          sec2 = b'\xff' * 4096
+          import os; os.makedirs('firmware/build', exist_ok=True)
+          open('firmware/build/otadata_ota0.bin', 'wb').write(sec1 + sec2)
+          print(f'[otadata] wrote otadata_ota0.bin (seq={seq} crc=0x{crc:08x} -> ota_0)')
+          "
+
       - name: Stage firmware artifacts
         # Stage all four bins needed for first-time serial flashing (browser
         # / esptool flow) plus the app bin that single-app OTA already used.
@@ -68,7 +87,7 @@ jobs:
              "release-stage/firmware/bootloader-${RELEASE_VERSION}.bin"
           cp firmware/build/partition_table/partition-table.bin \
              "release-stage/firmware/partition-table-${RELEASE_VERSION}.bin"
-          cp firmware/build/ota_data_initial.bin \
+          cp firmware/build/otadata_ota0.bin \
              "release-stage/firmware/ota-data-${RELEASE_VERSION}.bin"
           cp firmware/build/bbclaw_firmware.bin \
              "release-stage/firmware/bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
@@ -80,10 +99,15 @@ jobs:
           path: release-stage/firmware/
 
       - name: Push flash bundle to OTA server
-        # Reads ESP-IDF's flasher_args.json so the offsets always match whichever
-        # partition layout was actually built (factory vs OTA), then POSTs the
-        # multi-part bundle to /v1/ota/flash-bundle. The bundle is what the
-        # portal's /flash page consumes via esp-web-tools.
+        # Posts a multi-part flash bundle (bootloader + partition-table + otadata +
+        # ota_0 app) to /v1/ota/flash-bundle.  The bundle is what the portal's
+        # /flash page consumes via esp-web-tools.
+        #
+        # Offsets are from the BBClaw OTA partition layout (partitions_ota.csv):
+        #   0x0      bootloader       ~21 KB
+        #   0x8000   partition table    4 KB
+        #   0x10000  otadata (o_0)      8 KB
+        #   0x120000 ota_0 app         2.5 MB
         env:
           OTA_KEY: ${{ secrets.OTA_ADMIN_KEY }}
           OTA_URL: ${{ vars.OTA_SERVER_URL }}
@@ -96,46 +120,45 @@ jobs:
           fi
 
           STAGE="release-stage/firmware"
-          # Map each flasher_args.json source path → versioned staged filename.
-          # The bundle endpoint receives files keyed by their target manifest filename.
-          declare -A SRC_TO_STAGED=(
-            ["bootloader/bootloader.bin"]="bootloader-${RELEASE_VERSION}.bin"
-            ["partition_table/partition-table.bin"]="partition-table-${RELEASE_VERSION}.bin"
-            ["ota_data_initial.bin"]="ota-data-${RELEASE_VERSION}.bin"
-            ["bbclaw_firmware.bin"]="bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
-          )
 
-          # Build manifest JSON: [{offset, filename} ...] sorted by offset.
-          MANIFEST_PARTS=$(jq -c --argjson map "$(
-            jq -n --arg b "bootloader-${RELEASE_VERSION}.bin" \
-                  --arg p "partition-table-${RELEASE_VERSION}.bin" \
-                  --arg o "ota-data-${RELEASE_VERSION}.bin" \
-                  --arg a "bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin" \
-              '{"bootloader/bootloader.bin":$b,"partition_table/partition-table.bin":$p,"ota_data_initial.bin":$o,"bbclaw_firmware.bin":$a}'
-          )" '
-            .flash_files
-            | to_entries
-            | map({offset: .key, filename: $map[.value]})
-          ' firmware/build/flasher_args.json)
+          PART_BOOT="bootloader-${RELEASE_VERSION}.bin"
+          PART_PT="partition-table-${RELEASE_VERSION}.bin"
+          PART_OTA="ota-data-${RELEASE_VERSION}.bin"
+          PART_APP="bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
+
+          # Verify staged files exist.
+          for f in "$PART_BOOT" "$PART_PT" "$PART_OTA" "$PART_APP"; do
+            [[ -f "$STAGE/$f" ]] || { echo "missing: $STAGE/$f"; exit 1; }
+          done
 
           MANIFEST=$(jq -nc \
             --arg version "$RELEASE_VERSION" \
-            --argjson parts "$MANIFEST_PARTS" \
-            '{version:$version, platform:"esp32s3", chipFamily:"ESP32-S3", parts:$parts}')
+            --arg b "$PART_BOOT" \
+            --arg p "$PART_PT" \
+            --arg o "$PART_OTA" \
+            --arg a "$PART_APP" \
+            '{
+              version: $version,
+              platform: "esp32s3",
+              chipFamily: "ESP32-S3",
+              parts: [
+                {offset: "0x0",       filename: $b},
+                {offset: "0x8000",    filename: $p},
+                {offset: "0x10000",   filename: $o},
+                {offset: "0x120000",  filename: $a}
+              ]
+            }')
 
           echo "Manifest:"
           echo "$MANIFEST" | jq .
 
-          # Build curl -F args: one per part keyed by the bundle filename.
-          CURL_FILE_ARGS=()
-          while IFS= read -r staged; do
-            CURL_FILE_ARGS+=(-F "${staged}=@${STAGE}/${staged}")
-          done < <(echo "$MANIFEST" | jq -r '.parts[].filename')
-
           curl -fSs -X POST "$OTA_URL/v1/ota/flash-bundle" \
             -H "X-OTA-Admin-Key: $OTA_KEY" \
             -F "manifest=$MANIFEST" \
-            "${CURL_FILE_ARGS[@]}"
+            -F "${PART_BOOT}=@${STAGE}/${PART_BOOT}" \
+            -F "${PART_PT}=@${STAGE}/${PART_PT}" \
+            -F "${PART_OTA}=@${STAGE}/${PART_OTA}" \
+            -F "${PART_APP}=@${STAGE}/${PART_APP}"
           echo "Flash bundle pushed: $RELEASE_VERSION"
 
   # ───────────────────────────────────────────────────────────────────────
