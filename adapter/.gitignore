@@ -4,7 +4,11 @@ dist/
 releases/
 tmp/
 *.tmp
+
+# all dotenv variants — only .env.example may be tracked
 .env
+.env.*
+!.env.example
 
 # the binary itself, in case someone builds in adapter/ root
 bbclaw-adapter
