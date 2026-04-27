@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Buddy-anim theme** (Phase 4.6.x): LVGL-driven 9-state animations on top of the
+  existing ASCII faces — opacity pulse for SLEEP, y-bob for IDLE/LISTENING,
+  dot cycle for BUSY, x-sway for SPEAKING, transform-scale heartbeat for HEART,
+  color lerp for ATTENTION, y-bounce + festive color for CELEBRATE,
+  fast x-shake for DIZZY. Selectable via NVS like the existing themes.
+- **Aider driver** (Phase 4.10): adapter-side driver wrapping the `aider` CLI in
+  non-interactive mode (`--message ... --yes-always --no-pretty --no-stream`),
+  with per-session `--chat-history-file` for multi-turn continuity. Auto-enabled
+  when `aider` is on PATH; overridable via `AGENT_AIDER_FORCE`.
+
+### Fixed
+- **PTT → LISTENING state**: pressing PTT now reliably transitions the buddy face
+  to LISTENING. Previous code gated the state change behind WiFi / TTS guards
+  that could silently skip it (only the haptic fired); recording still started
+  via the arm path, leaving the user without visual feedback.
+- **Double-OK kills settings**: rapid OK presses no longer cause the settings
+  overlay to flash open then immediately close. The nav-event drain skips
+  buffered OK/BACK events for one tick after `settings_overlay_enter()` succeeds.
+
 ## [0.4.0] - 2026-04-27
 
 ### Added
