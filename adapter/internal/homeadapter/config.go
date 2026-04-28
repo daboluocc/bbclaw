@@ -82,7 +82,12 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	cfg := Config{
-		CloudWSURL:           strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
+		// Default to production SaaS so adapter dials cloud out-of-the-box.
+		// CLOUD_ALLOW_ANON_HOME_ADAPTER on the cloud side accepts the upgrade
+		// without a token; the peer is held in claim_required until claimed.
+		// Override via env (or set ADAPTER_MODE=local in the parent config) to
+		// disable cloud relay.
+		CloudWSURL:           getEnvOrDefault("CLOUD_WS_URL", "wss://bbclaw.daboluo.cc/ws"),
 		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
 		HomeSiteID:           homeSiteID,
 		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
@@ -100,9 +105,8 @@ func LoadFromEnv() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.CloudWSURL) == "" {
-		return errors.New("CLOUD_WS_URL is required")
-	}
+	// CloudWSURL has a built-in default (production SaaS); only validate the URL
+	// shape here. resolveCloudDialURL below catches malformed input.
 	if strings.TrimSpace(c.HomeSiteID) == "" {
 		return errors.New("HOME_SITE_ID is empty (unexpected after EnsureHomeSiteID)")
 	}

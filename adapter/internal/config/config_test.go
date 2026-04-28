@@ -33,8 +33,14 @@ func TestLoadFromEnvDefaultsAndRequireds(t *testing.T) {
 	if !cfg.EnableLocalIngress() {
 		t.Fatal("expected local ingress enabled by default")
 	}
-	if cfg.EnableCloudRelay() {
-		t.Fatal("expected cloud relay disabled when CLOUD_WS_URL is unset")
+	// CLOUD_WS_URL has a built-in production default now, so cloud relay is on
+	// out-of-the-box. The unauthenticated home_adapter goes through the cloud's
+	// claim_required pairing flow before any traffic flows.
+	if !cfg.EnableCloudRelay() {
+		t.Fatal("expected cloud relay enabled by default (CLOUD_WS_URL has a baked-in default)")
+	}
+	if cfg.CloudWSURL == "" {
+		t.Fatal("expected CloudWSURL default to be populated, got empty")
 	}
 }
 

@@ -147,7 +147,11 @@ func LoadFromEnv() (Config, error) {
 		ASRTranscribeTimeout: time.Duration(getEnvInt("ASR_TRANSCRIBE_TIMEOUT_SECONDS", 10)) * time.Second,
 		ASRReadinessProbe:    getEnvBool("ASR_READINESS_PROBE", true),
 		ASRReadinessTimeout:  time.Duration(getEnvInt("ASR_READINESS_TIMEOUT_SECONDS", 8)) * time.Second,
-		CloudWSURL:           strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
+		// Default points at the production SaaS so a fresh adapter installs and
+		// connects with zero config. Cloud relays are claim_required until the
+		// portal user types in the registration code, so unauthenticated traffic
+		// can't move. Set ADAPTER_MODE=local to opt out entirely.
+		CloudWSURL:           getEnvOrDefault("CLOUD_WS_URL", "wss://bbclaw.daboluo.cc/ws"),
 		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
 		HomeSiteID:           strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
 		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
