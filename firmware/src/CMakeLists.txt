@@ -19,6 +19,7 @@ set(_bb_srcs
     "bb_ota.c"
     "bb_ptt.c"
     "bb_radio_app.c"
+    "bb_session_store.c"
     "bb_theme_text_only.c"
     "bb_theme_buddy_ascii.c"
     "bb_theme_buddy_anim.c"
