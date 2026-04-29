@@ -3,8 +3,12 @@
 - **编号**: ADR-007
 - **标题**: 把 Settings 从 Agent Chat 子模式提升为独立全屏 overlay
 - **日期**: 2026-04-27
-- **状态**: 已接受
+- **状态**: 已替代（被 [ADR-012](ADR-012-fixed-page-menu.md) 取代，2026-04-30）
 - **关联**: ADR-005（openclaw driver 接入）；ADR-006（Flipper 6-button）；Phase 4.2.5 → 4.7 演进
+
+> **状态说明**：本 ADR 的 overlay 召唤 + 互斥仲裁模型已被 ADR-012 的"四态固定页面"模型取代。
+> Settings 不再是 overlay，而是 `BBCLAW_STATE_SETTINGS` 页面。本文档保留以记录 Phase 4.7 的 Settings 抽离演进
+> 和 §4 的 lvgl_port_lock 内禁 IO 经验（后者继续生效）。
 
 ## 背景
 

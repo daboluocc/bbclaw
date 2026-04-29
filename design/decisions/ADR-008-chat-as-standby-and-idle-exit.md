@@ -3,8 +3,12 @@
 - **编号**: ADR-008
 - **标题**: 待机屏作为首页；任意活动召唤 Agent Chat overlay；90s 无活动自动退出
 - **日期**: 2026-04-27
-- **状态**: 已接受
+- **状态**: 已替代（被 [ADR-012](ADR-012-fixed-page-menu.md) 取代，2026-04-30）
 - **关联**: ADR-007（Settings overlay）；Phase 4.5（语音桥接到 Agent Bus）；Phase 4.6（待机/IDLE 主题）
+
+> **状态说明**：本 ADR 的"chat overlay 召唤 + 90s idle-exit"模型已被 ADR-012 的"四态固定页面"取代。
+> 新模型下 CHAT 是显式页面，由用户 BACK 进入/退出，不再自动召唤、不再自动退出。本文档保留以记录
+> Phase 4.8.x 的演进逻辑和"in_flight 不打断回合"的设计原则（后者在新模型的 BACK 处理里继续生效）。
 
 ## 背景
 
