@@ -200,30 +200,50 @@ func detectSayTTS() Result {
 	}
 }
 
-// detectFunASR checks if FunASR is installed in tools/asr/
+// detectFunASR checks if FunASR is installed.
+// Search order:
+//   1. ~/.bbclaw/tools/asr  (user local install)
+//   2. ../tools/asr         (repo dev mode, relative to adapter directory)
 func detectFunASR() Result {
-	// Check if tools/asr/ directory exists with FunASR components
-	asrPath := "tools/asr"
-	if _, err := os.Stat(asrPath); os.IsNotExist(err) {
-		return Result{Present: false, Reason: "tools/asr/ directory not found"}
+	searchPaths := []string{}
+
+	// User local install
+	if home, err := os.UserHomeDir(); err == nil {
+		searchPaths = append(searchPaths, filepath.Join(home, ".bbclaw", "tools", "asr"))
 	}
 
-	// Check for key FunASR files
-	requiredFiles := []string{
-		filepath.Join(asrPath, "funasr_server.py"),
-		filepath.Join(asrPath, "funasr_wrapper.sh"),
-	}
+	// Repo dev mode (adapter is at bbclaw/adapter/cmd/bbclaw-adapter/, tools/ is at bbclaw/tools/)
+	// From current working dir (repo root), ../tools/asr should exist
+	searchPaths = append(searchPaths, filepath.Join("..", "tools", "asr"))
 
-	for _, file := range requiredFiles {
-		if _, err := os.Stat(file); os.IsNotExist(err) {
-			return Result{Present: false, Reason: fmt.Sprintf("%s not found", file)}
+	for _, asrPath := range searchPaths {
+		if _, err := os.Stat(asrPath); os.IsNotExist(err) {
+			continue
+		}
+
+		// Check for key FunASR files
+		requiredFiles := []string{
+			filepath.Join(asrPath, "funasr_server.py"),
+			filepath.Join(asrPath, "funasr_wrapper.sh"),
+		}
+
+		allPresent := true
+		for _, file := range requiredFiles {
+			if _, err := os.Stat(file); os.IsNotExist(err) {
+				allPresent = false
+				break
+			}
+		}
+
+		if allPresent {
+			return Result{
+				Present: true,
+				Data:    map[string]interface{}{"path": asrPath},
+			}
 		}
 	}
 
-	return Result{
-		Present: true,
-		Data:    map[string]interface{}{"path": asrPath},
-	}
+	return Result{Present: false, Reason: "funasr not found (checked ~/.bbclaw/tools/asr and ../tools/asr)"}
 }
 
 // detectEspeakTTS checks for espeak-ng or espeak on Linux

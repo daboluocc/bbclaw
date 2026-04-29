@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ var (
 	doctorReset      bool
 	doctorDoubaoEnv  string
 	doctorDryRun     bool
+	doctorAutoInstall bool // skip confirmation prompt for auto-install
 )
 
 // NewDoctorCmd creates the doctor command
@@ -41,6 +44,7 @@ Examples:
 	cmd.Flags().BoolVar(&doctorReset, "reset", false, "Discard existing .env and write fresh (backup first)")
 	cmd.Flags().StringVar(&doctorDoubaoEnv, "doubao-env", os.Getenv("DOUBAO_ENV_FILE"), "Path to external .env with Doubao/Volcano keys")
 	cmd.Flags().BoolVar(&doctorDryRun, "dry-run", false, "Print .env to stdout without writing")
+	cmd.Flags().BoolVar(&doctorAutoInstall, "yes", false, "Auto-install missing tools without prompting")
 
 	return cmd
 }
@@ -48,6 +52,18 @@ Examples:
 func runDoctor(cmd *cobra.Command, args []string) error {
 	// Detect all components
 	env := detect.DetectAll(doctorDoubaoEnv)
+
+	// Auto-install FunASR if missing and --fix is set
+	if !env.FunASR.Present && doctorFix {
+		if err := installFunASR(); err != nil {
+			fmt.Printf("\nWarning: FunASR auto-install failed: %v\n", err)
+			fmt.Println("You can install manually:")
+			fmt.Println("  python3 tools/asr/run_funasr_server.sh")
+		} else {
+			// Re-detect after installation
+			env = detect.DetectAll(doctorDoubaoEnv)
+		}
+	}
 
 	// Print detection results
 	fmt.Println("Driver scan:")
@@ -271,4 +287,86 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// installFunASR clones the bbclaw repo and copies tools/ to ~/.bbclaw/tools/
+func installFunASR() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot get home dir: %w", err)
+	}
+
+	bbclawToolsDir := filepath.Join(home, ".bbclaw", "tools")
+	bbclawDir := filepath.Join(home, ".bbclaw")
+
+	// Check if already installed
+	if _, err := os.Stat(filepath.Join(bbclawToolsDir, "asr")); err == nil {
+		return nil // already installed
+	}
+
+	fmt.Println("\nDownloading FunASR tools from GitHub...")
+
+	// Clone to a temp directory
+	tmpDir, err := os.MkdirTemp("", "bbclaw-tools-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Clone only the tools directory using sparse-checkout
+	cloneCmd := exec.Command("git", "clone", "--depth=1", "https://github.com/daboluocc/bbclaw", tmpDir)
+	cloneCmd.Stdout = os.Stdout
+	cloneCmd.Stderr = os.Stderr
+	if err := cloneCmd.Run(); err != nil {
+		return fmt.Errorf("git clone failed: %w", err)
+	}
+
+	// Ensure ~/.bbclaw exists
+	if err := os.MkdirAll(bbclawDir, 0755); err != nil {
+		return fmt.Errorf("create ~/.bbclaw: %w", err)
+	}
+
+	// Copy tools directory
+	srcTools := filepath.Join(tmpDir, "tools")
+	if _, err := os.Stat(srcTools); err != nil {
+		return fmt.Errorf("tools/ not found in clone: %w", err)
+	}
+
+	// Remove existing tools dir if exists
+	if _, err := os.Stat(bbclawToolsDir); err == nil {
+		if err := os.RemoveAll(bbclawToolsDir); err != nil {
+			return fmt.Errorf("remove old tools: %w", err)
+		}
+	}
+
+	if err := copyDir(srcTools, bbclawToolsDir); err != nil {
+		return fmt.Errorf("copy tools: %w", err)
+	}
+
+	fmt.Printf("FunASR installed to %s\n", bbclawToolsDir)
+	return nil
+}
+
+// copyDir recursively copies src to dst
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(src, path)
+		dstPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+		return copyFile(path, dstPath, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, mode)
 }
