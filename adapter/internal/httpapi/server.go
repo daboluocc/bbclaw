@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
+	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
 	// Playground is unauthenticated on purpose — it's a dev-only single-page
 	// UI for dogfooding agent drivers. Protect your adapter by not exposing
 	// it to the internet.
