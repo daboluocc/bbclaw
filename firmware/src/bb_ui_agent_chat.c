@@ -9,6 +9,7 @@
 #include "bb_agent_theme.h"
 #include "bb_audio.h"
 #include "bb_config.h"
+#include "bb_session_store.h"
 #include "bb_time.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -368,6 +369,13 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         strncpy(shortbuf, evt->session_id, 8);
         shortbuf[8] = '\0';
         post_session(shortbuf);
+
+        /* Phase S2 — save session ID to NVS for current driver */
+        if (evt->driver != NULL && evt->driver[0] != '\0') {
+          bb_session_store_save(evt->driver, evt->session_id);
+        } else if (s_chat.selected_driver[0] != '\0') {
+          bb_session_store_save(s_chat.selected_driver, evt->session_id);
+        }
       }
       if (evt->driver != NULL) {
         strncpy(s_chat.driver_name, evt->driver, sizeof(s_chat.driver_name) - 1);
@@ -994,6 +1002,16 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
   load_nvs_on_internal_stack();
+
+  /* Phase S2 — load session ID for selected driver from NVS */
+  if (s_chat.selected_driver[0] != '\0') {
+    esp_err_t err = bb_session_store_load(s_chat.selected_driver, s_chat.session_id, sizeof(s_chat.session_id));
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, s_chat.selected_driver);
+    } else if (err != ESP_ERR_NOT_FOUND) {
+      ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
+    }
+  }
 
   /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
    * RIGHT cycle don't have to wait for HTTP. Cheap if cache already populated

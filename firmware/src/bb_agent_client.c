@@ -360,6 +360,104 @@ esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* 
   return ESP_OK;
 }
 
+/* ── public: list sessions ── */
+
+esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_t* out_list, int cap, int* out_count) {
+  if (driver_name == NULL || driver_name[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (out_count != NULL) {
+    *out_count = 0;
+  }
+
+  char url[320] = {0};
+  char path[128] = {0};
+  snprintf(path, sizeof(path), "/v1/agent/sessions?driver=%s&limit=6", driver_name);
+  agent_build_url(url, sizeof(url), path);
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_GET, http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+
+  if (err != ESP_OK) {
+    free(accum.buf);
+    ESP_LOGE(TAG, "list_sessions transport err=%s", esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300 || accum.buf == NULL) {
+    ESP_LOGE(TAG, "list_sessions http status=%d body=%.120s", status, accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+
+  cJSON* root = cJSON_Parse(accum.buf);
+  free(accum.buf);
+  accum.buf = NULL;
+  if (root == NULL) {
+    ESP_LOGE(TAG, "list_sessions parse failed");
+    return ESP_FAIL;
+  }
+
+  const cJSON* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+  const cJSON* sessions = cJSON_GetObjectItemCaseSensitive(data, "sessions");
+  if (!cJSON_IsArray(sessions)) {
+    ESP_LOGE(TAG, "list_sessions missing data.sessions[]");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  int total = cJSON_GetArraySize(sessions);
+  if (out_count != NULL) {
+    *out_count = total;
+  }
+  if (out_list != NULL && cap > 0) {
+    int n = total < cap ? total : cap;
+    for (int i = 0; i < n; i++) {
+      const cJSON* item = cJSON_GetArrayItem(sessions, i);
+      if (item == NULL) {
+        continue;
+      }
+      bb_agent_session_info_t* slot = &out_list[i];
+      memset(slot, 0, sizeof(*slot));
+
+      const cJSON* id = cJSON_GetObjectItemCaseSensitive(item, "id");
+      if (cJSON_IsString(id) && id->valuestring != NULL) {
+        strncpy(slot->id, id->valuestring, sizeof(slot->id) - 1);
+        slot->id[sizeof(slot->id) - 1] = '\0';
+      }
+
+      const cJSON* preview = cJSON_GetObjectItemCaseSensitive(item, "preview");
+      if (cJSON_IsString(preview) && preview->valuestring != NULL) {
+        strncpy(slot->preview, preview->valuestring, sizeof(slot->preview) - 1);
+        slot->preview[sizeof(slot->preview) - 1] = '\0';
+      }
+
+      const cJSON* msg_count = cJSON_GetObjectItemCaseSensitive(item, "messageCount");
+      if (cJSON_IsNumber(msg_count)) {
+        slot->message_count = msg_count->valueint;
+      }
+
+      const cJSON* last_used = cJSON_GetObjectItemCaseSensitive(item, "lastUsed");
+      if (cJSON_IsNumber(last_used)) {
+        slot->last_used_ms = (int64_t)last_used->valuedouble;
+      }
+    }
+  }
+
+  ESP_LOGI(TAG, "list_sessions ok driver=%s total=%d", driver_name, total);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
 /* ── public: send message ── */
 
 esp_err_t bb_agent_send_message(const char* text, const char* session_id, const char* driver_name,

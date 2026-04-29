@@ -43,6 +43,13 @@ typedef struct {
   int streaming;
 } bb_agent_driver_info_t;
 
+typedef struct {
+  char id[64];
+  char preview[24];
+  int message_count;
+  int64_t last_used_ms;
+} bb_agent_session_info_t;
+
 /**
  * 列出 adapter 上可用 driver。
  *
@@ -52,6 +59,17 @@ typedef struct {
  * @return ESP_OK / 错误码。
  */
 esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* out_count);
+
+/**
+ * 列出指定 driver 的 session 列表（Phase S2）。
+ *
+ * @param driver_name  Driver 名称（必填）
+ * @param out_list     调用方提供的数组；可为 NULL（仅查总数）
+ * @param cap          out_list 容量；out_list 为 NULL 时忽略
+ * @param out_count    实际可用 session 总数（不受 cap 限制）
+ * @return ESP_OK / 错误码
+ */
+esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_t* out_list, int cap, int* out_count);
 
 /**
  * 发一条用户消息并流式读取 NDJSON 事件，阻塞直到 turn_end / error / HTTP 关闭。
