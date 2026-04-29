@@ -44,11 +44,11 @@ help:
 	@echo "示例文件: .env.example"
 
 sync-env:
-	@python3 "$(CURDIR)/scripts/sync_env.py" \
+	@$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter doctor --fix \
 		$(if $(DOUBAO_ENV),--doubao-env "$(DOUBAO_ENV)")
 
 sync-env-reset:
-	@python3 "$(CURDIR)/scripts/sync_env.py" --reset \
+	@$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter doctor --fix --reset \
 		$(if $(DOUBAO_ENV),--doubao-env "$(DOUBAO_ENV)")
 
 build:

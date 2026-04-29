@@ -22,6 +22,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/cmd"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/homeadapter"
 	"github.com/daboluocc/bbclaw/adapter/internal/httpapi"
@@ -29,25 +30,31 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/pipeline"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
+	"github.com/spf13/cobra"
 )
 
 func main() {
-	if buildinfo.ShouldPrintVersion(os.Args[1:]) {
-		fmt.Println(buildinfo.String("bbclaw-adapter"))
-		return
+	rootCmd := cmd.NewRootCmd()
+
+	// Override the default run function to execute the adapter service
+	rootCmd.RunE = func(c *cobra.Command, args []string) error {
+		logger := obs.NewLogger()
+		metrics := obs.NewMetrics()
+
+		cfg, err := config.LoadFromEnv()
+		if err != nil {
+			logger.Errorf("load config failed: %v", err)
+			os.Exit(1)
+		}
+
+		logger.Infof("%s", buildinfo.String("bbclaw-adapter"))
+		run(cfg, logger, metrics)
+		return nil
 	}
 
-	logger := obs.NewLogger()
-	metrics := obs.NewMetrics()
-
-	cfg, err := config.LoadFromEnv()
-	if err != nil {
-		logger.Errorf("load config failed: %v", err)
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
-
-	logger.Infof("%s", buildinfo.String("bbclaw-adapter"))
-	run(cfg, logger, metrics)
 }
 
 func buildSink(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) pipeline.Sink {
