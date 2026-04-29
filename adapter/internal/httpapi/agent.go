@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -197,6 +198,67 @@ type agentMessageRequest struct {
 	Text      string `json:"text"`
 	SessionId string `json:"sessionId,omitempty"`
 	Driver    string `json:"driver,omitempty"`
+}
+
+// handleAgentSessions lists persisted sessions for a given driver.
+//
+//	GET /v1/agent/sessions?driver=claude-code&limit=6
+//	response: {"ok":true,"data":{"sessions":[{"id":"...","preview":"...","lastUsed":1714000000,"messageCount":8}]}}
+func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+
+	driverName := strings.TrimSpace(r.URL.Query().Get("driver"))
+	if driverName == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "DRIVER_REQUIRED"})
+		return
+	}
+
+	drv, ok := s.router.Get(driverName)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, response{
+			OK:     false,
+			Error:  "UNKNOWN_DRIVER",
+			Detail: "driver not registered: " + driverName,
+		})
+		return
+	}
+
+	// Check if driver implements SessionLister
+	lister, ok := drv.(agent.SessionLister)
+	if !ok {
+		// Driver doesn't implement SessionLister — return empty list, not an error
+		writeJSON(w, http.StatusOK, response{
+			OK:   true,
+			Data: map[string]any{"sessions": []agent.SessionInfo{}},
+		})
+		return
+	}
+
+	limit := 6 // default
+	if limitStr := strings.TrimSpace(r.URL.Query().Get("limit")); limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	sessions, err := lister.ListSessions(r.Context(), limit)
+	if err != nil {
+		s.log.Errorf("agent: list sessions failed driver=%s err=%v", driverName, err)
+		writeJSON(w, http.StatusInternalServerError, response{
+			OK:     false,
+			Error:  "LIST_SESSIONS_FAILED",
+			Detail: err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, response{
+		OK:   true,
+		Data: map[string]any{"sessions": sessions},
+	})
 }
 
 // handleAgentDrivers lists the drivers currently registered on the router.

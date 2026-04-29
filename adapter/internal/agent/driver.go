@@ -91,3 +91,18 @@ var ErrUnsupported = errors.New("agent: operation unsupported by this driver")
 
 // ErrUnknownSession is returned when a SessionID does not exist in the driver.
 var ErrUnknownSession = errors.New("agent: unknown session")
+
+// SessionInfo describes a persisted CLI session that can be resumed.
+type SessionInfo struct {
+	ID           string `json:"id"`
+	Preview      string `json:"preview"`
+	LastUsed     int64  `json:"lastUsed"`     // Unix seconds
+	MessageCount int    `json:"messageCount"`
+}
+
+// SessionLister is an optional capability for drivers that can enumerate
+// persisted sessions from disk. Drivers that don't implement this return
+// an empty list from the HTTP endpoint (not an error).
+type SessionLister interface {
+	ListSessions(ctx context.Context, limit int) ([]SessionInfo, error)
+}
