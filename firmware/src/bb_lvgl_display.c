@@ -194,8 +194,8 @@ static lv_obj_t* s_img_standby_brand_claw;
 static lv_obj_t* s_img_standby_brand_openclaw;
 static lv_obj_t* s_lbl_standby_brand_join;
 static lv_obj_t* s_lbl_standby_clock;
-static lv_obj_t* s_lbl_standby_title;
 static lv_obj_t* s_lbl_standby_session;
+static lv_obj_t* s_lbl_standby_hint;
 static lv_obj_t* s_img_standby_mascot;
 
 /* LVGL objects — locked */
@@ -881,14 +881,15 @@ static void create_ui(void) {
     lv_anim_start(&a);
   }
 
-  /* Standby bottom: "BBClaw" + session info */
+  /* Standby bottom (ADR-012 §5): session/pairing line + key-hint bar.
+   *
+   * Layout from bottom up:
+   *   row -1 (very bottom):  "[OK]设置  [BACK]聊天" hint, centered
+   *   row -2:                 session/pairing label, left-aligned
+   *
+   * The decorative "BBClaw" title was removed — the hint bar carries
+   * functional information that didn't fit before. */
   {
-    s_lbl_standby_title = lv_label_create(s_view_standby);
-    lv_obj_set_style_text_color(s_lbl_standby_title, lv_color_hex(UI_TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_standby_title, font, 0);
-    lv_label_set_text(s_lbl_standby_title, "BBClaw");
-    lv_obj_set_pos(s_lbl_standby_title, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh * 2 - 4);
-
     s_lbl_standby_session = lv_label_create(s_view_standby);
     lv_obj_set_width(s_lbl_standby_session, DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT - 8);
     lv_obj_set_style_text_color(s_lbl_standby_session, lv_color_hex(UI_TEXT_DIM), 0);
@@ -896,7 +897,16 @@ static void create_ui(void) {
     lv_obj_set_style_text_opa(s_lbl_standby_session, LV_OPA_60, 0);
     lv_label_set_long_mode(s_lbl_standby_session, LV_LABEL_LONG_MODE_CLIP);
     lv_label_set_text(s_lbl_standby_session, BBCLAW_SESSION_KEY);
-    lv_obj_set_pos(s_lbl_standby_session, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh - 2);
+    lv_obj_set_pos(s_lbl_standby_session, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh * 2 - 4);
+
+    s_lbl_standby_hint = lv_label_create(s_view_standby);
+    lv_obj_set_width(s_lbl_standby_hint, DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT);
+    lv_obj_set_style_text_color(s_lbl_standby_hint, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_standby_hint, font, 0);
+    lv_obj_set_style_text_align(s_lbl_standby_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_lbl_standby_hint, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_text(s_lbl_standby_hint, "[OK]设置  [BACK]聊天");
+    lv_obj_set_pos(s_lbl_standby_hint, UI_SAFE_LEFT, DISP_H - UI_SAFE_BOTTOM - lh - 2);
   }
 
   /* Standby corner mascot (LimeZu green idle loop; red/blue: bb_el_red_idle_* / bb_el_blue_idle_*) */
