@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "bb_adapter_client.h"
+#include "bb_device_config.h"
 #include "bb_status.h"
 #include "bb_audio.h"
 #include "bb_config.h"
@@ -47,6 +48,9 @@ extern const uint8_t _binary_bbclaw_wav_end[] asm("_binary_bbclaw_wav_end");
 #define BB_LOG_TEXT_CHUNK 400
 #define BB_TTS_STREAM_QUEUE_DEPTH 128
 #define BB_TTS_STREAM_TASK_STACK 6144
+/* Stream task uses PSRAM stack (40KB) for deep call paths. NVS operations
+ * that disable cache are isolated in separate tasks with internal RAM stacks
+ * (see load_nvs_on_internal_stack, persist_task). */
 #ifdef CONFIG_SPIRAM
 #define BB_STREAM_TASK_STACK 40960
 #else
@@ -463,8 +467,14 @@ static void settings_value_locked(int delta) {
 }
 static void settings_click_locked(void) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    UBaseType_t stack_hw_before = uxTaskGetStackHighWaterMark(NULL);
     bb_ui_settings_handle_click();
     int still_active = bb_ui_settings_is_active();
+    UBaseType_t stack_hw_after = uxTaskGetStackHighWaterMark(NULL);
+    if (stack_hw_after < 2048) {
+      ESP_LOGW(TAG, "settings_click low stack: before=%u after=%u",
+               (unsigned)stack_hw_before, (unsigned)stack_hw_after);
+    }
     lvgl_port_unlock();
     /* Click on Back row asks bb_ui_settings to hide itself; mirror that here
      * so the radio_app overlay state stays in sync. ADR-012: also drop the
@@ -1456,7 +1466,10 @@ static void stream_task(void* arg) {
    * if the user exits chat mid-capture we still complete the agent turn. */
   int voice_target_agent = 0;
 
-  ESP_LOGI(TAG, "stream task ready stack_hw=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  UBaseType_t init_stack_hw = uxTaskGetStackHighWaterMark(NULL);
+  ESP_LOGI(TAG, "stream task ready stack=%u stack_hw=%u usage=%u%%",
+           (unsigned)BB_STREAM_TASK_STACK, (unsigned)init_stack_hw,
+           (unsigned)((BB_STREAM_TASK_STACK - init_stack_hw) * 100 / BB_STREAM_TASK_STACK));
   for (int i = 0; i < BB_NAV_EVENT_COUNT; ++i) {
     nav_handled_versions[i] = s_nav_event_versions[i];
   }
@@ -2563,6 +2576,7 @@ esp_err_t bb_radio_app_start(void) {
    * and trip esp_task_stack_is_sane_cache_disabled, panic-rebooting the
    * device the moment the user tries to open Settings from chat. */
   bb_ui_settings_preload_nvs();
+  bb_device_config_load();
 
   bb_gateway_node_config_t node_cfg = {
       .node_id = BBCLAW_NODE_ID,
@@ -2768,9 +2782,9 @@ esp_err_t bb_radio_app_start(void) {
     return ESP_ERR_NO_MEM;
   }
   log_heap_snapshot("after capture task");
-  /* Stream task drives Opus encode plus cloud finish/JSON parsing. The first
-   * encode burst can go materially deeper than the steady-state watermark,
-   * so keep a larger PSRAM-backed stack here. */
+  /* Stream task uses PSRAM stack. NVS operations (which disable cache) are
+   * isolated in separate tasks with internal RAM stacks to avoid PSRAM access
+   * during cache-disabled periods. */
 #ifdef CONFIG_FREERTOS_UNICORE
   ok = xTaskCreateWithCaps(stream_task, "bb_stream_task", BB_STREAM_TASK_STACK, NULL, 5, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #else

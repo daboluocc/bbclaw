@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "bb_device_config.h"
 #include "bb_ogg_opus.h"
 #include "bb_config.h"
 #include "bb_time.h"
@@ -694,7 +695,74 @@ static void ws_handle_text_message(const char* msg) {
   char stream_id[64] = {0};
 
   (void)json_extract_string(msg, "type", type, sizeof(type));
-  if (strcmp(type, "welcome") == 0 || strcmp(type, "ack") == 0 || strcmp(type, "pong") == 0) {
+  if (strcmp(type, "welcome") == 0) {
+    // Extract and apply config from welcome message
+    const char* config_start = strstr(msg, "\"config\"");
+    if (config_start != NULL) {
+      const char* brace = strchr(config_start, '{');
+      if (brace != NULL) {
+        int depth = 0;
+        const char* end = brace;
+        for (; *end != '\0'; end++) {
+          if (*end == '{') depth++;
+          else if (*end == '}') {
+            depth--;
+            if (depth == 0) break;
+          }
+        }
+        if (depth == 0 && end > brace) {
+          size_t len = (size_t)(end - brace + 1);
+          char* config_json = (char*)malloc(len + 1);
+          if (config_json != NULL) {
+            memcpy(config_json, brace, len);
+            config_json[len] = '\0';
+            bb_device_config_apply_welcome(config_json);
+            free(config_json);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (strcmp(type, "config.update") == 0) {
+    // Extract and apply config update
+    const char* config_start = strstr(msg, "\"config\"");
+    if (config_start != NULL) {
+      const char* brace = strchr(config_start, '{');
+      if (brace != NULL) {
+        int depth = 0;
+        const char* end = brace;
+        for (; *end != '\0'; end++) {
+          if (*end == '{') depth++;
+          else if (*end == '}') {
+            depth--;
+            if (depth == 0) break;
+          }
+        }
+        if (depth == 0 && end > brace) {
+          size_t len = (size_t)(end - brace + 1);
+          char* config_json = (char*)malloc(len + 1);
+          if (config_json != NULL) {
+            memcpy(config_json, brace, len);
+            config_json[len] = '\0';
+            // Extract version from config
+            int version = 0;
+            const char* ver_str = strstr(config_json, "\"version\"");
+            if (ver_str != NULL) {
+              const char* colon = strchr(ver_str, ':');
+              if (colon != NULL) {
+                version = atoi(colon + 1);
+              }
+            }
+            bb_device_config_apply_update(version, config_json);
+            free(config_json);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (strcmp(type, "ack") == 0 || strcmp(type, "pong") == 0) {
     return;
   }
   if (strcmp(type, "error") == 0) {

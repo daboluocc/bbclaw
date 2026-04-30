@@ -61,10 +61,10 @@ static const char* TAG = "bb_ui_settings";
 #define ROWS_BOX_H (ROW_H * ROW_COUNT + 6)
 
 /* ADR-012 §6: Session row removed (was per-driver session list, only
- * meaningful for claude-code). Settings is now Agent / Theme / TTS / Back. */
+ * meaningful for claude-code). Theme row removed — buddy-anim is the only theme.
+ * Settings is now Agent / TTS / Back. */
 typedef enum {
   ROW_AGENT = 0,
-  ROW_THEME,
   ROW_TTS,
   ROW_BACK,
   ROW_COUNT,
@@ -84,11 +84,6 @@ typedef struct {
   int driver_idx;
   volatile int driver_fetch_pending;
   volatile uint32_t driver_fetch_generation;
-
-  /* Theme list (in-process, sync). */
-  const char* const* theme_list;
-  int theme_count;
-  int theme_idx;
 
   /* Editable values (snapshot at show; committed on click). */
   char selected_driver[24];  /* "" = adapter default */
@@ -114,12 +109,15 @@ static int s_driver_loaded = 0;
 
 static esp_err_t persist_selected_driver(const char* name) {
   if (name == NULL) return ESP_ERR_INVALID_ARG;
+  UBaseType_t stack_hw = uxTaskGetStackHighWaterMark(NULL);
+  ESP_LOGI(TAG, "persist_driver stack_hw=%u name='%s'", (unsigned)stack_hw, name);
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READWRITE, &h);
   if (err != ESP_OK) return err;
   err = nvs_set_str(h, BB_SETTINGS_NVS_KEY_DRIVER, name);
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
+  ESP_LOGI(TAG, "persist_driver done err=%s", esp_err_to_name(err));
   return err;
 }
 
@@ -129,12 +127,17 @@ static void load_selected_driver_from_nvs(void) {
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
   s_driver_loaded = 1;  /* mark loaded even if open failed: empty default is in place */
-  if (err != ESP_OK) return;
+  if (err != ESP_OK) {
+    ESP_LOGI(TAG, "selected_driver: nvs open failed (%s), empty default", esp_err_to_name(err));
+    return;
+  }
   size_t sz = sizeof(s_st.selected_driver);
   err = nvs_get_str(h, BB_SETTINGS_NVS_KEY_DRIVER, s_st.selected_driver, &sz);
   nvs_close(h);
   if (err == ESP_OK) {
     ESP_LOGI(TAG, "selected_driver loaded: '%s'", s_st.selected_driver);
+  } else {
+    ESP_LOGI(TAG, "selected_driver: not in nvs (%s), empty default", esp_err_to_name(err));
   }
 }
 
@@ -253,38 +256,12 @@ static void spawn_fetch_task(void) {
   }
 }
 
-/* ── Theme list ── */
-
-static void load_theme_list(void) {
-  int n = 0;
-  s_st.theme_list = bb_agent_theme_list(&n);
-  s_st.theme_count = n;
-  const bb_agent_theme_t* cur = bb_agent_theme_get_active();
-  int idx = 0;
-  if (cur != NULL && cur->name != NULL && s_st.theme_list != NULL) {
-    for (int i = 0; i < n; ++i) {
-      if (s_st.theme_list[i] != NULL && strcmp(s_st.theme_list[i], cur->name) == 0) {
-        idx = i;
-        break;
-      }
-    }
-  }
-  s_st.theme_idx = idx;
-}
-
 /* ── Rendering ── */
 
 static const char* active_driver_label(void) {
   if (s_st.driver_cache_count <= 0) return "(none)";
   if (s_st.driver_idx < 0 || s_st.driver_idx >= s_st.driver_cache_count) return "(none)";
   const char* n = s_st.driver_cache[s_st.driver_idx].name;
-  return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
-}
-
-static const char* active_theme_label(void) {
-  if (s_st.theme_count <= 0 || s_st.theme_list == NULL) return "(none)";
-  if (s_st.theme_idx < 0 || s_st.theme_idx >= s_st.theme_count) return "(none)";
-  const char* n = s_st.theme_list[s_st.theme_idx];
   return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
 }
 
@@ -307,24 +284,13 @@ static void apply_rows(void) {
     lv_label_set_text(s_st.rows[ROW_AGENT], buf);
   }
 
-  /* Row 1: Theme */
-  if (s_st.rows[ROW_THEME] != NULL) {
-    if (s_st.theme_count > 1) {
-      snprintf(buf, sizeof(buf), "Theme: %s (%d/%d)", active_theme_label(),
-               s_st.theme_idx + 1, s_st.theme_count);
-    } else {
-      snprintf(buf, sizeof(buf), "Theme: %s", active_theme_label());
-    }
-    lv_label_set_text(s_st.rows[ROW_THEME], buf);
-  }
-
-  /* Row 2: TTS */
+  /* Row 1: TTS */
   if (s_st.rows[ROW_TTS] != NULL) {
     snprintf(buf, sizeof(buf), "TTS reply: %s", s_st.tts_enabled ? "On" : "Off");
     lv_label_set_text(s_st.rows[ROW_TTS], buf);
   }
 
-  /* Row 3: Back */
+  /* Row 2: Back */
   if (s_st.rows[ROW_BACK] != NULL) {
     lv_label_set_text(s_st.rows[ROW_BACK], "Back");
   }
@@ -356,10 +322,10 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     return;
   }
 
-  /* Snapshot persisted prefs into editable state. */
-  load_selected_driver_from_nvs();
-  load_tts_enabled_from_nvs();
-  load_theme_list();
+  /* Snapshot persisted prefs into editable state.
+   * Phase 4.9: NVS reads must happen on internal-RAM stacks. These values
+   * were already loaded by bb_ui_settings_preload_nvs() at boot; we just
+   * use the cached values here. No NVS read on this (potentially PSRAM) stack. */
 
   /* Reset driver cache so async fetch repopulates each time settings opens.
    * (Stale data is unlikely to bite given driver list rarely changes, but
@@ -416,8 +382,8 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   spawn_fetch_task();
   apply_rows();
 
-  ESP_LOGI(TAG, "show (themes=%d, driver_pref='%s', tts=%d)",
-           s_st.theme_count, s_st.selected_driver, s_st.tts_enabled);
+  ESP_LOGI(TAG, "show (driver_pref='%s', tts=%d)",
+           s_st.selected_driver, s_st.tts_enabled);
 }
 
 void bb_ui_settings_hide(void) {
@@ -465,13 +431,6 @@ void bb_ui_settings_handle_value(int delta) {
       s_st.driver_idx = next;
       break;
     }
-    case ROW_THEME: {
-      if (s_st.theme_count <= 1) return;
-      int n = s_st.theme_count;
-      int next = ((s_st.theme_idx + delta) % n + n) % n;
-      s_st.theme_idx = next;
-      break;
-    }
     case ROW_TTS: {
       s_st.tts_enabled = !s_st.tts_enabled;
       break;
@@ -491,7 +450,7 @@ void bb_ui_settings_handle_click(void) {
   switch ((settings_row_t)s_st.sel) {
     case ROW_AGENT: {
       if (s_st.driver_cache_count <= 0) {
-        s_st.sel = ROW_THEME;
+        s_st.sel = ROW_TTS;
         apply_rows();
         return;
       }
@@ -505,25 +464,7 @@ void bb_ui_settings_handle_click(void) {
       strncpy(s_st.selected_driver, new_driver, sizeof(s_st.selected_driver) - 1);
       s_st.selected_driver[sizeof(s_st.selected_driver) - 1] = '\0';
 
-      ESP_LOGI(TAG, "driver -> '%s' (committed)", new_driver);
-      s_st.sel = ROW_THEME;
-      apply_rows();
-      break;
-    }
-    case ROW_THEME: {
-      if (s_st.theme_count <= 0 || s_st.theme_list == NULL) {
-        s_st.sel = ROW_TTS;
-        apply_rows();
-        return;
-      }
-      const char* name = s_st.theme_list[s_st.theme_idx];
-      if (name == NULL || name[0] == '\0') return;
-      esp_err_t err = bb_agent_theme_set_active(name);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "theme set '%s' failed (%s)", name, esp_err_to_name(err));
-      } else {
-        ESP_LOGI(TAG, "theme -> '%s' (committed)", name);
-      }
+      ESP_LOGI(TAG, "driver -> '%s' (committed, hot-reload on next send)", new_driver);
       s_st.sel = ROW_TTS;
       apply_rows();
       break;

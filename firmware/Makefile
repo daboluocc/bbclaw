@@ -6,14 +6,15 @@ IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
 # Serial port for flash/monitor/erase.
-# Auto-detect: newest USB serial device on macOS (cu.usbmodem* / cu.usbserial*).
-# Non-USB serial nodes (Bluetooth, debug-console, wchusbserial aliases, etc.) are ignored.
+# Auto-detect: newest USB serial device (macOS: cu.*/tty.*, Linux: ttyUSB*/ttyACM*).
 # Precedence: command-line PORT=... > env BBCLAW_PORT > auto-detect.
-# Override per-invocation: make flash PORT=/dev/cu.usbmodemXXXX
-# Or export once:          export BBCLAW_PORT=/dev/cu.usbmodemXXXX
+# Override per-invocation: make flash PORT=/dev/cu.usbmodem12401
+# Or export once:          export BBCLAW_PORT=/dev/cu.usbmodem12401
 # Force esptool/idf.py auto-detect: make flash PORT=
 # List currently detected USB serial devices: make list-ports
-USB_PORT_GLOBS := /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.wchusbserial*
+USB_PORT_GLOBS := /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.wchusbserial* \
+                  /dev/tty.usbmodem* /dev/tty.usbserial* \
+                  /dev/ttyUSB* /dev/ttyACM*
 DEFAULT_PORT := $(shell ls -t $(USB_PORT_GLOBS) 2>/dev/null | head -n 1)
 PORT ?= $(if $(BBCLAW_PORT),$(BBCLAW_PORT),$(DEFAULT_PORT))
 ESPTOOL_PORT_ARG := $(if $(PORT),--port $(PORT),)
@@ -114,7 +115,7 @@ flash-ota0: build build/otadata_ota0.bin
 	@echo "Flashing to ota_0 partition (0x120000)... port=$(if $(PORT),$(PORT),auto)"
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
 	@sleep 1
-	@python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
+	@$(IDF_SOURCE) python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
 		write_flash \
 		--flash_mode dio --flash_size 8MB --flash_freq 80m \
 		0x0 build/bootloader/bootloader.bin \
@@ -143,7 +144,7 @@ boot-recover: build/otadata_ota0.bin
 	@echo "Recovering otadata to point at ota_0... port=$(if $(PORT),$(PORT),auto)"
 	@pkill -f "idf_monitor.py" 2>/dev/null || true
 	@sleep 1
-	@python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
+	@$(IDF_SOURCE) python3 -m esptool --chip esp32s3 $(ESPTOOL_PORT_ARG) -b 460800 --before default_reset --after hard_reset \
 		write_flash 0x10000 build/otadata_ota0.bin
 
 erase:

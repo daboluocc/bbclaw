@@ -13,10 +13,9 @@ static const char* TAG = "bb_agent_theme";
 
 #define BB_THEME_NVS_NS   "bbclaw"
 #define BB_THEME_NVS_KEY  "agent/theme"
-/* Phase 4.7.2: default to buddy-ascii so a fresh device has a visible
- * "character" out of the box and the user can immediately tell which theme
- * is active without entering Settings. text-only is still selectable. */
-#define BB_THEME_FALLBACK "buddy-ascii"
+/* Phase 4.7.2: default to buddy-anim (animated ASCII character theme).
+ * Theme selection removed from Settings — buddy-anim is the only theme. */
+#define BB_THEME_FALLBACK "buddy-anim"
 #define BB_THEME_NAME_MAX 24
 #define BB_THEME_CAP      8
 

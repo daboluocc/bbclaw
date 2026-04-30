@@ -105,16 +105,27 @@ make sim-export-feedback  # 导出预览图
 make set-board BOARD=bbclaw  # 切换到 bbclaw 板子
 ```
 
-### ⚠️ 禁止直接操作设备
+### ⚠️ AI 职责边界
 
-**严禁执行以下命令：**
+**AI 职责：仅负责构建成功**
+- 执行 `make build` 确保固件编译通过
+- 报告构建结果（成功/失败、固件大小、分区占用）
+- 修复构建错误和编译问题
+
+**用户职责：烧录与验证**
+- 用户自行执行 `make flash` 烧录固件
+- 用户自行执行 `make monitor` 查看串口输出
+- 用户负责设备功能验证
+
+**严禁 AI 执行：**
+- `make flash` — 禁止烧录到设备
 - `make all` — 禁止自动烧录和监视
 - `make monitor` — 禁止直接打开串口监视
+- 任何直接操作物理设备的命令
 
-**允许的操作：**
-- `make build` — 编译固件（测试用）
-- `make flash` — 仅在明确授权时烧录
-- 通过日志文件查看串口输出：`make monitor-last` 或 `tail -n 100 firmware/.cache/idf-monitor.latest.log`
+**日志查看（只读操作，允许）：**
+- `make monitor-last` — 查看上次监视日志
+- `tail -n 100 firmware/.cache/idf-monitor.latest.log` — 查看日志文件
 
 ### 日志查看
 ```bash

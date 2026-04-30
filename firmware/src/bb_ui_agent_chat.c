@@ -598,6 +598,15 @@ static void load_tts_enabled_from_nvs(void);
 static void load_nvs_task(void* arg) {
   load_selected_driver_from_nvs();
   load_tts_enabled_from_nvs();
+  /* Load session ID for selected driver from NVS on internal RAM stack */
+  if (s_chat.selected_driver[0] != '\0') {
+    esp_err_t err = bb_session_store_load(s_chat.selected_driver, s_chat.session_id, sizeof(s_chat.session_id));
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, s_chat.selected_driver);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+      ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
+    }
+  }
   SemaphoreHandle_t sem = (SemaphoreHandle_t)arg;
   xSemaphoreGive(sem);
   vTaskDelete(NULL);
@@ -1001,17 +1010,9 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.turn_start_ms = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
+  /* Load all NVS data (selected_driver, tts_enabled, session_id) on internal
+   * RAM stack to avoid PSRAM access during cache-disabled NVS operations. */
   load_nvs_on_internal_stack();
-
-  /* Phase S2 — load session ID for selected driver from NVS */
-  if (s_chat.selected_driver[0] != '\0') {
-    esp_err_t err = bb_session_store_load(s_chat.selected_driver, s_chat.session_id, sizeof(s_chat.session_id));
-    if (err == ESP_OK) {
-      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, s_chat.selected_driver);
-    } else if (err != ESP_ERR_NOT_FOUND) {
-      ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
-    }
-  }
 
   /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
    * RIGHT cycle don't have to wait for HTTP. Cheap if cache already populated
@@ -1140,10 +1141,14 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
   s_chat.turn_start_ms = bb_now_ms();
   s_chat.saw_text_in_turn = 0;
 
-  BaseType_t ok = xTaskCreate(agent_task, "bb_agent_task", BB_CHAT_AGENT_TASK_STACK, args,
-                              BB_CHAT_AGENT_TASK_PRIO, &s_chat.agent_task);
+  BaseType_t ok = xTaskCreateWithCaps(agent_task, "bb_agent_task", BB_CHAT_AGENT_TASK_STACK, args,
+                                      BB_CHAT_AGENT_TASK_PRIO, &s_chat.agent_task,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "send: xTaskCreate failed");
+    ESP_LOGE(TAG, "send: xTaskCreate failed stack=%u free_int=%u free_psram=%u",
+             (unsigned)BB_CHAT_AGENT_TASK_STACK,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     free(args->text);
     free(args);
     s_chat.sending = 0;

@@ -395,7 +395,14 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 	a.log.Infof("phase=transcript_request_recv device=%s session=%s stream=%s text_chars=%d driver=%s",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text), driverName)
 
-	if a.router != nil && driverName != "" {
+	// Route through agent router if available. When driver is empty, use the
+	// router's default driver instead of falling back to openclaw sink.
+	if a.router != nil {
+		if driverName == "" {
+			driverName = a.router.DefaultName()
+			a.log.Infof("phase=transcript_driver_default device=%s session=%s stream=%s driver=%s",
+				env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), driverName)
+		}
 		return a.handleChatTextViaAgent(ctx, write, env, text, sessionKey, streamID, driverName, routeStart)
 	}
 

@@ -6,6 +6,7 @@ set(_bb_srcs
     "bb_agent_theme.c"
     "bb_button_test.c"
     "bb_cloud_client.c"
+    "bb_device_config.c"
     "bb_ogg_opus.cpp"
     "bb_lvgl_assets.c"
     "bb_lvgl_display.c"
