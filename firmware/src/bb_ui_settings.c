@@ -5,7 +5,6 @@
 
 #include "bb_agent_client.h"
 #include "bb_agent_theme.h"
-#include "bb_session_store.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,7 +40,6 @@ static const char* TAG = "bb_ui_settings";
 #define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
 #define BB_SETTINGS_DRIVER_FALLBACK "claude-code"
 #define BB_SETTINGS_DRIVER_CACHE_MAX 6
-#define BB_SETTINGS_SESSION_CACHE_MAX 6
 
 #define BB_SETTINGS_FETCH_TASK_STACK 4096
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
@@ -56,15 +54,16 @@ static const char* TAG = "bb_ui_settings";
 
 /* Display is 320x172. Layout budget:
  *   header: 22 px
- *   rows  : 5 * 26 = 130 px (rows_h)
- *   total : 152 px (well under 172) */
+ *   rows  : 4 * 26 = 104 px (rows_h)
+ *   total : 126 px (well under 172) */
 #define HEADER_H 22
 #define ROW_H    26
 #define ROWS_BOX_H (ROW_H * ROW_COUNT + 6)
 
+/* ADR-012 §6: Session row removed (was per-driver session list, only
+ * meaningful for claude-code). Settings is now Agent / Theme / TTS / Back. */
 typedef enum {
   ROW_AGENT = 0,
-  ROW_SESSION,
   ROW_THEME,
   ROW_TTS,
   ROW_BACK,
@@ -86,13 +85,6 @@ typedef struct {
   volatile int driver_fetch_pending;
   volatile uint32_t driver_fetch_generation;
 
-  /* Session list (populated async, per-driver). */
-  bb_agent_session_info_t session_cache[BB_SETTINGS_SESSION_CACHE_MAX];
-  int session_cache_count;
-  int session_idx;
-  volatile int session_fetch_pending;
-  volatile uint32_t session_fetch_generation;
-
   /* Theme list (in-process, sync). */
   const char* const* theme_list;
   int theme_count;
@@ -100,7 +92,6 @@ typedef struct {
 
   /* Editable values (snapshot at show; committed on click). */
   char selected_driver[24];  /* "" = adapter default */
-  char selected_session[64]; /* current session ID for selected driver */
   int  tts_enabled;          /* 1 = on */
 } settings_state_t;
 
@@ -187,14 +178,6 @@ typedef struct {
   bb_agent_driver_info_t entries[BB_SETTINGS_DRIVER_CACHE_MAX];
 } fetch_result_t;
 
-typedef struct {
-  uint32_t gen;
-  esp_err_t err;
-  int total;
-  char driver_name[24];
-  bb_agent_session_info_t entries[BB_SETTINGS_SESSION_CACHE_MAX];
-} session_fetch_result_t;
-
 static void apply_driver_idx(void) {
   int idx = 0;
   if (s_st.selected_driver[0] != '\0') {
@@ -206,19 +189,6 @@ static void apply_driver_idx(void) {
     }
   }
   s_st.driver_idx = idx;
-}
-
-static void apply_session_idx(void) {
-  int idx = 0;
-  if (s_st.selected_session[0] != '\0') {
-    for (int i = 0; i < s_st.session_cache_count; ++i) {
-      if (strcmp(s_st.session_cache[i].id, s_st.selected_session) == 0) {
-        idx = i;
-        break;
-      }
-    }
-  }
-  s_st.session_idx = idx;
 }
 
 static void apply_rows(void);  /* fwd */
@@ -283,76 +253,6 @@ static void spawn_fetch_task(void) {
   }
 }
 
-/* ── Session fetch (async pipeline) ── */
-
-static void on_session_fetch_done(void* user_data) {
-  session_fetch_result_t* r = (session_fetch_result_t*)user_data;
-  if (r == NULL) return;
-  s_st.session_fetch_pending = 0;
-  if (!s_st.active || r->gen != s_st.session_fetch_generation) {
-    /* Stale or overlay closed — drop. */
-    free(r);
-    return;
-  }
-  if (r->err != ESP_OK || r->total < 0) {
-    ESP_LOGW(TAG, "session fetch failed (%s)", esp_err_to_name(r->err));
-    s_st.session_cache_count = 0;
-  } else {
-    int total = r->total > BB_SETTINGS_SESSION_CACHE_MAX
-                  ? BB_SETTINGS_SESSION_CACHE_MAX : r->total;
-    memcpy(s_st.session_cache, r->entries, sizeof(r->entries[0]) * (size_t)total);
-    s_st.session_cache_count = total;
-    ESP_LOGI(TAG, "session fetch ok: %d for driver '%s'", total, r->driver_name);
-  }
-  apply_session_idx();
-  apply_rows();
-  free(r);
-}
-
-static void session_fetch_task(void* arg) {
-  session_fetch_result_t* r = (session_fetch_result_t*)arg;
-  if (r == NULL) {
-    s_st.session_fetch_pending = 0;
-    vTaskDelete(NULL);
-    return;
-  }
-  r->err = bb_agent_list_sessions(r->driver_name, r->entries, BB_SETTINGS_SESSION_CACHE_MAX, &r->total);
-  lv_async_call(on_session_fetch_done, r);
-  vTaskDelete(NULL);
-}
-
-static void spawn_session_fetch_task(void) {
-  if (s_st.session_fetch_pending) return;
-  if (s_st.selected_driver[0] == '\0') {
-    /* No driver selected, can't fetch sessions */
-    s_st.session_cache_count = 0;
-    return;
-  }
-
-  s_st.session_fetch_pending = 1;
-  uint32_t gen = ++s_st.session_fetch_generation;
-
-  session_fetch_result_t* r = (session_fetch_result_t*)calloc(1, sizeof(*r));
-  if (r == NULL) {
-    ESP_LOGE(TAG, "spawn_session_fetch_task: calloc failed");
-    s_st.session_fetch_pending = 0;
-    return;
-  }
-
-  r->gen = gen;
-  strncpy(r->driver_name, s_st.selected_driver, sizeof(r->driver_name) - 1);
-
-  TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(session_fetch_task, "session_fetch",
-                              BB_SETTINGS_FETCH_TASK_STACK, r,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreate failed");
-    s_st.session_fetch_pending = 0;
-    free(r);
-  }
-}
-
 /* ── Theme list ── */
 
 static void load_theme_list(void) {
@@ -388,17 +288,6 @@ static const char* active_theme_label(void) {
   return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
 }
 
-static const char* active_session_preview(void) {
-  /* Special case: index at end of list = "(new session)" sentinel */
-  if (s_st.session_idx == s_st.session_cache_count) {
-    return "(new session)";
-  }
-  if (s_st.session_cache_count <= 0) return "(none)";
-  if (s_st.session_idx < 0 || s_st.session_idx >= s_st.session_cache_count) return "(none)";
-  const char* p = s_st.session_cache[s_st.session_idx].preview;
-  return (p != NULL && p[0] != '\0') ? p : "(unnamed)";
-}
-
 static void apply_rows(void) {
   if (s_st.root == NULL) return;
   char buf[80];
@@ -418,20 +307,7 @@ static void apply_rows(void) {
     lv_label_set_text(s_st.rows[ROW_AGENT], buf);
   }
 
-  /* Row 1: Session */
-  if (s_st.rows[ROW_SESSION] != NULL) {
-    if (s_st.session_fetch_pending) {
-      snprintf(buf, sizeof(buf), "Session: loading...");
-    } else {
-      /* Total includes the "(new session)" sentinel */
-      int total = s_st.session_cache_count + 1;
-      snprintf(buf, sizeof(buf), "Session: %s (%d/%d)", active_session_preview(),
-               s_st.session_idx + 1, total);
-    }
-    lv_label_set_text(s_st.rows[ROW_SESSION], buf);
-  }
-
-  /* Row 2: Theme */
+  /* Row 1: Theme */
   if (s_st.rows[ROW_THEME] != NULL) {
     if (s_st.theme_count > 1) {
       snprintf(buf, sizeof(buf), "Theme: %s (%d/%d)", active_theme_label(),
@@ -442,13 +318,13 @@ static void apply_rows(void) {
     lv_label_set_text(s_st.rows[ROW_THEME], buf);
   }
 
-  /* Row 3: TTS */
+  /* Row 2: TTS */
   if (s_st.rows[ROW_TTS] != NULL) {
     snprintf(buf, sizeof(buf), "TTS reply: %s", s_st.tts_enabled ? "On" : "Off");
     lv_label_set_text(s_st.rows[ROW_TTS], buf);
   }
 
-  /* Row 4: Back */
+  /* Row 3: Back */
   if (s_st.rows[ROW_BACK] != NULL) {
     lv_label_set_text(s_st.rows[ROW_BACK], "Back");
   }
@@ -485,25 +361,12 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   load_tts_enabled_from_nvs();
   load_theme_list();
 
-  /* Load current session for selected driver from NVS */
-  s_st.selected_session[0] = '\0';
-  if (s_st.selected_driver[0] != '\0') {
-    esp_err_t err = bb_session_store_load(s_st.selected_driver, s_st.selected_session, sizeof(s_st.selected_session));
-    if (err == ESP_OK) {
-      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_st.selected_session, s_st.selected_driver);
-    }
-  }
-
   /* Reset driver cache so async fetch repopulates each time settings opens.
    * (Stale data is unlikely to bite given driver list rarely changes, but
    * fresh fetch keeps "is openclaw still online?" honest.) */
   s_st.driver_cache_count = 0;
   s_st.driver_cache_offline = 0;
   s_st.driver_idx = 0;
-
-  /* Reset session cache */
-  s_st.session_cache_count = 0;
-  s_st.session_idx = 0;
 
   s_st.root = lv_obj_create(parent);
   lv_obj_remove_style_all(s_st.root);
@@ -551,12 +414,10 @@ void bb_ui_settings_show(lv_obj_t* parent) {
 
   /* Kick off async driver fetch — apply_rows will re-render when done. */
   spawn_fetch_task();
-  /* Kick off async session fetch for current driver */
-  spawn_session_fetch_task();
   apply_rows();
 
-  ESP_LOGI(TAG, "show (themes=%d, driver_pref='%s', session='%s', tts=%d)",
-           s_st.theme_count, s_st.selected_driver, s_st.selected_session, s_st.tts_enabled);
+  ESP_LOGI(TAG, "show (themes=%d, driver_pref='%s', tts=%d)",
+           s_st.theme_count, s_st.selected_driver, s_st.tts_enabled);
 }
 
 void bb_ui_settings_hide(void) {
@@ -564,7 +425,6 @@ void bb_ui_settings_hide(void) {
   s_st.active = 0;
   /* Bump generation so any in-flight fetch result is dropped. */
   s_st.driver_fetch_generation++;
-  s_st.session_fetch_generation++;
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
     s_st.root = NULL;
@@ -605,14 +465,6 @@ void bb_ui_settings_handle_value(int delta) {
       s_st.driver_idx = next;
       break;
     }
-    case ROW_SESSION: {
-      /* Total includes the "(new session)" sentinel at the end */
-      int total = s_st.session_cache_count + 1;
-      if (total <= 1) return;
-      int next = ((s_st.session_idx + delta) % total + total) % total;
-      s_st.session_idx = next;
-      break;
-    }
     case ROW_THEME: {
       if (s_st.theme_count <= 1) return;
       int n = s_st.theme_count;
@@ -639,20 +491,13 @@ void bb_ui_settings_handle_click(void) {
   switch ((settings_row_t)s_st.sel) {
     case ROW_AGENT: {
       if (s_st.driver_cache_count <= 0) {
-        s_st.sel = ROW_SESSION;
+        s_st.sel = ROW_THEME;
         apply_rows();
         return;
       }
-      const char* old_driver = s_st.selected_driver;
       const char* new_driver = s_st.driver_cache[s_st.driver_idx].name;
       if (new_driver == NULL || new_driver[0] == '\0') return;
 
-      /* Save current session to old driver's NVS key before switching */
-      if (old_driver[0] != '\0' && s_st.selected_session[0] != '\0') {
-        bb_session_store_save(old_driver, s_st.selected_session);
-      }
-
-      /* Persist new driver selection */
       esp_err_t err = persist_selected_driver(new_driver);
       if (err != ESP_OK) {
         ESP_LOGW(TAG, "persist driver '%s' failed (%s)", new_driver, esp_err_to_name(err));
@@ -660,47 +505,7 @@ void bb_ui_settings_handle_click(void) {
       strncpy(s_st.selected_driver, new_driver, sizeof(s_st.selected_driver) - 1);
       s_st.selected_driver[sizeof(s_st.selected_driver) - 1] = '\0';
 
-      /* Load new driver's session from NVS */
-      s_st.selected_session[0] = '\0';
-      err = bb_session_store_load(new_driver, s_st.selected_session, sizeof(s_st.selected_session));
-      if (err == ESP_OK) {
-        ESP_LOGI(TAG, "loaded session '%s' for new driver '%s'", s_st.selected_session, new_driver);
-      }
-
-      /* Reset and refetch session list for new driver */
-      s_st.session_cache_count = 0;
-      s_st.session_idx = 0;
-      spawn_session_fetch_task();
-
       ESP_LOGI(TAG, "driver -> '%s' (committed)", new_driver);
-      s_st.sel = ROW_SESSION;
-      apply_rows();
-      break;
-    }
-    case ROW_SESSION: {
-      /* Commit selected session to NVS */
-      if (s_st.selected_driver[0] == '\0') {
-        s_st.sel = ROW_THEME;
-        apply_rows();
-        return;
-      }
-
-      /* If user selected "(new session)" sentinel, clear the session ID */
-      if (s_st.session_idx == s_st.session_cache_count) {
-        s_st.selected_session[0] = '\0';
-        ESP_LOGI(TAG, "session -> (new) for driver '%s'", s_st.selected_driver);
-      } else if (s_st.session_idx >= 0 && s_st.session_idx < s_st.session_cache_count) {
-        const char* sid = s_st.session_cache[s_st.session_idx].id;
-        if (sid != NULL && sid[0] != '\0') {
-          strncpy(s_st.selected_session, sid, sizeof(s_st.selected_session) - 1);
-          s_st.selected_session[sizeof(s_st.selected_session) - 1] = '\0';
-          ESP_LOGI(TAG, "session -> '%s' for driver '%s'", sid, s_st.selected_driver);
-        }
-      }
-
-      /* Save to NVS (deferred) */
-      bb_session_store_save(s_st.selected_driver, s_st.selected_session);
-
       s_st.sel = ROW_THEME;
       apply_rows();
       break;
