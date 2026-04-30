@@ -11,9 +11,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
-# LVGL 字库 + 应用体积：single_app_large 仅 1500K，不够 → 自定义 factory（见 partitions_bbclaw.csv）
+# OTA 分区布局（partitions_ota.csv）：factory 1M + ota_0/ota_1 各 2.5M + resources 1M。
+# LVGL 字库 + 应用体积超过 single_app_large 的 1500K 上限，所以 ota_0/ota_1 各预留 2.5M。
+# 主固件烧到 ota_0（0x120000），由 otadata 选择启动槽——见 firmware/Makefile 的 flash-ota0 目标。
+# CLAUDE.md 也说明：cloud_saas 模式下设备启动后通过 GET /v1/ota/check 拉新版固件。
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_bbclaw.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
 
 # lv_font_conv 默认输出压缩位图；未开启则 get_bitmap 恒为 NULL → 中英文皆方框
 CONFIG_LV_USE_FONT_COMPRESSED=y
