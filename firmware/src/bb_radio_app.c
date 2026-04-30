@@ -225,7 +225,7 @@ static uint8_t s_stream_encoded_chunk_buf[sizeof(s_stream_pcm_chunk_buf) + 64];
 static RingbufHandle_t s_capture_rb;
 static volatile int s_capture_active;  /* 1 = capture_task should read I2S and push to ring buffer */
 static volatile int s_capture_stopped; /* 1 = capture_task has acknowledged stop */
-static volatile bb_radio_app_state_t s_app_state = BBCLAW_STATE_UNLOCKED;
+static volatile bb_radio_app_state_t s_app_state = BBCLAW_STATE_STANDBY;
 static uint8_t* s_voice_verify_pcm_buf;
 static size_t s_voice_verify_pcm_len;
 static size_t s_voice_verify_pcm_cap;
@@ -265,11 +265,20 @@ static void refresh_lock_screen_visibility(void) {
   bb_display_set_locked(radio_app_is_locked());
 }
 
+static const char* radio_app_state_name(bb_radio_app_state_t state) {
+  switch (state) {
+    case BBCLAW_STATE_LOCKED:   return "LOCKED";
+    case BBCLAW_STATE_STANDBY:  return "STANDBY";
+    case BBCLAW_STATE_CHAT:     return "CHAT";
+    case BBCLAW_STATE_SETTINGS: return "SETTINGS";
+  }
+  return "?";
+}
+
 static void set_radio_app_state(bb_radio_app_state_t state) {
   if (s_app_state != state) {
     ESP_LOGI(TAG, "STATE_TRANSITION: %s -> %s",
-             s_app_state == BBCLAW_STATE_LOCKED ? BB_STATUS_LOCKED : BB_STATUS_READY,
-             state == BBCLAW_STATE_LOCKED ? BB_STATUS_LOCKED : BB_STATUS_READY);
+             radio_app_state_name(s_app_state), radio_app_state_name(state));
     s_app_state = state;
     refresh_lock_screen_visibility();
   }
@@ -1911,7 +1920,7 @@ static void stream_task(void* arg) {
 
       if (verify_result.match) {
         ESP_LOGI(TAG, "phase=voice_verify_unlock confidence=%.3f", (double)verify_result.confidence);
-        set_radio_app_state(BBCLAW_STATE_UNLOCKED);
+        set_radio_app_state(BBCLAW_STATE_STANDBY);
         pulse_success_on_idle(BB_STATUS_READY);
         (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
@@ -2618,7 +2627,7 @@ esp_err_t bb_radio_app_start(void) {
   ESP_ERROR_CHECK(bb_display_init());
   bb_display_set_cloud_mode(bb_transport_is_cloud_saas());
   refresh_power_display();
-  set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_UNLOCKED);
+  set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_STANDBY);
   {
     esp_err_t power_err = bb_power_init();
     if (power_err != ESP_OK) {
