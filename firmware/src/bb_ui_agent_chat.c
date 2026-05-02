@@ -1230,6 +1230,11 @@ static void on_driver_fetch_done(void* user_data) {
             sizeof(s_chat.driver_cache[0].name) - 1);
     s_chat.driver_cache_count = 1;
     s_chat.driver_cache_offline = 1;
+    const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+    if (theme != NULL) {
+      if (theme->set_driver != NULL) theme->set_driver("OFFLINE");
+      if (theme->append_error != NULL) theme->append_error("adapter offline");
+    }
   } else {
     int total = res->total > BB_CHAT_DRIVER_CACHE_MAX
                   ? BB_CHAT_DRIVER_CACHE_MAX : res->total;

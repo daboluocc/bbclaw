@@ -1,7 +1,7 @@
 /**
- * ST7789 + LVGL display — redesigned two-zone layout.
+ * ST7789 + LVGL display — two-zone layout.
  *
- * STANDBY: clock animation + brand icons (no text body).
+ * LOCKED: padlock + unlock prompt.
  * All other states: top status bar + full-screen scrollable text area.
  */
 #include "bb_display.h"
@@ -123,10 +123,6 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_RECORD_HALO_SPAN_PX    18
 #define UI_RECORD_LEVEL_STALE_MS  280
 
-/* Standby mascot (LimeZu idle — green shown; red/blue frames in bb_lvgl_element_assets for future use) */
-#define UI_MASCOT_FRAME_MS        220
-#define UI_MASCOT_PX              32
-
 /* Panel config */
 #define DISP_X_GAP         BBCLAW_ST7789_X_GAP
 #define DISP_Y_GAP         BBCLAW_ST7789_Y_GAP
@@ -153,8 +149,7 @@ typedef struct {
 } bb_chat_turn_t;
 
 typedef enum {
-  UI_VIEW_STANDBY = 0,
-  UI_VIEW_LOCKED,
+  UI_VIEW_LOCKED = 0,
   UI_VIEW_ACTIVE,
 } ui_view_mode_t;
 
@@ -186,17 +181,6 @@ static int s_scroll_you;
 static int s_scroll_ai;
 static int s_focus_ai;
 static char s_status[32];
-static int64_t s_last_active_ms;  /* last non-idle activity timestamp */
-
-/* LVGL objects — standby */
-static lv_obj_t* s_view_standby;
-static lv_obj_t* s_img_standby_brand_claw;
-static lv_obj_t* s_img_standby_brand_openclaw;
-static lv_obj_t* s_lbl_standby_brand_join;
-static lv_obj_t* s_lbl_standby_clock;
-static lv_obj_t* s_lbl_standby_session;
-static lv_obj_t* s_lbl_standby_hint;
-static lv_obj_t* s_img_standby_mascot;
 
 /* LVGL objects — locked */
 static lv_obj_t* s_view_locked;
@@ -236,7 +220,6 @@ static lv_obj_t* s_lbl_text;
 static lv_timer_t* s_clock_timer;
 static lv_timer_t* s_auto_scroll_timer;
 static lv_timer_t* s_record_timer;
-static lv_timer_t* s_mascot_timer;
 
 /* Scroll state */
 static ui_auto_scroll_ctx_t s_auto_scroll_text;
@@ -254,7 +237,6 @@ static int64_t s_record_level_updated_ms;
 static uint8_t s_record_bar_visual[UI_RECORD_BAR_COUNT];
 static uint32_t s_record_anim_tick;
 static int s_record_view_visible;
-static uint32_t s_mascot_frame;
 static int s_battery_available;
 static int s_battery_percent = -1;
 static int s_battery_low;
@@ -273,25 +255,8 @@ static const lv_font_t* ui_font(void) {
 #endif
 }
 
-static const lv_font_t* ui_font_clock(void) {
-#if defined(CONFIG_LV_FONT_MONTSERRAT_48) || defined(LV_FONT_MONTSERRAT_48)
-  return &lv_font_montserrat_48;
-#elif defined(CONFIG_LV_FONT_MONTSERRAT_40) || defined(LV_FONT_MONTSERRAT_40)
-  return &lv_font_montserrat_40;
-#else
-  return ui_font();
-#endif
-}
-
 static int line_px(void) {
   return (int)lv_font_get_line_height(ui_font()) + 1;
-}
-
-static lv_coord_t text_width_px(const char* text, const lv_font_t* font) {
-  lv_point_t size = {0};
-  if (text == NULL || font == NULL) return 0;
-  lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-  return size.x;
 }
 
 /* ── WiFi helpers ── */
@@ -403,24 +368,7 @@ static const lv_image_dsc_t* record_anim_icon(uint32_t tick) {
   }
 }
 
-static const lv_image_dsc_t* standby_mascot_green_frame(uint32_t tick) {
-  switch (tick % 4U) {
-    case 0:
-      return &bb_el_green_idle_0;
-    case 1:
-      return &bb_el_green_idle_1;
-    case 2:
-      return &bb_el_green_idle_2;
-    default:
-      return &bb_el_green_idle_3;
-  }
-}
-
 /* ── View mode ── */
-
-static int is_standby_status(const char* status) {
-  return status == NULL || status[0] == '\0' || strcmp(status, BB_STATUS_READY) == 0;
-}
 
 static int should_show_locked_view(int locked, const char* status) {
   if (!locked) return 0;
@@ -430,12 +378,9 @@ static int should_show_locked_view(int locked, const char* status) {
   return 0;
 }
 
-static ui_view_mode_t resolve_view_mode(const char* status, int turn_den, int locked) {
+static ui_view_mode_t resolve_view_mode(const char* status, int locked) {
   if (should_show_locked_view(locked, status)) return UI_VIEW_LOCKED;
-  /* If there are chat turns to show, or status is not idle, go active */
-  if (!is_standby_status(status)) return UI_VIEW_ACTIVE;
-  if (turn_den > 0) return UI_VIEW_ACTIVE;
-  return UI_VIEW_STANDBY;
+  return UI_VIEW_ACTIVE;
 }
 
 /* ── Clock ── */
@@ -446,10 +391,6 @@ static void format_clock(char* out, size_t out_size, int64_t now_ms) {
   if (((now_ms / 1000) & 1LL) != 0 && strlen(out) >= 3 && out[2] == ':') {
     out[2] = ' ';
   }
-}
-
-static void standby_clock_anim_y_cb(void* obj, int32_t v) {
-  lv_obj_set_y((lv_obj_t*)obj, (lv_coord_t)v);
 }
 
 /* ── Auto-scroll ── */
@@ -669,17 +610,6 @@ static void record_timer_cb(lv_timer_t* t) {
   lvgl_port_unlock();
 }
 
-static void mascot_timer_cb(lv_timer_t* t) {
-  (void)t;
-  if (!s_ready) return;
-  if (s_img_standby_mascot == NULL || s_view_standby == NULL) return;
-  if (lv_obj_has_flag(s_view_standby, LV_OBJ_FLAG_HIDDEN)) return;
-  if (!lvgl_port_lock(0)) return;
-  s_mascot_frame++;
-  lv_image_set_src(s_img_standby_mascot, standby_mascot_green_frame(s_mascot_frame));
-  lvgl_port_unlock();
-}
-
 static void clock_timer_cb(lv_timer_t* t) {
   (void)t;
   if (s_ready) refresh_ui();
@@ -810,115 +740,6 @@ static void create_ui(void) {
   const int status_h = (lh + 2 > UI_STATUS_ICON_SZ + 2) ? (lh + 2) : (UI_STATUS_ICON_SZ + 2);
   const int content_y = UI_SAFE_TOP + status_h + UI_GAP;
   const int content_h = DISP_H - content_y - UI_SAFE_BOTTOM;
-  const int standby_clock_h = (int)lv_font_get_line_height(ui_font_clock());
-
-  /* ── STANDBY view: brand icons + clock ── */
-
-  s_view_standby = lv_obj_create(scr);
-  lv_obj_remove_style_all(s_view_standby);
-  lv_obj_set_size(s_view_standby, DISP_W, DISP_H);
-  lv_obj_set_pos(s_view_standby, 0, 0);
-  lv_obj_clear_flag(s_view_standby, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scrollbar_mode(s_view_standby, LV_SCROLLBAR_MODE_OFF);
-
-  /* Brand: [claw] x [openclaw] centered */
-  {
-    const lv_coord_t logo_w = (lv_coord_t)bb_img_logo_claw.header.w;
-#if defined(BBCLAW_SIMULATOR)
-    const lv_image_dsc_t* openclaw_logo = &bb_img_logo_openclaw;
-#else
-    const lv_image_dsc_t* openclaw_logo = &bb_img_logo_openclaw_panel;
-#endif
-    const lv_coord_t openclaw_w = (lv_coord_t)openclaw_logo->header.w;
-    const lv_coord_t join_w = text_width_px("x", font);
-    const lv_coord_t brand_gap = 4;
-    const lv_coord_t brand_total = logo_w + brand_gap + join_w + brand_gap + openclaw_w;
-    const lv_coord_t brand_x = (DISP_W - brand_total) / 2;
-    const lv_coord_t brand_y = 20;
-
-    s_img_standby_brand_claw = lv_image_create(s_view_standby);
-    lv_image_set_src(s_img_standby_brand_claw, &bb_img_logo_claw);
-    lv_obj_set_pos(s_img_standby_brand_claw, brand_x, brand_y);
-    lv_obj_set_style_opa(s_img_standby_brand_claw, LV_OPA_80, 0);
-
-    s_lbl_standby_brand_join = lv_label_create(s_view_standby);
-    lv_obj_set_style_text_color(s_lbl_standby_brand_join, lv_color_hex(UI_TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_standby_brand_join, font, 0);
-    lv_label_set_text(s_lbl_standby_brand_join, "x");
-    lv_obj_set_pos(s_lbl_standby_brand_join, brand_x + logo_w + brand_gap, brand_y + 2);
-
-    s_img_standby_brand_openclaw = lv_image_create(s_view_standby);
-    lv_image_set_src(s_img_standby_brand_openclaw, openclaw_logo);
-    lv_obj_set_pos(s_img_standby_brand_openclaw, brand_x + logo_w + brand_gap + join_w + brand_gap, brand_y);
-    lv_obj_set_style_opa(s_img_standby_brand_openclaw, LV_OPA_90, 0);
-  }
-
-  /* Clock with float animation */
-  {
-    const lv_coord_t clock_w = DISP_W - 40;
-    const int clock_y = 56;
-
-    s_lbl_standby_clock = lv_label_create(s_view_standby);
-    lv_obj_set_width(s_lbl_standby_clock, clock_w);
-    lv_obj_set_height(s_lbl_standby_clock, standby_clock_h + 2);
-    lv_obj_set_style_text_color(s_lbl_standby_clock, lv_color_hex(UI_ME_ACCENT), 0);
-    lv_obj_set_style_text_font(s_lbl_standby_clock, ui_font_clock(), 0);
-    lv_obj_set_style_text_align(s_lbl_standby_clock, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_letter_space(s_lbl_standby_clock, 1, 0);
-    lv_label_set_long_mode(s_lbl_standby_clock, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(s_lbl_standby_clock, "--:--");
-    lv_obj_set_pos(s_lbl_standby_clock, (DISP_W - clock_w) / 2, clock_y);
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s_lbl_standby_clock);
-    lv_anim_set_values(&a, clock_y, clock_y - 3);
-    lv_anim_set_duration(&a, 1200);
-    lv_anim_set_playback_duration(&a, 1200);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_set_exec_cb(&a, standby_clock_anim_y_cb);
-    lv_anim_start(&a);
-  }
-
-  /* Standby bottom (ADR-012 §5): session/pairing line + key-hint bar.
-   *
-   * Layout from bottom up:
-   *   row -1 (very bottom):  "[OK]设置  [BACK]聊天" hint, centered
-   *   row -2:                 session/pairing label, left-aligned
-   *
-   * The decorative "BBClaw" title was removed — the hint bar carries
-   * functional information that didn't fit before. */
-  {
-    s_lbl_standby_session = lv_label_create(s_view_standby);
-    lv_obj_set_width(s_lbl_standby_session, DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT - 8);
-    lv_obj_set_style_text_color(s_lbl_standby_session, lv_color_hex(UI_TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_standby_session, font, 0);
-    lv_obj_set_style_text_opa(s_lbl_standby_session, LV_OPA_60, 0);
-    lv_label_set_long_mode(s_lbl_standby_session, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(s_lbl_standby_session, BBCLAW_SESSION_KEY);
-    lv_obj_set_pos(s_lbl_standby_session, UI_SAFE_LEFT + 4, DISP_H - UI_SAFE_BOTTOM - lh * 2 - 4);
-
-    s_lbl_standby_hint = lv_label_create(s_view_standby);
-    lv_obj_set_width(s_lbl_standby_hint, DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT);
-    lv_obj_set_style_text_color(s_lbl_standby_hint, lv_color_hex(UI_TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_standby_hint, font, 0);
-    lv_obj_set_style_text_align(s_lbl_standby_hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(s_lbl_standby_hint, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(s_lbl_standby_hint, "[OK]设置  [BACK]聊天");
-    lv_obj_set_pos(s_lbl_standby_hint, UI_SAFE_LEFT, DISP_H - UI_SAFE_BOTTOM - lh - 2);
-  }
-
-  /* Standby corner mascot (LimeZu green idle loop; red/blue: bb_el_red_idle_* / bb_el_blue_idle_*) */
-  {
-    s_mascot_frame = 0;
-    s_img_standby_mascot = lv_image_create(s_view_standby);
-    lv_image_set_src(s_img_standby_mascot, standby_mascot_green_frame(0));
-    lv_obj_set_size(s_img_standby_mascot, UI_MASCOT_PX, UI_MASCOT_PX);
-    lv_obj_set_pos(s_img_standby_mascot, DISP_W - UI_SAFE_RIGHT - UI_MASCOT_PX,
-                   DISP_H - UI_SAFE_BOTTOM - UI_MASCOT_PX - 2);
-    lv_obj_set_style_opa(s_img_standby_mascot, LV_OPA_COVER, 0);
-  }
 
   /* ── LOCKED view: padlock + unlock prompt ── */
 
@@ -1150,16 +971,14 @@ static void create_ui(void) {
   lv_obj_set_pos(s_lbl_text, 0, 0);
 
   /* Initial visibility */
-  set_view_visible(s_view_standby, 1);
   set_view_visible(s_view_locked, 0);
-  set_view_visible(s_view_active, 0);
+  set_view_visible(s_view_active, 1);
   set_view_visible(s_view_speaking, 0);
 
   auto_scroll_ctx_attach(&s_auto_scroll_text, s_scroll_text);
   s_clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
   s_auto_scroll_timer = lv_timer_create(auto_scroll_text_cb, UI_AUTO_SCROLL_PERIOD_MS, NULL);
   s_record_timer = lv_timer_create(record_timer_cb, UI_RECORD_UPDATE_MS, NULL);
-  s_mascot_timer = lv_timer_create(mascot_timer_cb, UI_MASCOT_FRAME_MS, NULL);
   reset_recording_meter_visuals();
 }
 
@@ -1175,14 +994,6 @@ static void refresh_ui(void) {
   portENTER_CRITICAL(&s_state_lock);
   memcpy(status, s_status, sizeof(status));
   locked = s_locked;
-  /* Auto-clear history after idle timeout to return to standby */
-  if (BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS > 0 && s_history_count > 0 && is_standby_status(s_status) &&
-      s_last_active_ms > 0 && (bb_now_ms() - s_last_active_ms) >= BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS) {
-    s_history_count = 0;
-    s_view_back = 0;
-    s_scroll_you = 0;
-    s_scroll_ai = 0;
-  }
   turn_den = s_history_count;
   if (s_history_count <= 0) {
     you[0] = '\0';
@@ -1203,18 +1014,13 @@ static void refresh_ui(void) {
   char hm[8];
   format_clock(hm, sizeof(hm), now_ms);
 
-  ui_view_mode_t mode = resolve_view_mode(status, turn_den, locked);
+  ui_view_mode_t mode = resolve_view_mode(status, locked);
   const int recording = is_recording_status(status);
 
-  set_view_visible(s_view_standby, mode == UI_VIEW_STANDBY);
   set_view_visible(s_view_locked, mode == UI_VIEW_LOCKED);
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
 
-  if (mode == UI_VIEW_STANDBY) {
-    /* Update standby clock */
-    lv_label_set_text(s_lbl_standby_clock, hm);
-    s_record_view_visible = 0;
-  } else if (mode == UI_VIEW_LOCKED) {
+  if (mode == UI_VIEW_LOCKED) {
     if (strcmp(status, BB_STATUS_VERIFY_TX) == 0) {
       lv_label_set_text(s_lbl_locked_title, "正在聆听密语");
       lv_label_set_text(s_lbl_locked_hint, "松开按键后开始验证");
@@ -1491,7 +1297,6 @@ esp_err_t bb_display_show_status(const char* status_line) {
     portENTER_CRITICAL(&s_state_lock);
     strncpy(s_status, status_line, sizeof(s_status) - 1);
     s_status[sizeof(s_status) - 1] = '\0';
-    if (!is_standby_status(s_status)) s_last_active_ms = bb_now_ms();
     portEXIT_CRITICAL(&s_state_lock);
   }
   if (s_ready) refresh_ui();
@@ -1508,7 +1313,6 @@ esp_err_t bb_display_upsert_chat_turn(const char* user_said, const char* assista
   if (u[0] == '\0' && r[0] == '\0') return ESP_OK;
 
   portENTER_CRITICAL(&s_state_lock);
-  s_last_active_ms = bb_now_ms();
   if (s_stream_turn_active && s_history_count > 0) {
     strncpy(s_history[s_history_count - 1].you, u, sizeof(s_history[0].you) - 1);
     s_history[s_history_count - 1].you[sizeof(s_history[0].you) - 1] = '\0';

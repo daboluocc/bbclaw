@@ -22,7 +22,7 @@
 
 typedef enum {
   APP_MODE_AUTO = 0,
-  APP_MODE_STANDBY = 1,
+  APP_MODE_IDLE = 1,
   APP_MODE_ACTIVE = 2,
   /* Legacy aliases for CLI compat */
   APP_MODE_NOTIFICATION = 2,
@@ -83,8 +83,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     if ((strcmp(argv[i], "--mode") == 0) && i + 1 < argc) {
       ++i;
-      if (strcmp(argv[i], "standby") == 0) {
-        state->mode = APP_MODE_STANDBY;
+      if (strcmp(argv[i], "idle") == 0 || strcmp(argv[i], "standby") == 0) {
+        state->mode = APP_MODE_IDLE;
       } else if (strcmp(argv[i], "notification") == 0) {
         state->mode = APP_MODE_NOTIFICATION;
       } else if (strcmp(argv[i], "speaking") == 0) {
@@ -210,7 +210,7 @@ static void populate_preview_state(const app_state_t* state) {
   bb_wall_time_set_unix(1711283400);
   (void)bb_display_init();
 
-  if (state->mode == APP_MODE_STANDBY) {
+  if (state->mode == APP_MODE_IDLE) {
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "READY");
     return;
   }

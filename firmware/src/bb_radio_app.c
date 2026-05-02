@@ -230,7 +230,7 @@ static uint8_t s_stream_encoded_chunk_buf[sizeof(s_stream_pcm_chunk_buf) + 64];
 static RingbufHandle_t s_capture_rb;
 static volatile int s_capture_active;  /* 1 = capture_task should read I2S and push to ring buffer */
 static volatile int s_capture_stopped; /* 1 = capture_task has acknowledged stop */
-static volatile bb_radio_app_state_t s_app_state = BBCLAW_STATE_STANDBY;
+static volatile bb_radio_app_state_t s_app_state = BBCLAW_STATE_CHAT;
 static uint8_t* s_voice_verify_pcm_buf;
 static size_t s_voice_verify_pcm_len;
 static size_t s_voice_verify_pcm_cap;
@@ -273,7 +273,6 @@ static void refresh_lock_screen_visibility(void) {
 static const char* radio_app_state_name(bb_radio_app_state_t state) {
   switch (state) {
     case BBCLAW_STATE_LOCKED:   return "LOCKED";
-    case BBCLAW_STATE_STANDBY:  return "STANDBY";
     case BBCLAW_STATE_CHAT:     return "CHAT";
     case BBCLAW_STATE_SETTINGS: return "SETTINGS";
   }
@@ -478,11 +477,10 @@ static void settings_click_locked(void) {
     }
     lvgl_port_unlock();
     /* Click on Back row asks bb_ui_settings to hide itself; mirror that here
-     * so the radio_app overlay state stays in sync. ADR-012: also drop the
-     * page state back to STANDBY so the dispatcher matches the visible UI. */
+     * so the radio_app overlay state stays in sync. */
     if (!still_active && s_settings_active) {
       settings_overlay_exit();
-      set_radio_app_state(BBCLAW_STATE_STANDBY);
+      set_radio_app_state(BBCLAW_STATE_CHAT);
     }
   }
 }
@@ -1504,27 +1502,6 @@ static void stream_task(void* arg) {
             /* Nav events ignored; only PTT (passphrase verify) is alive. */
             break;
 
-          case BBCLAW_STATE_STANDBY:
-            if (nav == BB_NAV_EVENT_OK) {
-              if (settings_overlay_enter() == 0) {
-                set_radio_app_state(BBCLAW_STATE_SETTINGS);
-                /* Drain double-press so a quick OK doesn't immediately
-                 * commit the highlighted row. */
-                nav_handled_versions[event] = s_nav_event_versions[event];
-              } else {
-                ESP_LOGW(TAG, "STANDBY: OK -> settings_enter failed");
-              }
-            } else if (nav == BB_NAV_EVENT_BACK) {
-              if (agent_chat_enter() == 0) {
-                set_radio_app_state(BBCLAW_STATE_CHAT);
-                nav_handled_versions[event] = s_nav_event_versions[event];
-              } else {
-                ESP_LOGW(TAG, "STANDBY: BACK -> chat_enter failed");
-              }
-            }
-            /* UP/DOWN/LEFT/RIGHT ignored. */
-            break;
-
           case BBCLAW_STATE_CHAT: {
             int busy = agent_chat_is_busy_locked();
             switch (nav) {
@@ -1549,16 +1526,20 @@ static void stream_task(void* arg) {
                 }
                 break;
               case BB_NAV_EVENT_OK:
-                /* Reserved (ADR-012 §3 — OK is no-op in CHAT). */
+                if (busy) {
+                  ESP_LOGI(TAG, "CHAT: OK blocked (turn in flight)");
+                } else if (settings_overlay_enter() == 0) {
+                  set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                  nav_handled_versions[event] = s_nav_event_versions[event];
+                } else {
+                  ESP_LOGW(TAG, "CHAT: OK -> settings_enter failed");
+                }
                 break;
               case BB_NAV_EVENT_BACK:
-                /* ADR-012 §8: BACK during in-flight cancels and returns to STANDBY. */
                 if (busy) {
                   bb_ui_agent_chat_cancel();
+                  ESP_LOGI(TAG, "CHAT: BACK cancelled in-flight turn");
                 }
-                agent_chat_exit();
-                set_radio_app_state(BBCLAW_STATE_STANDBY);
-                ESP_LOGI(TAG, "CHAT: BACK -> STANDBY%s", busy ? " (cancelled in-flight)" : "");
                 break;
               case BB_NAV_EVENT_COUNT:
               default: break;
@@ -1575,8 +1556,8 @@ static void stream_task(void* arg) {
               case BB_NAV_EVENT_OK:    settings_click_locked();    break;
               case BB_NAV_EVENT_BACK:
                 settings_overlay_exit();
-                set_radio_app_state(BBCLAW_STATE_STANDBY);
-                ESP_LOGI(TAG, "SETTINGS: BACK -> STANDBY");
+                set_radio_app_state(BBCLAW_STATE_CHAT);
+                ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT");
                 break;
               case BB_NAV_EVENT_COUNT:
               default: break;
@@ -1611,11 +1592,11 @@ static void stream_task(void* arg) {
     unsigned ptt_version = s_ptt_change_version;
     if (ptt_version != ptt_handled_version) {
       /* Always consume the version, even when we won't act — otherwise a
-       * PTT pressed during STANDBY/SETTINGS would queue and fire later on
-       * entering CHAT. */
+       * PTT pressed during SETTINGS would queue and fire later on
+       * returning to CHAT. */
       ptt_handled_version = ptt_version;
-      /* ADR-012 §9: PTT only does work in LOCKED (passphrase verify) and
-       * CHAT (record). In STANDBY / SETTINGS the edge is silently dropped. */
+      /* PTT only does work in LOCKED (passphrase verify) and
+       * CHAT (record). SETTINGS silently drops the edge. */
       int ptt_dispatch = (s_app_state == BBCLAW_STATE_LOCKED ||
                           s_app_state == BBCLAW_STATE_CHAT);
       if (ptt_dispatch) {
@@ -1713,8 +1694,8 @@ static void stream_task(void* arg) {
     }
 
     if (s_ptt_pressed && !streaming && !arming && !session_busy) {
-      /* ADR-012 §9: only start capture in LOCKED (verify) or CHAT (record).
-       * STANDBY/SETTINGS swallow PTT entirely. */
+      /* Only start capture in LOCKED (verify) or CHAT (record).
+       * SETTINGS swallows PTT entirely. */
       if (s_app_state != BBCLAW_STATE_LOCKED &&
           s_app_state != BBCLAW_STATE_CHAT) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1919,10 +1900,16 @@ static void stream_task(void* arg) {
 
       if (verify_result.match) {
         ESP_LOGI(TAG, "phase=voice_verify_unlock confidence=%.3f", (double)verify_result.confidence);
-        set_radio_app_state(BBCLAW_STATE_STANDBY);
         pulse_success_on_idle(BB_STATUS_READY);
         (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
+        /* Unlock → CHAT directly. */
+        if (agent_chat_enter() == 0) {
+          set_radio_app_state(BBCLAW_STATE_CHAT);
+        } else {
+          ESP_LOGE(TAG, "unlock: agent_chat_enter failed, forcing CHAT state");
+          set_radio_app_state(BBCLAW_STATE_CHAT);
+        }
       } else {
         ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
                  verify_result.message);
@@ -2637,7 +2624,12 @@ esp_err_t bb_radio_app_start(void) {
   ESP_ERROR_CHECK(bb_display_init());
   bb_display_set_cloud_mode(bb_transport_is_cloud_saas());
   refresh_power_display();
-  set_radio_app_state(passphrase_unlock_enabled() ? BBCLAW_STATE_LOCKED : BBCLAW_STATE_STANDBY);
+  if (passphrase_unlock_enabled()) {
+    set_radio_app_state(BBCLAW_STATE_LOCKED);
+  } else {
+    set_radio_app_state(BBCLAW_STATE_CHAT);
+    (void)agent_chat_enter();
+  }
   {
     esp_err_t power_err = bb_power_init();
     if (power_err != ESP_OK) {

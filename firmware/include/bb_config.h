@@ -798,11 +798,6 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_DISPLAY_CHAT_HISTORY 8
 #endif
 
-/** READY 状态下无操作多久后自动回到待机画面（清掉聊天历史），单位 ms；0 = 不自动回待机 */
-#ifndef BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS
-#define BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS 120000
-#endif
-
 /**
  * 屏幕旋转角（度）：0 / 90 / 180 / 270。由板级 board_config.h 映射到 ST7789 swap/mirror。
  * 未在板级定义时默认为 0（与仅写死 SWAP/MIRROR 的旧板卡行为一致）。

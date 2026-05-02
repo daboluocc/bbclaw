@@ -56,7 +56,6 @@ static QueueHandle_t s_render_queue;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t s_line_buf[DISP_W];
 static char s_status[32];
-static int64_t s_last_active_ms;  /* last non-idle activity timestamp */
 
 typedef struct {
   char you[BBCLAW_DISPLAY_CHAT_LINE_LEN];
@@ -648,20 +647,8 @@ typedef struct {
   int more_ai;
 } display_snap_t;
 
-static int is_standby_status(const char* status) {
-  return status == NULL || status[0] == '\0' || strcmp(status, BB_STATUS_READY) == 0;
-}
-
 static void snapshot_fill(display_snap_t* o) {
   portENTER_CRITICAL(&s_state_lock);
-  /* Auto-clear history after idle timeout */
-  if (BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS > 0 && s_history_count > 0 && is_standby_status(s_status) &&
-      s_last_active_ms > 0 && (bb_now_ms() - s_last_active_ms) >= BBCLAW_DISPLAY_STANDBY_TIMEOUT_MS) {
-    s_history_count = 0;
-    s_view_back = 0;
-    s_scroll_you = 0;
-    s_scroll_ai = 0;
-  }
   memcpy(o->status, s_status, sizeof(o->status));
   o->skip_you = s_scroll_you;
   o->skip_ai = s_scroll_ai;
@@ -865,7 +852,6 @@ esp_err_t bb_display_show_status(const char* status_line) {
     portENTER_CRITICAL(&s_state_lock);
     strncpy(s_status, status_line, sizeof(s_status) - 1);
     s_status[sizeof(s_status) - 1] = '\0';
-    if (!is_standby_status(s_status)) s_last_active_ms = bb_now_ms();
     portEXIT_CRITICAL(&s_state_lock);
   }
   queue_render();
@@ -883,7 +869,6 @@ esp_err_t bb_display_upsert_chat_turn(const char* user_said, const char* assista
     return ESP_OK;
   }
   portENTER_CRITICAL(&s_state_lock);
-  s_last_active_ms = bb_now_ms();
   if (s_stream_turn_active && s_history_count > 0) {
     strncpy(s_history[s_history_count - 1].you, u, sizeof(s_history[0].you) - 1);
     s_history[s_history_count - 1].you[sizeof(s_history[0].you) - 1] = '\0';

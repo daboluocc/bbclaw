@@ -3,6 +3,9 @@
 
 #include "bb_agent_theme.h"
 #include "bb_theme_buddy_anim.h"
+#include "bb_lvgl_assets.h"
+#include "bb_lvgl_element_assets.h"
+#include "bb_power.h"
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
@@ -32,9 +35,8 @@ static const char* TAG = "bb_theme_anim";
 #define UI_CELEB_FG    0xff8fd0
 
 #define TOPBAR_H       18
-#define INPUT_H        20
-#define BUDDY_W        110
-#define MIDDLE_H       (172 - TOPBAR_H - INPUT_H)
+#define BUDDY_W        80
+#define MIDDLE_H       (172 - TOPBAR_H)
 #define TRANSCRIPT_W   (320 - BUDDY_W)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
@@ -43,9 +45,9 @@ static const char* TAG = "bb_theme_anim";
 /* Face label home position (relative to buddy_panel). Animations transform
  * around this baseline so we always have a stable resting pose. */
 #define FACE_X0        0
-#define FACE_Y0        30
+#define FACE_Y0        20
 #define MOOD_X0        0
-#define MOOD_Y0        64
+#define MOOD_Y0        50
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;
@@ -56,14 +58,22 @@ static const lv_font_t* theme_font(void) { return lv_font_get_default(); }
 
 typedef struct {
   lv_obj_t* root;
-  lv_obj_t* topbar_lbl;
+  /* topbar */
+  lv_obj_t* topbar;
+  lv_obj_t* topbar_icon;
+  lv_obj_t* topbar_driver_lbl;
+  lv_obj_t* topbar_session_lbl;
+  lv_obj_t* topbar_bat_container;
+  lv_obj_t* topbar_bat_fill;
+  lv_obj_t* topbar_bat_frame;
+  lv_obj_t* topbar_bat_lbl;
+  /* main */
   lv_obj_t* transcript;
-  lv_obj_t* input_lbl;
   lv_obj_t* buddy_panel;
   lv_obj_t* face_lbl;
   lv_obj_t* mood_lbl;
   lv_obj_t* active_assistant;
-  lv_timer_t* dots_timer;   /* BUSY: cycles "." ".." "..." */
+  lv_timer_t* dots_timer;
   int dots_phase;
   char driver_buf[24];
   char session_buf[16];
@@ -72,21 +82,6 @@ typedef struct {
 } bb_anim_state_t;
 
 static bb_anim_state_t s_st = {0};
-
-static const char* state_short(bb_agent_state_t s) {
-  switch (s) {
-    case BB_AGENT_STATE_SLEEP:     return "sleep";
-    case BB_AGENT_STATE_IDLE:      return "idle";
-    case BB_AGENT_STATE_BUSY:      return "busy";
-    case BB_AGENT_STATE_ATTENTION: return "attn";
-    case BB_AGENT_STATE_CELEBRATE: return "yay";
-    case BB_AGENT_STATE_DIZZY:     return "dizzy";
-    case BB_AGENT_STATE_HEART:     return "heart";
-    case BB_AGENT_STATE_LISTENING: return "listen";
-    case BB_AGENT_STATE_SPEAKING:  return "speak";
-  }
-  return "?";
-}
 
 typedef struct {
   const char* face;
@@ -274,16 +269,47 @@ static void busy_dots_timer_cb(lv_timer_t* t) {
 
 /* ── topbar / face refresh (shared with ascii) ── */
 
+static const lv_image_dsc_t* state_icon(bb_agent_state_t s) {
+  switch (s) {
+    case BB_AGENT_STATE_BUSY:
+    case BB_AGENT_STATE_LISTENING:
+    case BB_AGENT_STATE_SPEAKING:
+      return &bb_img_task;
+    case BB_AGENT_STATE_DIZZY:
+      return &bb_img_err;
+    default:
+      return &bb_img_ready;
+  }
+}
+
 static void refresh_topbar(void) {
-  if (s_st.topbar_lbl == NULL) return;
-  char buf[128];
-  snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
-           s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)",
-           s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------",
-           state_short(s_st.state),
-           bb_ui_settings_tts_enabled() ? "T+" : "T-",
-           bb_wifi_is_connected()       ? "W+" : "W-");
-  lv_label_set_text(s_st.topbar_lbl, buf);
+  if (s_st.topbar_icon != NULL) {
+    lv_image_set_src(s_st.topbar_icon, state_icon(s_st.state));
+  }
+  if (s_st.topbar_driver_lbl != NULL) {
+    lv_label_set_text(s_st.topbar_driver_lbl,
+                      s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "---");
+  }
+  if (s_st.topbar_session_lbl != NULL) {
+    lv_label_set_text(s_st.topbar_session_lbl,
+                      s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------");
+  }
+  if (s_st.topbar_bat_container != NULL) {
+    bb_power_state_t pwr = {0};
+    bb_power_get_state(&pwr);
+    if (!pwr.supported || !pwr.available) {
+      lv_obj_add_flag(s_st.topbar_bat_container, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_clear_flag(s_st.topbar_bat_container, LV_OBJ_FLAG_HIDDEN);
+      int pct = pwr.percent < 0 ? 0 : (pwr.percent > 100 ? 100 : pwr.percent);
+      lv_obj_set_width(s_st.topbar_bat_fill, (pct * 18) / 100);
+      lv_obj_set_style_bg_color(s_st.topbar_bat_fill,
+                                lv_color_hex(pwr.low ? UI_ERROR_FG : UI_ME_ACCENT), 0);
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%d", pct);
+      lv_label_set_text(s_st.topbar_bat_lbl, buf);
+    }
+  }
 }
 
 static const char* per_driver_face(const char* driver_name) {
@@ -415,15 +441,61 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_bg_opa(s_st.root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
 
-  s_st.topbar_lbl = lv_label_create(s_st.root);
-  lv_obj_set_size(s_st.topbar_lbl, lv_pct(100), TOPBAR_H);
-  lv_obj_align(s_st.topbar_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_obj_set_style_text_font(s_st.topbar_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.topbar_lbl, lv_color_hex(UI_STATUS_FG), 0);
-  lv_obj_set_style_text_align(s_st.topbar_lbl, LV_TEXT_ALIGN_LEFT, 0);
-  lv_obj_set_style_pad_left(s_st.topbar_lbl, 4, 0);
-  lv_obj_set_style_pad_right(s_st.topbar_lbl, 4, 0);
-  lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
+  /* ── Topbar: [icon] driver  session  [battery] ── */
+  s_st.topbar = lv_obj_create(s_st.root);
+  lv_obj_remove_style_all(s_st.topbar);
+  lv_obj_set_size(s_st.topbar, 320, TOPBAR_H);
+  lv_obj_align(s_st.topbar, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_clear_flag(s_st.topbar, LV_OBJ_FLAG_SCROLLABLE);
+
+  s_st.topbar_icon = lv_image_create(s_st.topbar);
+  lv_image_set_src(s_st.topbar_icon, &bb_img_ready);
+  lv_obj_set_size(s_st.topbar_icon, 16, 16);
+  lv_obj_set_pos(s_st.topbar_icon, 4, (TOPBAR_H - 16) / 2);
+
+  s_st.topbar_driver_lbl = lv_label_create(s_st.topbar);
+  lv_obj_set_width(s_st.topbar_driver_lbl, 100);
+  lv_obj_set_style_text_font(s_st.topbar_driver_lbl, theme_font(), 0);
+  lv_obj_set_style_text_color(s_st.topbar_driver_lbl, lv_color_hex(UI_STATUS_FG), 0);
+  lv_label_set_long_mode(s_st.topbar_driver_lbl, LV_LABEL_LONG_MODE_DOTS);
+  lv_obj_set_pos(s_st.topbar_driver_lbl, 24, 2);
+
+  s_st.topbar_session_lbl = lv_label_create(s_st.topbar);
+  lv_obj_set_width(s_st.topbar_session_lbl, 70);
+  lv_obj_set_style_text_font(s_st.topbar_session_lbl, theme_font(), 0);
+  lv_obj_set_style_text_color(s_st.topbar_session_lbl, lv_color_hex(UI_TEXT_DIM), 0);
+  lv_label_set_long_mode(s_st.topbar_session_lbl, LV_LABEL_LONG_MODE_DOTS);
+  lv_obj_set_pos(s_st.topbar_session_lbl, 128, 2);
+
+  /* Battery widget (right side) */
+  {
+    s_st.topbar_bat_container = lv_obj_create(s_st.topbar);
+    lv_obj_remove_style_all(s_st.topbar_bat_container);
+    lv_obj_set_size(s_st.topbar_bat_container, 44, 14);
+    lv_obj_set_pos(s_st.topbar_bat_container, 272, (TOPBAR_H - 14) / 2);
+    lv_obj_clear_flag(s_st.topbar_bat_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_st.topbar_bat_fill = lv_obj_create(s_st.topbar_bat_container);
+    lv_obj_remove_style_all(s_st.topbar_bat_fill);
+    lv_obj_set_size(s_st.topbar_bat_fill, 18, 8);
+    lv_obj_set_pos(s_st.topbar_bat_fill, 2, 3);
+    lv_obj_set_style_radius(s_st.topbar_bat_fill, 1, 0);
+    lv_obj_set_style_bg_color(s_st.topbar_bat_fill, lv_color_hex(UI_ME_ACCENT), 0);
+    lv_obj_set_style_bg_opa(s_st.topbar_bat_fill, LV_OPA_COVER, 0);
+
+    s_st.topbar_bat_frame = lv_image_create(s_st.topbar_bat_container);
+    lv_image_set_src(s_st.topbar_bat_frame, &bb_el_battery_frame_26x12);
+    lv_obj_set_pos(s_st.topbar_bat_frame, 0, 1);
+
+    s_st.topbar_bat_lbl = lv_label_create(s_st.topbar_bat_container);
+    lv_obj_set_width(s_st.topbar_bat_lbl, 16);
+    lv_obj_set_style_text_color(s_st.topbar_bat_lbl, lv_color_hex(UI_STATUS_FG), 0);
+    lv_obj_set_style_text_font(s_st.topbar_bat_lbl, theme_font(), 0);
+    lv_obj_set_style_text_align(s_st.topbar_bat_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(s_st.topbar_bat_lbl, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_text(s_st.topbar_bat_lbl, "--");
+    lv_obj_set_pos(s_st.topbar_bat_lbl, 28, 0);
+  }
 
   s_st.buddy_panel = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.buddy_panel);
@@ -438,16 +510,16 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_clear_flag(s_st.buddy_panel, LV_OBJ_FLAG_SCROLLABLE);
 
   s_st.face_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.face_lbl, BUDDY_W - 8, 28);
+  lv_obj_set_size(s_st.face_lbl, BUDDY_W - 4, 24);
   lv_obj_set_pos(s_st.face_lbl, FACE_X0, FACE_Y0);
   lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
   lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, (BUDDY_W - 8) / 2, 0);
-  lv_obj_set_style_transform_pivot_y(s_st.face_lbl, 14, 0);
+  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, (BUDDY_W - 4) / 2, 0);
+  lv_obj_set_style_transform_pivot_y(s_st.face_lbl, 12, 0);
 
   s_st.mood_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.mood_lbl, BUDDY_W - 8, 24);
+  lv_obj_set_size(s_st.mood_lbl, BUDDY_W - 4, 20);
   lv_obj_set_pos(s_st.mood_lbl, MOOD_X0, MOOD_Y0);
   lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
@@ -469,15 +541,6 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_scroll_dir(s_st.transcript, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(s_st.transcript, LV_SCROLLBAR_MODE_AUTO);
 
-  s_st.input_lbl = lv_label_create(s_st.root);
-  lv_obj_set_size(s_st.input_lbl, lv_pct(100), INPUT_H);
-  lv_obj_align(s_st.input_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  lv_obj_set_style_text_font(s_st.input_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.input_lbl, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_obj_set_style_pad_left(s_st.input_lbl, 4, 0);
-  lv_obj_set_style_pad_right(s_st.input_lbl, 4, 0);
-  lv_label_set_text(s_st.input_lbl, "(input not wired yet)");
-
   s_st.active_assistant = NULL;
   s_st.dots_timer = NULL;
   s_st.dots_phase = 0;
@@ -494,9 +557,15 @@ static void theme_on_exit(void) {
     lv_obj_del(s_st.root);
   }
   s_st.root = NULL;
-  s_st.topbar_lbl = NULL;
+  s_st.topbar = NULL;
+  s_st.topbar_icon = NULL;
+  s_st.topbar_driver_lbl = NULL;
+  s_st.topbar_session_lbl = NULL;
+  s_st.topbar_bat_container = NULL;
+  s_st.topbar_bat_fill = NULL;
+  s_st.topbar_bat_frame = NULL;
+  s_st.topbar_bat_lbl = NULL;
   s_st.transcript = NULL;
-  s_st.input_lbl = NULL;
   s_st.buddy_panel = NULL;
   s_st.face_lbl = NULL;
   s_st.mood_lbl = NULL;
