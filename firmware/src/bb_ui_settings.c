@@ -4,7 +4,8 @@
 #include <string.h>
 
 #include "bb_agent_client.h"
-#include "bb_agent_theme.h"
+#include "bb_session_store.h"
+#include "bb_ui_agent_chat.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,32 +15,9 @@
 
 static const char* TAG = "bb_ui_settings";
 
-/*
- * Phase 4.7 — standalone Settings overlay.
- *
- * Architecture mirrors the Phase 4.2.5 settings sub-mode that used to live
- * inside bb_ui_agent_chat. The big difference is layout: we render full-
- * screen on a dedicated parent (not as a bottom strip on top of the chat
- * theme), and we own our own state — the chat module no longer has any
- * settings code.
- *
- * NVS keys are SHARED with bb_ui_agent_chat:
- *   namespace "bbclaw":
- *     "agent/driver" → string, user-selected driver name (empty = adapter default)
- *     "agent/theme"  → string, active theme name (consumed by bb_agent_theme)
- *     "agent/tts"    → u8, 0/1 TTS-reply toggle
- *
- * The chat module reads these on chat-show; settings writes them when the
- * user commits a row. Mutually exclusive overlays guarantee no concurrent
- * access. After settings is dismissed, the next chat-show picks up new
- * values.
- */
-
 #define BB_SETTINGS_NVS_NS         "bbclaw"
-#define BB_SETTINGS_NVS_KEY_DRIVER "agent/driver"
 #define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
-#define BB_SETTINGS_DRIVER_FALLBACK "claude-code"
-#define BB_SETTINGS_DRIVER_CACHE_MAX 6
+#define BB_SETTINGS_SESSION_CACHE_MAX 6
 
 #define BB_SETTINGS_FETCH_TASK_STACK 4096
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
@@ -52,19 +30,12 @@ static const char* TAG = "bb_ui_settings";
 #define UI_ROW_SEL_BG  0x2ec4a0
 #define UI_HINT_FG     0x7a9a8c
 
-/* Display is 320x172. Layout budget:
- *   header: 22 px
- *   rows  : 4 * 26 = 104 px (rows_h)
- *   total : 126 px (well under 172) */
 #define HEADER_H 22
 #define ROW_H    26
 #define ROWS_BOX_H (ROW_H * ROW_COUNT + 6)
 
-/* ADR-012 §6: Session row removed (was per-driver session list, only
- * meaningful for claude-code). Theme row removed — buddy-anim is the only theme.
- * Settings is now Agent / TTS / Back. */
 typedef enum {
-  ROW_AGENT = 0,
+  ROW_SESSION = 0,
   ROW_TTS,
   ROW_BACK,
   ROW_COUNT,
@@ -77,69 +48,22 @@ typedef struct {
   lv_obj_t* rows[ROW_COUNT];
   int sel;
 
-  /* Driver list (populated async). */
-  bb_agent_driver_info_t driver_cache[BB_SETTINGS_DRIVER_CACHE_MAX];
-  int driver_cache_count;
-  int driver_cache_offline;
-  int driver_idx;
-  volatile int driver_fetch_pending;
-  volatile uint32_t driver_fetch_generation;
+  /* Session list (populated async, per-driver). */
+  bb_agent_session_info_t session_cache[BB_SETTINGS_SESSION_CACHE_MAX];
+  int session_cache_count;
+  int session_idx;
+  volatile int session_fetch_pending;
+  volatile uint32_t session_fetch_generation;
 
-  /* Editable values (snapshot at show; committed on click). */
-  char selected_driver[24];  /* "" = adapter default */
-  int  tts_enabled;          /* 1 = on */
+  char selected_session[64];
+  int  tts_enabled;
 } settings_state_t;
 
 static settings_state_t s_st = {0};
 
-/* Phase 4.8.x — tracks whether load_tts_enabled_from_nvs() has populated
- * s_st.tts_enabled at least once. The accessor uses this to lazily load
- * if a theme reads the value before the user has ever opened Settings. */
 static int s_tts_loaded = 0;
 
-/* Same idea for the persisted driver name. Phase 4.8.x crash fix: NVS reads
- * happen on whatever task calls them; stream_task has a PSRAM stack and
- * NVS internally calls spi_flash_disable_interrupts_caches_and_other_cpu,
- * which asserts when the caller's stack is in PSRAM. We eager-load both
- * NVS values from app_main (internal-RAM stack) so settings_overlay_enter
- * → bb_ui_settings_show never has to touch NVS from PSRAM-stack callers. */
-static int s_driver_loaded = 0;
-
 /* ── NVS helpers ── */
-
-static esp_err_t persist_selected_driver(const char* name) {
-  if (name == NULL) return ESP_ERR_INVALID_ARG;
-  UBaseType_t stack_hw = uxTaskGetStackHighWaterMark(NULL);
-  ESP_LOGI(TAG, "persist_driver stack_hw=%u name='%s'", (unsigned)stack_hw, name);
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) return err;
-  err = nvs_set_str(h, BB_SETTINGS_NVS_KEY_DRIVER, name);
-  if (err == ESP_OK) err = nvs_commit(h);
-  nvs_close(h);
-  ESP_LOGI(TAG, "persist_driver done err=%s", esp_err_to_name(err));
-  return err;
-}
-
-static void load_selected_driver_from_nvs(void) {
-  if (s_driver_loaded) return;
-  s_st.selected_driver[0] = '\0';
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
-  s_driver_loaded = 1;  /* mark loaded even if open failed: empty default is in place */
-  if (err != ESP_OK) {
-    ESP_LOGI(TAG, "selected_driver: nvs open failed (%s), empty default", esp_err_to_name(err));
-    return;
-  }
-  size_t sz = sizeof(s_st.selected_driver);
-  err = nvs_get_str(h, BB_SETTINGS_NVS_KEY_DRIVER, s_st.selected_driver, &sz);
-  nvs_close(h);
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "selected_driver loaded: '%s'", s_st.selected_driver);
-  } else {
-    ESP_LOGI(TAG, "selected_driver: not in nvs (%s), empty default", esp_err_to_name(err));
-  }
-}
 
 static esp_err_t persist_tts_enabled(int v) {
   nvs_handle_t h;
@@ -153,11 +77,9 @@ static esp_err_t persist_tts_enabled(int v) {
 
 static void load_tts_enabled_from_nvs(void) {
   if (s_tts_loaded) return;
-  s_st.tts_enabled = 1;  /* default ON */
+  s_st.tts_enabled = 1;
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
-  /* Mark loaded even if NVS open failed — the default value is now in place
-   * and the accessor shouldn't keep retrying on every topbar refresh. */
   s_tts_loaded = 1;
   if (err != ESP_OK) return;
   uint8_t v = 1;
@@ -168,120 +90,127 @@ static void load_tts_enabled_from_nvs(void) {
 }
 
 void bb_ui_settings_preload_nvs(void) {
-  load_selected_driver_from_nvs();
   load_tts_enabled_from_nvs();
 }
 
-/* ── Driver fetch (async pipeline; mirrors Phase 4.2.5) ── */
+/* ── Session fetch (async pipeline) ── */
 
 typedef struct {
   uint32_t gen;
   esp_err_t err;
   int total;
-  bb_agent_driver_info_t entries[BB_SETTINGS_DRIVER_CACHE_MAX];
-} fetch_result_t;
+  char driver_name[24];
+  bb_agent_session_info_t entries[BB_SETTINGS_SESSION_CACHE_MAX];
+} session_fetch_result_t;
 
-static void apply_driver_idx(void) {
+static void apply_session_idx(void) {
   int idx = 0;
-  if (s_st.selected_driver[0] != '\0') {
-    for (int i = 0; i < s_st.driver_cache_count; ++i) {
-      if (strcmp(s_st.driver_cache[i].name, s_st.selected_driver) == 0) {
+  if (s_st.selected_session[0] != '\0') {
+    for (int i = 0; i < s_st.session_cache_count; ++i) {
+      if (strcmp(s_st.session_cache[i].id, s_st.selected_session) == 0) {
         idx = i;
         break;
       }
     }
   }
-  s_st.driver_idx = idx;
+  s_st.session_idx = idx;
 }
 
 static void apply_rows(void);  /* fwd */
 
-static void on_fetch_done(void* user_data) {
-  fetch_result_t* r = (fetch_result_t*)user_data;
+static void on_session_fetch_done(void* user_data) {
+  session_fetch_result_t* r = (session_fetch_result_t*)user_data;
   if (r == NULL) return;
-  s_st.driver_fetch_pending = 0;
-  if (!s_st.active || r->gen != s_st.driver_fetch_generation) {
-    /* Stale or overlay closed — drop. */
+  s_st.session_fetch_pending = 0;
+  if (!s_st.active || r->gen != s_st.session_fetch_generation) {
     free(r);
     return;
   }
-  if (r->err != ESP_OK || r->total <= 0) {
-    ESP_LOGW(TAG, "driver fetch failed (%s), fallback to '%s'",
-             esp_err_to_name(r->err), BB_SETTINGS_DRIVER_FALLBACK);
-    memset(&s_st.driver_cache[0], 0, sizeof(s_st.driver_cache[0]));
-    strncpy(s_st.driver_cache[0].name, BB_SETTINGS_DRIVER_FALLBACK,
-            sizeof(s_st.driver_cache[0].name) - 1);
-    s_st.driver_cache_count = 1;
-    s_st.driver_cache_offline = 1;
+  if (r->err != ESP_OK || r->total < 0) {
+    ESP_LOGW(TAG, "session fetch failed (%s)", esp_err_to_name(r->err));
+    s_st.session_cache_count = 0;
   } else {
-    int total = r->total > BB_SETTINGS_DRIVER_CACHE_MAX
-                  ? BB_SETTINGS_DRIVER_CACHE_MAX : r->total;
-    memcpy(s_st.driver_cache, r->entries, sizeof(r->entries[0]) * (size_t)total);
-    s_st.driver_cache_count = total;
-    s_st.driver_cache_offline = 0;
-    ESP_LOGI(TAG, "driver fetch ok: %d", total);
+    int total = r->total > BB_SETTINGS_SESSION_CACHE_MAX
+                  ? BB_SETTINGS_SESSION_CACHE_MAX : r->total;
+    memcpy(s_st.session_cache, r->entries, sizeof(r->entries[0]) * (size_t)total);
+    s_st.session_cache_count = total;
+    ESP_LOGI(TAG, "session fetch ok: %d for driver '%s'", total, r->driver_name);
   }
-  apply_driver_idx();
+  apply_session_idx();
   apply_rows();
   free(r);
 }
 
-static void fetch_task(void* arg) {
-  uint32_t my_gen = (uint32_t)(uintptr_t)arg;
-  fetch_result_t* r = (fetch_result_t*)calloc(1, sizeof(*r));
+static void session_fetch_task(void* arg) {
+  session_fetch_result_t* r = (session_fetch_result_t*)arg;
   if (r == NULL) {
-    s_st.driver_fetch_pending = 0;
+    s_st.session_fetch_pending = 0;
     vTaskDelete(NULL);
     return;
   }
-  r->gen = my_gen;
-  r->err = bb_agent_list_drivers(r->entries, BB_SETTINGS_DRIVER_CACHE_MAX, &r->total);
-  lv_async_call(on_fetch_done, r);
+  r->err = bb_agent_list_sessions(r->driver_name, r->entries, BB_SETTINGS_SESSION_CACHE_MAX, &r->total);
+  lv_async_call(on_session_fetch_done, r);
   vTaskDelete(NULL);
 }
 
-static void spawn_fetch_task(void) {
-  if (s_st.driver_cache_count > 0) return;
-  if (s_st.driver_fetch_pending) return;
-  s_st.driver_fetch_pending = 1;
-  uint32_t gen = ++s_st.driver_fetch_generation;
+static void spawn_session_fetch_task(void) {
+  if (s_st.session_fetch_pending) return;
+  const char* driver = bb_ui_agent_chat_get_current_driver();
+  if (driver == NULL || driver[0] == '\0') {
+    s_st.session_cache_count = 0;
+    return;
+  }
+
+  s_st.session_fetch_pending = 1;
+  uint32_t gen = ++s_st.session_fetch_generation;
+
+  session_fetch_result_t* r = (session_fetch_result_t*)calloc(1, sizeof(*r));
+  if (r == NULL) {
+    ESP_LOGE(TAG, "spawn_session_fetch_task: calloc failed");
+    s_st.session_fetch_pending = 0;
+    return;
+  }
+
+  r->gen = gen;
+  strncpy(r->driver_name, driver, sizeof(r->driver_name) - 1);
+
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(fetch_task, "settings_fetch",
-                              BB_SETTINGS_FETCH_TASK_STACK,
-                              (void*)(uintptr_t)gen,
+  BaseType_t ok = xTaskCreate(session_fetch_task, "session_fetch",
+                              BB_SETTINGS_FETCH_TASK_STACK, r,
                               BB_SETTINGS_FETCH_TASK_PRIO, &t);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_fetch_task: xTaskCreate failed");
-    s_st.driver_fetch_pending = 0;
+    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreate failed");
+    s_st.session_fetch_pending = 0;
+    free(r);
   }
 }
 
 /* ── Rendering ── */
 
-static const char* active_driver_label(void) {
-  if (s_st.driver_cache_count <= 0) return "(none)";
-  if (s_st.driver_idx < 0 || s_st.driver_idx >= s_st.driver_cache_count) return "(none)";
-  const char* n = s_st.driver_cache[s_st.driver_idx].name;
-  return (n != NULL && n[0] != '\0') ? n : "(unnamed)";
+static const char* active_session_preview(void) {
+  if (s_st.session_idx == s_st.session_cache_count) {
+    return "(new session)";
+  }
+  if (s_st.session_cache_count <= 0) return "(none)";
+  if (s_st.session_idx < 0 || s_st.session_idx >= s_st.session_cache_count) return "(none)";
+  const char* p = s_st.session_cache[s_st.session_idx].preview;
+  return (p != NULL && p[0] != '\0') ? p : "(unnamed)";
 }
 
 static void apply_rows(void) {
   if (s_st.root == NULL) return;
   char buf[80];
 
-  /* Row 0: Agent */
-  if (s_st.rows[ROW_AGENT] != NULL) {
-    if (s_st.driver_cache_count <= 0 && s_st.driver_fetch_pending) {
-      snprintf(buf, sizeof(buf), "Agent: loading...");
-    } else if (s_st.driver_cache_offline) {
-      snprintf(buf, sizeof(buf), "Agent: %s (offline)", active_driver_label());
-    } else if (s_st.driver_cache_count > 1) {
-      snprintf(buf, sizeof(buf), "Agent: %s (%d/%d)", active_driver_label(),
-               s_st.driver_idx + 1, s_st.driver_cache_count);
+  /* Row 0: Session */
+  if (s_st.rows[ROW_SESSION] != NULL) {
+    if (s_st.session_fetch_pending) {
+      snprintf(buf, sizeof(buf), "Session: loading...");
     } else {
-      snprintf(buf, sizeof(buf), "Agent: %s", active_driver_label());
+      int total = s_st.session_cache_count + 1;
+      snprintf(buf, sizeof(buf), "Session: %s (%d/%d)", active_session_preview(),
+               s_st.session_idx + 1, total);
     }
-    lv_label_set_text(s_st.rows[ROW_AGENT], buf);
+    lv_label_set_text(s_st.rows[ROW_SESSION], buf);
   }
 
   /* Row 1: TTS */
@@ -322,17 +251,16 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     return;
   }
 
-  /* Snapshot persisted prefs into editable state.
-   * Phase 4.9: NVS reads must happen on internal-RAM stacks. These values
-   * were already loaded by bb_ui_settings_preload_nvs() at boot; we just
-   * use the cached values here. No NVS read on this (potentially PSRAM) stack. */
+  /* Snapshot persisted prefs into editable state. */
 
-  /* Reset driver cache so async fetch repopulates each time settings opens.
-   * (Stale data is unlikely to bite given driver list rarely changes, but
-   * fresh fetch keeps "is openclaw still online?" honest.) */
-  s_st.driver_cache_count = 0;
-  s_st.driver_cache_offline = 0;
-  s_st.driver_idx = 0;
+  /* Load current session from NVS for current driver. */
+  const char* driver = bb_ui_agent_chat_get_current_driver();
+  s_st.selected_session[0] = '\0';
+  if (driver != NULL && driver[0] != '\0') {
+    bb_session_store_load(driver, s_st.selected_session, sizeof(s_st.selected_session));
+  }
+  s_st.session_cache_count = 0;
+  s_st.session_idx = 0;
 
   s_st.root = lv_obj_create(parent);
   lv_obj_remove_style_all(s_st.root);
@@ -375,22 +303,21 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     s_st.rows[i] = row;
   }
 
-  s_st.sel = ROW_AGENT;
+  s_st.sel = ROW_SESSION;
   s_st.active = 1;
 
-  /* Kick off async driver fetch — apply_rows will re-render when done. */
-  spawn_fetch_task();
+  /* Kick off async session fetch — apply_rows will re-render when done. */
+  spawn_session_fetch_task();
   apply_rows();
 
-  ESP_LOGI(TAG, "show (driver_pref='%s', tts=%d)",
-           s_st.selected_driver, s_st.tts_enabled);
+  ESP_LOGI(TAG, "show (driver='%s', tts=%d)",
+           bb_ui_agent_chat_get_current_driver(), s_st.tts_enabled);
 }
 
 void bb_ui_settings_hide(void) {
   if (!s_st.active) return;
   s_st.active = 0;
-  /* Bump generation so any in-flight fetch result is dropped. */
-  s_st.driver_fetch_generation++;
+  s_st.session_fetch_generation++;
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
     s_st.root = NULL;
@@ -424,11 +351,11 @@ void bb_ui_settings_handle_rotate(int delta) {
 void bb_ui_settings_handle_value(int delta) {
   if (!s_st.active || delta == 0) return;
   switch ((settings_row_t)s_st.sel) {
-    case ROW_AGENT: {
-      if (s_st.driver_cache_count <= 1) return;
-      int n = s_st.driver_cache_count;
-      int next = ((s_st.driver_idx + delta) % n + n) % n;
-      s_st.driver_idx = next;
+    case ROW_SESSION: {
+      int total = s_st.session_cache_count + 1;
+      if (total <= 1) return;
+      int next = ((s_st.session_idx + delta) % total + total) % total;
+      s_st.session_idx = next;
       break;
     }
     case ROW_TTS: {
@@ -448,23 +375,20 @@ void bb_ui_settings_handle_value(int delta) {
 void bb_ui_settings_handle_click(void) {
   if (!s_st.active) return;
   switch ((settings_row_t)s_st.sel) {
-    case ROW_AGENT: {
-      if (s_st.driver_cache_count <= 0) {
-        s_st.sel = ROW_TTS;
-        apply_rows();
-        return;
+    case ROW_SESSION: {
+      /* Resolve session_idx to session ID */
+      if (s_st.session_idx == s_st.session_cache_count) {
+        /* "(new session)" selected — clear stored session */
+        s_st.selected_session[0] = '\0';
+      } else if (s_st.session_idx >= 0 && s_st.session_idx < s_st.session_cache_count) {
+        strncpy(s_st.selected_session, s_st.session_cache[s_st.session_idx].id,
+                sizeof(s_st.selected_session) - 1);
+        s_st.selected_session[sizeof(s_st.selected_session) - 1] = '\0';
       }
-      const char* new_driver = s_st.driver_cache[s_st.driver_idx].name;
-      if (new_driver == NULL || new_driver[0] == '\0') return;
-
-      esp_err_t err = persist_selected_driver(new_driver);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "persist driver '%s' failed (%s)", new_driver, esp_err_to_name(err));
-      }
-      strncpy(s_st.selected_driver, new_driver, sizeof(s_st.selected_driver) - 1);
-      s_st.selected_driver[sizeof(s_st.selected_driver) - 1] = '\0';
-
-      ESP_LOGI(TAG, "driver -> '%s' (committed, hot-reload on next send)", new_driver);
+      const char* driver = bb_ui_agent_chat_get_current_driver();
+      bb_session_store_save(driver, s_st.selected_session);
+      ESP_LOGI(TAG, "session -> '%s' for driver '%s' (committed)",
+               s_st.selected_session, driver);
       s_st.sel = ROW_TTS;
       apply_rows();
       break;

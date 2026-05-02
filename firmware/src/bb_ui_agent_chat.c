@@ -83,7 +83,6 @@ typedef struct {
   /* 持久化 session/driver；adapter SESSION 帧到达时更新。Phase 4.2 接入 NVS。 */
   char session_id[64];
   char driver_name[24];          /* 来自 SESSION 帧（adapter 真实分配的 driver） */
-  char selected_driver[24];      /* 用户设置选中的 driver；空 = 让 adapter 默认 */
 
   /* picker 状态（Phase 4.2） */
   lv_obj_t* picker_root;
@@ -373,8 +372,8 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         /* Phase S2 — save session ID to NVS for current driver */
         if (evt->driver != NULL && evt->driver[0] != '\0') {
           bb_session_store_save(evt->driver, evt->session_id);
-        } else if (s_chat.selected_driver[0] != '\0') {
-          bb_session_store_save(s_chat.selected_driver, evt->session_id);
+        } else if (s_chat.driver_name[0] != '\0') {
+          bb_session_store_save(s_chat.driver_name, evt->session_id);
         }
       }
       if (evt->driver != NULL) {
@@ -506,87 +505,6 @@ static void agent_task(void* arg) {
 
 /* ── public API ── */
 
-/* 从 NVS 加载用户上次选中的 driver 名；找不到则保持空字符串（让 adapter 默认）。 */
-static void load_selected_driver_from_nvs(void) {
-  s_chat.selected_driver[0] = '\0';
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READONLY, &h);
-  if (err != ESP_OK) {
-    ESP_LOGI(TAG, "selected_driver: no nvs (%s), leaving empty", esp_err_to_name(err));
-    return;
-  }
-  size_t sz = sizeof(s_chat.selected_driver);
-  err = nvs_get_str(h, BB_CHAT_NVS_KEY_DRIVER, s_chat.selected_driver, &sz);
-  nvs_close(h);
-  if (err != ESP_OK) {
-    s_chat.selected_driver[0] = '\0';
-    ESP_LOGI(TAG, "selected_driver: not in nvs (%s)", esp_err_to_name(err));
-    return;
-  }
-  ESP_LOGI(TAG, "selected_driver: loaded '%s'", s_chat.selected_driver);
-}
-
-static esp_err_t persist_selected_driver(const char* name) {
-  if (name == NULL) return ESP_ERR_INVALID_ARG;
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) return err;
-  err = nvs_set_str(h, BB_CHAT_NVS_KEY_DRIVER, name);
-  if (err == ESP_OK) {
-    err = nvs_commit(h);
-  }
-  nvs_close(h);
-  return err;
-}
-
-/* Phase 4.8.x: deferred-persist worker. Writing NVS while the LVGL lock is
- * held + audio is playing + agent stream is active triggered an
- * spi_flash_disable_interrupts_caches assertion (cache_utils.c:127) on the
- * cycle_driver hot path. Solution: hand the persist off to a one-shot
- * FreeRTOS task that runs without any of those locks, so the SPI-flash
- * driver can safely disable caches/interrupts to do its write.
- *
- * Stack: 4 KB matches the agent task — NVS write opens partition, possibly
- * creates the namespace (small flash erase), writes one short key-value.
- */
-typedef struct {
-  char name[24];
-} persist_driver_arg_t;
-
-static void persist_driver_task(void* arg) {
-  persist_driver_arg_t* a = (persist_driver_arg_t*)arg;
-  if (a == NULL) {
-    vTaskDelete(NULL);
-    return;
-  }
-  esp_err_t err = persist_selected_driver(a->name);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "persist_driver_task: '%s' failed: %s", a->name, esp_err_to_name(err));
-  } else {
-    ESP_LOGI(TAG, "persist_driver_task: '%s' committed to nvs", a->name);
-  }
-  free(a);
-  vTaskDelete(NULL);
-}
-
-static void spawn_persist_driver_task(const char* name) {
-  if (name == NULL || name[0] == '\0') return;
-  persist_driver_arg_t* arg = (persist_driver_arg_t*)calloc(1, sizeof(*arg));
-  if (arg == NULL) {
-    ESP_LOGW(TAG, "spawn persist task: calloc failed");
-    return;
-  }
-  strncpy(arg->name, name, sizeof(arg->name) - 1);
-  arg->name[sizeof(arg->name) - 1] = '\0';
-  TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(persist_driver_task, "persist_drv",
-                              4096, arg, 4, &t);
-  if (ok != pdPASS) {
-    ESP_LOGW(TAG, "spawn persist task: xTaskCreate failed");
-    free(arg);
-  }
-}
-
 /* Phase 4.9: NVS reads must run on a task whose stack lives in internal
  * RAM.  stream_task's stack is PSRAM-backed; during SPI-flash reads
  * (required by NVS) the cache is disabled, making PSRAM inaccessible
@@ -596,13 +514,13 @@ static void spawn_persist_driver_task(const char* name) {
 static void load_tts_enabled_from_nvs(void);
 
 static void load_nvs_task(void* arg) {
-  load_selected_driver_from_nvs();
   load_tts_enabled_from_nvs();
-  /* Load session ID for selected driver from NVS on internal RAM stack */
-  if (s_chat.selected_driver[0] != '\0') {
-    esp_err_t err = bb_session_store_load(s_chat.selected_driver, s_chat.session_id, sizeof(s_chat.session_id));
+  /* Load session ID for current driver from NVS on internal RAM stack */
+  const char* driver = bb_ui_agent_chat_get_current_driver();
+  if (driver != NULL && driver[0] != '\0') {
+    esp_err_t err = bb_session_store_load(driver, s_chat.session_id, sizeof(s_chat.session_id));
     if (err == ESP_OK) {
-      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, s_chat.selected_driver);
+      ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, driver);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
       ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
     }
@@ -1010,8 +928,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.turn_start_ms = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
-  /* Load all NVS data (selected_driver, tts_enabled, session_id) on internal
-   * RAM stack to avoid PSRAM access during cache-disabled NVS operations. */
+  /* Load NVS data (tts_enabled, session_id) on internal RAM stack. */
   load_nvs_on_internal_stack();
 
   /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
@@ -1022,17 +939,12 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
-  /* Phase 4.8 (post-Phase-5): show the effective driver in the topbar
-   * immediately on chat entry, before any agent SESSION frame arrives.
-   * Priority: server-provided driver_name (sticky between turns) > user's
-   * NVS-stored selected_driver > the hardcoded fallback. The SESSION frame
-   * that lands later will overwrite this via post_driver -> SET_DRIVER. */
+  /* Show the effective driver in the topbar immediately on chat entry.
+   * The SESSION frame that lands later will overwrite via post_driver. */
   if (theme->set_driver != NULL) {
     const char* effective_driver = NULL;
     if (s_chat.driver_name[0] != '\0') {
       effective_driver = s_chat.driver_name;
-    } else if (s_chat.selected_driver[0] != '\0') {
-      effective_driver = s_chat.selected_driver;
     } else {
       effective_driver = BB_CHAT_DRIVER_FALLBACK;
     }
@@ -1113,23 +1025,10 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
     free(args);
     return ESP_ERR_NO_MEM;
   }
-  /* Phase 4.8.x: re-read selected_driver from NVS before each send so that
-   * a Settings-side change (`bb_ui_settings` persists driver to NVS) takes
-   * effect on the next send without needing chat to be hidden + reshown.
-   * Without this reload, chat captured selected_driver only at show-time
-   * (= boot for the auto-entered chat home), so user-picked driver
-   * changes would be ignored until reboot. */
+  /* Load NVS data (tts_enabled, session_id) on internal RAM stack. */
   load_nvs_on_internal_stack();
-  /* 在调用线程的视角下 session/driver 是稳定字符串，复制进任务参数。
-   * 注意：driver 优先用用户在 settings 里选的 selected_driver；
-   * 为空时（首次启动 / NVS 没值）退回 driver_name（来自上次 SESSION 帧），
-   * 仍为空就传 NULL，让 adapter 选默认。 */
   strncpy(args->session_id, s_chat.session_id, sizeof(args->session_id) - 1);
-  if (s_chat.selected_driver[0] != '\0') {
-    strncpy(args->driver_name, s_chat.selected_driver, sizeof(args->driver_name) - 1);
-  } else {
-    strncpy(args->driver_name, s_chat.driver_name, sizeof(args->driver_name) - 1);
-  }
+  strncpy(args->driver_name, s_chat.driver_name, sizeof(args->driver_name) - 1);
   ESP_LOGI(TAG, "send: text='%.40s' driver=%s", text,
            args->driver_name[0] != '\0' ? args->driver_name : "(default)");
 
@@ -1303,8 +1202,7 @@ typedef struct {
 
 static void apply_driver_cache_idx(void) {
   int idx = 0;
-  const char* prefer = s_chat.selected_driver[0] != '\0' ? s_chat.selected_driver
-                       : (s_chat.driver_name[0] != '\0' ? s_chat.driver_name : NULL);
+  const char* prefer = s_chat.driver_name[0] != '\0' ? s_chat.driver_name : NULL;
   if (prefer != NULL) {
     for (int i = 0; i < s_chat.driver_cache_count; ++i) {
       if (strcmp(s_chat.driver_cache[i].name, prefer) == 0) {
@@ -1377,6 +1275,11 @@ static void spawn_driver_fetch_task(void) {
 
 int bb_ui_agent_chat_is_busy(void) {
   return (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) ? 1 : 0;
+}
+
+const char* bb_ui_agent_chat_get_current_driver(void) {
+  if (s_chat.driver_name[0] != '\0') return s_chat.driver_name;
+  return "claude-code";
 }
 
 /* Phase 4.9: cancel an in-flight agent turn. The HTTP stream continues to
@@ -1501,23 +1404,16 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
    * still running on the LVGL task. Worst case if the task fails to
    * spawn: in-memory state still updated → driver works for THIS
    * session, just doesn't survive reboot (logged). */
-  strncpy(s_chat.selected_driver, name, sizeof(s_chat.selected_driver) - 1);
-  s_chat.selected_driver[sizeof(s_chat.selected_driver) - 1] = '\0';
+  strncpy(s_chat.driver_name, name, sizeof(s_chat.driver_name) - 1);
+  s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
 
-  /* Phase 4.9: driver changed — invalidate the current session so the next
-   * send creates a fresh session with the new driver. Without this, the
-   * adapter rejects the message (HTTP 400) because the existing session_id
-   * is bound to the previous driver. Also clear driver_name (server-assigned
-   * from the last SESSION frame) so it doesn't shadow the new selection. */
   s_chat.session_id[0] = '\0';
-  s_chat.driver_name[0] = '\0';
 
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->set_driver != NULL) {
     theme->set_driver(name);
   }
-  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session reset — deferring NVS write",
+  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session reset",
            name, delta, next, n);
-  spawn_persist_driver_task(name);
   return ESP_OK;
 }

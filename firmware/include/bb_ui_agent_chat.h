@@ -103,6 +103,13 @@ int bb_ui_agent_chat_is_busy(void);
 void bb_ui_agent_chat_cancel(void);
 
 /**
+ * Returns the current driver name from the last adapter SESSION frame.
+ * Used by Settings to fetch sessions for the active driver.
+ * Returns "claude-code" if no driver has been set yet.
+ */
+const char* bb_ui_agent_chat_get_current_driver(void);
+
+/**
  * Phase 4.9 — scroll the agent chat transcript by `lines`.
  * lines < 0 scrolls up, lines > 0 scrolls down.
  * Must be called inside the LVGL lock.
