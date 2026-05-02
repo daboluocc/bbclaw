@@ -16,9 +16,10 @@ typedef struct {
   char detail[40];
   char registration_code[16];
   char registration_expires_at[40];
-  int volume_pct;      /* 0-100, from cloud config; -1 = not present */
-  int speed_ratio_x10; /* e.g. 12 = 1.2x; -1 = not present */
-  int speaker_enabled; /* 0=disabled, 1=enabled, -1=not present */
+  int volume_pct;          /* 0-100, from cloud config; -1 = not present */
+  int speed_ratio_x10;     /* e.g. 12 = 1.2x; -1 = not present */
+  int speaker_enabled;     /* 0=disabled, 1=enabled, -1=not present */
+  int adapter_connected;   /* 1=online, 0=offline, -1=not present */
 } bb_cloud_pairing_t;
 
 typedef struct {

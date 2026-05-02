@@ -189,6 +189,7 @@ static volatile int s_transport_ready;
 static volatile int s_transport_audio_streaming_ready;
 static volatile int s_transport_tts_ready;
 static volatile int s_transport_display_ready;
+static volatile int s_transport_adapter_connected;
 static volatile int s_tts_playback_active;
 static volatile int s_tts_interrupt_requested;
 static int s_transport_http_status;
@@ -497,6 +498,15 @@ static int agent_chat_is_busy_locked(void) {
   return busy;
 }
 
+static int agent_chat_is_adapter_offline_locked(void) {
+  int offline = 0;
+  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+    offline = bb_ui_agent_chat_is_adapter_offline();
+    lvgl_port_unlock();
+  }
+  return offline;
+}
+
 static void agent_chat_voice_listening_locked(int begin) {
   if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
     bb_ui_agent_chat_voice_listening(begin);
@@ -520,6 +530,7 @@ static esp_err_t agent_chat_voice_send_locked(const char* text) {
 static void agent_chat_voice_post_error(const char* msg) {
   if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
     bb_ui_agent_chat_voice_listening(0);
+    bb_ui_agent_chat_voice_error();
     if (msg != NULL && msg[0] != '\0') {
       const bb_agent_theme_t* theme = bb_agent_theme_get_active();
       if (theme != NULL && theme->append_error != NULL) {
@@ -1242,6 +1253,9 @@ static esp_err_t wait_for_transport_health(int* out_status) {
     s_transport_audio_streaming_ready = state.supports_audio_streaming;
     s_transport_tts_ready = state.supports_tts;
     s_transport_display_ready = state.supports_display;
+    if (bb_transport_is_cloud_saas() && state.cloud_adapter_connected >= 0) {
+      s_transport_adapter_connected = state.cloud_adapter_connected;
+    }
     remember_transport_state(&state);
     if (last_err == ESP_OK) {
       if (out_status != NULL) {
@@ -1617,6 +1631,14 @@ static void stream_task(void* arg) {
         } else if (agent_chat_is_busy_locked()) {
           ESP_LOGI(TAG, "agent_chat: PTT press refused (chat send in flight)");
           signal_error_haptic();
+        } else if (agent_chat_is_adapter_offline_locked()) {
+          ESP_LOGW(TAG, "agent_chat: PTT press refused (adapter offline)");
+          agent_chat_voice_post_error("ADAPTER OFFLINE");
+          signal_error_haptic();
+          if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+            bb_ui_agent_chat_retry_adapter();
+            lvgl_port_unlock();
+          }
         } else {
           /* Show LISTENING immediately so the buddy face updates on every PTT
            * press. WiFi/TTS are not hard blockers: the arm path below starts
@@ -1754,7 +1776,7 @@ static void stream_task(void* arg) {
         continue;
       }
       if (bb_transport_is_cloud_saas()) {
-        if (!s_transport_ready) {
+        if (!s_transport_ready || !s_transport_health_ok) {
           if (cloud_saas_tx_wait_is_benign()) {
             int64_t now_ms = bb_now_ms();
             if (pairing_ptt_ui_last_ms == 0 || (now_ms - pairing_ptt_ui_last_ms) >= 2000) {
@@ -1792,10 +1814,21 @@ static void stream_task(void* arg) {
           vTaskDelay(pdMS_TO_TICKS(250));
           continue;
         }
-      } else if (!s_transport_ready) {
+        if (s_transport_adapter_connected == 0) {
+          show_status_error("ADAPTER OFF");
+          signal_error_haptic();
+          (void)bb_display_show_chat_turn("Adapter offline", "Start adapter and retry");
+          vTaskDelay(pdMS_TO_TICKS(250));
+          continue;
+        }
+      } else if (!s_transport_ready || !s_transport_health_ok) {
         show_status_error("LINK ERR");
         signal_error_haptic();
         (void)bb_display_show_chat_turn("Local adapter unavailable", "Check adapter health");
+        vTaskDelay(pdMS_TO_TICKS(250));
+        continue;
+      }
+      if (!radio_app_is_locked() && agent_chat_is_adapter_offline_locked()) {
         vTaskDelay(pdMS_TO_TICKS(250));
         continue;
       }
@@ -2465,6 +2498,7 @@ static void stream_task(void* arg) {
         int prev_audio_ready = s_transport_audio_streaming_ready;
         int prev_tts_ready = s_transport_tts_ready;
         int prev_display_ready = s_transport_display_ready;
+        int prev_adapter_connected = s_transport_adapter_connected;
         int prev_http_status = s_transport_http_status;
         char prev_detail[sizeof(s_transport_detail)];
         snprintf(prev_detail, sizeof(prev_detail), "%s", s_transport_detail);
@@ -2478,6 +2512,9 @@ static void stream_task(void* arg) {
         s_transport_audio_streaming_ready = state.supports_audio_streaming;
         s_transport_tts_ready = state.supports_tts;
         s_transport_display_ready = state.supports_display;
+        if (bb_transport_is_cloud_saas() && state.cloud_adapter_connected >= 0) {
+          s_transport_adapter_connected = state.cloud_adapter_connected;
+        }
         remember_transport_state(&state);
         if (health_err == ESP_OK && bb_transport_is_cloud_saas()) {
           if (state.cloud_volume_pct >= 0) {
@@ -2511,10 +2548,14 @@ static void stream_task(void* arg) {
                      (prev_ready != state.ready || prev_audio_ready != state.supports_audio_streaming ||
                       prev_tts_ready != state.supports_tts || prev_display_ready != state.supports_display ||
                       prev_http_status != state.http_status || strcmp(prev_detail, state.detail) != 0 ||
-                      strcmp(prev_reg, state.cloud_registration_code) != 0)) {
-            ESP_LOGI(TAG, "cloud transport state updated status=%d ready=%d audio=%d tts=%d display=%d detail=%s",
+                      strcmp(prev_reg, state.cloud_registration_code) != 0 ||
+                      prev_adapter_connected != s_transport_adapter_connected)) {
+            ESP_LOGI(TAG, "cloud transport state updated status=%d ready=%d audio=%d tts=%d display=%d adapter=%d detail=%s",
                      health_status, state.ready, state.supports_audio_streaming, state.supports_tts,
-                     state.supports_display, state.detail);
+                     state.supports_display, s_transport_adapter_connected, state.detail);
+            if (prev_adapter_connected != s_transport_adapter_connected) {
+              ESP_LOGW(TAG, "adapter_connected changed %d -> %d", prev_adapter_connected, s_transport_adapter_connected);
+            }
             show_cloud_transport_or_locked(&state);
           }
         } else {
@@ -2528,6 +2569,8 @@ static void stream_task(void* arg) {
             /* Adapter was up but now gone down — mark as down and show error */
             adapter_health_is_up = 0;
             s_transport_health_ok = 0;
+            s_transport_ready = 0;
+            s_transport_audio_streaming_ready = 0;
             if (bb_transport_is_cloud_saas()) {
               show_status_error("CLOUD ERR");
               (void)bb_display_show_chat_turn("Cloud unreachable", "Check " BBCLAW_CLOUD_BASE_URL);

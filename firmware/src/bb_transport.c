@@ -92,6 +92,7 @@ static void fill_cloud_state(bb_transport_state_t* state, const bb_cloud_health_
   state->cloud_volume_pct = pairing->volume_pct;
   state->cloud_speed_ratio_x10 = pairing->speed_ratio_x10;
   state->cloud_speaker_enabled = pairing->speaker_enabled;
+  state->cloud_adapter_connected = pairing->adapter_connected;
 }
 
 static esp_err_t refresh_local(bb_transport_state_t* out_state) {

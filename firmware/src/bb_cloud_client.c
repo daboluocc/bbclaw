@@ -410,6 +410,17 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   } else {
     out_pairing->status = BB_CLOUD_PAIR_STATUS_PENDING;
   }
+  out_pairing->adapter_connected = -1;
+  {
+    const char* ac = strstr(parse, "\"adapterConnected\":");
+    if (ac == NULL) ac = strstr(parse, "\"adapterConnected\": ");
+    if (ac != NULL) {
+      ac += strlen("\"adapterConnected\":");
+      while (*ac == ' ') ac++;
+      if (strncmp(ac, "true", 4) == 0) out_pairing->adapter_connected = 1;
+      else if (strncmp(ac, "false", 5) == 0) out_pairing->adapter_connected = 0;
+    }
+  }
   static char s_pair_poll_code[16];
   static char s_pair_poll_detail[64];
   static char s_pair_poll_exp[40];

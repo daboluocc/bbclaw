@@ -1256,7 +1256,7 @@ static void driver_fetch_task(void* arg) {
 }
 
 static void spawn_driver_fetch_task(void) {
-  if (s_chat.driver_cache_count > 0) return;
+  if (s_chat.driver_cache_count > 0 && !s_chat.driver_cache_offline) return;
   if (s_chat.driver_fetch_pending) return;
   s_chat.driver_fetch_pending = 1;
   uint32_t gen = ++s_chat.driver_fetch_generation;
@@ -1275,6 +1275,15 @@ static void spawn_driver_fetch_task(void) {
 
 int bb_ui_agent_chat_is_busy(void) {
   return (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) ? 1 : 0;
+}
+
+int bb_ui_agent_chat_is_adapter_offline(void) {
+  return (s_chat.active && s_chat.driver_cache_offline) ? 1 : 0;
+}
+
+void bb_ui_agent_chat_retry_adapter(void) {
+  if (!s_chat.active || !s_chat.driver_cache_offline) return;
+  spawn_driver_fetch_task();
 }
 
 const char* bb_ui_agent_chat_get_current_driver(void) {
@@ -1350,6 +1359,12 @@ void bb_ui_agent_chat_voice_processing(void) {
   ESP_LOGI(TAG, "voice_processing → BUSY (ASR/cloud wait)");
   post_listening_topbar(0);
   post_state(BB_AGENT_STATE_BUSY);
+}
+
+void bb_ui_agent_chat_voice_error(void) {
+  if (!s_chat.active) return;
+  if (s_chat.sending) return;
+  post_state(BB_AGENT_STATE_DIZZY);
 }
 
 esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {

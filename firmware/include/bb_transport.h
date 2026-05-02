@@ -19,9 +19,10 @@ typedef struct {
   char detail[64];
   char cloud_registration_code[16];
   char cloud_registration_expires_at[40];
-  int cloud_volume_pct;      /* -1 = not present */
-  int cloud_speed_ratio_x10; /* -1 = not present */
-  int cloud_speaker_enabled;  /* 0=disabled, 1=enabled, -1=not present */
+  int cloud_volume_pct;          /* -1 = not present */
+  int cloud_speed_ratio_x10;     /* -1 = not present */
+  int cloud_speaker_enabled;     /* 0=disabled, 1=enabled, -1=not present */
+  int cloud_adapter_connected;   /* 1=online, 0=offline, -1=not present (cloud_saas only) */
 } bb_transport_state_t;
 
 const char* bb_transport_profile_name(void);

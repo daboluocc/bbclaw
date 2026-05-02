@@ -94,6 +94,21 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta);
 int bb_ui_agent_chat_is_busy(void);
 
 /**
+ * Returns 1 when the last driver fetch returned HOME_ADAPTER_OFFLINE (502).
+ * Used by radio_app to reject PTT when the adapter is known to be offline.
+ * Cleared automatically when a subsequent driver fetch succeeds.
+ */
+int bb_ui_agent_chat_is_adapter_offline(void);
+
+/**
+ * Trigger a background re-fetch of the driver list. Used by radio_app after
+ * rejecting PTT due to adapter-offline, so the offline flag can clear if the
+ * adapter comes back. No-op if a fetch is already in flight.
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_retry_adapter(void);
+
+/**
  * Phase 4.9 — cancel an in-flight agent turn (thinking/streaming).
  *
  * The HTTP stream continues draining in the background, but events are
@@ -115,6 +130,17 @@ const char* bb_ui_agent_chat_get_current_driver(void);
  * Must be called inside the LVGL lock.
  */
 void bb_ui_agent_chat_scroll(int lines);
+
+/**
+ * Reset agent chat state from BUSY→DIZZY on external voice pipeline error.
+ *
+ * Called by radio_app when stream_finish fails before bb_ui_agent_chat_send()
+ * was ever invoked (e.g. HOME_ADAPTER_OFFLINE). In that case agent_task never
+ * ran, so the normal BUSY→DIZZY transition inside agent_task doesn't fire.
+ * No-op if agent_task is already running (it owns the state machine).
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_voice_error(void);
 
 /**
  * Light visual hint that the device is recording PTT for an agent turn.
