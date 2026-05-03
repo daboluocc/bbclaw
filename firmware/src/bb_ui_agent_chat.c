@@ -53,8 +53,8 @@ static const char* TAG = "bb_agent_ui";
 
 /* Session picker (Phase S1) — full-screen overlay for multi-session switching. */
 #define BB_SESSION_PICKER_MAX      8
-#define BB_SESSION_PICKER_VISIBLE  5
-#define BB_SESSION_PICKER_ROW_H    11
+#define BB_SESSION_PICKER_VISIBLE  6
+#define BB_SESSION_PICKER_ROW_H    20
 
 /* Action codes returned by session_picker_select(). */
 #define BB_SESSION_PICKER_ACTION_SWITCH    0
@@ -1403,7 +1403,7 @@ static void spawn_session_fetch_task(void) {
 #define BB_SPICKER_FG_DIM   0x6b8c80
 #define BB_SPICKER_SEL_BG   0x2ec4a0
 #define BB_SPICKER_SEL_FG   0x0a0e0c
-#define BB_SPICKER_TITLE_H  13
+#define BB_SPICKER_TITLE_H  22
 
 static void session_picker_apply_styles(void) {
   const int total = s_chat.session_picker_total_rows;
@@ -1437,6 +1437,13 @@ static void session_picker_apply_styles(void) {
 static void session_picker_build_ui(void) {
   if (s_chat.parent == NULL) return;
 
+#ifdef BBCLAW_HAVE_CJK_FONT
+  extern const lv_font_t lv_font_bbclaw_cjk;
+  const lv_font_t* font = &lv_font_bbclaw_cjk;
+#else
+  const lv_font_t* font = lv_font_get_default();
+#endif
+
   /* Tear down previous picker if any. */
   if (s_chat.session_picker_root != NULL) {
     lv_obj_del(s_chat.session_picker_root);
@@ -1466,6 +1473,7 @@ static void session_picker_build_ui(void) {
   lv_obj_t* title = lv_label_create(s_chat.session_picker_root);
   lv_obj_set_size(title, lv_pct(100), BB_SPICKER_TITLE_H);
   lv_obj_set_style_text_color(title, lv_color_hex(BB_SPICKER_FG), 0);
+  lv_obj_set_style_text_font(title, font, 0);
   lv_obj_set_style_pad_left(title, 2, 0);
   char title_buf[48];
   const char* drv = s_chat.driver_name[0] != '\0'
@@ -1480,6 +1488,7 @@ static void session_picker_build_ui(void) {
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_pad_right(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
 
     char row_buf[40];
@@ -1500,6 +1509,7 @@ static void session_picker_build_ui(void) {
     lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_text(row, "+ New session");
     s_chat.session_picker_items[n_sessions] = row;
   }
@@ -1510,6 +1520,7 @@ static void session_picker_build_ui(void) {
     lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_text(row, "* Settings");
     s_chat.session_picker_items[n_sessions + 1] = row;
   }
