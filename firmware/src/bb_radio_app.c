@@ -257,9 +257,10 @@ static void capture_seed_clear(void) {
   s_capture_seed_len = 0;
 }
 
-/** 公网 Cloud SaaS 模式下启用「密语」锁屏（ASR 比对），与声纹/生物特征无关。 */
+/** 公网 Cloud SaaS 模式下启用「密语」锁屏（ASR 比对），与声纹/生物特征无关。
+ *  云端可通过 config.update 下发 miyu_enabled=false 关闭。 */
 static int passphrase_unlock_enabled(void) {
-  return bb_transport_is_cloud_saas();
+  return bb_transport_is_cloud_saas() && bb_device_config_get()->miyu_enabled;
 }
 
 static int radio_app_is_locked(void) {
@@ -1504,45 +1505,95 @@ static void stream_task(void* arg) {
 
           case BBCLAW_STATE_CHAT: {
             int busy = agent_chat_is_busy_locked();
-            switch (nav) {
-              case BB_NAV_EVENT_UP:
-                if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-                  bb_ui_agent_chat_scroll(-2);
-                  lvgl_port_unlock();
+            int picker_up = bb_ui_agent_chat_session_picker_is_visible();
+            if (picker_up) {
+              /* Session picker is open — route nav to picker. */
+              switch (nav) {
+                case BB_NAV_EVENT_UP:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_session_picker_move(-1);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_DOWN:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_session_picker_move(+1);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_OK: {
+                  int action = -1;
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    action = bb_ui_agent_chat_session_picker_select();
+                    lvgl_port_unlock();
+                  }
+                  if (action == 2) { /* Settings */
+                    if (settings_overlay_enter() == 0) {
+                      set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                      nav_handled_versions[event] = s_nav_event_versions[event];
+                    }
+                  }
+                  break;
                 }
-                break;
-              case BB_NAV_EVENT_DOWN:
-                if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
-                  bb_ui_agent_chat_scroll(+2);
-                  lvgl_port_unlock();
-                }
-                break;
-              case BB_NAV_EVENT_LEFT:
-              case BB_NAV_EVENT_RIGHT:
-                if (busy) {
-                  ESP_LOGI(TAG, "CHAT: LEFT/RIGHT blocked (turn in flight)");
-                } else {
-                  agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
-                }
-                break;
-              case BB_NAV_EVENT_OK:
-                if (busy) {
-                  ESP_LOGI(TAG, "CHAT: OK blocked (turn in flight)");
-                } else if (settings_overlay_enter() == 0) {
-                  set_radio_app_state(BBCLAW_STATE_SETTINGS);
-                  nav_handled_versions[event] = s_nav_event_versions[event];
-                } else {
-                  ESP_LOGW(TAG, "CHAT: OK -> settings_enter failed");
-                }
-                break;
-              case BB_NAV_EVENT_BACK:
-                if (busy) {
-                  bb_ui_agent_chat_cancel();
-                  ESP_LOGI(TAG, "CHAT: BACK cancelled in-flight turn");
-                }
-                break;
-              case BB_NAV_EVENT_COUNT:
-              default: break;
+                case BB_NAV_EVENT_BACK:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_session_picker_hide();
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_LEFT:
+                case BB_NAV_EVENT_RIGHT:
+                  /* Close picker, then cycle driver. */
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_session_picker_hide();
+                    lvgl_port_unlock();
+                  }
+                  if (!busy) {
+                    agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
+                  }
+                  break;
+                default: break;
+              }
+            } else {
+              /* Normal CHAT nav. */
+              switch (nav) {
+                case BB_NAV_EVENT_UP:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_scroll(-2);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_DOWN:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_scroll(+2);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_LEFT:
+                case BB_NAV_EVENT_RIGHT:
+                  if (busy) {
+                    ESP_LOGI(TAG, "CHAT: LEFT/RIGHT blocked (turn in flight)");
+                  } else {
+                    agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
+                  }
+                  break;
+                case BB_NAV_EVENT_OK:
+                  if (busy) {
+                    ESP_LOGI(TAG, "CHAT: OK blocked (turn in flight)");
+                  } else if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_session_picker_show();
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_BACK:
+                  if (busy) {
+                    bb_ui_agent_chat_cancel();
+                    ESP_LOGI(TAG, "CHAT: BACK cancelled in-flight turn");
+                  }
+                  break;
+                case BB_NAV_EVENT_COUNT:
+                default: break;
+              }
             }
             break;
           }

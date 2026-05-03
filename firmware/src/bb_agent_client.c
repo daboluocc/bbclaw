@@ -38,7 +38,8 @@ static void agent_build_url(char* out, size_t out_len, const char* path) {
   if (out == NULL || out_len == 0) return;
   const char* base = agent_base_url();
   if (agent_is_cloud_mode()) {
-    snprintf(out, out_len, "%s%s?deviceId=%s", base, path, BBCLAW_DEVICE_ID);
+    const char* sep = strchr(path, '?') != NULL ? "&" : "?";
+    snprintf(out, out_len, "%s%s%sdeviceId=%s", base, path, sep, BBCLAW_DEVICE_ID);
   } else {
     snprintf(out, out_len, "%s%s", base, path);
   }

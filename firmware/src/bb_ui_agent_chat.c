@@ -9,8 +9,10 @@
 #include "bb_agent_theme.h"
 #include "bb_audio.h"
 #include "bb_config.h"
+#include "bb_notification.h"
 #include "bb_session_store.h"
 #include "bb_time.h"
+#include "bb_wifi.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -48,6 +50,17 @@ static const char* TAG = "bb_agent_ui";
  * BB_CHAT_PICKER_MAX_ITEMS - 1 个调用方提供的短语。 */
 #define BB_CHAT_PICKER_MAX_ITEMS 12
 #define BB_CHAT_DRIVER_CACHE_MAX 6
+
+/* Session picker (Phase S1) — full-screen overlay for multi-session switching. */
+#define BB_SESSION_PICKER_MAX      8
+#define BB_SESSION_PICKER_VISIBLE  5
+#define BB_SESSION_PICKER_ROW_H    11
+
+/* Action codes returned by session_picker_select(). */
+#define BB_SESSION_PICKER_ACTION_SWITCH    0
+#define BB_SESSION_PICKER_ACTION_NEW       1
+#define BB_SESSION_PICKER_ACTION_SETTINGS  2
+#define BB_SESSION_PICKER_ACTION_NONE     (-1)
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
@@ -101,6 +114,18 @@ typedef struct {
   int driver_cache_idx;
   volatile int driver_fetch_pending;
   volatile uint32_t driver_fetch_generation;
+
+  /* Session picker (Phase S1) — multi-session management. */
+  bb_agent_session_info_t session_list[BB_SESSION_PICKER_MAX];
+  int session_list_count;
+  int session_picker_sel;              /* highlighted row (0-based, includes + New / Settings) */
+  int session_picker_active_idx;       /* index of current session in list (-1 if not found) */
+  int session_picker_visible;          /* 0=hidden, 1=loading, 2=visible */
+  lv_obj_t* session_picker_root;
+  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 2]; /* sessions + New + Settings */
+  int session_picker_total_rows;       /* session_list_count + 2 (New + Settings) */
+  volatile int session_fetch_pending;
+  volatile uint32_t session_fetch_generation;
 
   /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator.
    * Phase 4.5.2 — sentence-level streaming + cancel-and-replace.
@@ -936,6 +961,8 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
    * from an earlier session. */
   spawn_driver_fetch_task();
 
+  bb_notification_init();
+
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
@@ -1255,6 +1282,11 @@ static void driver_fetch_task(void* arg) {
     return;
   }
   res->gen = my_gen;
+  /* Wait for WiFi before making HTTP calls — avoids lwIP assert crash
+   * when CHAT enters before network is ready (miyu_enabled=false path). */
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
   res->err = bb_agent_list_drivers(res->entries, BB_CHAT_DRIVER_CACHE_MAX, &res->total);
   lv_async_call(on_driver_fetch_done, res);
   vTaskDelete(NULL);
@@ -1274,6 +1306,315 @@ static void spawn_driver_fetch_task(void) {
     ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
     s_chat.driver_fetch_pending = 0;
   }
+}
+
+/* ── Phase S1 — session picker (multi-session management) ──
+ *
+ * Full-screen overlay listing sessions for the current driver. Fetched
+ * asynchronously via bb_agent_list_sessions (already implemented for both
+ * local_home and cloud_saas). Pattern mirrors spawn_driver_fetch_task.
+ */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int total;
+  bb_agent_session_info_t entries[BB_SESSION_PICKER_MAX];
+} session_fetch_result_t;
+
+#define BB_SESSION_FETCH_TASK_STACK 4096
+#define BB_SESSION_FETCH_TASK_PRIO  4
+
+static void session_picker_apply_styles(void);
+static void session_picker_build_ui(void);
+
+static void on_session_fetch_done(void* user_data) {
+  session_fetch_result_t* res = (session_fetch_result_t*)user_data;
+  if (res == NULL) return;
+  s_chat.session_fetch_pending = 0;
+  if (!s_chat.active || res->gen != s_chat.session_fetch_generation) {
+    free(res);
+    return;
+  }
+  if (res->err != ESP_OK) {
+    ESP_LOGW(TAG, "session fetch failed: %s", esp_err_to_name(res->err));
+    s_chat.session_list_count = 0;
+    s_chat.session_picker_visible = 0;
+    free(res);
+    return;
+  }
+  int total = res->total > BB_SESSION_PICKER_MAX ? BB_SESSION_PICKER_MAX : res->total;
+  memcpy(s_chat.session_list, res->entries, sizeof(res->entries[0]) * (size_t)total);
+  s_chat.session_list_count = total;
+
+  /* Find the active session in the list. */
+  s_chat.session_picker_active_idx = -1;
+  for (int i = 0; i < total; ++i) {
+    if (s_chat.session_id[0] != '\0' &&
+        strcmp(s_chat.session_list[i].id, s_chat.session_id) == 0) {
+      s_chat.session_picker_active_idx = i;
+      break;
+    }
+  }
+
+  s_chat.session_picker_visible = 2;
+  session_picker_build_ui();
+  free(res);
+}
+
+static void session_fetch_task(void* arg) {
+  uint32_t my_gen = (uint32_t)(uintptr_t)arg;
+  session_fetch_result_t* res = (session_fetch_result_t*)calloc(1, sizeof(*res));
+  if (res == NULL) {
+    s_chat.session_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  res->gen = my_gen;
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  const char* drv = s_chat.driver_name[0] != '\0'
+                      ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+  res->err = bb_agent_list_sessions(drv, res->entries, BB_SESSION_PICKER_MAX, &res->total);
+  lv_async_call(on_session_fetch_done, res);
+  vTaskDelete(NULL);
+}
+
+static void spawn_session_fetch_task(void) {
+  if (s_chat.session_fetch_pending) return;
+  s_chat.session_fetch_pending = 1;
+  uint32_t gen = ++s_chat.session_fetch_generation;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(session_fetch_task, "ses_fetch",
+                              BB_SESSION_FETCH_TASK_STACK,
+                              (void*)(uintptr_t)gen,
+                              BB_SESSION_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreate failed");
+    s_chat.session_fetch_pending = 0;
+  }
+}
+
+/* ── Session picker UI ── */
+
+#define BB_SPICKER_BG       0x12211b
+#define BB_SPICKER_FG       0xc8e2d6
+#define BB_SPICKER_FG_DIM   0x6b8c80
+#define BB_SPICKER_SEL_BG   0x2ec4a0
+#define BB_SPICKER_SEL_FG   0x0a0e0c
+#define BB_SPICKER_TITLE_H  13
+
+static void session_picker_apply_styles(void) {
+  const int total = s_chat.session_picker_total_rows;
+  if (total == 0) return;
+  int first = s_chat.session_picker_sel - BB_SESSION_PICKER_VISIBLE / 2;
+  if (first < 0) first = 0;
+  if (first + BB_SESSION_PICKER_VISIBLE > total) {
+    first = total - BB_SESSION_PICKER_VISIBLE;
+    if (first < 0) first = 0;
+  }
+  for (int i = 0; i < total; ++i) {
+    lv_obj_t* row = s_chat.session_picker_items[i];
+    if (row == NULL) continue;
+    int visible = (i >= first && i < first + BB_SESSION_PICKER_VISIBLE);
+    if (visible) {
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (i == s_chat.session_picker_sel) {
+      lv_obj_set_style_bg_color(row, lv_color_hex(BB_SPICKER_SEL_BG), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_SPICKER_SEL_FG), 0);
+    } else {
+      lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_SPICKER_FG_DIM), 0);
+    }
+  }
+}
+
+static void session_picker_build_ui(void) {
+  if (s_chat.parent == NULL) return;
+
+  /* Tear down previous picker if any. */
+  if (s_chat.session_picker_root != NULL) {
+    lv_obj_del(s_chat.session_picker_root);
+    s_chat.session_picker_root = NULL;
+    memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
+  }
+
+  const int n_sessions = s_chat.session_list_count;
+  const int total_rows = n_sessions + 2; /* + New session + Settings */
+  s_chat.session_picker_total_rows = total_rows;
+  s_chat.session_picker_sel = (s_chat.session_picker_active_idx >= 0)
+                                ? s_chat.session_picker_active_idx : 0;
+
+  /* Full-screen overlay. */
+  s_chat.session_picker_root = lv_obj_create(s_chat.parent);
+  lv_obj_remove_style_all(s_chat.session_picker_root);
+  lv_obj_set_size(s_chat.session_picker_root, lv_pct(100), lv_pct(100));
+  lv_obj_align(s_chat.session_picker_root, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(s_chat.session_picker_root, lv_color_hex(BB_SPICKER_BG), 0);
+  lv_obj_set_style_bg_opa(s_chat.session_picker_root, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(s_chat.session_picker_root, 2, 0);
+  lv_obj_set_flex_flow(s_chat.session_picker_root, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(s_chat.session_picker_root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_move_foreground(s_chat.session_picker_root);
+
+  /* Title row. */
+  lv_obj_t* title = lv_label_create(s_chat.session_picker_root);
+  lv_obj_set_size(title, lv_pct(100), BB_SPICKER_TITLE_H);
+  lv_obj_set_style_text_color(title, lv_color_hex(BB_SPICKER_FG), 0);
+  lv_obj_set_style_pad_left(title, 2, 0);
+  char title_buf[48];
+  const char* drv = s_chat.driver_name[0] != '\0'
+                      ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+  snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
+  lv_label_set_text(title, title_buf);
+
+  /* Session rows. */
+  for (int i = 0; i < n_sessions; ++i) {
+    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_pad_right(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+
+    char row_buf[40];
+    const char* preview = s_chat.session_list[i].preview;
+    if (preview == NULL || preview[0] == '\0') preview = "(empty)";
+    if (i == s_chat.session_picker_active_idx) {
+      snprintf(row_buf, sizeof(row_buf), "%.18s <", preview);
+    } else {
+      snprintf(row_buf, sizeof(row_buf), "%.22s", preview);
+    }
+    lv_label_set_text(row, row_buf);
+    s_chat.session_picker_items[i] = row;
+  }
+
+  /* "+ New session" row. */
+  {
+    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_label_set_text(row, "+ New session");
+    s_chat.session_picker_items[n_sessions] = row;
+  }
+
+  /* "Settings" row. */
+  {
+    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_label_set_text(row, "* Settings");
+    s_chat.session_picker_items[n_sessions + 1] = row;
+  }
+
+  session_picker_apply_styles();
+  ESP_LOGI(TAG, "session_picker: built %d sessions + 2 fixed rows", n_sessions);
+}
+
+/* ── Session picker public API ── */
+
+void bb_ui_agent_chat_session_picker_show(void) {
+  if (!s_chat.active || s_chat.parent == NULL) return;
+  if (s_chat.session_picker_visible) return;
+  s_chat.session_picker_visible = 1; /* loading */
+  ESP_LOGI(TAG, "session_picker: show (fetching sessions for '%s')",
+           s_chat.driver_name[0] != '\0' ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK);
+  spawn_session_fetch_task();
+}
+
+void bb_ui_agent_chat_session_picker_hide(void) {
+  if (!s_chat.active) return;
+  if (s_chat.session_picker_root != NULL) {
+    lv_obj_del(s_chat.session_picker_root);
+    s_chat.session_picker_root = NULL;
+    memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
+  }
+  s_chat.session_picker_visible = 0;
+  s_chat.session_picker_total_rows = 0;
+  ESP_LOGI(TAG, "session_picker: hidden");
+}
+
+void bb_ui_agent_chat_session_picker_move(int delta) {
+  if (!s_chat.active || s_chat.session_picker_visible != 2) return;
+  const int total = s_chat.session_picker_total_rows;
+  if (total == 0) return;
+  int sel = ((s_chat.session_picker_sel + delta) % total + total) % total;
+  if (sel == s_chat.session_picker_sel) return;
+  s_chat.session_picker_sel = sel;
+  session_picker_apply_styles();
+}
+
+int bb_ui_agent_chat_session_picker_select(void) {
+  if (!s_chat.active || s_chat.session_picker_visible != 2) {
+    return BB_SESSION_PICKER_ACTION_NONE;
+  }
+  const int sel = s_chat.session_picker_sel;
+  const int n = s_chat.session_list_count;
+
+  if (sel < n) {
+    /* Session row — switch to it. */
+    const bb_agent_session_info_t* session = &s_chat.session_list[sel];
+    ESP_LOGI(TAG, "session_picker: switch to '%s'", session->id);
+
+    strncpy(s_chat.session_id, session->id, sizeof(s_chat.session_id) - 1);
+    s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+    bb_session_store_save(s_chat.driver_name, session->id);
+    bb_notification_ack(session->id);
+
+    /* Refresh topbar with short session id. */
+    char shortbuf[16] = {0};
+    strncpy(shortbuf, session->id, 8);
+    shortbuf[8] = '\0';
+    post_session(shortbuf);
+
+    /* Clear transcript by cycling theme. */
+    const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+    if (theme != NULL) {
+      if (theme->on_exit != NULL) theme->on_exit();
+      if (theme->on_enter != NULL) theme->on_enter(s_chat.parent);
+    }
+    post_state(BB_AGENT_STATE_IDLE);
+
+    bb_ui_agent_chat_session_picker_hide();
+    return BB_SESSION_PICKER_ACTION_SWITCH;
+  }
+
+  if (sel == n) {
+    /* "+ New session" row. */
+    ESP_LOGI(TAG, "session_picker: new session");
+    s_chat.session_id[0] = '\0';
+    post_session("--------");
+
+    const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+    if (theme != NULL) {
+      if (theme->on_exit != NULL) theme->on_exit();
+      if (theme->on_enter != NULL) theme->on_enter(s_chat.parent);
+    }
+    post_state(BB_AGENT_STATE_IDLE);
+
+    bb_ui_agent_chat_session_picker_hide();
+    return BB_SESSION_PICKER_ACTION_NEW;
+  }
+
+  if (sel == n + 1) {
+    /* "Settings" row. */
+    ESP_LOGI(TAG, "session_picker: enter settings");
+    bb_ui_agent_chat_session_picker_hide();
+    return BB_SESSION_PICKER_ACTION_SETTINGS;
+  }
+
+  return BB_SESSION_PICKER_ACTION_NONE;
+}
+
+int bb_ui_agent_chat_session_picker_is_visible(void) {
+  return (s_chat.active && s_chat.session_picker_visible > 0) ? 1 : 0;
 }
 
 /* ── Phase 4.5 — voice bridge helpers ── */

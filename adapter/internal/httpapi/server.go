@@ -74,6 +74,10 @@ type Server struct {
 	agentCtx      context.Context
 	agentCancel   context.CancelFunc
 	agentSessions *sessionRegistry
+
+	// WebSocket hub for local_home device connections + notification queue.
+	wsHub      *WSHub
+	notifQueue *NotificationQueue
 }
 
 func NewServer(cfg AppConfig, streams *audio.Manager, asrProvider ASRProvider, ttsProvider TTSProvider, sink OpenClawSink, logger *obs.Logger, metrics *obs.Metrics) *Server {
@@ -102,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
+	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", s.withAuth(s.handleAgentDeleteSession))
+	mux.HandleFunc("GET /ws", s.handleWebSocket)
 	// Playground is unauthenticated on purpose — it's a dev-only single-page
 	// UI for dogfooding agent drivers. Protect your adapter by not exposing
 	// it to the internet.

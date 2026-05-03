@@ -88,6 +88,9 @@ typedef struct {
   char session_buf[16];
   bb_agent_state_t state;
   int built;
+  int unread_count;
+  lv_obj_t* toast_lbl;
+  lv_timer_t* toast_timer;
 } bb_buddy_state_t;
 
 static bb_buddy_state_t s_st = {0};
@@ -132,17 +135,21 @@ static const buddy_glyph_t k_glyphs[] = {
 static void refresh_topbar(void) {
   if (s_st.topbar_lbl == NULL) return;
   char buf[128];
-  /* ASCII-only flag suffix for TTS toggle + WiFi connectivity. The buddy
-   * topbar spans the full screen width (the right column is the buddy
-   * panel below TOPBAR_H, not beside it), so the layout matches text-only.
-   * Long-mode DOTS guarantees graceful truncation if a driver name is
-   * unusually long. */
-  snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
-           s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)",
-           s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------",
-           state_short(s_st.state),
-           bb_ui_settings_tts_enabled() ? "T+" : "T-",
-           bb_wifi_is_connected()       ? "W+" : "W-");
+  const char* drv = s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)";
+  const char* ses = s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------";
+  if (s_st.unread_count > 0) {
+    snprintf(buf, sizeof(buf), "%s[%d] | %s | %s %s%s",
+             drv, s_st.unread_count, ses,
+             state_short(s_st.state),
+             bb_ui_settings_tts_enabled() ? "T+" : "T-",
+             bb_wifi_is_connected()       ? "W+" : "W-");
+  } else {
+    snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
+             drv, ses,
+             state_short(s_st.state),
+             bb_ui_settings_tts_enabled() ? "T+" : "T-",
+             bb_wifi_is_connected()       ? "W+" : "W-");
+  }
   lv_label_set_text(s_st.topbar_lbl, buf);
 }
 
@@ -398,6 +405,49 @@ static void theme_set_session(const char* sid_short) {
   if (s_st.built) refresh_topbar();
 }
 
+static void theme_set_unread_count(int count) {
+  s_st.unread_count = count;
+  if (s_st.built) refresh_topbar();
+}
+
+static void toast_timer_cb(lv_timer_t* timer) {
+  (void)timer;
+  if (s_st.toast_lbl != NULL) {
+    lv_obj_del(s_st.toast_lbl);
+    s_st.toast_lbl = NULL;
+  }
+  if (s_st.toast_timer != NULL) {
+    lv_timer_del(s_st.toast_timer);
+    s_st.toast_timer = NULL;
+  }
+}
+
+static void theme_show_toast(const char* preview) {
+  if (!s_st.built || s_st.root == NULL || preview == NULL || preview[0] == '\0') return;
+  /* Remove previous toast if still visible. */
+  if (s_st.toast_lbl != NULL) {
+    lv_obj_del(s_st.toast_lbl);
+    s_st.toast_lbl = NULL;
+  }
+  if (s_st.toast_timer != NULL) {
+    lv_timer_del(s_st.toast_timer);
+    s_st.toast_timer = NULL;
+  }
+  s_st.toast_lbl = lv_label_create(s_st.root);
+  lv_obj_set_size(s_st.toast_lbl, lv_pct(96), LV_SIZE_CONTENT);
+  lv_obj_align(s_st.toast_lbl, LV_ALIGN_BOTTOM_MID, 0, -2);
+  lv_obj_set_style_bg_color(s_st.toast_lbl, lv_color_hex(0x2ec4a0), 0);
+  lv_obj_set_style_bg_opa(s_st.toast_lbl, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(s_st.toast_lbl, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_pad_all(s_st.toast_lbl, 2, 0);
+  lv_obj_set_style_radius(s_st.toast_lbl, 3, 0);
+  lv_label_set_long_mode(s_st.toast_lbl, LV_LABEL_LONG_MODE_DOTS);
+  lv_label_set_text(s_st.toast_lbl, preview);
+  lv_obj_move_foreground(s_st.toast_lbl);
+  s_st.toast_timer = lv_timer_create(toast_timer_cb, 2000, NULL);
+  lv_timer_set_repeat_count(s_st.toast_timer, 1);
+}
+
 static const bb_agent_theme_t s_buddy_ascii_theme = {
     .name = "buddy-ascii",
     .on_enter = theme_on_enter,
@@ -410,6 +460,8 @@ static const bb_agent_theme_t s_buddy_ascii_theme = {
     .set_driver = theme_set_driver,
     .set_session = theme_set_session,
     .scroll_transcript = theme_scroll_transcript,
+    .set_unread_count = theme_set_unread_count,
+    .show_toast = theme_show_toast,
 };
 
 /* 显式 init（与 text-only 同样的 DCE-defeating 模式）。

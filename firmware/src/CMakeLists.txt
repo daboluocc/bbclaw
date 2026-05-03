@@ -17,6 +17,7 @@ set(_bb_srcs
     "bb_gateway_node.c"
     "bb_motor.c"
     "bb_nav_input.c"
+    "bb_notification.c"
     "bb_ota.c"
     "bb_ptt.c"
     "bb_radio_app.c"

@@ -88,6 +88,71 @@ func (r *agentProxyRegistry) drop(id string) {
 	delete(r.sessions, id)
 }
 
+// handleAgentSessionsRequest lists sessions for a driver, proxied from cloud.
+func (a *Adapter) handleAgentSessionsRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	if a.router == nil {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.reply",
+			Payload:    map[string]any{"sessions": []any{}},
+		})
+	}
+	driverName, _ := env.Payload["driver"].(string)
+	driverName = strings.TrimSpace(driverName)
+	if driverName == "" {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.reply",
+			Payload:    map[string]any{"error": "DRIVER_REQUIRED"},
+		})
+	}
+	drv, ok := a.router.Get(driverName)
+	if !ok {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.reply",
+			Payload:    map[string]any{"error": "UNKNOWN_DRIVER"},
+		})
+	}
+	lister, ok := drv.(agent.SessionLister)
+	if !ok {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.reply",
+			Payload:    map[string]any{"sessions": []any{}},
+		})
+	}
+	limit := 6
+	if l, ok := env.Payload["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+	}
+	sessions, err := lister.ListSessions(context.Background(), limit)
+	if err != nil {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.reply",
+			Payload:    map[string]any{"error": "LIST_SESSIONS_FAILED", "detail": err.Error()},
+		})
+	}
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "agent.sessions.reply",
+		Payload:    map[string]any{"sessions": sessions},
+	})
+}
+
 // handleAgentDriversRequest replies with the same shape as the cloud
 // proxy expects (a flat `drivers` payload). The cloud HTTP layer reshapes
 // that into the response.data.drivers envelope the firmware reads.
@@ -243,7 +308,13 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 	a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s text_chars=%d",
 		driverName, sid, isNew, env.DeviceID, len(text))
 
-	turnEnded := false
+	var (
+		turnEnded  bool
+		textCount  int
+		errorCount int
+		lastError  string
+		lastText   string
+	)
 loop:
 	for {
 		select {
@@ -258,24 +329,84 @@ loop:
 				a.agentSessions.drop(string(sid))
 				break loop
 			}
-			frame := agentEventToFrame(ev)
-			if frame != nil {
-				writeEvent(frame)
-			}
-			if ev.Type == agent.EvTurnEnd {
+			switch ev.Type {
+			case agent.EvText:
+				textCount++
+				lastText = ev.Text
+			case agent.EvError:
+				errorCount++
+				lastError = ev.Text
+			case agent.EvTurnEnd:
 				turnEnded = true
+				// Phase S3: push session.notification via cloud WS.
+				notifType := "turn_end"
+				if errorCount > 0 && textCount == 0 {
+					notifType = "error"
+				}
+				preview := lastText
+				if len(preview) > 48 {
+					preview = preview[:48]
+				}
+				_ = write(CloudEnvelope{
+					Type:       "event",
+					DeviceID:   env.DeviceID,
+					HomeSiteID: a.cfg.HomeSiteID,
+					Kind:       "session.notification",
+					Payload: map[string]any{
+						"sessionId": string(sid),
+						"driver":    driverName,
+						"type":      notifType,
+						"preview":   preview,
+						"timestamp": time.Now().UnixMilli(),
+					},
+				})
 				break loop
+			}
+			if ev.Type != agent.EvTurnEnd {
+				frame := agentEventToFrame(ev)
+				if frame != nil {
+					writeEvent(frame)
+				}
 			}
 		}
 	}
 
-	if sendErr := <-sendErrCh; sendErr != nil {
+	sendErr := <-sendErrCh
+	if sendErr != nil {
 		a.log.Warnf("phase=agent_proxy_send_failed driver=%s sid=%s err=%v", driverName, sid, sendErr)
 	}
 	a.agentSessions.touch(string(sid))
-	a.metrics.Inc("agent_proxy_message_ok")
-	a.log.Infof("phase=agent_proxy_done driver=%s sid=%s elapsed_s=%.3f turn_end=%v",
-		driverName, sid, time.Since(routeStart).Seconds(), turnEnded)
+
+	// Turn is healthy only when it ended cleanly AND either produced text or
+	// had no errors. A turn with only errors and zero text is a silent failure
+	// from the user's perspective — report it so the cloud emits an error
+	// frame the firmware can display.
+	turnOK := turnEnded && (errorCount == 0 || textCount > 0)
+
+	a.log.Infof("phase=agent_proxy_done driver=%s sid=%s elapsed_s=%.3f turn_end=%v ok=%v text=%d errors=%d",
+		driverName, sid, time.Since(routeStart).Seconds(), turnEnded, turnOK, textCount, errorCount)
+	if turnOK {
+		a.metrics.Inc("agent_proxy_message_ok")
+	} else {
+		a.metrics.Inc("agent_proxy_message_error")
+	}
+
+	replyPayload := map[string]any{
+		"ok":        turnOK,
+		"sessionId": string(sid),
+		"driver":    driverName,
+		"turnEnd":   turnEnded,
+	}
+	if !turnOK {
+		errMsg := "AGENT_TURN_FAILED"
+		if sendErr != nil {
+			errMsg = sendErr.Error()
+		}
+		replyPayload["error"] = errMsg
+		if lastError != "" {
+			replyPayload["detail"] = lastError
+		}
+	}
 
 	return write(CloudEnvelope{
 		Type:       "reply",
@@ -283,12 +414,7 @@ loop:
 		DeviceID:   env.DeviceID,
 		HomeSiteID: a.cfg.HomeSiteID,
 		Kind:       "agent.reply",
-		Payload: map[string]any{
-			"ok":        true,
-			"sessionId": string(sid),
-			"driver":    driverName,
-			"turnEnd":   turnEnded,
-		},
+		Payload:    replyPayload,
 	})
 }
 

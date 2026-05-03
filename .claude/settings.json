@@ -1,4 +1,25 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(source ~/esp/esp-idf/export.sh *)",
+      "Bash(make build *)",
+      "Bash(make build)",
+      "Bash(make help *)",
+      "Bash(make monitor-last *)",
+      "Bash(make monitor-errors *)",
+      "Bash(make gen *)",
+      "Bash(make clean-run-procs *)",
+      "Bash(make sim-build *)",
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(curl *)",
+      "Bash(idf.py build *)",
+      "Bash(idf.py build)",
+      "Bash(idf.py size *)",
+      "Bash(ssh *)",
+      "Bash(curl -s *)"
+    ]
+  },
   "mcpServers": {
     "gitnexus": {
       "command": "npx",

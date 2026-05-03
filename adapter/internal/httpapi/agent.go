@@ -27,6 +27,8 @@ type sessionEntry struct {
 	sid        agent.SessionID
 	driverName string
 	lastUsed   time.Time
+	state      string // "idle", "running", "completed", "error"
+	lastEvent  string // last event type for status queries
 }
 
 // sessionRegistry is a goroutine-safe map of server-visible session id
@@ -58,6 +60,15 @@ func (r *sessionRegistry) touch(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if e, ok := r.sessions[id]; ok {
+		e.lastUsed = time.Now()
+	}
+}
+
+func (r *sessionRegistry) setState(id string, state string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.sessions[id]; ok {
+		e.state = state
 		e.lastUsed = time.Now()
 	}
 }
@@ -107,11 +118,10 @@ func (s *Server) SetAgentRouter(r *agent.Router) {
 		s.router = nil
 		return
 	}
-	// NOTE: the Server struct has no Shutdown hook yet, so in practice
-	// agentCtx lives for the process lifetime. When a shutdown hook is
-	// added later, call s.agentCancel() from there to tear everything down.
 	s.agentCtx, s.agentCancel = context.WithCancel(context.Background())
 	s.agentSessions = newSessionRegistry()
+	s.wsHub = newWSHub(s.log)
+	s.notifQueue = newNotificationQueue(32)
 	go s.runSessionSweeper(s.agentCtx, sweepInterval, sessionTTL)
 }
 
@@ -400,7 +410,10 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			sid:        sid,
 			driverName: driverName,
 			lastUsed:   time.Now(),
+			state:      "running",
 		})
+	} else {
+		s.agentSessions.setState(string(sid), "running")
 	}
 
 	// Emit the session frame first so the client learns (or confirms) the
@@ -429,6 +442,13 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Inc("agent_message_start")
 	s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v text_chars=%d", driverName, sid, isNew, len(text))
 
+	var (
+		textCount  int
+		errorCount int
+		lastError  string
+		lastText   string
+	)
+
 	ctx := r.Context()
 	for {
 		select {
@@ -443,6 +463,15 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				s.agentSessions.mu.Unlock()
 				return
 			}
+			switch ev.Type {
+			case agent.EvText:
+				textCount++
+				lastText = ev.Text
+			case agent.EvError:
+				errorCount++
+				lastError = ev.Text
+				s.agentSessions.setState(string(sid), "error")
+			}
 			if !s.writeAgentEvent(sw, ev) {
 				return
 			}
@@ -451,15 +480,69 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				if sendErr := <-sendErrCh; sendErr != nil {
 					s.log.Errorf("phase=agent_send_failed driver=%s sid=%s err=%v", driverName, sid, sendErr)
 				}
-				// Turn ended cleanly: keep the session alive for the next
-				// request and refresh lastUsed.
-				s.agentSessions.touch(string(sid))
-				s.metrics.Inc("agent_message_ok")
-				s.log.Infof("phase=agent_done driver=%s sid=%s", driverName, sid)
+				s.agentSessions.setState(string(sid), "completed")
+
+				// Phase S3: push notification for this turn_end.
+				// Firmware filters out notifications for its active session.
+				notifType := "turn_end"
+				if errorCount > 0 && textCount == 0 {
+					notifType = "error"
+				}
+				s.pushNotification(SessionNotification{
+					SessionID: string(sid),
+					Driver:    driverName,
+					Type:      notifType,
+					Preview:   lastText,
+				})
+
+				if errorCount > 0 && textCount == 0 {
+					s.metrics.Inc("agent_message_error_only")
+					s.log.Warnf("phase=agent_done_error_only driver=%s sid=%s errors=%d last=%q",
+						driverName, sid, errorCount, lastError)
+				} else {
+					s.metrics.Inc("agent_message_ok")
+					s.log.Infof("phase=agent_done driver=%s sid=%s text=%d errors=%d",
+						driverName, sid, textCount, errorCount)
+				}
 				return
 			}
 		}
 	}
+}
+
+// handleAgentDeleteSession removes a session from the registry and stops it.
+//
+//	DELETE /v1/agent/sessions/{id}
+func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil || s.agentSessions == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "SESSION_ID_REQUIRED"})
+		return
+	}
+
+	s.agentSessions.mu.Lock()
+	entry, found := s.agentSessions.sessions[sessionID]
+	if found {
+		delete(s.agentSessions.sessions, sessionID)
+	}
+	s.agentSessions.mu.Unlock()
+
+	if !found {
+		writeJSON(w, http.StatusNotFound, response{OK: false, Error: "SESSION_NOT_FOUND"})
+		return
+	}
+
+	if drv, ok := s.router.Get(entry.driverName); ok {
+		if err := drv.Stop(entry.sid); err != nil {
+			s.log.Warnf("agent: delete session stop failed driver=%s sid=%s err=%v", entry.driverName, entry.sid, err)
+		}
+	}
+	s.log.Infof("agent: deleted session=%s driver=%s", sessionID, entry.driverName)
+	writeJSON(w, http.StatusOK, response{OK: true})
 }
 
 // writeAgentEvent serialises an agent.Event to the NDJSON stream.

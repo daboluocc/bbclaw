@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "bb_device_config.h"
+#include "bb_notification.h"
 #include "bb_ogg_opus.h"
 #include "bb_config.h"
 #include "bb_time.h"
@@ -791,6 +792,30 @@ static void ws_handle_text_message(const char* msg) {
 
   (void)json_extract_string(msg, "kind", kind, sizeof(kind));
   (void)json_extract_string(msg, "streamId", stream_id, sizeof(stream_id));
+
+  /* Phase S3: session.notification — no finish context needed, handle before
+   * taking the semaphore. The payload is nested: extract from the "payload"
+   * sub-object. */
+  if (strcmp(kind, "session.notification") == 0) {
+    const char* payload_start = strstr(msg, "\"payload\"");
+    if (payload_start != NULL) {
+      const char* brace = strchr(payload_start, '{');
+      if (brace != NULL) {
+        char sid[64] = {0};
+        char drv[24] = {0};
+        char ntype[16] = {0};
+        char preview[48] = {0};
+        json_extract_string(brace, "sessionId", sid, sizeof(sid));
+        json_extract_string(brace, "driver", drv, sizeof(drv));
+        json_extract_string(brace, "type", ntype, sizeof(ntype));
+        json_extract_string(brace, "preview", preview, sizeof(preview));
+        if (sid[0] != '\0') {
+          bb_notification_on_ws_event(sid, drv, ntype, preview);
+        }
+      }
+    }
+    return;
+  }
 
   xSemaphoreTake(s_ws.lock, portMAX_DELAY);
   if (strcmp(kind, "voice.verify.result") == 0 && s_ws.verify_result != NULL) {
