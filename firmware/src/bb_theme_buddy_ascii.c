@@ -18,21 +18,19 @@ static const char* TAG = "bb_theme_buddy";
  *
  * 屏幕布局（320x172）：
  *   ┌──────────────────────────────────────────┐
- *   │ topbar: <driver> | <session> | <state>   │ 18px
- *   ├────────────────────────────┬─────────────┤
- *   │                            │             │
- *   │   transcript               │   buddy     │
- *   │   (scrolling, ~200px wide) │   (~110px)  │
- *   │                            │             │
- *   ├────────────────────────────┴─────────────┤
+ *   │ topbar: <driver> | <session>  (^_^) ready│ 20px
+ *   ├──────────────────────────────────────────┤
+ *   │                                          │
+ *   │   transcript (full width, scrollable)    │
+ *   │                                          │
+ *   ├──────────────────────────────────────────┤
  *   │ input placeholder                        │ 20px
  *   └──────────────────────────────────────────┘
  *
- * Buddy 区是两个 label 垂直堆叠：
- *   - face_lbl: 上方表情（如 "(^_^)"）
- *   - mood_lbl: 下方状态短语（如 "thinking…"）
+ * Buddy face + mood live in the topbar right side (~86px).
+ * Transcript gets the full 320px width (minus corner insets).
  *
- * 由 set_state() 切换；其它 callback（消息流）和 text-only 主题完全等价。
+ * By set_state() 切换；其它 callback（消息流）和 text-only 主题完全等价。
  */
 
 /* 颜色（与 text-only / lvgl_display 同款） */
@@ -50,23 +48,27 @@ static const char* TAG = "bb_theme_buddy";
 /* 布局
  *
  * 显示是 320x172 (landscape, 来自 BBCLAW_ST7789_WIDTH/HEIGHT). 我们用绝对像素
- * 布局 buddy_panel 和 transcript —— LVGL 的 lv_pct() 是特殊编码值，不能跟整数
+ * 布局 topbar buddy 和 transcript —— LVGL 的 lv_pct() 是特殊编码值，不能跟整数
  * 做加减（lv_pct(100) - TOPBAR_H 会算出垃圾尺寸），导致 buddy 角色看不到。
  * 这里直接算好：
- *   topbar      = 18 px
+ *   topbar      = 20 px (includes buddy face+mood on the right)
  *   input       = 20 px
- *   middle area = 172 - 18 - 20 = 134 px (= MIDDLE_H)
- *   buddy panel = 110 x 134 (右栏)
- *   transcript  = 210 x 134 (左栏 = 320 - 110)
+ *   corner Y    = 4 px
+ *   middle area = 172 - 20 - 20 - 4 = 128 px (= MIDDLE_H)
+ *   transcript  = 320 x 128 (full width)
  */
-#define TOPBAR_H       18
+/* Screen corner inset — prevents content from being clipped by the physical
+ * display's rounded corners (~R12-R16 on the 1.47" ST7789 panel). */
+#define SCREEN_CORNER_INSET_X  8
+#define SCREEN_CORNER_INSET_Y  4
+
+#define TOPBAR_H       20
 #define INPUT_H        20
-#define BUDDY_W        110
-#define MIDDLE_H       (172 - TOPBAR_H - INPUT_H)
-#define TRANSCRIPT_W   (320 - BUDDY_W)
+#define BUDDY_TOPBAR_W 86   /* fixed width for buddy face+mood in topbar */
+#define MIDDLE_H       (172 - TOPBAR_H - INPUT_H - SCREEN_CORNER_INSET_Y)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
-#define MSG_HMARGIN    6
+#define MSG_HMARGIN    SCREEN_CORNER_INSET_X
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;
@@ -80,7 +82,7 @@ typedef struct {
   lv_obj_t* topbar_lbl;
   lv_obj_t* transcript;
   lv_obj_t* input_lbl;
-  lv_obj_t* buddy_panel;
+  lv_obj_t* topbar_buddy;   /* container for face + mood in topbar */
   lv_obj_t* face_lbl;
   lv_obj_t* mood_lbl;
   lv_obj_t* active_assistant;
@@ -112,7 +114,7 @@ static const char* state_short(bb_agent_state_t s) {
 
 /* 七态表情 + 副标题。两行布局，每个状态独立。
  * 注意：用 ASCII（含基本标点 + 空格 + < > / 等），LVGL 默认 Montserrat 全部支持。
- * 长度控制在 ~12 字符内，能塞进 BUDDY_W 宽度（默认字体 ~7px/字符）。 */
+ * 长度控制在 ~12 字符内，能塞进 BUDDY_TOPBAR_W 宽度（默认字体 ~7px/字符）。 */
 typedef struct {
   const char* face;
   const char* mood;
@@ -237,57 +239,48 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_bg_opa(s_st.root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
 
-  /* Top status bar */
+  /* Top status bar — left portion is text info, right portion is buddy */
   s_st.topbar_lbl = lv_label_create(s_st.root);
-  lv_obj_set_size(s_st.topbar_lbl, lv_pct(100), TOPBAR_H);
-  lv_obj_align(s_st.topbar_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_size(s_st.topbar_lbl, 320 - BUDDY_TOPBAR_W - SCREEN_CORNER_INSET_X, TOPBAR_H);
+  lv_obj_align(s_st.topbar_lbl, LV_ALIGN_TOP_LEFT, 0, SCREEN_CORNER_INSET_Y);
   lv_obj_set_style_text_font(s_st.topbar_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.topbar_lbl, lv_color_hex(UI_STATUS_FG), 0);
   lv_obj_set_style_text_align(s_st.topbar_lbl, LV_TEXT_ALIGN_LEFT, 0);
-  lv_obj_set_style_pad_left(s_st.topbar_lbl, 4, 0);
+  lv_obj_set_style_pad_left(s_st.topbar_lbl, SCREEN_CORNER_INSET_X, 0);
   lv_obj_set_style_pad_right(s_st.topbar_lbl, 4, 0);
   lv_label_set_long_mode(s_st.topbar_lbl, LV_LABEL_LONG_MODE_DOTS);
 
-  /* Buddy panel (right column). Absolute pixel size + absolute label
-   * positions (no flex) — see the layout block at the top of this file
-   * for why we don't use lv_pct arithmetic. */
-  ESP_LOGI(TAG, "buddy on_enter: building panel %dx%d at right", BUDDY_W, MIDDLE_H);
-  s_st.buddy_panel = lv_obj_create(s_st.root);
-  lv_obj_remove_style_all(s_st.buddy_panel);
-  lv_obj_set_size(s_st.buddy_panel, BUDDY_W, MIDDLE_H);
-  lv_obj_align(s_st.buddy_panel, LV_ALIGN_TOP_RIGHT, 0, TOPBAR_H);
-  lv_obj_set_style_bg_color(s_st.buddy_panel, lv_color_hex(UI_SCR_BG), 0);
-  lv_obj_set_style_bg_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
-  /* Subtle 1-px left border to visually separate from transcript. */
-  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_obj_set_style_border_width(s_st.buddy_panel, 1, 0);
-  lv_obj_set_style_border_side(s_st.buddy_panel, LV_BORDER_SIDE_LEFT, 0);
-  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_50, 0);
-  lv_obj_clear_flag(s_st.buddy_panel, LV_OBJ_FLAG_SCROLLABLE);
+  /* ── Buddy area in topbar (right side): face + mood side by side ── */
+  s_st.topbar_buddy = lv_obj_create(s_st.root);
+  lv_obj_remove_style_all(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.topbar_buddy, BUDDY_TOPBAR_W, TOPBAR_H);
+  lv_obj_set_pos(s_st.topbar_buddy, 320 - SCREEN_CORNER_INSET_X - BUDDY_TOPBAR_W,
+                 SCREEN_CORNER_INSET_Y);
+  lv_obj_clear_flag(s_st.topbar_buddy, LV_OBJ_FLAG_SCROLLABLE);
 
-  /* Face label — explicit position, big enough to read at arm's length.
-   * Centered horizontally inside the 110-px panel, vertically at the top
-   * third (so picker can't easily occlude it). */
-  s_st.face_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.face_lbl, BUDDY_W - 8, 28);
-  lv_obj_align(s_st.face_lbl, LV_ALIGN_TOP_MID, 0, 30);
+  /* Face label — left half of buddy area */
+  s_st.face_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.face_lbl, 50, TOPBAR_H);
+  lv_obj_set_pos(s_st.face_lbl, 0, 2);
   lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
   lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
 
-  /* Mood label — sits below face. */
-  s_st.mood_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.mood_lbl, BUDDY_W - 8, 24);
-  lv_obj_align(s_st.mood_lbl, LV_ALIGN_TOP_MID, 0, 64);
+  /* Mood label — right half of buddy area */
+  s_st.mood_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.mood_lbl, 36, TOPBAR_H);
+  lv_obj_set_pos(s_st.mood_lbl, 50, 2);
   lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
-  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_LEFT, 0);
+  lv_label_set_long_mode(s_st.mood_lbl, LV_LABEL_LONG_MODE_DOTS);
 
-  /* Transcript (left column). Absolute pixel size — see header comment. */
+  /* Transcript (full width). */
   s_st.transcript = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.transcript);
-  lv_obj_set_size(s_st.transcript, TRANSCRIPT_W, MIDDLE_H);
-  lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0, TOPBAR_H);
+  lv_obj_set_size(s_st.transcript, 320, MIDDLE_H);
+  lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0,
+               SCREEN_CORNER_INSET_Y + TOPBAR_H);
   lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
   lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(s_st.transcript, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
@@ -306,8 +299,8 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_align(s_st.input_lbl, LV_ALIGN_BOTTOM_LEFT, 0, 0);
   lv_obj_set_style_text_font(s_st.input_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.input_lbl, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_obj_set_style_pad_left(s_st.input_lbl, 4, 0);
-  lv_obj_set_style_pad_right(s_st.input_lbl, 4, 0);
+  lv_obj_set_style_pad_left(s_st.input_lbl, SCREEN_CORNER_INSET_X, 0);
+  lv_obj_set_style_pad_right(s_st.input_lbl, SCREEN_CORNER_INSET_X, 0);
   lv_label_set_text(s_st.input_lbl, "(input not wired yet)");
 
   s_st.active_assistant = NULL;
@@ -325,7 +318,7 @@ static void theme_on_exit(void) {
   s_st.topbar_lbl = NULL;
   s_st.transcript = NULL;
   s_st.input_lbl = NULL;
-  s_st.buddy_panel = NULL;
+  s_st.topbar_buddy = NULL;
   s_st.face_lbl = NULL;
   s_st.mood_lbl = NULL;
   s_st.active_assistant = NULL;
