@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 )
 
 // Per-call cap on the limit query parameter. Devices have small displays and
@@ -39,6 +40,33 @@ func (s *Server) handleAgentSessionMessages(w http.ResponseWriter, r *http.Reque
 	if sessionID == "" {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "SESSION_ID_REQUIRED"})
 		return
+	}
+
+	// ADR-014: resolve logical session ids to the underlying CLI session id
+	// so the driver's MessageLoader receives the id it actually knows about
+	// (the CLI conversation UUID, not the stable ls- id).
+	cliSessionID := sessionID
+	if s.sessions != nil && strings.HasPrefix(sessionID, "ls-") {
+		ls, ok := s.sessions.Get(logicalsession.ID(sessionID))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, response{OK: false, Error: "SESSION_NOT_FOUND", Detail: "logical session not found: " + sessionID})
+			return
+		}
+		if ls.CLISessionID == "" {
+			// Logical session exists but no CLI conversation has been started
+			// yet (session was minted via POST but no message sent). Return an
+			// empty page rather than an error — the device can handle this.
+			writeJSON(w, http.StatusOK, response{
+				OK: true,
+				Data: map[string]any{
+					"messages": []agent.Message{},
+					"total":    0,
+					"hasMore":  false,
+				},
+			})
+			return
+		}
+		cliSessionID = ls.CLISessionID
 	}
 
 	driverName := strings.TrimSpace(r.URL.Query().Get("driver"))
@@ -90,9 +118,9 @@ func (s *Server) handleAgentSessionMessages(w http.ResponseWriter, r *http.Reque
 		limit = n
 	}
 
-	page, err := loader.LoadMessages(r.Context(), sessionID, before, limit)
+	page, err := loader.LoadMessages(r.Context(), cliSessionID, before, limit)
 	if err != nil {
-		s.log.Errorf("agent: load messages failed driver=%s sid=%s err=%v", driverName, sessionID, err)
+		s.log.Errorf("agent: load messages failed driver=%s sid=%s (logical=%s) err=%v", driverName, cliSessionID, sessionID, err)
 		writeJSON(w, http.StatusInternalServerError, response{
 			OK:     false,
 			Error:  "LOAD_MESSAGES_FAILED",
