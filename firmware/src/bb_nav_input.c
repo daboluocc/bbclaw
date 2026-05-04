@@ -30,12 +30,18 @@ static esp_timer_handle_t s_timer;
 /* Flipper 6-button mode: each of UP/DOWN/LEFT/RIGHT/OK/BACK has its own
  * debounce state. Buttons whose GPIO macro is -1 are skipped at gpio_config
  * time and their poll branch is short-circuited.
+ *
+ * UP/DOWN additionally track press-hold timestamps so the polling loop can
+ * emit auto-repeat events while the user holds the key — unused for the
+ * other four buttons (see header in bb_config.h for rationale).
  */
 typedef struct {
   int gpio;
   int raw;
   int stable;
   int count;
+  int64_t press_started_ms; /* monotonic time of latest press edge (UP/DOWN only) */
+  int64_t last_repeat_ms;   /* monotonic time of most recent emission while held */
 } bb_nav_btn_t;
 
 static bb_nav_btn_t s_btn_up = {.gpio = BBCLAW_NAV_BTN_UP_GPIO};
@@ -152,12 +158,42 @@ static void nav_poll_cb(void* arg) {
    * LONG_PRESS — those names are aliases for UP / DOWN / OK / BACK, so the
    * same downstream switch/case handles both input families.
    */
-  if (poll_btn(&s_btn_up, eff_debounce) > 0) {
+  /* UP/DOWN: emit on press edge AND auto-repeat while held. The repeat path
+   * uses the same emit_event hook so downstream handlers don't need to know
+   * whether a given event came from a real key press or a hold-repeat. */
+  int64_t now_ms = esp_timer_get_time() / 1000;
+  int up_edge = poll_btn(&s_btn_up, eff_debounce);
+  if (up_edge > 0) {
+    s_btn_up.press_started_ms = now_ms;
+    s_btn_up.last_repeat_ms = now_ms;
     emit_event(BB_NAV_EVENT_UP);
+  } else if (up_edge < 0) {
+    s_btn_up.press_started_ms = 0;
+  } else if (s_btn_up.stable && s_btn_up.press_started_ms > 0) {
+    int64_t held_ms = now_ms - s_btn_up.press_started_ms;
+    if (held_ms >= BBCLAW_NAV_REPEAT_INITIAL_MS &&
+        now_ms - s_btn_up.last_repeat_ms >= BBCLAW_NAV_REPEAT_INTERVAL_MS) {
+      s_btn_up.last_repeat_ms = now_ms;
+      emit_event(BB_NAV_EVENT_UP);
+    }
   }
-  if (poll_btn(&s_btn_down, eff_debounce) > 0) {
+
+  int down_edge = poll_btn(&s_btn_down, eff_debounce);
+  if (down_edge > 0) {
+    s_btn_down.press_started_ms = now_ms;
+    s_btn_down.last_repeat_ms = now_ms;
     emit_event(BB_NAV_EVENT_DOWN);
+  } else if (down_edge < 0) {
+    s_btn_down.press_started_ms = 0;
+  } else if (s_btn_down.stable && s_btn_down.press_started_ms > 0) {
+    int64_t held_ms = now_ms - s_btn_down.press_started_ms;
+    if (held_ms >= BBCLAW_NAV_REPEAT_INITIAL_MS &&
+        now_ms - s_btn_down.last_repeat_ms >= BBCLAW_NAV_REPEAT_INTERVAL_MS) {
+      s_btn_down.last_repeat_ms = now_ms;
+      emit_event(BB_NAV_EVENT_DOWN);
+    }
   }
+
   if (poll_btn(&s_btn_left, eff_debounce) > 0) {
     emit_event(BB_NAV_EVENT_LEFT);
   }
@@ -273,6 +309,8 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
     b->raw = read_btn_pressed(b->gpio);
     b->stable = b->raw;
     b->count = 0;
+    b->press_started_ms = 0;
+    b->last_repeat_ms = 0;
   }
 #else
   gpio_config_t io_conf = {

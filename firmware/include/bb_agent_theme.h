@@ -34,7 +34,7 @@ typedef enum {
 } bb_agent_state_t;
 
 typedef struct bb_agent_theme {
-  const char* name;                                       /* "text-only", "buddy-ascii", … */
+  const char* name;                                       /* "buddy-anim" (the only shipping theme) */
   void (*on_enter)(lv_obj_t* parent);                     /* 建初始 UI（一次） */
   void (*on_exit)(void);                                  /* 清理（一次） */
   void (*set_state)(bb_agent_state_t state);              /* 七态切换 */
@@ -48,6 +48,21 @@ typedef struct bb_agent_theme {
   /* Phase S1 — multi-session notification UI (optional; NULL-check before calling). */
   void (*set_unread_count)(int count);                    /* topbar badge: driver [N] */
   void (*show_toast)(const char* preview);                /* bottom overlay, 2s auto-dismiss */
+  /* Phase S3 — history replay. Optional; NULL-check before calling.
+   *   append_history_message: 在 transcript 末尾追加一条已完成消息（不影响 active_assistant，
+   *                            不会被后续流式 chunk 错误地拼到一起）。用于初次进入 session 时
+   *                            按时间序填入历史。
+   *   prepend_history_message: 把消息插到 transcript 顶部（lv_obj_move_to_index(0)），用于
+   *                            "上翻到顶 → 拉更早一批"的懒加载。
+   *   is_transcript_at_top:    返回 1 表示用户已经滚到 transcript 顶部（用作懒加载触发条件）。
+   */
+  void (*append_history_message)(const char* role, const char* content);
+  void (*prepend_history_message)(const char* role, const char* content);
+  int  (*is_transcript_at_top)(void);
+  /* Force scroll-to-bottom after a batch of history appends. Required because
+   * lv_obj_scroll_by_bounded relies on a settled layout, but a tight append
+   * loop hasn't reflowed yet — scroll_to_view triggers layout internally. */
+  void (*scroll_transcript_to_bottom)(void);
 } bb_agent_theme_t;
 
 /**
@@ -57,29 +72,20 @@ typedef struct bb_agent_theme {
 void bb_agent_theme_register(const bb_agent_theme_t* theme);
 
 /**
- * 显式注册内置 "text-only" 主题。在 app 启动早期调一次（典型：bb_radio_app_start
- * 入口），保证 bb_agent_theme_get_active() 第一次被调时 registry 不为空。
+ * 显式注册唯一内置主题 "buddy-anim"（九态 ASCII + LVGL 动效）。
+ *
+ * 在 app 启动早期调一次（典型：bb_radio_app_start 入口），保证
+ * bb_agent_theme_get_active() 第一次被调时 registry 不为空。
  *
  * 之前用 GCC __attribute__((constructor)) 自注册，但 ESP-IDF 静态库链接 +
  * --gc-sections 会把没有外部引用的构造函数 DCE 掉，真机上 registry 空了。
  * 改成显式 init 后由调用点 force-link，绕开 DCE。幂等（重名注册带警告）。
  */
-void bb_theme_text_only_init(void);
-
-/**
- * Phase 4.6 — 显式注册 "buddy-ascii" 主题（七态 ASCII 角色）。
- * 与 text-only_init 同样的 DCE 规避模式：bb_radio_app_start 调一次。
- */
-void bb_theme_buddy_ascii_init(void);
-
-/**
- * Phase 4.6.x — 显式注册 "buddy-anim" 主题（九态 ASCII + LVGL 动效）。
- */
 void bb_theme_buddy_anim_init(void);
 
 /**
- * 当前激活主题；首次调用时从 NVS（namespace=bbclaw, key=agent/theme）加载，缺省 fallback 到 "text-only"。
- * 永不返回 NULL（只要至少注册过一个主题；text-only 通过 constructor 自动注册）。
+ * 当前激活主题；首次调用时从 NVS（namespace=bbclaw, key=agent/theme）加载，
+ * 缺省 fallback 到 "buddy-anim"。永不返回 NULL（只要 init 已被调过）。
  */
 const bb_agent_theme_t* bb_agent_theme_get_active(void);
 

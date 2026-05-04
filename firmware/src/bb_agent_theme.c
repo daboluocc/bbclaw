@@ -89,7 +89,7 @@ void bb_agent_theme_register(const bb_agent_theme_t* theme) {
 }
 
 /*
- * 从 NVS 读 agent/theme；找不到 / namespace 不存在 / 主题名未注册 → fallback "text-only"。
+ * 从 NVS 读 agent/theme；找不到 / namespace 不存在 / 主题名未注册 → fallback "buddy-anim"。
  * 必须在持锁状态下调用（写 s_reg.active）。
  */
 static void load_active_from_nvs_locked(void) {

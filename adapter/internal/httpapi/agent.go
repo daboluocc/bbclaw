@@ -399,13 +399,31 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sid == "" {
-		newSid, err := drv.Start(s.agentCtx, agent.StartOpts{})
+		// Two cases reach here:
+		//   1. No sessionId in the request → start a brand-new session.
+		//   2. sessionId was provided, but it's not in our in-memory registry
+		//      (adapter restarted, sweeper evicted it, or the device picked a
+		//      session from disk via the picker). In that case we MUST resume
+		//      it via StartOpts.ResumeID so the agent has the prior context —
+		//      otherwise the firmware sends sid=719a6a7e and gets back
+		//      sid=cc-<new> isNew=1 with no memory of the conversation.
+		startOpts := agent.StartOpts{}
+		isResumeAttempt := false
+		if requested := strings.TrimSpace(req.SessionId); requested != "" {
+			startOpts.ResumeID = requested
+			isResumeAttempt = true
+		}
+		newSid, err := drv.Start(s.agentCtx, startOpts)
 		if err != nil {
 			_ = sw.write(map[string]any{"type": "error", "error": "AGENT_START_FAILED", "detail": err.Error()})
 			return
 		}
 		sid = newSid
-		isNew = true
+		// When resuming, the device already knows this session (it picked
+		// it). Reporting isNew=true would lie about that and trigger the
+		// firmware's "fresh session" UX. Set isNew=false on resume — the
+		// claude-code CLI's --resume continues the same JSONL.
+		isNew = !isResumeAttempt
 		s.agentSessions.put(string(sid), &sessionEntry{
 			sid:        sid,
 			driverName: driverName,

@@ -186,8 +186,7 @@ void bb_ui_agent_chat_session_picker_move(int delta);
  * Confirm the currently highlighted session picker row.
  * Returns action code:
  *   0 = switched to selected session
- *   1 = new session created
- *   2 = Settings entry selected (caller should enter settings overlay)
+ *   1 = Settings entry selected (caller should enter settings overlay)
  *  -1 = no action (picker not visible or invalid state)
  * Must be called inside the LVGL lock.
  */

@@ -94,8 +94,21 @@ func (d *Driver) Capabilities() agent.Capabilities {
 
 // Start allocates a new session. No subprocess is spawned here; the CLI is
 // invoked on demand in Send so each turn can carry the latest --resume id.
+//
+// When opts.ResumeID is set, we use it AS the device-visible session id —
+// not just as a `--resume` argument. This keeps the device's sessionId in
+// lockstep with the on-disk JSONL filename: a session picked from the picker
+// (sid=719a6a7e...) continues writing to that same JSONL after resume,
+// instead of being silently re-numbered to `cc-<new-uuid>`. Without this,
+// every resume looked like "isNew=1" to the firmware and the agent had no
+// memory of prior turns.
 func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.SessionID, error) {
-	sid := agent.SessionID("cc-" + uuid.NewString())
+	var sid agent.SessionID
+	if strings.TrimSpace(opts.ResumeID) != "" {
+		sid = agent.SessionID(strings.TrimSpace(opts.ResumeID))
+	} else {
+		sid = agent.SessionID("cc-" + uuid.NewString())
+	}
 	s := &session{
 		id:        sid,
 		events:    make(chan agent.Event, eventBufSize),
@@ -177,14 +190,28 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, s.resumeID, cmd.Process.Pid)
 
-	// Drain stderr into the log (don't fail on stderr noise).
-	go drainStderr(stderr, d.log, sid)
+	// Capture stderr while logging it: if claude-code refuses to resume a
+	// locked session, we want to surface SESSION_BUSY to the device rather
+	// than the bare "claude-code exit: 1" we'd otherwise emit.
+	stderrCap := &stderrCapture{}
+	stderrDone := make(chan struct{})
+	go func() {
+		drainStderr(stderr, d.log, sid, stderrCap)
+		close(stderrDone)
+	}()
 
 	// Parse stdout stream-json, emitting events.
 	parseStreamJSON(stdout, s, d.log)
 
-	if err := cmd.Wait(); err != nil {
-		s.emit(agent.Event{Type: agent.EvError, Text: fmt.Sprintf("claude-code exit: %v", err)})
+	waitErr := cmd.Wait()
+	<-stderrDone
+	if waitErr != nil {
+		_, busy := stderrCap.snapshot()
+		if busy {
+			s.emit(agent.Event{Type: agent.EvError, Text: "SESSION_BUSY: another process is using this session — close it or pick a different one"})
+		} else {
+			s.emit(agent.Event{Type: agent.EvError, Text: fmt.Sprintf("claude-code exit: %v", waitErr)})
+		}
 	}
 	s.emit(agent.Event{Type: agent.EvTurnEnd})
 	return nil
@@ -357,10 +384,59 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
-func drainStderr(r io.Reader, log *obs.Logger, sid agent.SessionID) {
+// stderrCapture holds the last few stderr lines plus a "session busy" flag
+// flipped when claude-code rejects a --resume because the session is locked
+// by another live process. We can't probe the lock proactively (claude-code
+// owns its own filesystem locks), so we observe the stderr surface instead.
+type stderrCapture struct {
+	mu          sync.Mutex
+	lines       []string
+	sessionBusy bool
+}
+
+const stderrCaptureMax = 16
+
+func (c *stderrCapture) add(line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.lines) >= stderrCaptureMax {
+		c.lines = c.lines[1:]
+	}
+	c.lines = append(c.lines, line)
+	low := strings.ToLower(line)
+	// Match a small set of phrases observed across claude-code versions when
+	// resuming a session whose JSONL is currently held open by another
+	// process. Better to false-positive than to silently fall back to "started
+	// a new session" — the firmware will display the message verbatim so the
+	// user can decide what to do (close the other claude / wait / pick a
+	// different session).
+	if strings.Contains(low, "session is currently in use") ||
+		strings.Contains(low, "session is locked") ||
+		strings.Contains(low, "session in use") ||
+		strings.Contains(low, "session lock") ||
+		strings.Contains(low, "could not acquire lock") ||
+		strings.Contains(low, "another process is using") ||
+		strings.Contains(low, "already running") {
+		c.sessionBusy = true
+	}
+}
+
+func (c *stderrCapture) snapshot() ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.lines))
+	copy(out, c.lines)
+	return out, c.sessionBusy
+}
+
+func drainStderr(r io.Reader, log *obs.Logger, sid agent.SessionID, cap *stderrCapture) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
-		log.Warnf("claude-code stderr sid=%s: %s", sid, sc.Text())
+		line := sc.Text()
+		log.Warnf("claude-code stderr sid=%s: %s", sid, line)
+		if cap != nil {
+			cap.add(line)
+		}
 	}
 }
 

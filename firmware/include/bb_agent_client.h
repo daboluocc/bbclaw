@@ -72,6 +72,55 @@ esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* 
 esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_t* out_list, int cap, int* out_count);
 
 /**
+ * Phase S3 — 一条历史消息（adapter 持久化转储）。
+ *
+ * - role: "user" / "assistant"，固定长度便于栈上拷贝
+ * - content: 堆字符串，所有权属于 bb_agent_message_t；调用 bb_agent_messages_free
+ *            统一释放
+ * - seq:  adapter 内部按时间序的 0-based 索引；下一页 `before` 用最小 seq
+ */
+typedef struct {
+  char role[16];
+  char* content;
+  int seq;
+} bb_agent_message_t;
+
+/**
+ * 加载指定 session 的历史消息分页。
+ *
+ * 行为：返回 chronological 升序（旧→新）的一段切片。
+ *  - before <= 0 / 默认：返回最末 limit 条
+ *  - before  > 0：返回 [max(0, before-limit), before) 这段
+ *
+ * 内存：成功时 *out_list 是 calloc 出来的 bb_agent_message_t 数组，每个元素的
+ * content 也单独 malloc。失败 (返回值 != ESP_OK) 时 *out_list 保证为 NULL，
+ * 调用方无需 free。成功后必须调 bb_agent_messages_free 释放（含 NULL 安全）。
+ *
+ * @param session_id   Session ID（必填，非空）
+ * @param driver_name  Driver 名（必填，非空）
+ * @param before       游标；<=0 表示拉最末页
+ * @param limit        每页上限；adapter 端硬上限 200，传 0 用 adapter 默认
+ * @param out_list     [out] 新分配的数组指针；调用方负责 free
+ * @param out_count    [out] 本页实际返回条数
+ * @param out_total    [out] adapter 端 session 总条数（可为 NULL）
+ * @param out_has_more [out] 是否还有更早一批（可为 NULL）
+ * @return ESP_OK / 错误码
+ */
+esp_err_t bb_agent_load_messages(const char* session_id,
+                                 const char* driver_name,
+                                 int before,
+                                 int limit,
+                                 bb_agent_message_t** out_list,
+                                 int* out_count,
+                                 int* out_total,
+                                 int* out_has_more);
+
+/**
+ * 释放 bb_agent_load_messages 返回的数组（NULL 安全）。
+ */
+void bb_agent_messages_free(bb_agent_message_t* list, int count);
+
+/**
  * 发一条用户消息并流式读取 NDJSON 事件，阻塞直到 turn_end / error / HTTP 关闭。
  *
  * @param text         用户输入；不可为空。

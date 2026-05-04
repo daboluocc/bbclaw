@@ -459,6 +459,165 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
   return ESP_OK;
 }
 
+/* ── public: load messages (history pagination) ── */
+
+void bb_agent_messages_free(bb_agent_message_t* list, int count) {
+  if (list == NULL) return;
+  for (int i = 0; i < count; i++) {
+    free(list[i].content);
+    list[i].content = NULL;
+  }
+  free(list);
+}
+
+esp_err_t bb_agent_load_messages(const char* session_id,
+                                 const char* driver_name,
+                                 int before,
+                                 int limit,
+                                 bb_agent_message_t** out_list,
+                                 int* out_count,
+                                 int* out_total,
+                                 int* out_has_more) {
+  if (out_list != NULL) *out_list = NULL;
+  if (out_count != NULL) *out_count = 0;
+  if (out_total != NULL) *out_total = 0;
+  if (out_has_more != NULL) *out_has_more = 0;
+
+  if (session_id == NULL || session_id[0] == '\0' ||
+      driver_name == NULL || driver_name[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  /* URL: /v1/agent/sessions/{id}/messages?driver=X&before=Y&limit=Z */
+  char path[224] = {0};
+  if (limit > 0) {
+    snprintf(path, sizeof(path),
+             "/v1/agent/sessions/%s/messages?driver=%s&before=%d&limit=%d",
+             session_id, driver_name, before, limit);
+  } else {
+    snprintf(path, sizeof(path),
+             "/v1/agent/sessions/%s/messages?driver=%s&before=%d",
+             session_id, driver_name, before);
+  }
+  char url[384] = {0};
+  agent_build_url(url, sizeof(url), path);
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_GET, http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+
+  if (err != ESP_OK) {
+    free(accum.buf);
+    ESP_LOGE(TAG, "load_messages transport err=%s", esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300 || accum.buf == NULL) {
+    ESP_LOGE(TAG, "load_messages http status=%d body=%.120s", status, accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+
+  cJSON* root = cJSON_Parse(accum.buf);
+  free(accum.buf);
+  accum.buf = NULL;
+  if (root == NULL) {
+    ESP_LOGE(TAG, "load_messages parse failed");
+    return ESP_FAIL;
+  }
+
+  /* Adapter degrades unsupported drivers with HTTP 200 + ok=false. Treat as soft error. */
+  const cJSON* ok_node = cJSON_GetObjectItemCaseSensitive(root, "ok");
+  if (cJSON_IsBool(ok_node) && !cJSON_IsTrue(ok_node)) {
+    const cJSON* err_code = cJSON_GetObjectItemCaseSensitive(root, "error");
+    ESP_LOGW(TAG, "load_messages refused: %s",
+             cJSON_IsString(err_code) ? err_code->valuestring : "(unknown)");
+    cJSON_Delete(root);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  const cJSON* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+  const cJSON* msgs = cJSON_GetObjectItemCaseSensitive(data, "messages");
+  if (!cJSON_IsArray(msgs)) {
+    ESP_LOGE(TAG, "load_messages missing data.messages[]");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  if (out_total != NULL) {
+    const cJSON* tot = cJSON_GetObjectItemCaseSensitive(data, "total");
+    if (cJSON_IsNumber(tot)) {
+      *out_total = tot->valueint;
+    }
+  }
+  if (out_has_more != NULL) {
+    const cJSON* hm = cJSON_GetObjectItemCaseSensitive(data, "hasMore");
+    if (cJSON_IsBool(hm)) {
+      *out_has_more = cJSON_IsTrue(hm) ? 1 : 0;
+    }
+  }
+
+  int n = cJSON_GetArraySize(msgs);
+  if (n <= 0) {
+    ESP_LOGI(TAG, "load_messages empty page sid=%s", session_id);
+    cJSON_Delete(root);
+    return ESP_OK;
+  }
+
+  bb_agent_message_t* arr = (bb_agent_message_t*)calloc((size_t)n, sizeof(*arr));
+  if (arr == NULL) {
+    cJSON_Delete(root);
+    return ESP_ERR_NO_MEM;
+  }
+
+  int written = 0;
+  for (int i = 0; i < n; i++) {
+    const cJSON* item = cJSON_GetArrayItem(msgs, i);
+    if (item == NULL) continue;
+    const cJSON* role = cJSON_GetObjectItemCaseSensitive(item, "role");
+    const cJSON* content = cJSON_GetObjectItemCaseSensitive(item, "content");
+    const cJSON* seq = cJSON_GetObjectItemCaseSensitive(item, "seq");
+    if (!cJSON_IsString(role) || !cJSON_IsString(content)) {
+      continue;
+    }
+    bb_agent_message_t* slot = &arr[written];
+    strncpy(slot->role, role->valuestring, sizeof(slot->role) - 1);
+    slot->role[sizeof(slot->role) - 1] = '\0';
+    slot->content = strdup(content->valuestring);
+    if (slot->content == NULL) {
+      /* Out of memory mid-page: free what we have and bail. */
+      bb_agent_messages_free(arr, written);
+      cJSON_Delete(root);
+      return ESP_ERR_NO_MEM;
+    }
+    slot->seq = cJSON_IsNumber(seq) ? seq->valueint : i;
+    written++;
+  }
+
+  cJSON_Delete(root);
+
+  if (written == 0) {
+    free(arr);
+    return ESP_OK;
+  }
+
+  *out_list = arr;
+  if (out_count != NULL) *out_count = written;
+  ESP_LOGI(TAG, "load_messages ok sid=%s before=%d limit=%d returned=%d total=%d hasMore=%d",
+           session_id, before, limit, written,
+           out_total != NULL ? *out_total : -1,
+           out_has_more != NULL ? *out_has_more : -1);
+  return ESP_OK;
+}
+
 /* ── public: send message ── */
 
 esp_err_t bb_agent_send_message(const char* text, const char* session_id, const char* driver_name,

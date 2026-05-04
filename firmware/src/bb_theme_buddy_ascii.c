@@ -410,6 +410,42 @@ static void theme_set_unread_count(int count) {
   if (s_st.built) refresh_topbar();
 }
 
+/* Phase S3 — history replay. Same structure as text-only theme. */
+static void theme_append_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  s_st.active_assistant = NULL;
+}
+
+static void theme_prepend_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  lv_obj_move_to_index(lbl, 0);
+}
+
+static int theme_is_transcript_at_top(void) {
+  if (!s_st.built || s_st.transcript == NULL) return 0;
+  return lv_obj_get_scroll_top(s_st.transcript) <= 4 ? 1 : 0;
+}
+
+static void theme_scroll_transcript_to_bottom(void) {
+  scroll_to_bottom();
+}
+
 static void toast_timer_cb(lv_timer_t* timer) {
   (void)timer;
   if (s_st.toast_lbl != NULL) {
@@ -462,6 +498,10 @@ static const bb_agent_theme_t s_buddy_ascii_theme = {
     .scroll_transcript = theme_scroll_transcript,
     .set_unread_count = theme_set_unread_count,
     .show_toast = theme_show_toast,
+    .append_history_message = theme_append_history_message,
+    .prepend_history_message = theme_prepend_history_message,
+    .is_transcript_at_top = theme_is_transcript_at_top,
+    .scroll_transcript_to_bottom = theme_scroll_transcript_to_bottom,
 };
 
 /* 显式 init（与 text-only 同样的 DCE-defeating 模式）。

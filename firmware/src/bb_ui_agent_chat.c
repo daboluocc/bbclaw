@@ -56,10 +56,19 @@ static const char* TAG = "bb_agent_ui";
 #define BB_SESSION_PICKER_VISIBLE  6
 #define BB_SESSION_PICKER_ROW_H    20
 
+/* Phase S3 — history replay tunables.
+ *  - PAGE_SIZE: how many messages we ask for in one round trip. 50 fits a
+ *    typical session in two pages and keeps adapter response under ~50 KB.
+ *  - MAX_LOADED: hard cap on labels in the LVGL flex column. Beyond this we
+ *    stop chasing earlier history (the user is told via a one-shot toast in
+ *    the topbar — for v1, just stop silently).
+ */
+#define BB_HISTORY_PAGE_SIZE   50
+#define BB_HISTORY_MAX_LOADED  300
+
 /* Action codes returned by session_picker_select(). */
 #define BB_SESSION_PICKER_ACTION_SWITCH    0
-#define BB_SESSION_PICKER_ACTION_NEW       1
-#define BB_SESSION_PICKER_ACTION_SETTINGS  2
+#define BB_SESSION_PICKER_ACTION_SETTINGS  1
 #define BB_SESSION_PICKER_ACTION_NONE     (-1)
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
@@ -122,10 +131,30 @@ typedef struct {
   int session_picker_active_idx;       /* index of current session in list (-1 if not found) */
   int session_picker_visible;          /* 0=hidden, 1=loading, 2=visible */
   lv_obj_t* session_picker_root;
-  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 2]; /* sessions + New + Settings */
-  int session_picker_total_rows;       /* session_list_count + 2 (New + Settings) */
+  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 1]; /* sessions + Settings */
+  int session_picker_total_rows;       /* session_list_count + 1 (Settings) */
   volatile int session_fetch_pending;
   volatile uint32_t session_fetch_generation;
+
+  /* Phase S3 — history replay state. Updated on the LVGL task only.
+   *  history_total:        last-known total messages on adapter side
+   *  history_min_seq:      smallest seq currently rendered in transcript;
+   *                        -1 = nothing loaded yet. Used as `before` cursor
+   *                        for the next "load earlier" fetch.
+   *  history_loaded_count: number of history labels currently in the flex
+   *                        column (excludes live user/assistant turn labels).
+   *                        Capped at BB_HISTORY_MAX_LOADED.
+   *  history_has_more:     server told us earlier messages exist beyond the
+   *                        oldest loaded one.
+   *  history_fetch_pending / generation: stale-fetch guard, identical to the
+   *                        session_fetch_* pair above.
+   */
+  int history_total;
+  int history_min_seq;
+  int history_loaded_count;
+  int history_has_more;
+  volatile int history_fetch_pending;
+  volatile uint32_t history_fetch_generation;
 
   /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator.
    * Phase 4.5.2 — sentence-level streaming + cancel-and-replace.
@@ -186,6 +215,10 @@ static void tts_cancel_in_flight(void);
 /* Forward decls for Phase 4.2.5 / Phase 5 async driver fetch (used by cycle_driver). */
 static void spawn_driver_fetch_task(void);
 static void apply_driver_cache_idx(void);
+
+/* Forward decls for Phase S3 history replay (defined alongside session-fetch). */
+static void spawn_history_fetch_task(int before, int is_initial);
+static void history_state_reset(void);
 
 /* ── async payload 类型（agent 线程 → LVGL 线程） ── */
 
@@ -966,22 +999,33 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   ESP_LOGI(TAG, "show: theme=%s", theme->name != NULL ? theme->name : "(unnamed)");
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
+  /* Initialize s_chat.driver_name with the fallback so downstream callers
+   * (session_picker_select / spawn_history_fetch_task / session_store_save)
+   * always see a non-empty driver. The first SESSION frame from adapter
+   * will overwrite this with the real driver name. Without this, picking a
+   * session from the picker before any agent turn happens triggers the
+   * "save: unknown driver ''" warning in session_store. */
+  if (s_chat.driver_name[0] == '\0') {
+    strncpy(s_chat.driver_name, BB_CHAT_DRIVER_FALLBACK, sizeof(s_chat.driver_name) - 1);
+    s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
+  }
   /* Show the effective driver in the topbar immediately on chat entry.
    * The SESSION frame that lands later will overwrite via post_driver. */
   if (theme->set_driver != NULL) {
-    const char* effective_driver = NULL;
-    if (s_chat.driver_name[0] != '\0') {
-      effective_driver = s_chat.driver_name;
-    } else {
-      effective_driver = BB_CHAT_DRIVER_FALLBACK;
-    }
-    theme->set_driver(effective_driver);
+    theme->set_driver(s_chat.driver_name);
   }
   if (s_chat.session_id[0] != '\0' && theme->set_session != NULL) {
     char shortbuf[16] = {0};
     strncpy(shortbuf, s_chat.session_id, 8);
     shortbuf[8] = '\0';
     theme->set_session(shortbuf);
+  }
+  /* Phase S3 — if we resumed a session from NVS, fetch its history so the
+   * transcript isn't an unsettling blank. Skipped when session_id is empty
+   * (fresh boot with no prior session) since there's nothing to load. */
+  if (s_chat.session_id[0] != '\0') {
+    history_state_reset();
+    spawn_history_fetch_task(-1, /*is_initial=*/1);
   }
 }
 
@@ -997,6 +1041,8 @@ void bb_ui_agent_chat_hide(void) {
    * on_driver_fetch_done. The task itself self-deletes; we just refuse its
    * result. */
   s_chat.driver_fetch_generation++;
+  /* Phase S3 — same trick for any in-flight history fetch. */
+  s_chat.history_fetch_generation++;
   /* Phase 4.5.1/4.5.2 — if a TTS streaming task is still running, mark it
    * cancelled and break out of any blocking playback. The task's loop sees
    * the cancel flag (or the active=0 we already set), exits cleanly, and
@@ -1396,6 +1442,202 @@ static void spawn_session_fetch_task(void) {
   }
 }
 
+/* ── Phase S3 — history replay fetch ───────────────────────────────────────
+ *
+ * Lifecycle:
+ *   1. session_picker_select() rebuilds the empty transcript and calls
+ *      spawn_history_fetch_task(-1, is_initial=1).
+ *   2. The worker task calls bb_agent_load_messages() (HTTP GET, blocks
+ *      until response or timeout).
+ *   3. Worker hands the result struct (which OWNS the bb_agent_message_t
+ *      heap array) to the LVGL task via lv_async_call(on_history_fetch_done).
+ *   4. on_history_fetch_done renders messages through the active theme and
+ *      frees everything it received.
+ *
+ * Stale guard: history_fetch_generation is bumped on every spawn. If the
+ * user picks a different session before the response lands, we drop the
+ * stale result on arrival. Same pattern as session_fetch_*.
+ */
+
+#define BB_HISTORY_FETCH_TASK_STACK 4096
+#define BB_HISTORY_FETCH_TASK_PRIO  4
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int is_initial;          /* 1 = first page after entering session, 0 = paginate-earlier */
+  int total;
+  int has_more;
+  int count;
+  bb_agent_message_t* msgs;  /* heap array; ownership transfers to dispatcher */
+  /* Captured at spawn time so the worker doesn't read shared mutable state. */
+  char session_id[64];
+  char driver_name[24];
+  int  before;
+} history_fetch_result_t;
+
+typedef struct {
+  uint32_t gen;
+  int is_initial;
+  int before;
+  char session_id[64];
+  char driver_name[24];
+} history_fetch_args_t;
+
+static void on_history_fetch_done(void* user_data);
+
+static void history_fetch_task(void* arg) {
+  history_fetch_args_t* args = (history_fetch_args_t*)arg;
+  history_fetch_result_t* res = (history_fetch_result_t*)calloc(1, sizeof(*res));
+  if (res == NULL) {
+    free(args);
+    s_chat.history_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  res->gen = args->gen;
+  res->is_initial = args->is_initial;
+  res->before = args->before;
+  strncpy(res->session_id, args->session_id, sizeof(res->session_id) - 1);
+  strncpy(res->driver_name, args->driver_name, sizeof(res->driver_name) - 1);
+
+  /* Wait for WiFi the same way session_fetch_task does. */
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+
+  res->err = bb_agent_load_messages(args->session_id, args->driver_name,
+                                    args->before, BB_HISTORY_PAGE_SIZE,
+                                    &res->msgs, &res->count, &res->total, &res->has_more);
+  free(args);
+  lv_async_call(on_history_fetch_done, res);
+  vTaskDelete(NULL);
+}
+
+static void spawn_history_fetch_task(int before, int is_initial) {
+  if (s_chat.history_fetch_pending) return;
+  if (s_chat.session_id[0] == '\0') return;
+  if (s_chat.history_loaded_count >= BB_HISTORY_MAX_LOADED && !is_initial) {
+    ESP_LOGD(TAG, "history fetch: in-DOM cap %d reached, skip", BB_HISTORY_MAX_LOADED);
+    return;
+  }
+
+  history_fetch_args_t* args = (history_fetch_args_t*)calloc(1, sizeof(*args));
+  if (args == NULL) return;
+  args->is_initial = is_initial;
+  args->before = before;
+  args->gen = ++s_chat.history_fetch_generation;
+  strncpy(args->session_id, s_chat.session_id, sizeof(args->session_id) - 1);
+  const char* drv = s_chat.driver_name[0] != '\0' ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+  strncpy(args->driver_name, drv, sizeof(args->driver_name) - 1);
+
+  s_chat.history_fetch_pending = 1;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(history_fetch_task, "hist_fetch",
+                              BB_HISTORY_FETCH_TASK_STACK,
+                              args, BB_HISTORY_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_history_fetch_task: xTaskCreate failed");
+    s_chat.history_fetch_pending = 0;
+    free(args);
+  }
+}
+
+/* Runs in LVGL task. Renders the page through the active theme then frees
+ * the result + its message strings. */
+static void on_history_fetch_done(void* user_data) {
+  history_fetch_result_t* res = (history_fetch_result_t*)user_data;
+  if (res == NULL) return;
+  s_chat.history_fetch_pending = 0;
+
+  /* Stale: user switched sessions before we got back. */
+  if (!s_chat.active || res->gen != s_chat.history_fetch_generation ||
+      strcmp(res->session_id, s_chat.session_id) != 0) {
+    bb_agent_messages_free(res->msgs, res->count);
+    free(res);
+    return;
+  }
+
+  if (res->err != ESP_OK) {
+    if (res->err == ESP_ERR_NOT_SUPPORTED) {
+      ESP_LOGI(TAG, "history fetch: driver does not support replay (sid=%s)", res->session_id);
+    } else {
+      ESP_LOGW(TAG, "history fetch failed err=%s", esp_err_to_name(res->err));
+    }
+    /* Hard fail: leave transcript blank, future scrolls won't retry. */
+    s_chat.history_has_more = 0;
+    bb_agent_messages_free(res->msgs, res->count);
+    free(res);
+    return;
+  }
+
+  s_chat.history_total = res->total;
+  s_chat.history_has_more = res->has_more;
+
+  if (res->count <= 0) {
+    free(res);
+    return;
+  }
+
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme == NULL) {
+    bb_agent_messages_free(res->msgs, res->count);
+    free(res);
+    return;
+  }
+
+  if (res->is_initial) {
+    /* Chronological order — append from oldest to newest. */
+    if (theme->append_history_message != NULL) {
+      for (int i = 0; i < res->count; i++) {
+        theme->append_history_message(res->msgs[i].role, res->msgs[i].content);
+      }
+    }
+    /* min_seq is the oldest seq we just rendered. */
+    s_chat.history_min_seq = res->msgs[0].seq;
+    s_chat.history_loaded_count = res->count;
+    /* After initial load, scroll to the most-recent turn so the user sees
+     * the conversation's latest state, not the oldest in the loaded window.
+     * scroll_transcript_to_bottom uses lv_obj_scroll_to_view internally
+     * which forces a layout pass — scroll_by_bounded silently no-ops if
+     * the freshly-appended labels haven't reflowed yet (real bug seen on
+     * device 2026-05-04). */
+    if (theme->scroll_transcript_to_bottom != NULL) {
+      theme->scroll_transcript_to_bottom();
+    }
+  } else {
+    /* Pagination: prepend in REVERSE so oldest in batch ends up at the very
+     * top after all the move_to_index(0) calls. */
+    if (theme->prepend_history_message != NULL) {
+      for (int i = res->count - 1; i >= 0; i--) {
+        theme->prepend_history_message(res->msgs[i].role, res->msgs[i].content);
+      }
+    }
+    s_chat.history_min_seq = res->msgs[0].seq;
+    s_chat.history_loaded_count += res->count;
+    if (s_chat.history_loaded_count > BB_HISTORY_MAX_LOADED) {
+      s_chat.history_has_more = 0;  /* stop further pagination */
+    }
+  }
+  ESP_LOGI(TAG, "history loaded sid=%s initial=%d count=%d total=%d min_seq=%d has_more=%d",
+           res->session_id, res->is_initial, res->count, res->total,
+           s_chat.history_min_seq, s_chat.history_has_more);
+
+  bb_agent_messages_free(res->msgs, res->count);
+  free(res);
+}
+
+/* Reset all history bookkeeping. Called when entering a new session so a
+ * stale "min_seq" from the previous session can't be used as a cursor. */
+static void history_state_reset(void) {
+  s_chat.history_total = 0;
+  s_chat.history_min_seq = -1;
+  s_chat.history_loaded_count = 0;
+  s_chat.history_has_more = 0;
+  /* bumping generation invalidates any in-flight fetch we don't want anymore */
+  s_chat.history_fetch_generation++;
+}
+
 /* ── Session picker UI ── */
 
 #define BB_SPICKER_BG       0x12211b
@@ -1434,6 +1676,25 @@ static void session_picker_apply_styles(void) {
   }
 }
 
+static void format_relative_time(int64_t last_used_ms, char* buf, int buf_len) {
+  if (last_used_ms <= 0) {
+    buf[0] = '\0';
+    return;
+  }
+  int64_t now_ms = bb_now_ms();
+  int64_t diff_s = (now_ms - last_used_ms) / 1000;
+  if (diff_s < 0) diff_s = 0;
+  if (diff_s < 60) {
+    snprintf(buf, (size_t)buf_len, "<1m");
+  } else if (diff_s < 3600) {
+    snprintf(buf, (size_t)buf_len, "%dm", (int)(diff_s / 60));
+  } else if (diff_s < 86400) {
+    snprintf(buf, (size_t)buf_len, "%dh", (int)(diff_s / 3600));
+  } else {
+    snprintf(buf, (size_t)buf_len, "%dd", (int)(diff_s / 86400));
+  }
+}
+
 static void session_picker_build_ui(void) {
   if (s_chat.parent == NULL) return;
 
@@ -1452,7 +1713,7 @@ static void session_picker_build_ui(void) {
   }
 
   const int n_sessions = s_chat.session_list_count;
-  const int total_rows = n_sessions + 2; /* + New session + Settings */
+  const int total_rows = n_sessions + 1; /* + Settings */
   s_chat.session_picker_total_rows = total_rows;
   s_chat.session_picker_sel = (s_chat.session_picker_active_idx >= 0)
                                 ? s_chat.session_picker_active_idx : 0;
@@ -1481,7 +1742,7 @@ static void session_picker_build_ui(void) {
   snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
   lv_label_set_text(title, title_buf);
 
-  /* Session rows. */
+  /* Session rows: "preview [Nm] [Xt] [<]" */
   for (int i = 0; i < n_sessions; ++i) {
     lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
     lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
@@ -1491,27 +1752,32 @@ static void session_picker_build_ui(void) {
     lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
 
-    char row_buf[40];
-    const char* preview = s_chat.session_list[i].preview;
+    const bb_agent_session_info_t* si = &s_chat.session_list[i];
+    const char* preview = si->preview;
     if (preview == NULL || preview[0] == '\0') preview = "(empty)";
-    if (i == s_chat.session_picker_active_idx) {
-      snprintf(row_buf, sizeof(row_buf), "%.18s <", preview);
-    } else {
-      snprintf(row_buf, sizeof(row_buf), "%.22s", preview);
+
+    char time_buf[8] = {0};
+    format_relative_time(si->last_used_ms, time_buf, sizeof(time_buf));
+
+    char suffix[24] = {0};
+    int off = 0;
+    if (si->message_count > 0) {
+      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %dm", si->message_count);
     }
+    if (time_buf[0] != '\0') {
+      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", time_buf);
+    }
+    if (i == s_chat.session_picker_active_idx) {
+      snprintf(suffix + off, sizeof(suffix) - (size_t)off, " <");
+    }
+
+    int preview_max = 22 - (int)strlen(suffix);
+    if (preview_max < 6) preview_max = 6;
+
+    char row_buf[48];
+    snprintf(row_buf, sizeof(row_buf), "%.*s%s", preview_max, preview, suffix);
     lv_label_set_text(row, row_buf);
     s_chat.session_picker_items[i] = row;
-  }
-
-  /* "+ New session" row. */
-  {
-    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_text_font(row, font, 0);
-    lv_label_set_text(row, "+ New session");
-    s_chat.session_picker_items[n_sessions] = row;
   }
 
   /* "Settings" row. */
@@ -1522,11 +1788,11 @@ static void session_picker_build_ui(void) {
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_text(row, "* Settings");
-    s_chat.session_picker_items[n_sessions + 1] = row;
+    s_chat.session_picker_items[n_sessions] = row;
   }
 
   session_picker_apply_styles();
-  ESP_LOGI(TAG, "session_picker: built %d sessions + 2 fixed rows", n_sessions);
+  ESP_LOGI(TAG, "session_picker: built %d sessions + 1 fixed row", n_sessions);
 }
 
 /* ── Session picker public API ── */
@@ -1593,28 +1859,18 @@ int bb_ui_agent_chat_session_picker_select(void) {
     }
     post_state(BB_AGENT_STATE_IDLE);
 
+    /* Phase S3 — fetch history for the just-selected session. The fetch is
+     * async (worker task); the empty transcript is what the user sees in the
+     * meantime. We don't gate session_picker_hide() on the response so picker
+     * UX stays snappy. */
+    history_state_reset();
+    spawn_history_fetch_task(-1, /*is_initial=*/1);
+
     bb_ui_agent_chat_session_picker_hide();
     return BB_SESSION_PICKER_ACTION_SWITCH;
   }
 
   if (sel == n) {
-    /* "+ New session" row. */
-    ESP_LOGI(TAG, "session_picker: new session");
-    s_chat.session_id[0] = '\0';
-    post_session("--------");
-
-    const bb_agent_theme_t* theme = bb_agent_theme_get_active();
-    if (theme != NULL) {
-      if (theme->on_exit != NULL) theme->on_exit();
-      if (theme->on_enter != NULL) theme->on_enter(s_chat.parent);
-    }
-    post_state(BB_AGENT_STATE_IDLE);
-
-    bb_ui_agent_chat_session_picker_hide();
-    return BB_SESSION_PICKER_ACTION_NEW;
-  }
-
-  if (sel == n + 1) {
     /* "Settings" row. */
     ESP_LOGI(TAG, "session_picker: enter settings");
     bb_ui_agent_chat_session_picker_hide();
@@ -1665,6 +1921,20 @@ void bb_ui_agent_chat_scroll(int lines) {
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->scroll_transcript != NULL) {
     theme->scroll_transcript(lines);
+  }
+  /* Phase S3 — auto-fetch earlier history when the user scrolls to the very
+   * top. We require:
+   *   - an upward scroll gesture (lines < 0)
+   *   - server reported more history exists
+   *   - haven't hit the in-DOM cap
+   *   - no fetch already in flight
+   *   - theme reports we're at the top edge
+   */
+  if (lines < 0 && s_chat.history_has_more && !s_chat.history_fetch_pending &&
+      s_chat.history_loaded_count < BB_HISTORY_MAX_LOADED && s_chat.history_min_seq > 0 &&
+      theme != NULL && theme->is_transcript_at_top != NULL && theme->is_transcript_at_top()) {
+    ESP_LOGI(TAG, "scroll-to-top: load earlier history before=%d", s_chat.history_min_seq);
+    spawn_history_fetch_task(s_chat.history_min_seq, /*is_initial=*/0);
   }
 }
 

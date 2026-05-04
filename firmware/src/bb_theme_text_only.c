@@ -275,6 +275,61 @@ static void theme_set_session(const char* sid_short) {
   if (s_st.built) refresh_topbar();
 }
 
+/* Phase S3 — history replay helpers.
+ *
+ * Append: render a finalized history message at the bottom of the transcript.
+ * Crucially, this does NOT set s_st.active_assistant — otherwise an in-flight
+ * streaming chunk would get appended onto the last historical assistant
+ * message. Initial-load callers iterate chronologically and follow up with
+ * scroll_to_bottom().
+ *
+ * Prepend: insert at index 0 of the flex column. Used for "scroll to top →
+ * fetch earlier batch" lazy load. Caller iterates the new batch in REVERSE
+ * order (newest in batch first) so the oldest in the batch ends up at the
+ * very top after all the move_to_index(0) calls.
+ */
+static void theme_append_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  s_st.active_assistant = NULL;
+}
+
+static void theme_prepend_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  lv_obj_move_to_index(lbl, 0);
+}
+
+/* True iff the transcript is scrolled all the way to the top. Used by the
+ * UI layer to detect "user wants earlier history" without having to expose
+ * the LVGL handle through the theme API. */
+static int theme_is_transcript_at_top(void) {
+  if (!s_st.built || s_st.transcript == NULL) return 0;
+  return lv_obj_get_scroll_top(s_st.transcript) <= 4 ? 1 : 0;
+}
+
+/* Public scroll-to-bottom hook. Wraps the existing private scroll_to_bottom
+ * helper so the chat UI can reliably reset the viewport after a batch of
+ * history appends — scroll_by_bounded only works once layout is settled,
+ * scroll_to_view triggers layout internally, so it works mid-frame. */
+static void theme_scroll_transcript_to_bottom(void) {
+  scroll_to_bottom();
+}
+
 /* ── 主题对象 + constructor 注册 ── */
 
 static const bb_agent_theme_t s_text_only_theme = {
@@ -289,6 +344,10 @@ static const bb_agent_theme_t s_text_only_theme = {
     .set_driver = theme_set_driver,
     .set_session = theme_set_session,
     .scroll_transcript = theme_scroll_transcript,
+    .append_history_message = theme_append_history_message,
+    .prepend_history_message = theme_prepend_history_message,
+    .is_transcript_at_top = theme_is_transcript_at_top,
+    .scroll_transcript_to_bottom = theme_scroll_transcript_to_bottom,
 };
 
 /*

@@ -153,6 +153,79 @@ func (a *Adapter) handleAgentSessionsRequest(write func(CloudEnvelope) error, en
 	})
 }
 
+// handleAgentMessagesRequest is the home-adapter side of the cloud reverse
+// proxy for `GET /v1/agent/sessions/{id}/messages`. The cloud sends:
+//
+//	{type:"request", kind:"agent.messages",
+//	 payload:{sessionId, driver, before, limit}}
+//
+// We dispatch to the local agent.MessageLoader (claudecode today) and reply
+// with a single envelope:
+//
+//	{type:"reply", kind:"agent.messages.reply",
+//	 payload:{messages, total, hasMore} | {error, detail}}
+//
+// Drivers without MessageLoader degrade to MESSAGES_NOT_SUPPORTED, mirroring
+// the LAN-direct HTTP path's behaviour.
+func (a *Adapter) handleAgentMessagesRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.messages.reply",
+			Payload:    payload,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	sid, _ := env.Payload["sessionId"].(string)
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return reply(map[string]any{"error": "SESSION_ID_REQUIRED"})
+	}
+	driverName, _ := env.Payload["driver"].(string)
+	driverName = strings.TrimSpace(driverName)
+	if driverName == "" {
+		return reply(map[string]any{"error": "DRIVER_REQUIRED"})
+	}
+	drv, ok := a.router.Get(driverName)
+	if !ok {
+		return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": "driver not registered: " + driverName})
+	}
+	loader, ok := drv.(agent.MessageLoader)
+	if !ok {
+		return reply(map[string]any{"error": "MESSAGES_NOT_SUPPORTED",
+			"detail": "driver " + driverName + " does not support message replay"})
+	}
+
+	before := -1
+	if v, ok := env.Payload["before"].(float64); ok {
+		before = int(v)
+	}
+	limit := 50
+	if v, ok := env.Payload["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+		if limit > 200 {
+			limit = 200
+		}
+	}
+
+	page, err := loader.LoadMessages(context.Background(), sid, before, limit)
+	if err != nil {
+		return reply(map[string]any{"error": "LOAD_MESSAGES_FAILED", "detail": err.Error()})
+	}
+	if page.Messages == nil {
+		page.Messages = []agent.Message{}
+	}
+	return reply(map[string]any{
+		"messages": page.Messages,
+		"total":    page.Total,
+		"hasMore":  page.HasMore,
+	})
+}
+
 // handleAgentDriversRequest replies with the same shape as the cloud
 // proxy expects (a flat `drivers` payload). The cloud HTTP layer reshapes
 // that into the response.data.drivers envelope the firmware reads.
@@ -275,12 +348,24 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 	}
 
 	if sid == "" {
-		newSid, err := drv.Start(ctx, agent.StartOpts{})
+		// Resume path: if the device sent a sessionId we don't have in our
+		// process registry (adapter restart / sweep / picker-loaded session),
+		// pass it as ResumeID so claude-code continues the same JSONL. Without
+		// this the cloud_saas device sees isNew=1 + sid=cc-<new-uuid> every
+		// time and the agent loses all context. See httpapi/agent.go for the
+		// twin LAN-direct fix.
+		startOpts := agent.StartOpts{}
+		isResumeAttempt := false
+		if requestedSession != "" {
+			startOpts.ResumeID = requestedSession
+			isResumeAttempt = true
+		}
+		newSid, err := drv.Start(ctx, startOpts)
 		if err != nil {
 			return fmt.Errorf("AGENT_START_FAILED:%w", err)
 		}
 		sid = newSid
-		isNew = true
+		isNew = !isResumeAttempt
 		a.agentSessions.put(string(sid), &agentProxySession{
 			sid:        sid,
 			driverName: driverName,

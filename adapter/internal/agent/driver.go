@@ -106,3 +106,29 @@ type SessionInfo struct {
 type SessionLister interface {
 	ListSessions(ctx context.Context, limit int) ([]SessionInfo, error)
 }
+
+// Message is one persisted turn from a session's conversation history.
+// Returned by MessageLoader and surfaced to the device for transcript replay.
+type Message struct {
+	Role    string `json:"role"`    // "user" | "assistant"
+	Content string `json:"content"` // plain text; multimodal content is flattened to text
+	Seq     int    `json:"seq"`     // 0-based index into the underlying transcript (used as a pagination cursor)
+}
+
+// MessagesPage is the result of a paginated history load.
+type MessagesPage struct {
+	Messages []Message `json:"messages"` // chronological order (oldest first)
+	Total    int       `json:"total"`    // total messages in the session (after filtering)
+	HasMore  bool      `json:"hasMore"`  // true when earlier messages exist beyond the returned slice
+}
+
+// MessageLoader is an optional capability for drivers that can replay a
+// session's history. Drivers that don't implement this cause the HTTP
+// endpoint to return MESSAGES_NOT_SUPPORTED.
+//
+// before is the upper-exclusive seq cursor. before <= 0 means "the latest
+// page" — return the last `limit` messages of the session. Otherwise return
+// messages with seq < before, capped at `limit`.
+type MessageLoader interface {
+	LoadMessages(ctx context.Context, sid string, before, limit int) (MessagesPage, error)
+}

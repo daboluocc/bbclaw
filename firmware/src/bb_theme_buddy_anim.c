@@ -2,7 +2,6 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
-#include "bb_theme_buddy_anim.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_power.h"
@@ -14,11 +13,16 @@
 static const char* TAG = "bb_theme_anim";
 
 /*
- * buddy-anim 主题（Phase 4.6.x）
+ * buddy-anim — the single shipping agent-chat theme.
  *
- * 与 buddy-ascii 共享布局 + 文案，但每个状态附加一个 LVGL 动效，让角色"动起来"。
- * 无美术资产版本：底图仍是 ASCII，靠 lv_anim 驱动 obj 属性（透明度 / 位置 / 缩放
- * / 颜色）产生情绪表达。
+ * 布局：上方状态栏 / 中央 ASCII 角色 + 滚动 transcript / 底部输入提示。每个九态
+ * （sleep/idle/busy/attention/celebrate/dizzy/heart/listening/speaking）附一个
+ * LVGL 动效，靠 lv_anim 驱动 obj 属性（透明度/位置/缩放/颜色）让角色"动起来"，
+ * 不依赖美术资产。
+ *
+ * 历史回放（Phase S3）：transcript 是 LVGL flex column；append_history_message
+ * 在末尾追加完成的 user/assistant label，prepend_history_message 把更老的批次
+ * 插到顶部（lv_obj_move_to_index(0)）实现"上翻自动加载"。
  */
 
 #define UI_SCR_BG      0x0a0e0c
@@ -646,6 +650,44 @@ static void theme_set_session(const char* sid_short) {
   if (s_st.built) refresh_topbar();
 }
 
+/* Phase S3 — history replay. Same structure as text-only theme: append at
+ * end without claiming active_assistant (avoids streaming chunk pollution),
+ * prepend at index 0 for "scroll-to-top → load earlier" pagination. */
+static void theme_append_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  s_st.active_assistant = NULL;
+}
+
+static void theme_prepend_history_message(const char* role, const char* content) {
+  if (!s_st.built || role == NULL || content == NULL) return;
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl;
+  if (is_user) {
+    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
+  } else {
+    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  }
+  lv_label_set_text(lbl, content);
+  lv_obj_move_to_index(lbl, 0);
+}
+
+static int theme_is_transcript_at_top(void) {
+  if (!s_st.built || s_st.transcript == NULL) return 0;
+  return lv_obj_get_scroll_top(s_st.transcript) <= 4 ? 1 : 0;
+}
+
+static void theme_scroll_transcript_to_bottom(void) {
+  scroll_to_bottom();
+}
+
 static const bb_agent_theme_t s_buddy_anim_theme = {
     .name = "buddy-anim",
     .on_enter = theme_on_enter,
@@ -658,6 +700,10 @@ static const bb_agent_theme_t s_buddy_anim_theme = {
     .set_driver = theme_set_driver,
     .set_session = theme_set_session,
     .scroll_transcript = theme_scroll_transcript,
+    .append_history_message = theme_append_history_message,
+    .prepend_history_message = theme_prepend_history_message,
+    .is_transcript_at_top = theme_is_transcript_at_top,
+    .scroll_transcript_to_bottom = theme_scroll_transcript_to_bottom,
 };
 
 void bb_theme_buddy_anim_init(void) {

@@ -277,6 +277,10 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		return a.handleAgentDriversRequest(write, env)
 	case "agent.sessions":
 		return a.handleAgentSessionsRequest(write, env)
+	case "agent.messages":
+		// Phase S3 cloud proxy: cloud reverse-proxies firmware
+		// /v1/agent/sessions/{id}/messages history requests through this kind.
+		return a.handleAgentMessagesRequest(write, env)
 	case "agent.message":
 		// Phase 4.8 cloud agent proxy: cloud reverse-proxies firmware
 		// /v1/agent/message NDJSON streams through this kind.

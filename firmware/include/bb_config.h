@@ -268,6 +268,21 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_NAV_LONG_PRESS_MS 700
 #endif
 
+/* Auto-repeat for UP/DOWN scroll keys. Other directional keys (LEFT/RIGHT/OK/BACK)
+ * do not repeat — re-firing those triggers driver cycling / re-opens picker /
+ * cancels turns, all of which want a fresh tap each time.
+ *   INITIAL: how long the user must hold UP/DOWN before auto-repeat kicks in.
+ *   INTERVAL: gap between repeats once auto-repeat is active.
+ * 400 / 80 ms gives ~12.5 scroll lines per second, similar to a typical
+ * laptop arrow-key repeat rate. */
+#ifndef BBCLAW_NAV_REPEAT_INITIAL_MS
+#define BBCLAW_NAV_REPEAT_INITIAL_MS 400
+#endif
+
+#ifndef BBCLAW_NAV_REPEAT_INTERVAL_MS
+#define BBCLAW_NAV_REPEAT_INTERVAL_MS 80
+#endif
+
 /**
  * 把 ENC_A / ENC_B 当作两个独立按键来处理（按下 A → ROTATE_CCW，按下 B → ROTATE_CW）。
  * 默认 0 = 走正交编码器解码（bbclaw 生产板的旋钮编码器）。

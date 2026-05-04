@@ -198,6 +198,136 @@ func TestAgentProxyMessageRejectsEmptyText(t *testing.T) {
 	}
 }
 
+// fakeMessageLoaderDriver augments fakeAgentDriver with agent.MessageLoader
+// so we can exercise the agent.messages proxy path without dragging in the
+// real claudecode driver (which needs ~/.claude/projects/... on disk).
+type fakeMessageLoaderDriver struct {
+	*fakeAgentDriver
+	all []agent.Message
+}
+
+func (f *fakeMessageLoaderDriver) LoadMessages(_ context.Context, sid string, before, limit int) (agent.MessagesPage, error) {
+	if sid == "" {
+		return agent.MessagesPage{}, nil
+	}
+	total := len(f.all)
+	end := total
+	if before > 0 && before < total {
+		end = before
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	return agent.MessagesPage{
+		Messages: f.all[start:end],
+		Total:    total,
+		HasMore:  start > 0,
+	}, nil
+}
+
+func TestAgentProxyMessagesReturnsPage(t *testing.T) {
+	drv := &fakeMessageLoaderDriver{
+		fakeAgentDriver: newFakeAgentDriver("claude-code"),
+		all: []agent.Message{
+			{Role: "user", Content: "a", Seq: 0},
+			{Role: "assistant", Content: "b", Seq: 1},
+			{Role: "user", Content: "c", Seq: 2},
+			{Role: "assistant", Content: "d", Seq: 3},
+		},
+	}
+	a := newProxyTestAdapter(t, drv)
+
+	var got []CloudEnvelope
+	write := func(env CloudEnvelope) error {
+		got = append(got, env)
+		return nil
+	}
+	err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-msgs", Kind: "agent.messages",
+		Payload: map[string]any{
+			"sessionId": "sid-1",
+			"driver":    "claude-code",
+			"before":    float64(-1),
+			"limit":     float64(2),
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.messages: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != "agent.messages.reply" {
+		t.Fatalf("expected single agent.messages.reply, got %+v", got)
+	}
+	msgs, ok := got[0].Payload["messages"].([]agent.Message)
+	if !ok || len(msgs) != 2 || msgs[0].Seq != 2 {
+		t.Fatalf("page wrong: %+v", got[0].Payload)
+	}
+	if got[0].Payload["total"].(int) != 4 {
+		t.Errorf("total wrong: %v", got[0].Payload["total"])
+	}
+	if got[0].Payload["hasMore"].(bool) != true {
+		t.Errorf("hasMore wrong")
+	}
+}
+
+func TestAgentProxyMessagesUnsupportedDriver(t *testing.T) {
+	a := newProxyTestAdapter(t, newFakeAgentDriver("ollama"))
+
+	var got []CloudEnvelope
+	write := func(env CloudEnvelope) error {
+		got = append(got, env)
+		return nil
+	}
+	err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-msgs2", Kind: "agent.messages",
+		Payload: map[string]any{
+			"sessionId": "sid-1",
+			"driver":    "ollama",
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.messages: %v", err)
+	}
+	if len(got) != 1 || got[0].Payload["error"] != "MESSAGES_NOT_SUPPORTED" {
+		t.Fatalf("expected MESSAGES_NOT_SUPPORTED, got %+v", got)
+	}
+}
+
+func TestAgentProxyMessagesMissingFields(t *testing.T) {
+	a := newProxyTestAdapter(t, &fakeMessageLoaderDriver{
+		fakeAgentDriver: newFakeAgentDriver("claude-code"),
+	})
+
+	cases := []struct {
+		name    string
+		payload map[string]any
+		wantErr string
+	}{
+		{"no session", map[string]any{"driver": "claude-code"}, "SESSION_ID_REQUIRED"},
+		{"no driver", map[string]any{"sessionId": "sid-1"}, "DRIVER_REQUIRED"},
+		{"unknown driver", map[string]any{"sessionId": "sid-1", "driver": "nope"}, "UNKNOWN_DRIVER"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []CloudEnvelope
+			write := func(env CloudEnvelope) error {
+				got = append(got, env)
+				return nil
+			}
+			err := a.handleRequest(context.Background(), write, CloudEnvelope{
+				Type: "request", MessageID: "m", Kind: "agent.messages",
+				Payload: tc.payload,
+			})
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if len(got) != 1 || got[0].Payload["error"] != tc.wantErr {
+				t.Fatalf("want error=%s, got %+v", tc.wantErr, got)
+			}
+		})
+	}
+}
+
 func TestAgentProxyMessageRejectsUnknownDriver(t *testing.T) {
 	a := newProxyTestAdapter(t, newFakeAgentDriver("claude-code"))
 	err := a.handleRequest(context.Background(), func(CloudEnvelope) error { return nil }, CloudEnvelope{
