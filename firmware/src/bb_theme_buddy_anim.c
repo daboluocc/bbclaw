@@ -15,10 +15,10 @@ static const char* TAG = "bb_theme_anim";
 /*
  * buddy-anim — the single shipping agent-chat theme.
  *
- * 布局：上方状态栏 / 中央 ASCII 角色 + 滚动 transcript / 底部输入提示。每个九态
+ * 布局：topbar（状态 + buddy face/mood 右侧）/ 全宽滚动 transcript。每个九态
  * （sleep/idle/busy/attention/celebrate/dizzy/heart/listening/speaking）附一个
  * LVGL 动效，靠 lv_anim 驱动 obj 属性（透明度/位置/缩放/颜色）让角色"动起来"，
- * 不依赖美术资产。
+ * 不依赖美术资产。Buddy 动画限制在 topbar 右侧 ~86×20 区域内。
  *
  * 历史回放（Phase S3）：transcript 是 LVGL flex column；append_history_message
  * 在末尾追加完成的 user/assistant label，prepend_history_message 把更老的批次
@@ -38,20 +38,25 @@ static const char* TAG = "bb_theme_anim";
 #define UI_ATTN_FG     0xffd166
 #define UI_CELEB_FG    0xff8fd0
 
-#define TOPBAR_H       18
-#define BUDDY_W        80
-#define MIDDLE_H       (172 - TOPBAR_H)
-#define TRANSCRIPT_W   (320 - BUDDY_W)
+/* Screen corner inset — prevents content from being clipped by the physical
+ * display's rounded corners (~R12-R16 on the 1.47" ST7789 panel). */
+#define SCREEN_CORNER_INSET_X  8
+#define SCREEN_CORNER_INSET_Y  4
+
+#define TOPBAR_H       20
+#define BUDDY_TOPBAR_W 86   /* fixed width for buddy face+mood in topbar */
+#define MIDDLE_H       (172 - TOPBAR_H - SCREEN_CORNER_INSET_Y)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
-#define MSG_HMARGIN    6
+#define MSG_HMARGIN    SCREEN_CORNER_INSET_X
 
-/* Face label home position (relative to buddy_panel). Animations transform
- * around this baseline so we always have a stable resting pose. */
+/* Face label home position (relative to topbar buddy container). Animations
+ * transform around this baseline so we always have a stable resting pose.
+ * The container is ~86x20, so keep amplitudes small. */
 #define FACE_X0        0
-#define FACE_Y0        20
+#define FACE_Y0        2
 #define MOOD_X0        0
-#define MOOD_Y0        50
+#define MOOD_Y0        2
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;
@@ -71,11 +76,12 @@ typedef struct {
   lv_obj_t* topbar_bat_fill;
   lv_obj_t* topbar_bat_frame;
   lv_obj_t* topbar_bat_lbl;
-  /* main */
-  lv_obj_t* transcript;
-  lv_obj_t* buddy_panel;
+  /* buddy (lives inside topbar, right side) */
+  lv_obj_t* topbar_buddy;   /* container for face + mood in topbar */
   lv_obj_t* face_lbl;
   lv_obj_t* mood_lbl;
+  /* main */
+  lv_obj_t* transcript;
   lv_obj_t* active_assistant;
   lv_timer_t* dots_timer;
   int dots_phase;
@@ -340,7 +346,10 @@ static void refresh_buddy_text(void) {
 }
 
 /* Apply per-state animation. Caller must have already stopped previous anims
- * via stop_all_anims() and refreshed text via refresh_buddy_text(). */
+ * via stop_all_anims() and refreshed text via refresh_buddy_text().
+ *
+ * Amplitudes are tuned for the compact topbar buddy area (~86×20px).
+ * Vertical bob is ±1px (was ±2-8 in the old 80×154 panel). */
 static void apply_state_anim(bb_agent_state_t state) {
   if (s_st.face_lbl == NULL || s_st.mood_lbl == NULL) return;
   switch (state) {
@@ -350,8 +359,8 @@ static void apply_state_anim(bb_agent_state_t state) {
       start_pulse_opa(s_st.mood_lbl, LV_OPA_30, LV_OPA_COVER, 1800);
       break;
     case BB_AGENT_STATE_IDLE:
-      /* Gentle ±2px float. */
-      start_bob_y(s_st.face_lbl, FACE_Y0, 2, 1600);
+      /* Gentle ±1px float (reduced from ±2 for topbar). */
+      start_bob_y(s_st.face_lbl, FACE_Y0, 1, 1600);
       break;
     case BB_AGENT_STATE_BUSY:
       /* Cycle dots in mood text every 400ms; face stays still. */
@@ -360,20 +369,20 @@ static void apply_state_anim(bb_agent_state_t state) {
       s_st.dots_timer = lv_timer_create(busy_dots_timer_cb, 400, NULL);
       break;
     case BB_AGENT_STATE_SPEAKING:
-      /* Left/right sway. */
-      start_sway_x(s_st.face_lbl, FACE_X0, 4, 600);
+      /* Left/right sway (reduced from ±4 to ±2 for topbar). */
+      start_sway_x(s_st.face_lbl, FACE_X0, 2, 600);
       break;
     case BB_AGENT_STATE_HEART:
-      /* Heartbeat: scale 90%↔110%. */
-      start_pulse_zoom(s_st.face_lbl, 230, 282, 700);
+      /* Heartbeat: scale 95%↔105% (tighter range for topbar). */
+      start_pulse_zoom(s_st.face_lbl, 243, 269, 700);
       break;
     case BB_AGENT_STATE_LISTENING:
-      /* Fade-in once + small bobbing. */
-      start_bob_y(s_st.face_lbl, FACE_Y0, 3, 900);
+      /* Small bob + mood pulse. */
+      start_bob_y(s_st.face_lbl, FACE_Y0, 1, 900);
       start_pulse_opa(s_st.mood_lbl, LV_OPA_60, LV_OPA_COVER, 900);
       break;
     case BB_AGENT_STATE_DIZZY:
-      /* Horizontal shake. */
+      /* Horizontal shake (reduced amplitude). */
       start_shake_x(s_st.face_lbl, FACE_X0, 120);
       break;
     case BB_AGENT_STATE_ATTENTION:
@@ -382,8 +391,8 @@ static void apply_state_anim(bb_agent_state_t state) {
       lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_ATTN_FG), 0);
       break;
     case BB_AGENT_STATE_CELEBRATE:
-      /* Bounce + festive color. */
-      start_bob_y(s_st.face_lbl, FACE_Y0, 8, 350);
+      /* Bounce + festive color (reduced from ±8 to ±2 for topbar). */
+      start_bob_y(s_st.face_lbl, FACE_Y0, 2, 350);
       lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_CELEB_FG), 0);
       lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_CELEB_FG), 0);
       break;
@@ -445,38 +454,40 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_bg_opa(s_st.root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
 
-  /* ── Topbar: [icon] driver  session  [battery] ── */
+  /* ── Topbar: [icon] driver  session  [battery]  (^_^) ready ── */
   s_st.topbar = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.topbar);
   lv_obj_set_size(s_st.topbar, 320, TOPBAR_H);
-  lv_obj_align(s_st.topbar, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_align(s_st.topbar, LV_ALIGN_TOP_LEFT, 0, SCREEN_CORNER_INSET_Y);
   lv_obj_clear_flag(s_st.topbar, LV_OBJ_FLAG_SCROLLABLE);
 
   s_st.topbar_icon = lv_image_create(s_st.topbar);
   lv_image_set_src(s_st.topbar_icon, &bb_img_ready);
   lv_obj_set_size(s_st.topbar_icon, 16, 16);
-  lv_obj_set_pos(s_st.topbar_icon, 4, (TOPBAR_H - 16) / 2);
+  lv_obj_set_pos(s_st.topbar_icon, SCREEN_CORNER_INSET_X, (TOPBAR_H - 16) / 2);
 
   s_st.topbar_driver_lbl = lv_label_create(s_st.topbar);
-  lv_obj_set_width(s_st.topbar_driver_lbl, 100);
+  lv_obj_set_width(s_st.topbar_driver_lbl, 80);
   lv_obj_set_style_text_font(s_st.topbar_driver_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.topbar_driver_lbl, lv_color_hex(UI_STATUS_FG), 0);
   lv_label_set_long_mode(s_st.topbar_driver_lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_pos(s_st.topbar_driver_lbl, 24, 2);
+  lv_obj_set_pos(s_st.topbar_driver_lbl, SCREEN_CORNER_INSET_X + 20, 2);
 
   s_st.topbar_session_lbl = lv_label_create(s_st.topbar);
-  lv_obj_set_width(s_st.topbar_session_lbl, 70);
+  lv_obj_set_width(s_st.topbar_session_lbl, 60);
   lv_obj_set_style_text_font(s_st.topbar_session_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.topbar_session_lbl, lv_color_hex(UI_TEXT_DIM), 0);
   lv_label_set_long_mode(s_st.topbar_session_lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_pos(s_st.topbar_session_lbl, 128, 2);
+  lv_obj_set_pos(s_st.topbar_session_lbl, SCREEN_CORNER_INSET_X + 104, 2);
 
-  /* Battery widget (right side) */
+  /* Battery widget — positioned left of the buddy area */
   {
     s_st.topbar_bat_container = lv_obj_create(s_st.topbar);
     lv_obj_remove_style_all(s_st.topbar_bat_container);
     lv_obj_set_size(s_st.topbar_bat_container, 44, 14);
-    lv_obj_set_pos(s_st.topbar_bat_container, 272, (TOPBAR_H - 14) / 2);
+    lv_obj_set_pos(s_st.topbar_bat_container,
+                   320 - SCREEN_CORNER_INSET_X - BUDDY_TOPBAR_W - 48,
+                   (TOPBAR_H - 14) / 2);
     lv_obj_clear_flag(s_st.topbar_bat_container, LV_OBJ_FLAG_SCROLLABLE);
 
     s_st.topbar_bat_fill = lv_obj_create(s_st.topbar_bat_container);
@@ -501,38 +512,36 @@ static void theme_on_enter(lv_obj_t* parent) {
     lv_obj_set_pos(s_st.topbar_bat_lbl, 28, 0);
   }
 
-  s_st.buddy_panel = lv_obj_create(s_st.root);
-  lv_obj_remove_style_all(s_st.buddy_panel);
-  lv_obj_set_size(s_st.buddy_panel, BUDDY_W, MIDDLE_H);
-  lv_obj_align(s_st.buddy_panel, LV_ALIGN_TOP_RIGHT, 0, TOPBAR_H);
-  lv_obj_set_style_bg_color(s_st.buddy_panel, lv_color_hex(UI_SCR_BG), 0);
-  lv_obj_set_style_bg_opa(s_st.buddy_panel, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(s_st.buddy_panel, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_obj_set_style_border_width(s_st.buddy_panel, 1, 0);
-  lv_obj_set_style_border_side(s_st.buddy_panel, LV_BORDER_SIDE_LEFT, 0);
-  lv_obj_set_style_border_opa(s_st.buddy_panel, LV_OPA_50, 0);
-  lv_obj_clear_flag(s_st.buddy_panel, LV_OBJ_FLAG_SCROLLABLE);
+  /* ── Buddy area in topbar (right side): face + mood side by side ── */
+  s_st.topbar_buddy = lv_obj_create(s_st.topbar);
+  lv_obj_remove_style_all(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.topbar_buddy, BUDDY_TOPBAR_W, TOPBAR_H);
+  lv_obj_set_pos(s_st.topbar_buddy, 320 - SCREEN_CORNER_INSET_X - BUDDY_TOPBAR_W, 0);
+  lv_obj_clear_flag(s_st.topbar_buddy, LV_OBJ_FLAG_SCROLLABLE);
 
-  s_st.face_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.face_lbl, BUDDY_W - 4, 24);
+  s_st.face_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.face_lbl, 50, TOPBAR_H);
   lv_obj_set_pos(s_st.face_lbl, FACE_X0, FACE_Y0);
   lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
   lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, (BUDDY_W - 4) / 2, 0);
-  lv_obj_set_style_transform_pivot_y(s_st.face_lbl, 12, 0);
+  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, 25, 0);
+  lv_obj_set_style_transform_pivot_y(s_st.face_lbl, TOPBAR_H / 2, 0);
 
-  s_st.mood_lbl = lv_label_create(s_st.buddy_panel);
-  lv_obj_set_size(s_st.mood_lbl, BUDDY_W - 4, 20);
-  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0, MOOD_Y0);
+  s_st.mood_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.mood_lbl, 36, TOPBAR_H);
+  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0 + 50, MOOD_Y0);
   lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
-  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_LEFT, 0);
+  lv_label_set_long_mode(s_st.mood_lbl, LV_LABEL_LONG_MODE_DOTS);
 
+  /* ── Transcript (full width, below topbar) ── */
   s_st.transcript = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.transcript);
-  lv_obj_set_size(s_st.transcript, TRANSCRIPT_W, MIDDLE_H);
-  lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0, TOPBAR_H);
+  lv_obj_set_size(s_st.transcript, 320, MIDDLE_H);
+  lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0,
+               SCREEN_CORNER_INSET_Y + TOPBAR_H);
   lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
   lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(s_st.transcript, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
@@ -569,8 +578,8 @@ static void theme_on_exit(void) {
   s_st.topbar_bat_fill = NULL;
   s_st.topbar_bat_frame = NULL;
   s_st.topbar_bat_lbl = NULL;
+  s_st.topbar_buddy = NULL;
   s_st.transcript = NULL;
-  s_st.buddy_panel = NULL;
   s_st.face_lbl = NULL;
   s_st.mood_lbl = NULL;
   s_st.active_assistant = NULL;
