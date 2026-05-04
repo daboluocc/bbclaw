@@ -14,6 +14,7 @@
 #include "bb_time.h"
 #include "bb_wifi.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
@@ -240,17 +241,24 @@ typedef struct {
 } bb_async_payload_t;
 
 static bb_async_payload_t* async_alloc(bb_async_kind_t kind) {
-  bb_async_payload_t* p = (bb_async_payload_t*)calloc(1, sizeof(*p));
+  /* High-frequency alloc (one per assistant text chunk during streaming).
+   * Force PSRAM so a fast-talking turn doesn't bloat internal heap. */
+  bb_async_payload_t* p = (bb_async_payload_t*)heap_caps_calloc(
+      1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (p != NULL) {
     p->kind = kind;
   }
   return p;
 }
 
+/* All async-payload string copies go to PSRAM. Internal heap is too tight
+ * (~135 KB shared with WiFi/TCP/FreeRTOS) to absorb the per-turn churn —
+ * after long uptime + several turns we'd see xTaskCreate failures because
+ * internal heap was exhausted by transient duplicates. PSRAM has 8 MB. */
 static char* dup_str(const char* s) {
   if (s == NULL) return NULL;
   size_t n = strlen(s);
-  char* out = (char*)malloc(n + 1);
+  char* out = (char*)heap_caps_malloc(n + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (out == NULL) return NULL;
   memcpy(out, s, n + 1);
   return out;
@@ -1091,7 +1099,8 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  bb_agent_task_args_t* args = (bb_agent_task_args_t*)calloc(1, sizeof(*args));
+  bb_agent_task_args_t* args = (bb_agent_task_args_t*)heap_caps_calloc(
+      1, sizeof(*args), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (args == NULL) return ESP_ERR_NO_MEM;
   args->text = dup_str(text);
   if (args->text == NULL) {
@@ -1488,7 +1497,8 @@ static void on_history_fetch_done(void* user_data);
 
 static void history_fetch_task(void* arg) {
   history_fetch_args_t* args = (history_fetch_args_t*)arg;
-  history_fetch_result_t* res = (history_fetch_result_t*)calloc(1, sizeof(*res));
+  history_fetch_result_t* res = (history_fetch_result_t*)heap_caps_calloc(
+      1, sizeof(*res), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (res == NULL) {
     free(args);
     s_chat.history_fetch_pending = 0;
@@ -1522,7 +1532,8 @@ static void spawn_history_fetch_task(int before, int is_initial) {
     return;
   }
 
-  history_fetch_args_t* args = (history_fetch_args_t*)calloc(1, sizeof(*args));
+  history_fetch_args_t* args = (history_fetch_args_t*)heap_caps_calloc(
+      1, sizeof(*args), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (args == NULL) return;
   args->is_initial = is_initial;
   args->before = before;

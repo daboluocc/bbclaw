@@ -10,6 +10,7 @@
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 
@@ -82,7 +83,12 @@ static esp_err_t http_event_handler_dyn(esp_http_client_event_t* evt) {
     while (new_cap < need) {
       new_cap *= 2;
     }
-    char* new_buf = (char*)realloc(accum->buf, new_cap);
+    /* Force PSRAM placement: agent stream / history bodies can run into
+     * hundreds of KB. Internal RAM is ~135 KB total and shared with WiFi /
+     * TCP / FreeRTOS — putting these here previously caused xTaskCreate
+     * failures after a few turns (see "send: xTaskCreate failed" 2026-05-04). */
+    char* new_buf = (char*)heap_caps_realloc(accum->buf, new_cap,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (new_buf == NULL) {
       return ESP_ERR_NO_MEM;
     }
@@ -243,7 +249,12 @@ static esp_err_t http_event_handler_agent_stream(esp_http_client_event_t* evt) {
     while (new_cap < need) {
       new_cap *= 2;
     }
-    char* new_buf = (char*)realloc(accum->buf, new_cap);
+    /* Force PSRAM placement: agent stream / history bodies can run into
+     * hundreds of KB. Internal RAM is ~135 KB total and shared with WiFi /
+     * TCP / FreeRTOS — putting these here previously caused xTaskCreate
+     * failures after a few turns (see "send: xTaskCreate failed" 2026-05-04). */
+    char* new_buf = (char*)heap_caps_realloc(accum->buf, new_cap,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (new_buf == NULL) {
       return ESP_ERR_NO_MEM;
     }
@@ -572,7 +583,12 @@ esp_err_t bb_agent_load_messages(const char* session_id,
     return ESP_OK;
   }
 
-  bb_agent_message_t* arr = (bb_agent_message_t*)calloc((size_t)n, sizeof(*arr));
+  /* History page can be 50 × ~500B = 25 KB of strings — strdup goes to
+   * internal heap by default, which we can't afford. Use PSRAM for both
+   * the array and per-message content buffers. bb_agent_messages_free
+   * uses free(), which works on heap_caps_*-allocated blocks too. */
+  bb_agent_message_t* arr = (bb_agent_message_t*)heap_caps_calloc(
+      (size_t)n, sizeof(*arr), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (arr == NULL) {
     cJSON_Delete(root);
     return ESP_ERR_NO_MEM;
@@ -591,13 +607,15 @@ esp_err_t bb_agent_load_messages(const char* session_id,
     bb_agent_message_t* slot = &arr[written];
     strncpy(slot->role, role->valuestring, sizeof(slot->role) - 1);
     slot->role[sizeof(slot->role) - 1] = '\0';
-    slot->content = strdup(content->valuestring);
+    size_t clen = strlen(content->valuestring);
+    slot->content = (char*)heap_caps_malloc(clen + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (slot->content == NULL) {
       /* Out of memory mid-page: free what we have and bail. */
       bb_agent_messages_free(arr, written);
       cJSON_Delete(root);
       return ESP_ERR_NO_MEM;
     }
+    memcpy(slot->content, content->valuestring, clen + 1);
     slot->seq = cJSON_IsNumber(seq) ? seq->valueint : i;
     written++;
   }
