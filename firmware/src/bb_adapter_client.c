@@ -276,10 +276,10 @@ static void dispatch_tts_chunk_event(bb_finish_result_t* result, bb_finish_strea
     emit_finish_stream_event(cb, user_ctx, BB_FINISH_STREAM_EVENT_TTS_CHUNK, NULL, NULL, chunk, 0);
     return;
   }
-  if (result != NULL) {
-    append_result_tts_chunk(result, chunk);
-    return;
-  }
+  /* No event callback (agent-bus path / abort path) → no TTS consumer.
+   * Previously we still appended to result->tts_chunks, which the cloud's
+   * 25 s reply piles into a multi-hundred-KB linked list of malloc'd PCM
+   * data, freed only after cloud_wait returns. Drop instead. */
   bb_adapter_tts_chunks_free(chunk);
 }
 
@@ -867,9 +867,14 @@ static void ws_handle_text_message(const char* msg) {
                                name, NULL, 0);
     }
   } else if (strcmp(kind, "tts.chunk") == 0) {
-    bb_tts_chunk_t* chunk = decode_tts_chunk_json(msg);
-    if (chunk != NULL) {
-      dispatch_tts_chunk_event(s_ws.finish_result, s_ws.finish_on_event, s_ws.finish_user_ctx, chunk);
+    /* Agent-bus path / abort path don't want TTS — skip base64 decode + alloc
+     * entirely. dispatch_tts_chunk_event would also drop the chunk, but we
+     * may as well not spend CPU on the JSON parse. */
+    if (s_ws.finish_on_event != NULL) {
+      bb_tts_chunk_t* chunk = decode_tts_chunk_json(msg);
+      if (chunk != NULL) {
+        dispatch_tts_chunk_event(s_ws.finish_result, s_ws.finish_on_event, s_ws.finish_user_ctx, chunk);
+      }
     }
   } else if (strcmp(kind, "tts.start") == 0) {
     (void)json_extract_string(msg, "streamId", s_ws.tts_stream_id, sizeof(s_ws.tts_stream_id));
@@ -903,6 +908,16 @@ static void ws_handle_binary_message(const uint8_t* data, size_t len) {
   }
   xSemaphoreTake(s_ws.lock, portMAX_DELAY);
   if (s_ws.finish_result == NULL || s_ws.tts_stream_id[0] == '\0') {
+    xSemaphoreGive(s_ws.lock);
+    return;
+  }
+  /* No TTS consumer (agent-bus path / abort path) → drop OGG without
+   * accumulating. Otherwise a multi-second cloud reply piles ~1 MB of
+   * OGG into tts_audio_buf (sticky cap, never shrinks) and the ensuing
+   * tts.stop decode further inflates PCM into finish->tts_chunks, both
+   * of which sit in PSRAM until cloud_wait returns — squeezing internal
+   * RAM via fragmentation pressure to the point xTaskCreate fails. */
+  if (s_ws.finish_on_event == NULL) {
     xSemaphoreGive(s_ws.lock);
     return;
   }

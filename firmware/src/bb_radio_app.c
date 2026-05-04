@@ -192,6 +192,11 @@ static volatile int s_transport_display_ready;
 static volatile int s_transport_adapter_connected;
 static volatile int s_tts_playback_active;
 static volatile int s_tts_interrupt_requested;
+/* Set while the main loop is synchronously blocked in
+ * bb_adapter_stream_finish_stream (cloud_wait). PTT callback runs in
+ * esp_timer task and uses this to give the user haptic + log feedback so
+ * presses during the long wait don't feel silently dropped. */
+static volatile int s_cloud_wait_busy;
 static int s_transport_http_status;
 static char s_transport_detail[64];
 static char s_transport_registration_code[16];
@@ -515,9 +520,15 @@ static void agent_chat_voice_listening_locked(int begin) {
 
 static esp_err_t agent_chat_voice_send_locked(const char* text) {
   esp_err_t err = ESP_FAIL;
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  /* 5 s — well above any realistic LVGL render burst. Voice-send is the
+   * payoff of the entire PTT round-trip; dropping the transcript because
+   * LVGL was busy rendering a 50-item history + buddy animation is far
+   * worse than a few hundred ms of extra wait. */
+  if (lvgl_port_lock(pdMS_TO_TICKS(5000))) {
     err = bb_ui_agent_chat_send(text);
     lvgl_port_unlock();
+  } else {
+    ESP_LOGE(TAG, "agent_chat_voice_send_locked: lvgl_port_lock timeout (5s)");
   }
   return err;
 }
@@ -677,6 +688,13 @@ static void on_ptt_changed(int pressed) {
   if (s_ptt_pressed && s_tts_playback_active) {
     s_tts_interrupt_requested = 1;
     bb_audio_request_playback_interrupt();
+  }
+  if (s_ptt_pressed && s_cloud_wait_busy) {
+    /* Main loop is blocked in stream_finish_stream; PTT version will be
+     * consumed only after cloud returns. Give immediate physical feedback
+     * so the user knows the press registered but is being held. */
+    ESP_LOGW(TAG, "ptt press during cloud_wait: ignored, waiting for cloud reply");
+    (void)bb_motor_trigger(BB_MOTOR_PATTERN_ERROR_ALERT);
   }
   s_ptt_change_version++;
 }
@@ -2063,6 +2081,8 @@ static void stream_task(void* arg) {
                  (long long)t_cloud_req_ms, stream.stream_id, voice_target_agent ? "agent" : "openclaw");
         ESP_LOGI(TAG, "phase=cloud_wait_stack stream=%s stack_hw=%u", stream.stream_id,
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
+        log_heap_snapshot("before cloud_wait");
+        s_cloud_wait_busy = 1;
         /* Phase 4.5 — when routing to agent bus we don't want assistant
          * deltas / TTS chunks piped into the openclaw chat surface. Pass
          * NULL callbacks; finish->transcript is still populated, which is
@@ -2072,6 +2092,8 @@ static void stream_task(void* arg) {
             bb_adapter_stream_finish_stream(&stream, finish,
                                             voice_target_agent ? NULL : on_finish_stream_event,
                                             voice_target_agent ? NULL : ui_stream);
+        s_cloud_wait_busy = 0;
+        log_heap_snapshot("after cloud_wait");
         if (finish_err == ESP_OK) {
           int64_t t_cloud_done_ms = bb_now_ms();
           unsigned cloud_latency_ms = (unsigned)(t_cloud_done_ms - t_cloud_req_ms);
