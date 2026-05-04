@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 
 /**
@@ -133,3 +136,16 @@ void bb_agent_messages_free(bb_agent_message_t* list, int count);
  */
 esp_err_t bb_agent_send_message(const char* text, const char* session_id, const char* driver_name,
                                 bb_agent_stream_cb_t on_event, void* user_ctx);
+
+/**
+ * POST /v1/agent/sessions — mint a new logical session on the adapter (ADR-014).
+ * Returns the new session id (prefix "ls-") via out_session_id.
+ *
+ * @param driver               Driver name (e.g. "claude-code"); NULL/"" → adapter picks default.
+ * @param title                Human-friendly title; NULL/"" allowed (set later via control panel).
+ * @param out_session_id       Buffer to receive the id, NUL-terminated; empty string on failure.
+ * @param out_session_id_len   Capacity of buffer (must be >= 40 to fit "ls-" + uuid).
+ * @return ESP_OK on success; ESP_ERR_INVALID_ARG / ESP_ERR_NO_MEM / ESP_FAIL otherwise.
+ */
+esp_err_t bb_agent_create_session(const char* driver, const char* title,
+                                  char* out_session_id, size_t out_session_id_len);

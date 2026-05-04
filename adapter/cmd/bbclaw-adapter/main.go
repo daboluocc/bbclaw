@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/aider"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/openclawdriver"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
@@ -92,7 +94,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -160,6 +162,9 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
 	server.SetAgentRouter(agentRouter)
+	if sessionMgr != nil {
+		server.SetSessionManager(sessionMgr)
+	}
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
@@ -284,6 +289,35 @@ func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 	return buildAgentRouterFromRegistry(cfg, logger, k_driver_registry, os.Getenv)
 }
 
+// buildSessionManager constructs the logical-session table (ADR-014). The
+// persistence path is BBCLAW_DATA_DIR/sessions.json (default
+// ~/.bbclaw-adapter), and the default cwd for sessions created without an
+// explicit cwd comes from BBCLAW_DEFAULT_CWD (empty falls through to the
+// process's working directory at the time the driver spawns the CLI).
+//
+// Returns nil only on unrecoverable failure (we still want the adapter to
+// run for ASR/TTS even if the session table can't be loaded).
+func buildSessionManager(logger *obs.Logger) *logicalsession.Manager {
+	dataDir := strings.TrimSpace(os.Getenv("BBCLAW_DATA_DIR"))
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Warnf("logicalsession: cannot resolve home dir, manager disabled: %v", err)
+			return nil
+		}
+		dataDir = filepath.Join(home, ".bbclaw-adapter")
+	}
+	defaultCwd := strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))
+	path := filepath.Join(dataDir, "sessions.json")
+	mgr, err := logicalsession.NewManager(path, defaultCwd, logger)
+	if err != nil {
+		logger.Warnf("logicalsession: load failed at %s, manager disabled: %v", path, err)
+		return nil
+	}
+	logger.Infof("logicalsession: ready path=%s default_cwd=%q", path, defaultCwd)
+	return mgr
+}
+
 // buildAgentRouterFromRegistry is the testable core of buildAgentRouter. It
 // takes the registry slice and an env-getter as parameters so unit tests
 // can drive it deterministically without touching the real environment or
@@ -404,6 +438,7 @@ func probeTCP(addr string, timeout time.Duration) bool {
 func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sink := buildSink(cfg, logger, metrics)
 	agentRouter := buildAgentRouter(cfg, logger)
+	sessionMgr := buildSessionManager(logger)
 	var cloudRelay *homeadapter.Adapter
 	var err error
 	if cfg.EnableCloudRelay() {
@@ -413,6 +448,9 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			os.Exit(1)
 		}
 		cloudRelay.SetRouter(agentRouter)
+		if sessionMgr != nil {
+			cloudRelay.SetSessionManager(sessionMgr)
+		}
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -432,7 +470,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)

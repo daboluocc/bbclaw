@@ -45,7 +45,7 @@ adapter migration on 2026-04-27 (ADR-011).
 
 - `daboluocc/bbclaw` — main public repo:
   - `firmware/` — ESP32 firmware (C, ESP-IDF)
-  - `adapter/` — local agent-bridge daemon (Go). Imported from bbclaw-reference 2026-04-27 (commit `bf24299`); module path `github.com/daboluocc/bbclaw/adapter` unchanged.
+  - `adapter/` — Go Agent Bus daemon with pluggable drivers (Claude Code, OpenCode, Ollama, Aider, OpenClaw). Migrated from bbclaw-reference 2026-04-27 (ADR-011); module path `github.com/daboluocc/bbclaw/adapter`.
   - `docs/`, `design/`, `CHANGELOG.md` — public design docs and ADRs
   - GitHub releases ship the adapter binary alongside firmware OTA bins
 - `bbclaw-reference` — private repo (gitignored in main repo at `references/bbclaw-reference/`):
@@ -194,7 +194,35 @@ fatal error: xxx.h: No such file or directory
 ### OTA 说明
 - **仅支持 `cloud_saas` 模式**，`local_home` 不支持 OTA
 - 固件启动后通过 `GET /v1/ota/check` 查询更新
-- OTA API 在 `references/bbclaw-reference/cloud/internal/ota/`（cloud 仍在闭源仓）
+- OTA 服务端 API 由 Cloud Backend 提供（不在本仓库内）
+
+## Adapter 日志查看
+
+```bash
+cd adapter
+
+# 实时追踪运行日志
+make log
+# 等价于 tail -f tmp/adapter-runtime.log
+```
+
+日志文件位置: `adapter/tmp/adapter-runtime.log`
+
+## Cross-Component Protocol Sync
+
+BBClaw's Adapter defines the canonical protocol (WebSocket envelopes, HTTP API contracts, audio streaming format). A Cloud Backend exists as a relay between remote devices and the Adapter. When changing protocol-level contracts in this repo, the Cloud side must stay in sync.
+
+**Check the following when modifying:**
+
+| Change in this repo | Also verify |
+|------|------|
+| Adapter HTTP API (`/v1/agent/*`, `/v1/ota/*`) | Cloud relay proxy passes new fields correctly |
+| WebSocket envelope format (`homeadapter/`) | Cloud hub routing handles new envelope kinds |
+| Notification payload fields (`notifications.go`) | Cloud hub forwarding + Firmware WS handler |
+| Session API changes (`agent.go`) | Cloud agent proxy + Firmware session client |
+| New agent proxy request kind | Cloud `handleRequest` dispatch + route registration |
+
+When in doubt, search for the envelope `kind` string or HTTP path across both repos to find all touch points.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

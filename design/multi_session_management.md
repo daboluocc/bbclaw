@@ -1,11 +1,17 @@
 # Multi-Session Management & Notification System
 
 - **日期**: 2026-05-03
-- **状态**: Draft
+- **状态**: Draft（session id 语义被 ADR-014 取代，UI / 通知机制不变）
 - **关联**:
   - [ADR-003](decisions/ADR-003-router-and-multi-driver.md) — 多 driver 路由 + session 绑定
   - [ADR-012](decisions/ADR-012-fixed-page-menu.md) — 三态页面状态机
   - [AGENT_STATE_MACHINE](AGENT_STATE_MACHINE.md) — 9 态 buddy 模型
+  - [ADR-014](decisions/ADR-014-logical-session-abstraction.md) — **本文 session id 语义被替换为 logical session id**
+
+> **注：** 本文写作时，session id 直接是 CLI 自家 conversation UUID（claude-code 的
+> `~/.claude/projects/{cwdHash}/{sid}.jsonl` 文件名）。ADR-014 把这一层抽象上移到
+> adapter / cloud 控制台，设备端持有的是稳定的 logical session id，底层 CLI
+> conversation 可被透明替换。**本文描述的 UI / picker / 通知机制不变**，只是 id 语义变了。
 
 ## 概述
 

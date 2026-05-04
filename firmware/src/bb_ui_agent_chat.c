@@ -68,9 +68,10 @@ static const char* TAG = "bb_agent_ui";
 #define BB_HISTORY_MAX_LOADED  300
 
 /* Action codes returned by session_picker_select(). */
-#define BB_SESSION_PICKER_ACTION_SWITCH    0
-#define BB_SESSION_PICKER_ACTION_SETTINGS  1
-#define BB_SESSION_PICKER_ACTION_NONE     (-1)
+#define BB_SESSION_PICKER_ACTION_SWITCH       0
+#define BB_SESSION_PICKER_ACTION_SETTINGS     1
+#define BB_SESSION_PICKER_ACTION_NEW_SESSION  2
+#define BB_SESSION_PICKER_ACTION_NONE        (-1)
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
@@ -132,7 +133,7 @@ typedef struct {
   int session_picker_active_idx;       /* index of current session in list (-1 if not found) */
   int session_picker_visible;          /* 0=hidden, 1=loading, 2=visible */
   lv_obj_t* session_picker_root;
-  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 1]; /* sessions + Settings */
+  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 2]; /* + New + sessions + Settings */
   int session_picker_total_rows;       /* session_list_count + 1 (Settings) */
   volatile int session_fetch_pending;
   volatile uint32_t session_fetch_generation;
@@ -1724,10 +1725,13 @@ static void session_picker_build_ui(void) {
   }
 
   const int n_sessions = s_chat.session_list_count;
-  const int total_rows = n_sessions + 1; /* + Settings */
+  /* Layout: [+ 新建 session] [session 0..n-1] [Settings] */
+  const int total_rows = n_sessions + 2; /* + New + Settings */
   s_chat.session_picker_total_rows = total_rows;
+  /* Active idx is into session_list[]; the picker visual idx is shifted by 1
+   * because row 0 is the "+ 新建 session" entry. */
   s_chat.session_picker_sel = (s_chat.session_picker_active_idx >= 0)
-                                ? s_chat.session_picker_active_idx : 0;
+                                ? s_chat.session_picker_active_idx + 1 : 0;
 
   /* Full-screen overlay. */
   s_chat.session_picker_root = lv_obj_create(s_chat.parent);
@@ -1752,6 +1756,17 @@ static void session_picker_build_ui(void) {
                       ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
   snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
   lv_label_set_text(title, title_buf);
+
+  /* "+ 新建 session" fixed row at the top. */
+  {
+    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_font(row, font, 0);
+    lv_label_set_text(row, "+ 新建 session");
+    s_chat.session_picker_items[0] = row;
+  }
 
   /* Session rows: "preview [Nm] [Xt] [<]" */
   for (int i = 0; i < n_sessions; ++i) {
@@ -1788,10 +1803,11 @@ static void session_picker_build_ui(void) {
     char row_buf[48];
     snprintf(row_buf, sizeof(row_buf), "%.*s%s", preview_max, preview, suffix);
     lv_label_set_text(row, row_buf);
-    s_chat.session_picker_items[i] = row;
+    /* Sessions occupy visual rows [1 .. n_sessions]; row 0 is "+ 新建". */
+    s_chat.session_picker_items[1 + i] = row;
   }
 
-  /* "Settings" row. */
+  /* "Settings" row at the very end. */
   {
     lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
     lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
@@ -1799,11 +1815,11 @@ static void session_picker_build_ui(void) {
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_font(row, font, 0);
     lv_label_set_text(row, "* Settings");
-    s_chat.session_picker_items[n_sessions] = row;
+    s_chat.session_picker_items[1 + n_sessions] = row;
   }
 
   session_picker_apply_styles();
-  ESP_LOGI(TAG, "session_picker: built %d sessions + 1 fixed row", n_sessions);
+  ESP_LOGI(TAG, "session_picker: built %d sessions + 2 fixed rows", n_sessions);
 }
 
 /* ── Session picker public API ── */
@@ -1839,6 +1855,121 @@ void bb_ui_agent_chat_session_picker_move(int delta) {
   session_picker_apply_styles();
 }
 
+/* Common transcript-reset + topbar-refresh used after both session-switch and
+ * new-session-creation. Caller already updated s_chat.session_id and persisted
+ * to NVS. Must run on the LVGL task. */
+static void apply_session_switch_ui(const char* sid) {
+  char shortbuf[16] = {0};
+  if (sid != NULL) {
+    strncpy(shortbuf, sid, 8);
+    shortbuf[8] = '\0';
+  }
+  post_session(shortbuf);
+
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL) {
+    if (theme->on_exit != NULL) theme->on_exit();
+    if (theme->on_enter != NULL) theme->on_enter(s_chat.parent);
+  }
+  post_state(BB_AGENT_STATE_IDLE);
+}
+
+/* ── ADR-014 — new-session creation worker ── */
+
+#define BB_NEW_SESSION_TASK_STACK 6144
+#define BB_NEW_SESSION_TASK_PRIO  4
+
+typedef struct {
+  esp_err_t err;
+  char session_id[64];
+  char driver_name[24];
+} new_session_result_t;
+
+typedef struct {
+  char driver_name[24];
+} new_session_args_t;
+
+static void on_new_session_done(void* user_data) {
+  new_session_result_t* res = (new_session_result_t*)user_data;
+  if (res == NULL) return;
+  if (!s_chat.active) {
+    free(res);
+    return;
+  }
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (res->err != ESP_OK || res->session_id[0] == '\0') {
+    ESP_LOGW(TAG, "new_session: create failed err=%s", esp_err_to_name(res->err));
+    if (theme != NULL && theme->append_error != NULL) {
+      theme->append_error("new session failed");
+    }
+    free(res);
+    return;
+  }
+
+  ESP_LOGI(TAG, "new_session: created sid=%s driver=%s", res->session_id, res->driver_name);
+  strncpy(s_chat.session_id, res->session_id, sizeof(s_chat.session_id) - 1);
+  s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+  if (res->driver_name[0] != '\0') {
+    bb_session_store_save(res->driver_name, res->session_id);
+  } else if (s_chat.driver_name[0] != '\0') {
+    bb_session_store_save(s_chat.driver_name, res->session_id);
+  }
+  bb_notification_ack(res->session_id);
+
+  apply_session_switch_ui(res->session_id);
+
+  /* Brand-new session has no history; just reset bookkeeping. */
+  history_state_reset();
+
+  free(res);
+}
+
+static void new_session_task(void* arg) {
+  new_session_args_t* args = (new_session_args_t*)arg;
+  new_session_result_t* res = (new_session_result_t*)heap_caps_calloc(
+      1, sizeof(*res), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (res == NULL) {
+    free(args);
+    vTaskDelete(NULL);
+    return;
+  }
+  if (args != NULL) {
+    strncpy(res->driver_name, args->driver_name, sizeof(res->driver_name) - 1);
+  }
+
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+
+  res->err = bb_agent_create_session(res->driver_name, NULL,
+                                     res->session_id, sizeof(res->session_id));
+  free(args);
+  lv_async_call(on_new_session_done, res);
+  vTaskDelete(NULL);
+}
+
+static void spawn_new_session_task(void) {
+  new_session_args_t* args = (new_session_args_t*)heap_caps_calloc(
+      1, sizeof(*args), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (args == NULL) {
+    ESP_LOGE(TAG, "spawn_new_session_task: alloc failed");
+    return;
+  }
+  const char* drv = s_chat.driver_name[0] != '\0'
+                      ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+  strncpy(args->driver_name, drv, sizeof(args->driver_name) - 1);
+
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreateWithCaps(new_session_task, "new_session",
+                                      BB_NEW_SESSION_TASK_STACK, args,
+                                      BB_NEW_SESSION_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_new_session_task: xTaskCreateWithCaps failed");
+    free(args);
+  }
+}
+
 int bb_ui_agent_chat_session_picker_select(void) {
   if (!s_chat.active || s_chat.session_picker_visible != 2) {
     return BB_SESSION_PICKER_ACTION_NONE;
@@ -1846,9 +1977,19 @@ int bb_ui_agent_chat_session_picker_select(void) {
   const int sel = s_chat.session_picker_sel;
   const int n = s_chat.session_list_count;
 
-  if (sel < n) {
-    /* Session row — switch to it. */
-    const bb_agent_session_info_t* session = &s_chat.session_list[sel];
+  if (sel == 0) {
+    /* "+ 新建 session" row — kick off async create then converge with switch flow. */
+    ESP_LOGI(TAG, "session_picker: new session requested");
+    bb_ui_agent_chat_session_picker_hide();
+    spawn_new_session_task();
+    return BB_SESSION_PICKER_ACTION_NEW_SESSION;
+  }
+
+  if (sel >= 1 && sel <= n) {
+    /* Session row — switch to it. (Visual idx is shifted by 1 because row 0
+     * is "+ 新建 session".) */
+    const int idx = sel - 1;
+    const bb_agent_session_info_t* session = &s_chat.session_list[idx];
     ESP_LOGI(TAG, "session_picker: switch to '%s'", session->id);
 
     strncpy(s_chat.session_id, session->id, sizeof(s_chat.session_id) - 1);
@@ -1856,19 +1997,7 @@ int bb_ui_agent_chat_session_picker_select(void) {
     bb_session_store_save(s_chat.driver_name, session->id);
     bb_notification_ack(session->id);
 
-    /* Refresh topbar with short session id. */
-    char shortbuf[16] = {0};
-    strncpy(shortbuf, session->id, 8);
-    shortbuf[8] = '\0';
-    post_session(shortbuf);
-
-    /* Clear transcript by cycling theme. */
-    const bb_agent_theme_t* theme = bb_agent_theme_get_active();
-    if (theme != NULL) {
-      if (theme->on_exit != NULL) theme->on_exit();
-      if (theme->on_enter != NULL) theme->on_enter(s_chat.parent);
-    }
-    post_state(BB_AGENT_STATE_IDLE);
+    apply_session_switch_ui(session->id);
 
     /* Phase S3 — fetch history for the just-selected session. The fetch is
      * async (worker task); the empty transcript is what the user sees in the
@@ -1881,7 +2010,7 @@ int bb_ui_agent_chat_session_picker_select(void) {
     return BB_SESSION_PICKER_ACTION_SWITCH;
   }
 
-  if (sel == n) {
+  if (sel == n + 1) {
     /* "Settings" row. */
     ESP_LOGI(TAG, "session_picker: enter settings");
     bb_ui_agent_chat_session_picker_hide();

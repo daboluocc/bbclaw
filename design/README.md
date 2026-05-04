@@ -2,6 +2,15 @@
 
 BBClaw 项目的系统级设计文档，是开发决策的唯一真相来源。
 
+## 产品定位
+
+BBClaw 是 **Claude Code / OpenCode / Aider 等 Agent CLI 的语音外设**，不是这些 CLI 的替代品。
+形态接近 Siri / Alexa：用户从不关心"我后台是哪一个 conversation"，只关心"我和我的 BBClaw
+设备一直在聊"。所有 CLI 实现细节（`cwd`、CLI session id、`--resume` 行为）对设备**完全透明**，
+由 adapter（local_home 模式）或 cloud 控制台（cloud_saas 模式）代为管理。
+
+→ 见 [ADR-014](decisions/ADR-014-logical-session-abstraction.md) 了解 session 抽象的具体落地方式。
+
 ## 文档结构
 
 ```

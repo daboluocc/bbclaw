@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 )
 
 // agentSessionTTL must mirror httpapi.sessionTTL so the user sees the same
@@ -317,7 +318,87 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		sid   agent.SessionID
 		isNew bool
 	)
-	if requestedSession != "" {
+
+	writeEventEnv := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "event",
+			MessageID:  env.MessageID,
+			DeviceID:   env.DeviceID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.event",
+			Payload:    payload,
+		})
+	}
+
+	// ADR-014 Phase B: when a logical-session manager is configured, resolve
+	// "ls-"-prefixed sessions and auto-mint on empty. Legacy raw cli ids fall
+	// through to the existing path unchanged for backward compatibility.
+	var (
+		logicalID         logicalsession.ID
+		resumeFromLogical string
+		usingLogical      bool
+	)
+	if a.sessions != nil {
+		switch {
+		case strings.HasPrefix(requestedSession, "ls-"):
+			ls, ok := a.sessions.Get(logicalsession.ID(requestedSession))
+			if !ok {
+				// Don't silently mint a new logical id — emit an error event
+				// so the cloud forwards it to the firmware as a normal turn
+				// failure.
+				if err := writeEventEnv(map[string]any{
+					"type":  "error",
+					"error": "UNKNOWN_LOGICAL_SESSION",
+					"text":  "logical session not found: " + requestedSession,
+				}); err != nil {
+					a.log.Warnf("agent_proxy: write UNKNOWN_LOGICAL_SESSION failed device=%s err=%v",
+						env.DeviceID, err)
+				}
+				return write(CloudEnvelope{
+					Type:       "reply",
+					MessageID:  env.MessageID,
+					DeviceID:   env.DeviceID,
+					HomeSiteID: a.cfg.HomeSiteID,
+					Kind:       "agent.reply",
+					Payload: map[string]any{
+						"ok":    false,
+						"error": "UNKNOWN_LOGICAL_SESSION",
+					},
+				})
+			}
+			logicalID = ls.ID
+			resumeFromLogical = ls.CLISessionID
+			usingLogical = true
+			// If the logical's CLISessionID matches a live in-process entry,
+			// honour the existing pinning behaviour.
+			if resumeFromLogical != "" {
+				if entry, found := a.agentSessions.get(resumeFromLogical); found {
+					if requestedDriver != "" && requestedDriver != entry.driverName {
+						return fmt.Errorf("SESSION_DRIVER_MISMATCH:want=%s,have=%s", requestedDriver, entry.driverName)
+					}
+					pinned, ok := a.router.Get(entry.driverName)
+					if !ok {
+						return fmt.Errorf("SESSION_UNREGISTERED_DRIVER:%s", entry.driverName)
+					}
+					drv = pinned
+					driverName = entry.driverName
+					sid = entry.sid
+				}
+			}
+		case requestedSession == "":
+			// Auto-mint a logical session so future turns can come back with
+			// its stable id. Cwd defaults to the manager's configured value.
+			ls, err := a.sessions.Create(env.DeviceID, driverName, "", "")
+			if err != nil {
+				return fmt.Errorf("CREATE_SESSION_FAILED:%w", err)
+			}
+			logicalID = ls.ID
+			usingLogical = true
+		}
+	}
+
+	if !usingLogical && requestedSession != "" {
+		// Legacy raw CLI id path (Phase A backward compat).
 		if entry, found := a.agentSessions.get(requestedSession); found {
 			if requestedDriver != "" && requestedDriver != entry.driverName {
 				return fmt.Errorf("SESSION_DRIVER_MISMATCH:want=%s,have=%s", requestedDriver, entry.driverName)
@@ -347,120 +428,209 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		}
 	}
 
-	if sid == "" {
-		// Resume path: if the device sent a sessionId we don't have in our
-		// process registry (adapter restart / sweep / picker-loaded session),
-		// pass it as ResumeID so claude-code continues the same JSONL. Without
-		// this the cloud_saas device sees isNew=1 + sid=cc-<new-uuid> every
-		// time and the agent loses all context. See httpapi/agent.go for the
-		// twin LAN-direct fix.
-		startOpts := agent.StartOpts{}
-		isResumeAttempt := false
-		if requestedSession != "" {
-			startOpts.ResumeID = requestedSession
-			isResumeAttempt = true
-		}
-		newSid, err := drv.Start(ctx, startOpts)
-		if err != nil {
-			return fmt.Errorf("AGENT_START_FAILED:%w", err)
-		}
-		sid = newSid
-		isNew = !isResumeAttempt
-		a.agentSessions.put(string(sid), &agentProxySession{
-			sid:        sid,
-			driverName: driverName,
-			lastUsed:   time.Now(),
-		})
-	}
-
-	// Session frame first so the device learns its session id before any
-	// text arrives. seq=0 mirrors the LAN direct shape.
-	writeEvent(map[string]any{
-		"type":      "session",
-		"sessionId": string(sid),
-		"isNew":     isNew,
-		"driver":    driverName,
-		"seq":       0,
-	})
-	a.agentSessions.touch(string(sid))
-
-	events := drv.Events(sid)
-	sendErrCh := make(chan error, 1)
-	go func() { sendErrCh <- drv.Send(sid, text) }()
-
 	a.metrics.Inc("agent_proxy_message_start")
 	routeStart := time.Now()
-	a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s text_chars=%d",
-		driverName, sid, isNew, env.DeviceID, len(text))
 
+	// Outer loop wraps one or two attempts. Attempt 0 is the normal path
+	// (start with ResumeID if the device asked to resume); attempt 1 fires
+	// only when the driver emitted SESSION_NOT_FOUND on attempt 0 — see
+	// ADR-014. We mint a fresh session and re-send the user text so the
+	// device sees a clean turn instead of a generic AGENT_TURN_FAILED.
+	const maxAttempts = 2
 	var (
 		turnEnded  bool
 		textCount  int
 		errorCount int
 		lastError  string
 		lastText   string
+		sendErr    error
 	)
-loop:
-	for {
-		select {
-		case <-ctx.Done():
-			a.log.Warnf("agent_proxy: ctx done driver=%s sid=%s", driverName, sid)
-			return ctx.Err()
-		case ev, ok := <-events:
-			if !ok {
-				// Driver closed channel — session ended on its side. Drop
-				// the registry entry so the next turn doesn't try to resume
-				// a dead session.
-				a.agentSessions.drop(string(sid))
-				break loop
-			}
-			switch ev.Type {
-			case agent.EvText:
-				textCount++
-				lastText = ev.Text
-			case agent.EvError:
-				errorCount++
-				lastError = ev.Text
-			case agent.EvTurnEnd:
-				turnEnded = true
-				// Phase S3: push session.notification via cloud WS.
-				notifType := "turn_end"
-				if errorCount > 0 && textCount == 0 {
-					notifType = "error"
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Reset per-attempt state — only the FINAL attempt's tallies count
+		// when we build the reply payload below.
+		turnEnded = false
+		textCount = 0
+		errorCount = 0
+		lastError = ""
+		lastText = ""
+		sendErr = nil
+		sessionNotFound := false
+
+		if sid == "" {
+			// Resume path: if the device sent a sessionId we don't have in our
+			// process registry (adapter restart / sweep / picker-loaded session),
+			// pass it as ResumeID so claude-code continues the same JSONL. On
+			// retry (attempt > 0) we deliberately DON'T resume — the prior id
+			// just told us "no conversation found".
+			startOpts := agent.StartOpts{}
+			isResumeAttempt := false
+			if attempt == 0 {
+				switch {
+				case usingLogical:
+					if resumeFromLogical != "" {
+						startOpts.ResumeID = resumeFromLogical
+						isResumeAttempt = true
+					}
+				case requestedSession != "":
+					startOpts.ResumeID = requestedSession
+					isResumeAttempt = true
 				}
-				preview := lastText
-				if len(preview) > 48 {
-					preview = preview[:48]
-				}
-				_ = write(CloudEnvelope{
-					Type:       "event",
-					DeviceID:   env.DeviceID,
-					HomeSiteID: a.cfg.HomeSiteID,
-					Kind:       "session.notification",
-					Payload: map[string]any{
-						"sessionId": string(sid),
-						"driver":    driverName,
-						"type":      notifType,
-						"preview":   preview,
-						"timestamp": time.Now().UnixMilli(),
-					},
-				})
-				break loop
 			}
-			if ev.Type != agent.EvTurnEnd {
+			newSid, err := drv.Start(ctx, startOpts)
+			if err != nil {
+				return fmt.Errorf("AGENT_START_FAILED:%w", err)
+			}
+			sid = newSid
+			isNew = !isResumeAttempt
+			a.agentSessions.put(string(sid), &agentProxySession{
+				sid:        sid,
+				driverName: driverName,
+				lastUsed:   time.Now(),
+			})
+			// Write back the freshly-minted CLI session id to the logical
+			// table on every Start (including retry) so the logical's
+			// CLISessionID always tracks the live conversation.
+			if usingLogical && logicalID != "" {
+				if err := a.sessions.UpdateCLISessionID(logicalID, string(sid)); err != nil {
+					a.log.Warnf("agent_proxy: UpdateCLISessionID logical=%s cli=%s err=%v",
+						logicalID, sid, err)
+				}
+			}
+		}
+
+		// Session frame first so the device learns its session id before any
+		// text arrives. seq=0 mirrors the LAN direct shape. On retry the
+		// device sees a second session frame with the new sid+isNew=true,
+		// which is exactly what its NVS needs to update.
+		//
+		// When the logical-session manager is in play, the device-visible id
+		// in the frame is the *logical* id (stable across cli rotation).
+		visibleSessionID := string(sid)
+		if usingLogical && logicalID != "" {
+			visibleSessionID = string(logicalID)
+		}
+		writeEvent(map[string]any{
+			"type":      "session",
+			"sessionId": visibleSessionID,
+			"isNew":     isNew,
+			"driver":    driverName,
+			"seq":       0,
+		})
+		a.agentSessions.touch(string(sid))
+
+		if attempt == 0 {
+			a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s text_chars=%d",
+				driverName, sid, isNew, env.DeviceID, len(text))
+		} else {
+			a.log.Warnf("phase=agent_proxy_retry driver=%s sid=%s device=%s attempt=%d reason=SESSION_NOT_FOUND",
+				driverName, sid, env.DeviceID, attempt)
+		}
+
+		events := drv.Events(sid)
+		sendErrCh := make(chan error, 1)
+		curSid := sid
+		go func() { sendErrCh <- drv.Send(curSid, text) }()
+
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
+				a.log.Warnf("agent_proxy: ctx done driver=%s sid=%s", driverName, sid)
+				return ctx.Err()
+			case ev, ok := <-events:
+				if !ok {
+					// Driver closed channel — session ended on its side. Drop
+					// the registry entry so the next turn doesn't try to resume
+					// a dead session.
+					a.agentSessions.drop(string(sid))
+					break loop
+				}
+				switch ev.Type {
+				case agent.EvText:
+					textCount++
+					lastText = ev.Text
+				case agent.EvError:
+					errorCount++
+					lastError = ev.Text
+					if strings.HasPrefix(ev.Text, "SESSION_NOT_FOUND") {
+						sessionNotFound = true
+					}
+				case agent.EvTurnEnd:
+					turnEnded = true
+					break loop
+				}
+				if ev.Type == agent.EvTurnEnd {
+					continue
+				}
+				// Suppress the SESSION_NOT_FOUND error frame on the attempt
+				// we plan to retry — the device should not see a transient
+				// error message that we're about to recover from.
+				if ev.Type == agent.EvError && sessionNotFound && attempt+1 < maxAttempts {
+					continue
+				}
 				frame := agentEventToFrame(ev)
 				if frame != nil {
 					writeEvent(frame)
 				}
 			}
 		}
+
+		sendErr = <-sendErrCh
+		if sendErr != nil {
+			a.log.Warnf("phase=agent_proxy_send_failed driver=%s sid=%s err=%v attempt=%d",
+				driverName, sid, sendErr, attempt)
+		}
+
+		if sessionNotFound && attempt+1 < maxAttempts {
+			// Drop the dead session and force a fresh start on next iteration.
+			a.agentSessions.drop(string(sid))
+			sid = ""
+			isNew = false // will be flipped to true by the no-resume branch
+			a.metrics.Inc("agent_proxy_session_not_found_retry")
+			continue
+		}
+		break
 	}
 
-	sendErr := <-sendErrCh
-	if sendErr != nil {
-		a.log.Warnf("phase=agent_proxy_send_failed driver=%s sid=%s err=%v", driverName, sid, sendErr)
-	}
 	a.agentSessions.touch(string(sid))
+
+	// Bump LastUsedAt on the logical session so the picker can sort by recency.
+	if usingLogical && logicalID != "" && turnEnded {
+		if err := a.sessions.Touch(logicalID); err != nil {
+			a.log.Warnf("agent_proxy: Touch logical=%s err=%v", logicalID, err)
+		}
+	}
+
+	// Phase S3: push session.notification via cloud WS — emitted once per
+	// turn after retry has settled, so the device gets a single notification
+	// reflecting the actual outcome rather than an intermediate failure.
+	if turnEnded {
+		notifType := "turn_end"
+		if errorCount > 0 && textCount == 0 {
+			notifType = "error"
+		}
+		preview := lastText
+		if len(preview) > 48 {
+			preview = preview[:48]
+		}
+		notifSID := string(sid)
+		if usingLogical && logicalID != "" {
+			notifSID = string(logicalID)
+		}
+		_ = write(CloudEnvelope{
+			Type:       "event",
+			DeviceID:   env.DeviceID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "session.notification",
+			Payload: map[string]any{
+				"sessionId": notifSID,
+				"driver":    driverName,
+				"type":      notifType,
+				"preview":   preview,
+				"timestamp": time.Now().UnixMilli(),
+			},
+		})
+	}
 
 	// Turn is healthy only when it ended cleanly AND either produced text or
 	// had no errors. A turn with only errors and zero text is a silent failure
@@ -476,9 +646,13 @@ loop:
 		a.metrics.Inc("agent_proxy_message_error")
 	}
 
+	replySID := string(sid)
+	if usingLogical && logicalID != "" {
+		replySID = string(logicalID)
+	}
 	replyPayload := map[string]any{
 		"ok":        turnOK,
-		"sessionId": string(sid),
+		"sessionId": replySID,
 		"driver":    driverName,
 		"turnEnd":   turnEnded,
 	}

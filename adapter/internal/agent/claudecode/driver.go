@@ -206,10 +206,13 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	waitErr := cmd.Wait()
 	<-stderrDone
 	if waitErr != nil {
-		_, busy := stderrCap.snapshot()
-		if busy {
+		snap := stderrCap.snapshot()
+		switch {
+		case snap.SessionBusy:
 			s.emit(agent.Event{Type: agent.EvError, Text: "SESSION_BUSY: another process is using this session — close it or pick a different one"})
-		} else {
+		case snap.SessionNotFound:
+			s.emit(agent.Event{Type: agent.EvError, Text: "SESSION_NOT_FOUND: cli conversation no longer exists; adapter should mint a new session"})
+		default:
 			s.emit(agent.Event{Type: agent.EvError, Text: fmt.Sprintf("claude-code exit: %v", waitErr)})
 		}
 	}
@@ -389,9 +392,19 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 // by another live process. We can't probe the lock proactively (claude-code
 // owns its own filesystem locks), so we observe the stderr surface instead.
 type stderrCapture struct {
-	mu          sync.Mutex
-	lines       []string
-	sessionBusy bool
+	mu              sync.Mutex
+	lines           []string
+	sessionBusy     bool
+	sessionNotFound bool
+}
+
+// stderrSnapshot is the immutable view returned by stderrCapture.snapshot.
+// Bundling the flags into a struct keeps the call site readable as we add
+// more typed-error detections (currently SESSION_BUSY + SESSION_NOT_FOUND).
+type stderrSnapshot struct {
+	Lines           []string
+	SessionBusy     bool
+	SessionNotFound bool
 }
 
 const stderrCaptureMax = 16
@@ -419,14 +432,24 @@ func (c *stderrCapture) add(line string) {
 		strings.Contains(low, "already running") {
 		c.sessionBusy = true
 	}
+	// "No conversation found with session ID: <uuid>" — claude-code emits this
+	// when --resume points at a deleted/missing conversation. Caller does
+	// transparent retry by spawning a new CLI session (see ADR-014).
+	if strings.Contains(low, "no conversation found with session id") {
+		c.sessionNotFound = true
+	}
 }
 
-func (c *stderrCapture) snapshot() ([]string, bool) {
+func (c *stderrCapture) snapshot() stderrSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]string, len(c.lines))
 	copy(out, c.lines)
-	return out, c.sessionBusy
+	return stderrSnapshot{
+		Lines:           out,
+		SessionBusy:     c.sessionBusy,
+		SessionNotFound: c.sessionNotFound,
+	}
 }
 
 func drainStderr(r io.Reader, log *obs.Logger, sid agent.SessionID, cap *stderrCapture) {

@@ -636,6 +636,103 @@ esp_err_t bb_agent_load_messages(const char* session_id,
   return ESP_OK;
 }
 
+/* ── public: create logical session (ADR-014) ── */
+
+esp_err_t bb_agent_create_session(const char* driver, const char* title,
+                                  char* out_session_id, size_t out_session_id_len) {
+  if (out_session_id == NULL || out_session_id_len < 40) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  out_session_id[0] = '\0';
+
+  cJSON* req = cJSON_CreateObject();
+  if (req == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+  if (driver != NULL && driver[0] != '\0') {
+    cJSON_AddStringToObject(req, "driver", driver);
+  }
+  if (title != NULL && title[0] != '\0') {
+    cJSON_AddStringToObject(req, "title", title);
+  }
+  char* body = cJSON_PrintUnformatted(req);
+  cJSON_Delete(req);
+  if (body == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  char url[256] = {0};
+  agent_build_url(url, sizeof(url), "/v1/agent/sessions");
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_POST,
+                   http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    free(body);
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+  ESP_LOGI(TAG, "create_session url=%s driver=%s title=%s", url,
+           (driver != NULL && driver[0] != '\0') ? driver : "(default)",
+           (title != NULL && title[0] != '\0') ? title : "(none)");
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+  free(body);
+
+  if (err != ESP_OK) {
+    free(accum.buf);
+    ESP_LOGE(TAG, "create_session transport err=%s", esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300 || accum.buf == NULL) {
+    ESP_LOGE(TAG, "create_session http status=%d body=%.120s", status,
+             accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+
+  cJSON* root = cJSON_Parse(accum.buf);
+  free(accum.buf);
+  accum.buf = NULL;
+  if (root == NULL) {
+    ESP_LOGE(TAG, "create_session parse failed");
+    return ESP_FAIL;
+  }
+
+  /* Adapter degrades errors with HTTP 200 + ok=false (see load_messages). */
+  const cJSON* ok_node = cJSON_GetObjectItemCaseSensitive(root, "ok");
+  if (cJSON_IsBool(ok_node) && !cJSON_IsTrue(ok_node)) {
+    const cJSON* err_code = cJSON_GetObjectItemCaseSensitive(root, "error");
+    ESP_LOGW(TAG, "create_session refused: %s",
+             cJSON_IsString(err_code) ? err_code->valuestring : "(unknown)");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  const cJSON* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+  const cJSON* session = cJSON_GetObjectItemCaseSensitive(data, "session");
+  const cJSON* id = cJSON_GetObjectItemCaseSensitive(session, "id");
+  if (!cJSON_IsString(id) || id->valuestring == NULL || id->valuestring[0] == '\0') {
+    ESP_LOGE(TAG, "create_session missing data.session.id");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  strncpy(out_session_id, id->valuestring, out_session_id_len - 1);
+  out_session_id[out_session_id_len - 1] = '\0';
+  ESP_LOGI(TAG, "create_session ok sid=%s", out_session_id);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
 /* ── public: send message ── */
 
 esp_err_t bb_agent_send_message(const char* text, const char* session_id, const char* driver_name,

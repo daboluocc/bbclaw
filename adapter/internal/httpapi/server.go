@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -75,6 +76,11 @@ type Server struct {
 	agentCancel   context.CancelFunc
 	agentSessions *sessionRegistry
 
+	// sessions is the logical-session table (ADR-014). Optional: when nil
+	// the LAN-direct agent path falls back to legacy behaviour. Set via
+	// SetSessionManager from main.go.
+	sessions *logicalsession.Manager
+
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
 	notifQueue *NotificationQueue
@@ -106,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
+	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
 	mux.HandleFunc("GET /v1/agent/sessions/{id}/messages", s.withAuth(s.handleAgentSessionMessages))
 	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", s.withAuth(s.handleAgentDeleteSession))
 	mux.HandleFunc("GET /ws", s.handleWebSocket)

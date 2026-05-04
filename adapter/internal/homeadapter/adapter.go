@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
@@ -45,6 +46,11 @@ type Adapter struct {
 	// agent.message request arrives, so existing test fixtures that build
 	// an Adapter literal keep working without changes.
 	agentSessions *agentProxyRegistry
+
+	// sessions is the logical-session table (ADR-014). Optional: when nil the
+	// adapter falls back to legacy behaviour (raw CLI session ids on the
+	// wire). Set via SetSessionManager from main.go.
+	sessions *logicalsession.Manager
 }
 
 type Status struct {
@@ -91,6 +97,12 @@ func (a *Adapter) Status() Status {
 // explicit driver field are dispatched through the agent bus instead of the
 // openclaw sink.
 func (a *Adapter) SetRouter(r *agent.Router) { a.router = r }
+
+// SetSessionManager attaches the logical-session table (ADR-014). When set,
+// inbound sessionId fields prefixed "ls-" are resolved through the manager
+// to the underlying CLI session id, and SESSION_NOT_FOUND retries write the
+// new CLI id back. nil disables the manager-aware path entirely.
+func (a *Adapter) SetSessionManager(m *logicalsession.Manager) { a.sessions = m }
 
 func (a *Adapter) setStatus(connected bool, lastErr error) {
 	a.mu.Lock()

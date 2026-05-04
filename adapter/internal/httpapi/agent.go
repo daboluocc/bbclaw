@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 )
 
 // Session sweeper tunables. Sessions inactive for more than sessionTTL are
@@ -102,6 +103,12 @@ func (s *Server) SetAgentDriver(d agent.Driver) {
 	r.Register(d, s.log)
 	s.SetAgentRouter(r)
 }
+
+// SetSessionManager attaches the logical-session table (ADR-014). When set,
+// inbound sessionId fields prefixed "ls-" are resolved through the manager
+// to the underlying CLI session id, and SESSION_NOT_FOUND retries write the
+// new CLI id back. nil disables the manager-aware path entirely.
+func (s *Server) SetSessionManager(m *logicalsession.Manager) { s.sessions = m }
 
 // SetAgentRouter attaches a multi-driver router to the server. Pass nil to
 // disable the /v1/agent/* endpoints. Starts the long-lived session sweeper
@@ -361,8 +368,92 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		sid   agent.SessionID
 		isNew bool
 	)
-	if requested := strings.TrimSpace(req.SessionId); requested != "" {
-		if entry, found := s.agentSessions.get(requested); found {
+	requestedSession := strings.TrimSpace(req.SessionId)
+
+	// ADR-014 Phase B: when a logical-session manager is configured, resolve
+	// "ls-"-prefixed ids and auto-mint on empty. Legacy raw cli ids fall
+	// through to the existing path unchanged for backward compatibility.
+	//
+	// logicalID is the logical id we'll write into the session frame and
+	// touch on success. resumeFromLogical is what we pass to drv.Start as
+	// ResumeID — taken from the logical's CLISessionID (may be "" for first
+	// turn). When logicalID stays "" we use legacy semantics.
+	var (
+		logicalID         logicalsession.ID
+		resumeFromLogical string
+		usingLogical      bool
+	)
+	if s.sessions != nil {
+		switch {
+		case strings.HasPrefix(requestedSession, "ls-"):
+			ls, ok := s.sessions.Get(logicalsession.ID(requestedSession))
+			if !ok {
+				// Don't silently mint a new logical id — would surprise the
+				// user. Emit a streamed error frame so the firmware can
+				// surface it the same way it surfaces other turn errors.
+				sw, ok := newFinishStreamWriter(w)
+				if !ok {
+					writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "STREAMING_NOT_SUPPORTED"})
+					return
+				}
+				_ = sw.write(map[string]any{
+					"type":  "error",
+					"error": "UNKNOWN_LOGICAL_SESSION",
+					"text":  "logical session not found: " + requestedSession,
+				})
+				return
+			}
+			logicalID = ls.ID
+			resumeFromLogical = ls.CLISessionID
+			usingLogical = true
+			// If the logical session's CLISessionID matches a live cli entry,
+			// honor the existing pinning behaviour by treating that as a hit.
+			if resumeFromLogical != "" {
+				if entry, found := s.agentSessions.get(resumeFromLogical); found {
+					if requestedDriver != "" && requestedDriver != entry.driverName {
+						writeJSON(w, http.StatusBadRequest, response{
+							OK:     false,
+							Error:  "SESSION_DRIVER_MISMATCH",
+							Detail: "sessionId is pinned to driver=" + entry.driverName + ", request asked for driver=" + requestedDriver,
+						})
+						return
+					}
+					pinned, found2 := s.router.Get(entry.driverName)
+					if !found2 {
+						writeJSON(w, http.StatusInternalServerError, response{
+							OK:     false,
+							Error:  "UNKNOWN_DRIVER",
+							Detail: "session references unregistered driver: " + entry.driverName,
+						})
+						return
+					}
+					drv = pinned
+					driverName = entry.driverName
+					sid = entry.sid
+					isNew = false
+				}
+			}
+		case requestedSession == "":
+			// Auto-mint a logical session so future turns can come back with
+			// its stable id. Cwd defaults to the manager's configured value.
+			deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+			ls, err := s.sessions.Create(deviceID, driverName, "", "")
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, response{
+					OK:     false,
+					Error:  "CREATE_SESSION_FAILED",
+					Detail: err.Error(),
+				})
+				return
+			}
+			logicalID = ls.ID
+			usingLogical = true
+		}
+	}
+
+	if !usingLogical && requestedSession != "" {
+		// Legacy raw CLI id path (Phase A backward compat).
+		if entry, found := s.agentSessions.get(requestedSession); found {
 			// Sessions are pinned to the driver that started them. If the
 			// caller supplied an explicit driver that disagrees, fail loudly
 			// with a 400 instead of silently switching drivers mid-
@@ -398,137 +489,276 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "STREAMING_NOT_SUPPORTED"})
 		return
 	}
-	if sid == "" {
-		// Two cases reach here:
-		//   1. No sessionId in the request → start a brand-new session.
-		//   2. sessionId was provided, but it's not in our in-memory registry
-		//      (adapter restarted, sweeper evicted it, or the device picked a
-		//      session from disk via the picker). In that case we MUST resume
-		//      it via StartOpts.ResumeID so the agent has the prior context —
-		//      otherwise the firmware sends sid=719a6a7e and gets back
-		//      sid=cc-<new> isNew=1 with no memory of the conversation.
-		startOpts := agent.StartOpts{}
-		isResumeAttempt := false
-		if requested := strings.TrimSpace(req.SessionId); requested != "" {
-			startOpts.ResumeID = requested
-			isResumeAttempt = true
-		}
-		newSid, err := drv.Start(s.agentCtx, startOpts)
-		if err != nil {
-			_ = sw.write(map[string]any{"type": "error", "error": "AGENT_START_FAILED", "detail": err.Error()})
-			return
-		}
-		sid = newSid
-		// When resuming, the device already knows this session (it picked
-		// it). Reporting isNew=true would lie about that and trigger the
-		// firmware's "fresh session" UX. Set isNew=false on resume — the
-		// claude-code CLI's --resume continues the same JSONL.
-		isNew = !isResumeAttempt
-		s.agentSessions.put(string(sid), &sessionEntry{
-			sid:        sid,
-			driverName: driverName,
-			lastUsed:   time.Now(),
-			state:      "running",
-		})
-	} else {
-		s.agentSessions.setState(string(sid), "running")
-	}
-
-	// Emit the session frame first so the client learns (or confirms) the
-	// sessionId before any text arrives.
-	if err := sw.write(map[string]any{
-		"type":      "session",
-		"sessionId": string(sid),
-		"isNew":     isNew,
-		"driver":    driverName,
-		"seq":       0,
-	}); err != nil {
-		s.log.Warnf("agent: write session frame failed: %v", err)
-		return
-	}
-
-	// Bump lastUsed now that we've committed to serving this turn.
-	s.agentSessions.touch(string(sid))
-
-	events := drv.Events(sid)
-
-	// Send blocks until the subprocess exits and emits EvTurnEnd. Run it in
-	// a goroutine so we can drain events concurrently.
-	sendErrCh := make(chan error, 1)
-	go func() { sendErrCh <- drv.Send(sid, text) }()
-
 	s.metrics.Inc("agent_message_start")
-	s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v text_chars=%d", driverName, sid, isNew, len(text))
+	ctx := r.Context()
 
+	// Outer loop wraps one or two attempts. Attempt 0 resumes the requested
+	// session; attempt 1 fires only if the driver emits SESSION_NOT_FOUND
+	// (ADR-014) — we mint a fresh session and re-send the user text so the
+	// device sees a clean turn instead of a generic AGENT_TURN_FAILED.
+	const maxAttempts = 2
 	var (
 		textCount  int
 		errorCount int
 		lastError  string
 		lastText   string
 	)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		textCount = 0
+		errorCount = 0
+		lastError = ""
+		lastText = ""
+		sessionNotFound := false
 
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
+		if sid == "" {
+			// Reaches here on:
+			//   1. No sessionId in the request → start a brand-new session.
+			//   2. sessionId provided but not in registry (adapter restarted,
+			//      picker-loaded, etc.) → must resume so claude-code's
+			//      --resume continues the same JSONL.
+			//   3. Retry after SESSION_NOT_FOUND (attempt > 0) → no resume.
+			startOpts := agent.StartOpts{}
+			isResumeAttempt := false
+			if attempt == 0 {
+				switch {
+				case usingLogical:
+					// Logical session path: ResumeID comes from the logical's
+					// stored CLISessionID (may be "" on first turn — that's
+					// fine, drv.Start handles empty resume).
+					if resumeFromLogical != "" {
+						startOpts.ResumeID = resumeFromLogical
+						isResumeAttempt = true
+					}
+				case requestedSession != "":
+					// Legacy raw cli id path.
+					startOpts.ResumeID = requestedSession
+					isResumeAttempt = true
+				}
+			}
+			newSid, err := drv.Start(s.agentCtx, startOpts)
+			if err != nil {
+				_ = sw.write(map[string]any{"type": "error", "error": "AGENT_START_FAILED", "detail": err.Error()})
+				return
+			}
+			sid = newSid
+			isNew = !isResumeAttempt
+			s.agentSessions.put(string(sid), &sessionEntry{
+				sid:        sid,
+				driverName: driverName,
+				lastUsed:   time.Now(),
+				state:      "running",
+			})
+			// Write back the freshly-minted CLI session id to the logical
+			// table. Done on every Start (including retry) so the logical's
+			// CLISessionID always tracks the live conversation.
+			if usingLogical && logicalID != "" {
+				if err := s.sessions.UpdateCLISessionID(logicalID, string(sid)); err != nil {
+					s.log.Warnf("agent: UpdateCLISessionID logical=%s cli=%s err=%v", logicalID, sid, err)
+				}
+			}
+		} else {
+			s.agentSessions.setState(string(sid), "running")
+		}
+
+		// Emit the session frame so the client learns (or confirms) the
+		// sessionId before any text arrives. On retry, the device sees a
+		// second session frame with the new sid+isNew=true — exactly what
+		// its NVS needs to update.
+		//
+		// When the logical-session manager is in play, the device-visible id
+		// in the frame is the *logical* id (stable across cli rotation), not
+		// the cli sid (which can change on SESSION_NOT_FOUND retry).
+		visibleSessionID := string(sid)
+		if usingLogical && logicalID != "" {
+			visibleSessionID = string(logicalID)
+		}
+		if err := sw.write(map[string]any{
+			"type":      "session",
+			"sessionId": visibleSessionID,
+			"isNew":     isNew,
+			"driver":    driverName,
+			"seq":       0,
+		}); err != nil {
+			s.log.Warnf("agent: write session frame failed: %v", err)
 			return
-		case ev, ok := <-events:
-			if !ok {
-				// Driver closed the channel (session ended on its side);
-				// drop the registry entry so we don't resurrect a dead sid.
-				s.agentSessions.mu.Lock()
-				delete(s.agentSessions.sessions, string(sid))
-				s.agentSessions.mu.Unlock()
-				return
-			}
-			switch ev.Type {
-			case agent.EvText:
-				textCount++
-				lastText = ev.Text
-			case agent.EvError:
-				errorCount++
-				lastError = ev.Text
-				s.agentSessions.setState(string(sid), "error")
-			}
-			if !s.writeAgentEvent(sw, ev) {
-				return
-			}
-			if ev.Type == agent.EvTurnEnd {
-				// Wait for Send to return so we log its error properly.
-				if sendErr := <-sendErrCh; sendErr != nil {
-					s.log.Errorf("phase=agent_send_failed driver=%s sid=%s err=%v", driverName, sid, sendErr)
-				}
-				s.agentSessions.setState(string(sid), "completed")
+		}
+		s.agentSessions.touch(string(sid))
 
-				// Phase S3: push notification for this turn_end.
-				// Firmware filters out notifications for its active session.
-				notifType := "turn_end"
-				if errorCount > 0 && textCount == 0 {
-					notifType = "error"
-				}
-				s.pushNotification(SessionNotification{
-					SessionID: string(sid),
-					Driver:    driverName,
-					Type:      notifType,
-					Preview:   lastText,
-				})
+		if attempt == 0 {
+			s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v text_chars=%d", driverName, sid, isNew, len(text))
+		} else {
+			s.log.Warnf("phase=agent_retry driver=%s sid=%s attempt=%d reason=SESSION_NOT_FOUND",
+				driverName, sid, attempt)
+		}
 
-				if errorCount > 0 && textCount == 0 {
-					s.metrics.Inc("agent_message_error_only")
-					s.log.Warnf("phase=agent_done_error_only driver=%s sid=%s errors=%d last=%q",
-						driverName, sid, errorCount, lastError)
-				} else {
-					s.metrics.Inc("agent_message_ok")
-					s.log.Infof("phase=agent_done driver=%s sid=%s text=%d errors=%d",
-						driverName, sid, textCount, errorCount)
-				}
+		events := drv.Events(sid)
+		sendErrCh := make(chan error, 1)
+		curSid := sid
+		go func() { sendErrCh <- drv.Send(curSid, text) }()
+
+		channelClosed := false
+		turnEnded := false
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case ev, ok := <-events:
+				if !ok {
+					// Driver closed the channel (session ended on its side);
+					// drop the registry entry so we don't resurrect a dead sid.
+					s.agentSessions.mu.Lock()
+					delete(s.agentSessions.sessions, string(sid))
+					s.agentSessions.mu.Unlock()
+					channelClosed = true
+					break loop
+				}
+				switch ev.Type {
+				case agent.EvText:
+					textCount++
+					lastText = ev.Text
+				case agent.EvError:
+					errorCount++
+					lastError = ev.Text
+					s.agentSessions.setState(string(sid), "error")
+					if strings.HasPrefix(ev.Text, "SESSION_NOT_FOUND") {
+						sessionNotFound = true
+					}
+				case agent.EvTurnEnd:
+					turnEnded = true
+				}
+				// Suppress the SESSION_NOT_FOUND error frame on the attempt
+				// we plan to retry — the device should not see a transient
+				// error message that we're about to recover from.
+				if ev.Type == agent.EvError && sessionNotFound && attempt+1 < maxAttempts {
+					// skip emit
+				} else if !s.writeAgentEvent(sw, ev) {
+					return
+				}
+				if ev.Type == agent.EvTurnEnd {
+					break loop
+				}
 			}
 		}
+
+		if sendErr := <-sendErrCh; sendErr != nil {
+			s.log.Errorf("phase=agent_send_failed driver=%s sid=%s err=%v attempt=%d",
+				driverName, sid, sendErr, attempt)
+		}
+
+		if sessionNotFound && attempt+1 < maxAttempts {
+			// Drop the dead session and force a fresh start on next iteration.
+			s.agentSessions.mu.Lock()
+			delete(s.agentSessions.sessions, string(sid))
+			s.agentSessions.mu.Unlock()
+			sid = ""
+			isNew = false
+			s.metrics.Inc("agent_message_session_not_found_retry")
+			continue
+		}
+
+		// Final attempt: finalize state and notification, then return.
+		if !channelClosed {
+			s.agentSessions.setState(string(sid), "completed")
+		}
+		// Bump LastUsedAt on the logical session so the picker can sort by
+		// recency. Done after the turn settles (post-retry) so a transient
+		// SESSION_NOT_FOUND doesn't double-bump.
+		if usingLogical && logicalID != "" && turnEnded {
+			if err := s.sessions.Touch(logicalID); err != nil {
+				s.log.Warnf("agent: Touch logical=%s err=%v", logicalID, err)
+			}
+		}
+		if turnEnded {
+			notifType := "turn_end"
+			if errorCount > 0 && textCount == 0 {
+				notifType = "error"
+			}
+			notifSID := string(sid)
+			if usingLogical && logicalID != "" {
+				notifSID = string(logicalID)
+			}
+			s.pushNotification(SessionNotification{
+				SessionID: notifSID,
+				Driver:    driverName,
+				Type:      notifType,
+				Preview:   lastText,
+			})
+		}
+		if errorCount > 0 && textCount == 0 {
+			s.metrics.Inc("agent_message_error_only")
+			s.log.Warnf("phase=agent_done_error_only driver=%s sid=%s errors=%d last=%q",
+				driverName, sid, errorCount, lastError)
+		} else {
+			s.metrics.Inc("agent_message_ok")
+			s.log.Infof("phase=agent_done driver=%s sid=%s text=%d errors=%d",
+				driverName, sid, textCount, errorCount)
+		}
+		return
 	}
 }
 
+// agentSessionCreateRequest is the body for POST /v1/agent/sessions.
+// Per ADR-014 the device never picks the cwd — it's preconfigured in the
+// adapter's `BBCLAW_DEFAULT_CWD` (or, future: a named cwd pool selected by
+// the cloud admin console).
+type agentSessionCreateRequest struct {
+	Driver string `json:"driver,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Cwd    string `json:"cwd,omitempty"` // optional override; defaults to manager's default
+}
+
+// handleAgentSessionCreate mints a new logical session (ADR-014).
+//
+//	POST /v1/agent/sessions
+//	{"driver":"claude-code","title":"...","cwd":"..."}
+//	→ {"ok":true,"data":{"session":{...}}}
+//
+// The CLI conversation is NOT spawned here — that happens lazily on the
+// first /v1/agent/message turn referencing this session. This keeps "new
+// session" UX cheap and avoids spawning subprocesses we may never need.
+func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "LOGICAL_SESSIONS_DISABLED"})
+		return
+	}
+
+	var req agentSessionCreateRequest
+	if r.Body != nil {
+		// Empty body is fine — defaults will apply.
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	driver := strings.TrimSpace(req.Driver)
+	if driver == "" {
+		if d := s.router.Default(); d != nil {
+			driver = d.Name()
+		} else {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "DRIVER_REQUIRED"})
+			return
+		}
+	}
+	if _, ok := s.router.Get(driver); !ok {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "UNKNOWN_DRIVER", Detail: driver})
+		return
+	}
+
+	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	sess, err := s.sessions.Create(deviceID, driver, strings.TrimSpace(req.Cwd), strings.TrimSpace(req.Title))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "CREATE_SESSION_FAILED", Detail: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"session": sess}})
+}
+
 // handleAgentDeleteSession removes a session from the registry and stops it.
+// When the id has the "ls-" prefix it's also dropped from the logical-session
+// table; otherwise we treat it as a CLI-native id (ADR-014 phase A backward-
+// compat for legacy firmware that still sends raw cli ids).
 //
 //	DELETE /v1/agent/sessions/{id}
 func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -539,6 +769,32 @@ func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request
 	sessionID := r.PathValue("id")
 	if sessionID == "" {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "SESSION_ID_REQUIRED"})
+		return
+	}
+
+	// Logical session path (ADR-014).
+	if s.sessions != nil && strings.HasPrefix(sessionID, "ls-") {
+		ls, ok := s.sessions.Get(logicalsession.ID(sessionID))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, response{OK: false, Error: "SESSION_NOT_FOUND"})
+			return
+		}
+		// Best-effort tear down of the underlying CLI conversation if we
+		// know it. Stop is idempotent across drivers.
+		if ls.CLISessionID != "" {
+			if drv, ok := s.router.Get(ls.Driver); ok {
+				_ = drv.Stop(agent.SessionID(ls.CLISessionID))
+			}
+			s.agentSessions.mu.Lock()
+			delete(s.agentSessions.sessions, ls.CLISessionID)
+			s.agentSessions.mu.Unlock()
+		}
+		if err := s.sessions.Delete(ls.ID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "DELETE_SESSION_FAILED", Detail: err.Error()})
+			return
+		}
+		s.log.Infof("agent: deleted logical session=%s driver=%s cli=%s", ls.ID, ls.Driver, ls.CLISessionID)
+		writeJSON(w, http.StatusOK, response{OK: true})
 		return
 	}
 
