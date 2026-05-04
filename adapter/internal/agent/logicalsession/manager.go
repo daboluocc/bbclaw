@@ -214,6 +214,15 @@ func (m *Manager) SetTitle(id ID, title string) error {
 	})
 }
 
+// UpdateCwd updates the cwd. Persists. Empty cwd is written verbatim — unlike
+// Create, we don't substitute defaultCwd here because admin tools may
+// intentionally clear the field.
+func (m *Manager) UpdateCwd(id ID, cwd string) error {
+	return m.mutate(id, func(s *LogicalSession) {
+		s.Cwd = cwd
+	})
+}
+
 // Delete removes a session. Persists.
 func (m *Manager) Delete(id ID) error {
 	m.mu.Lock()

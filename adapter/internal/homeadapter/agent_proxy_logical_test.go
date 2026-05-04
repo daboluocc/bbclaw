@@ -193,6 +193,180 @@ func TestAgentProxyLogicalSessionAutoMintOnEmpty(t *testing.T) {
 	}
 }
 
+func TestAgentProxySessionsUpdate(t *testing.T) {
+	drv := newRecordingProxyDriver("never-used")
+	a, mgr := newProxyTestAdapterWithMgr(t, drv)
+
+	ls, err := mgr.Create("device-x", "claude-code", "/old", "old")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var (
+		mu  sync.Mutex
+		got []CloudEnvelope
+	)
+	write := func(env CloudEnvelope) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, env)
+		return nil
+	}
+
+	// Happy path: title + cwd.
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-up-1", DeviceID: "device-x", Kind: "agent.sessions.update",
+		Payload: map[string]any{
+			"sessionId": string(ls.ID),
+			"title":     "new",
+			"cwd":       "/new",
+		},
+	}); err != nil {
+		t.Fatalf("handleRequest: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0].Kind != "agent.sessions.update.reply" {
+		mu.Unlock()
+		t.Fatalf("update reply shape wrong: %+v", got)
+	}
+	sess, ok := got[0].Payload["session"].(*logicalsession.LogicalSession)
+	if !ok {
+		// JSON-style decoded as map[string]any path doesn't apply here since
+		// we never crossed JSON; payload should still hold the typed pointer.
+		t.Fatalf("payload.session not LogicalSession pointer: got %T", got[0].Payload["session"])
+	}
+	if sess.Title != "new" || sess.Cwd != "/new" {
+		t.Errorf("update returned title=%q cwd=%q want new/new", sess.Title, sess.Cwd)
+	}
+	mu.Unlock()
+	stored, _ := mgr.Get(ls.ID)
+	if stored.Title != "new" || stored.Cwd != "/new" {
+		t.Errorf("manager state title=%q cwd=%q want new/new", stored.Title, stored.Cwd)
+	}
+
+	// Empty patch.
+	mu.Lock()
+	got = got[:0]
+	mu.Unlock()
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-up-2", DeviceID: "device-x", Kind: "agent.sessions.update",
+		Payload: map[string]any{"sessionId": string(ls.ID)},
+	}); err != nil {
+		t.Fatalf("handleRequest empty: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0].Payload["error"] != "EMPTY_PATCH" {
+		mu.Unlock()
+		t.Fatalf("expected EMPTY_PATCH reply: %+v", got)
+	}
+	mu.Unlock()
+
+	// NOT_LOGICAL.
+	mu.Lock()
+	got = got[:0]
+	mu.Unlock()
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-up-3", DeviceID: "device-x", Kind: "agent.sessions.update",
+		Payload: map[string]any{"sessionId": "cc-raw", "title": "x"},
+	}); err != nil {
+		t.Fatalf("handleRequest non-logical: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0].Payload["error"] != "NOT_LOGICAL" {
+		mu.Unlock()
+		t.Fatalf("expected NOT_LOGICAL reply: %+v", got)
+	}
+	mu.Unlock()
+
+	// SESSION_NOT_FOUND.
+	mu.Lock()
+	got = got[:0]
+	mu.Unlock()
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-up-4", DeviceID: "device-x", Kind: "agent.sessions.update",
+		Payload: map[string]any{"sessionId": "ls-missing", "title": "x"},
+	}); err != nil {
+		t.Fatalf("handleRequest missing: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0].Payload["error"] != "SESSION_NOT_FOUND" {
+		mu.Unlock()
+		t.Fatalf("expected SESSION_NOT_FOUND reply: %+v", got)
+	}
+	mu.Unlock()
+}
+
+func TestAgentProxySessionsListLogical(t *testing.T) {
+	drv := newRecordingProxyDriver("never-used")
+	a, mgr := newProxyTestAdapterWithMgr(t, drv)
+
+	if _, err := mgr.Create("device-A", "claude-code", "/a1", ""); err != nil {
+		t.Fatalf("Create A1: %v", err)
+	}
+	if _, err := mgr.Create("device-A", "claude-code", "/a2", ""); err != nil {
+		t.Fatalf("Create A2: %v", err)
+	}
+	if _, err := mgr.Create("device-B", "claude-code", "/b1", ""); err != nil {
+		t.Fatalf("Create B1: %v", err)
+	}
+
+	var (
+		mu  sync.Mutex
+		got []CloudEnvelope
+	)
+	write := func(env CloudEnvelope) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, env)
+		return nil
+	}
+
+	// Filter by deviceId.
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-list-1", Kind: "agent.sessions.list.logical",
+		Payload: map[string]any{"deviceId": "device-A"},
+	}); err != nil {
+		t.Fatalf("handleRequest: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 || got[0].Kind != "agent.sessions.list.logical.reply" {
+		mu.Unlock()
+		t.Fatalf("list reply shape wrong: %+v", got)
+	}
+	sessions, ok := got[0].Payload["sessions"].([]*logicalsession.LogicalSession)
+	if !ok {
+		mu.Unlock()
+		t.Fatalf("payload.sessions wrong type: %T", got[0].Payload["sessions"])
+	}
+	if len(sessions) != 2 {
+		mu.Unlock()
+		t.Fatalf("device-A list len=%d want 2", len(sessions))
+	}
+	mu.Unlock()
+
+	// No filter → 3.
+	mu.Lock()
+	got = got[:0]
+	mu.Unlock()
+	if err := a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-list-2", Kind: "agent.sessions.list.logical",
+		Payload: map[string]any{},
+	}); err != nil {
+		t.Fatalf("handleRequest: %v", err)
+	}
+	mu.Lock()
+	if len(got) != 1 {
+		mu.Unlock()
+		t.Fatalf("got %d envelopes, want 1", len(got))
+	}
+	sessions, _ = got[0].Payload["sessions"].([]*logicalsession.LogicalSession)
+	if len(sessions) != 3 {
+		mu.Unlock()
+		t.Fatalf("no-filter list len=%d want 3", len(sessions))
+	}
+	mu.Unlock()
+}
+
 func TestAgentProxyUnknownLogicalSession(t *testing.T) {
 	drv := newRecordingProxyDriver("never-used")
 	a, mgr := newProxyTestAdapterWithMgr(t, drv)

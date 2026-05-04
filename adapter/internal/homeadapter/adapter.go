@@ -294,6 +294,16 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// through this kind so device-side "+ 新建 session" works in
 		// cloud_saas mode the same as on LAN.
 		return a.handleAgentSessionsCreateRequest(write, env)
+	case "agent.sessions.update":
+		// ADR-014 admin: cloud proxies web admin PATCH /v1/agent/sessions/{id}
+		// for editing logical session title/cwd.
+		return a.handleAgentSessionsUpdateRequest(write, env)
+	case "agent.sessions.list.logical":
+		// ADR-014 admin: cloud proxies web admin GET /v1/agent/sessions?kind=logical.
+		return a.handleAgentSessionsListLogicalRequest(write, env)
+	case "agent.sessions.delete":
+		// ADR-014 admin: cloud proxies web admin DELETE /v1/agent/sessions/{id}.
+		return a.handleAgentSessionsDeleteRequest(write, env)
 	case "agent.messages":
 		// Phase S3 cloud proxy: cloud reverse-proxies firmware
 		// /v1/agent/sessions/{id}/messages history requests through this kind.

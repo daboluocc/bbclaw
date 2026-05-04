@@ -341,3 +341,30 @@ func TestSetTitle(t *testing.T) {
 		t.Errorf("SetTitle on missing id should fail")
 	}
 }
+
+func TestUpdateCwd(t *testing.T) {
+	m, _ := newTestManager(t)
+	s, err := m.Create("dev-1", "claude-code", "/old/path", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.UpdateCwd(s.ID, "/new/path"); err != nil {
+		t.Fatalf("UpdateCwd: %v", err)
+	}
+	got, _ := m.Get(s.ID)
+	if got.Cwd != "/new/path" {
+		t.Errorf("cwd=%q want %q", got.Cwd, "/new/path")
+	}
+	// Empty cwd is written verbatim — UpdateCwd does not fall back to
+	// defaultCwd the way Create does.
+	if err := m.UpdateCwd(s.ID, ""); err != nil {
+		t.Fatalf("UpdateCwd empty: %v", err)
+	}
+	got, _ = m.Get(s.ID)
+	if got.Cwd != "" {
+		t.Errorf("cwd=%q want empty", got.Cwd)
+	}
+	if err := m.UpdateCwd("ls-doesnotexist", "/x"); err == nil {
+		t.Errorf("UpdateCwd on missing id should fail")
+	}
+}

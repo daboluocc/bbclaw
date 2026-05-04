@@ -221,9 +221,20 @@ type agentMessageRequest struct {
 //
 //	GET /v1/agent/sessions?driver=claude-code&limit=6
 //	response: {"ok":true,"data":{"sessions":[{"id":"...","preview":"...","lastUsed":1714000000,"messageCount":8}]}}
+//
+// The optional `kind=logical` query switches the source from the driver's
+// own session list (CLI-native) to the logical-session manager (ADR-014).
+// When kind=logical, deviceId/driver are filters rather than required, and
+// the response carries the LogicalSession shape instead of SessionInfo.
 func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
 	if s.router == nil {
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	if kind == "logical" {
+		s.handleAgentSessionsLogical(w, r)
 		return
 	}
 
@@ -753,6 +764,110 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"session": sess}})
+}
+
+// handleAgentSessionsLogical lists rows from the logical-session manager
+// (ADR-014). Filters: deviceId (empty matches any), driver (empty matches
+// any). Limit defaults to 50, capped at 200.
+func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "LOGICAL_SESSIONS_DISABLED"})
+		return
+	}
+	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	driverName := strings.TrimSpace(r.URL.Query().Get("driver"))
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	sessions := s.sessions.List(deviceID, driverName, limit)
+	if sessions == nil {
+		sessions = []*logicalsession.LogicalSession{}
+	}
+	writeJSON(w, http.StatusOK, response{
+		OK:   true,
+		Data: map[string]any{"sessions": sessions},
+	})
+}
+
+// agentSessionUpdateRequest is the body for PATCH /v1/agent/sessions/{id}.
+// Both fields are optional pointers so we can distinguish "not present" from
+// "present but empty". Empty cwd clears the field per Manager.UpdateCwd.
+type agentSessionUpdateRequest struct {
+	Title *string `json:"title,omitempty"`
+	Cwd   *string `json:"cwd,omitempty"`
+}
+
+// handleAgentSessionUpdate applies a partial update to a logical session
+// (ADR-014). Title and cwd are independently optional; an entirely empty
+// patch is a 400.
+//
+//	PATCH /v1/agent/sessions/{id}
+//	{"title":"...","cwd":"..."}
+//	→ {"ok":true,"data":{"session":{...}}}
+func (s *Server) handleAgentSessionUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "LOGICAL_SESSIONS_DISABLED"})
+		return
+	}
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "SESSION_ID_REQUIRED"})
+		return
+	}
+	if !strings.HasPrefix(sessionID, "ls-") {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "NOT_LOGICAL", Detail: "id must have ls- prefix"})
+		return
+	}
+
+	var req agentSessionUpdateRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST"})
+			return
+		}
+	}
+	if req.Title == nil && req.Cwd == nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_PATCH"})
+		return
+	}
+
+	if _, ok := s.sessions.Get(logicalsession.ID(sessionID)); !ok {
+		writeJSON(w, http.StatusNotFound, response{OK: false, Error: "SESSION_NOT_FOUND"})
+		return
+	}
+	if req.Title != nil {
+		if err := s.sessions.SetTitle(logicalsession.ID(sessionID), *req.Title); err != nil {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "UPDATE_SESSION_FAILED", Detail: err.Error()})
+			return
+		}
+	}
+	if req.Cwd != nil {
+		if err := s.sessions.UpdateCwd(logicalsession.ID(sessionID), *req.Cwd); err != nil {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "UPDATE_SESSION_FAILED", Detail: err.Error()})
+			return
+		}
+	}
+
+	updated, ok := s.sessions.Get(logicalsession.ID(sessionID))
+	if !ok {
+		// Race against Delete; surface the same shape as the up-front check.
+		writeJSON(w, http.StatusNotFound, response{OK: false, Error: "SESSION_NOT_FOUND"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{
+		OK:   true,
+		Data: map[string]any{"session": updated},
+	})
 }
 
 // handleAgentDeleteSession removes a session from the registry and stops it.

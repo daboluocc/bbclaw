@@ -212,6 +212,163 @@ func (a *Adapter) handleAgentSessionsCreateRequest(write func(CloudEnvelope) err
 	return reply(map[string]any{"session": sess})
 }
 
+// handleAgentSessionsUpdateRequest applies a partial update to a logical
+// session via the cloud relay (ADR-014). Cloud sends:
+//
+//	{type:"request", kind:"agent.sessions.update",
+//	 payload:{sessionId, title?, cwd?}}
+//
+// Reply kind="agent.sessions.update.reply" with {session:{...}} on success
+// or {error, detail} on failure. Validation matches the LAN-direct PATCH:
+// missing id, non-ls id, empty patch, and unknown id all surface as their
+// own error codes.
+func (a *Adapter) handleAgentSessionsUpdateRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.update.reply",
+			Payload:    payload,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	if a.sessions == nil {
+		return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+	}
+	sid, _ := env.Payload["sessionId"].(string)
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return reply(map[string]any{"error": "SESSION_ID_REQUIRED"})
+	}
+	if !strings.HasPrefix(sid, "ls-") {
+		return reply(map[string]any{"error": "NOT_LOGICAL", "detail": "id must have ls- prefix"})
+	}
+
+	titleRaw, hasTitle := env.Payload["title"]
+	cwdRaw, hasCwd := env.Payload["cwd"]
+	if !hasTitle && !hasCwd {
+		return reply(map[string]any{"error": "EMPTY_PATCH"})
+	}
+
+	if _, ok := a.sessions.Get(logicalsession.ID(sid)); !ok {
+		return reply(map[string]any{"error": "SESSION_NOT_FOUND"})
+	}
+	if hasTitle {
+		title, _ := titleRaw.(string)
+		if err := a.sessions.SetTitle(logicalsession.ID(sid), title); err != nil {
+			return reply(map[string]any{"error": "UPDATE_SESSION_FAILED", "detail": err.Error()})
+		}
+	}
+	if hasCwd {
+		cwd, _ := cwdRaw.(string)
+		if err := a.sessions.UpdateCwd(logicalsession.ID(sid), cwd); err != nil {
+			return reply(map[string]any{"error": "UPDATE_SESSION_FAILED", "detail": err.Error()})
+		}
+	}
+	updated, ok := a.sessions.Get(logicalsession.ID(sid))
+	if !ok {
+		return reply(map[string]any{"error": "SESSION_NOT_FOUND"})
+	}
+	return reply(map[string]any{"session": updated})
+}
+
+// handleAgentSessionsListLogicalRequest lists logical sessions via the cloud
+// relay (ADR-014). Cloud sends:
+//
+//	{type:"request", kind:"agent.sessions.list.logical",
+//	 payload:{deviceId?, driver?, limit?}}
+//
+// Reply kind="agent.sessions.list.logical.reply" with {sessions:[...]} on
+// success or {error, detail} on failure. Filters mirror the LAN-direct
+// kind=logical query: empty deviceId/driver matches all.
+func (a *Adapter) handleAgentSessionsListLogicalRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.list.logical.reply",
+			Payload:    payload,
+		})
+	}
+	if a.sessions == nil {
+		return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+	}
+	deviceID, _ := env.Payload["deviceId"].(string)
+	deviceID = strings.TrimSpace(deviceID)
+	driverName, _ := env.Payload["driver"].(string)
+	driverName = strings.TrimSpace(driverName)
+	limit := 50
+	if l, ok := env.Payload["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	sessions := a.sessions.List(deviceID, driverName, limit)
+	if sessions == nil {
+		sessions = []*logicalsession.LogicalSession{}
+	}
+	return reply(map[string]any{"sessions": sessions})
+}
+
+// handleAgentSessionsDeleteRequest removes a logical session via the cloud
+// relay (ADR-014 admin). Cloud sends:
+//
+//	{type:"request", kind:"agent.sessions.delete",
+//	 payload:{sessionId}}
+//
+// Reply kind="agent.sessions.delete.reply" with {ok:true} on success or
+// {error, detail} on failure. Mirrors the LAN-direct DELETE handler: only
+// "ls-" prefixed ids are accepted; the underlying CLI conversation (if any)
+// is best-effort stopped via Driver.Stop.
+func (a *Adapter) handleAgentSessionsDeleteRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.delete.reply",
+			Payload:    payload,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	if a.sessions == nil {
+		return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+	}
+
+	sid, _ := env.Payload["sessionId"].(string)
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return reply(map[string]any{"error": "SESSION_ID_REQUIRED"})
+	}
+	if !strings.HasPrefix(sid, "ls-") {
+		return reply(map[string]any{"error": "NOT_LOGICAL", "detail": "only logical (ls-) ids are deletable via this endpoint"})
+	}
+	ls, ok := a.sessions.Get(logicalsession.ID(sid))
+	if !ok {
+		return reply(map[string]any{"error": "SESSION_NOT_FOUND"})
+	}
+	// Best-effort tear-down of the underlying CLI conversation.
+	if ls.CLISessionID != "" {
+		if drv, ok := a.router.Get(ls.Driver); ok {
+			_ = drv.Stop(agent.SessionID(ls.CLISessionID))
+		}
+		if a.agentSessions != nil {
+			a.agentSessions.drop(ls.CLISessionID)
+		}
+	}
+	if err := a.sessions.Delete(ls.ID); err != nil {
+		return reply(map[string]any{"error": "DELETE_SESSION_FAILED", "detail": err.Error()})
+	}
+	return reply(map[string]any{"ok": true})
+}
+
 // handleAgentMessagesRequest is the home-adapter side of the cloud reverse
 // proxy for `GET /v1/agent/sessions/{id}/messages`. The cloud sends:
 //

@@ -113,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
 	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
+	mux.HandleFunc("PATCH /v1/agent/sessions/{id}", s.withAuth(s.handleAgentSessionUpdate))
 	mux.HandleFunc("GET /v1/agent/sessions/{id}/messages", s.withAuth(s.handleAgentSessionMessages))
 	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", s.withAuth(s.handleAgentDeleteSession))
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
