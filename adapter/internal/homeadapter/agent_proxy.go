@@ -154,6 +154,64 @@ func (a *Adapter) handleAgentSessionsRequest(write func(CloudEnvelope) error, en
 	})
 }
 
+// handleAgentSessionsCreateRequest mints a logical session via the
+// home-adapter's local manager when the cloud proxies a firmware
+// `POST /v1/agent/sessions` (ADR-014 phase B). The cloud sends:
+//
+//	{type:"request", kind:"agent.sessions.create",
+//	 payload:{driver, title?, cwd?, deviceId}}
+//
+// We reply with kind="agent.sessions.create.reply" and payload
+// {session:{id, driver, cwd, title, createdAt, lastUsedAt}} on success
+// or {error, detail} on failure. The CLI conversation is NOT spawned
+// here — it's lazily created on the first agent.message turn that
+// references this logical id.
+func (a *Adapter) handleAgentSessionsCreateRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.sessions.create.reply",
+			Payload:    payload,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	if a.sessions == nil {
+		return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+	}
+
+	driver, _ := env.Payload["driver"].(string)
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		if d := a.router.Default(); d != nil {
+			driver = d.Name()
+		} else {
+			return reply(map[string]any{"error": "DRIVER_REQUIRED"})
+		}
+	}
+	if _, ok := a.router.Get(driver); !ok {
+		return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": driver})
+	}
+
+	title, _ := env.Payload["title"].(string)
+	cwd, _ := env.Payload["cwd"].(string)
+	deviceID, _ := env.Payload["deviceId"].(string)
+	if deviceID == "" {
+		// Cloud should always thread this through; fall back to envelope's
+		// own DeviceID rather than refusing — keeps the path forgiving.
+		deviceID = env.DeviceID
+	}
+
+	sess, err := a.sessions.Create(strings.TrimSpace(deviceID), driver, strings.TrimSpace(cwd), strings.TrimSpace(title))
+	if err != nil {
+		return reply(map[string]any{"error": "CREATE_SESSION_FAILED", "detail": err.Error()})
+	}
+	return reply(map[string]any{"session": sess})
+}
+
 // handleAgentMessagesRequest is the home-adapter side of the cloud reverse
 // proxy for `GET /v1/agent/sessions/{id}/messages`. The cloud sends:
 //

@@ -289,6 +289,11 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		return a.handleAgentDriversRequest(write, env)
 	case "agent.sessions":
 		return a.handleAgentSessionsRequest(write, env)
+	case "agent.sessions.create":
+		// Phase B (ADR-014): cloud proxies firmware POST /v1/agent/sessions
+		// through this kind so device-side "+ 新建 session" works in
+		// cloud_saas mode the same as on LAN.
+		return a.handleAgentSessionsCreateRequest(write, env)
 	case "agent.messages":
 		// Phase S3 cloud proxy: cloud reverse-proxies firmware
 		// /v1/agent/sessions/{id}/messages history requests through this kind.
