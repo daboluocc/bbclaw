@@ -28,12 +28,13 @@ const (
 type EventType string
 
 const (
-	EvText     EventType = "text"      // assistant text fragment
-	EvToolCall EventType = "tool_call" // permission request (Capabilities.ToolApproval)
-	EvStatus   EventType = "status"    // running/waiting/idle/offline
-	EvTokens   EventType = "tokens"    // usage stats
-	EvError    EventType = "error"     // driver-level error
-	EvTurnEnd  EventType = "turn_end"  // one assistant turn finished
+	EvText        EventType = "text"         // assistant text fragment
+	EvToolCall    EventType = "tool_call"    // permission request (Capabilities.ToolApproval)
+	EvStatus      EventType = "status"       // running/waiting/idle/offline
+	EvTokens      EventType = "tokens"       // usage stats
+	EvError       EventType = "error"        // driver-level error
+	EvTurnEnd     EventType = "turn_end"     // one assistant turn finished
+	EvSessionInit EventType = "session_init" // CLI reported its real session id (Text field)
 )
 
 // Event is the single type every driver emits on its Events channel.

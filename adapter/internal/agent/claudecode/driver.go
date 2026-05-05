@@ -337,6 +337,7 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 		case "system":
 			if env.Subtype == "init" && env.SessionID != "" {
 				s.setResumeID(env.SessionID)
+				s.emit(agent.Event{Type: agent.EvSessionInit, Text: env.SessionID})
 				log.Infof("claude-code: session init sid=%s cli_session=%s", s.id, env.SessionID)
 			}
 		case "assistant":

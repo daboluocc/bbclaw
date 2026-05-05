@@ -32,27 +32,30 @@ func TestParseStreamJSON(t *testing.T) {
 		got = append(got, e)
 	}
 
-	if len(got) != 4 {
-		t.Fatalf("want 4 events (2 text + 1 tool_call + 1 tokens), got %d: %+v", len(got), got)
+	if len(got) != 5 {
+		t.Fatalf("want 5 events (1 session_init + 2 text + 1 tool_call + 1 tokens), got %d: %+v", len(got), got)
 	}
 
-	if got[0].Type != agent.EvText || got[0].Text != "Hello" {
-		t.Errorf("event 0: want EvText 'Hello', got %+v", got[0])
+	if got[0].Type != agent.EvSessionInit || got[0].Text != "abc-123" {
+		t.Errorf("event 0: want EvSessionInit 'abc-123', got %+v", got[0])
 	}
-	if got[1].Type != agent.EvText || got[1].Text != " world" {
-		t.Errorf("event 1: want EvText ' world', got %+v", got[1])
+	if got[1].Type != agent.EvText || got[1].Text != "Hello" {
+		t.Errorf("event 1: want EvText 'Hello', got %+v", got[1])
 	}
-	if got[2].Type != agent.EvToolCall || got[2].Tool == nil {
-		t.Fatalf("event 2: want EvToolCall, got %+v", got[2])
+	if got[2].Type != agent.EvText || got[2].Text != " world" {
+		t.Errorf("event 2: want EvText ' world', got %+v", got[2])
 	}
-	if got[2].Tool.Tool != "Bash" || got[2].Tool.Hint != "ls -la" || got[2].Tool.ID != "tu_1" {
-		t.Errorf("tool_call: want tool=Bash hint='ls -la' id=tu_1, got %+v", got[2].Tool)
+	if got[3].Type != agent.EvToolCall || got[3].Tool == nil {
+		t.Fatalf("event 3: want EvToolCall, got %+v", got[3])
 	}
-	if got[3].Type != agent.EvTokens || got[3].Tokens == nil {
-		t.Fatalf("event 3: want EvTokens, got %+v", got[3])
+	if got[3].Tool.Tool != "Bash" || got[3].Tool.Hint != "ls -la" || got[3].Tool.ID != "tu_1" {
+		t.Errorf("tool_call: want tool=Bash hint='ls -la' id=tu_1, got %+v", got[3].Tool)
 	}
-	if got[3].Tokens.In != 12 || got[3].Tokens.Out != 3 {
-		t.Errorf("tokens: want in=12 out=3, got %+v", got[3].Tokens)
+	if got[4].Type != agent.EvTokens || got[4].Tokens == nil {
+		t.Fatalf("event 4: want EvTokens, got %+v", got[4])
+	}
+	if got[4].Tokens.In != 12 || got[4].Tokens.Out != 3 {
+		t.Errorf("tokens: want in=12 out=3, got %+v", got[4].Tokens)
 	}
 
 	// Resume ID should have been captured from the init event.

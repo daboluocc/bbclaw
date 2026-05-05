@@ -823,6 +823,15 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 					break loop
 				}
 				switch ev.Type {
+				case agent.EvSessionInit:
+					// CLI reported its real session id. Update the logical
+					// session store so LoadMessages can find the JSONL file.
+					if usingLogical && logicalID != "" && ev.Text != "" {
+						if err := a.sessions.UpdateCLISessionID(logicalID, ev.Text); err != nil {
+							a.log.Warnf("agent_proxy: UpdateCLISessionID (init) logical=%s cli=%s err=%v",
+								logicalID, ev.Text, err)
+						}
+					}
 				case agent.EvText:
 					textCount++
 					lastText = ev.Text
@@ -975,6 +984,9 @@ func agentEventToFrame(ev agent.Event) map[string]any {
 		}
 	case agent.EvTurnEnd:
 		// no extra fields
+	case agent.EvSessionInit:
+		// Internal event — not forwarded to the device.
+		return nil
 	}
 	return frame
 }

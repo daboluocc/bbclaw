@@ -650,6 +650,14 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 					break loop
 				}
 				switch ev.Type {
+				case agent.EvSessionInit:
+					// CLI reported its real session id. Update the logical
+					// session store so LoadMessages can find the JSONL file.
+					if usingLogical && logicalID != "" && ev.Text != "" {
+						if err := s.sessions.UpdateCLISessionID(logicalID, ev.Text); err != nil {
+							s.log.Warnf("agent: UpdateCLISessionID (init) logical=%s cli=%s err=%v", logicalID, ev.Text, err)
+						}
+					}
 				case agent.EvText:
 					textCount++
 					lastText = ev.Text
@@ -1077,6 +1085,9 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 		}
 	case agent.EvTurnEnd:
 		// no extra fields
+	case agent.EvSessionInit:
+		// Internal event — not forwarded to the device.
+		return true
 	}
 	if err := sw.write(frame); err != nil {
 		s.log.Warnf("agent: write frame failed: %v", err)
