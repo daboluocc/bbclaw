@@ -1681,7 +1681,8 @@ static void stream_task(void* arg) {
         } else if (agent_chat_is_busy_locked()) {
           ESP_LOGI(TAG, "agent_chat: PTT press refused (chat send in flight)");
           signal_error_haptic();
-        } else if (agent_chat_is_adapter_offline_locked()) {
+        } else if (agent_chat_is_adapter_offline_locked() ||
+                   (bb_transport_is_cloud_saas() && s_transport_adapter_connected == 0)) {
           ESP_LOGW(TAG, "agent_chat: PTT press refused (adapter offline)");
           agent_chat_voice_post_error("ADAPTER OFFLINE");
           signal_error_haptic();
@@ -1865,9 +1866,13 @@ static void stream_task(void* arg) {
           continue;
         }
         if (s_transport_adapter_connected == 0) {
-          show_status_error("ADAPTER OFF");
+          if (agent_chat_voice_capture_active()) {
+            agent_chat_voice_post_error("ADAPTER OFFLINE");
+          } else {
+            show_status_error("ADAPTER OFF");
+            (void)bb_display_show_chat_turn("Adapter offline", "Start adapter and retry");
+          }
           signal_error_haptic();
-          (void)bb_display_show_chat_turn("Adapter offline", "Start adapter and retry");
           vTaskDelay(pdMS_TO_TICKS(250));
           continue;
         }
