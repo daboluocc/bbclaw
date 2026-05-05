@@ -445,9 +445,34 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		case requestedSession == "":
-			// Auto-mint a logical session so future turns can come back with
-			// its stable id. Cwd defaults to the manager's configured value.
+			// T2: Session reuse — before minting a new logical session, check
+			// if there's a recent one for the same device+driver within the
+			// configured reuse window. This avoids flooding the picker with
+			// one-off sessions on rapid PTT presses.
 			deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
+			if s.cfg.SessionReuseWindow > 0 {
+				if recent := s.sessions.FindRecent(deviceID, driverName, s.cfg.SessionReuseWindow); recent != nil {
+					logicalID = recent.ID
+					resumeFromLogical = recent.CLISessionID
+					usingLogical = true
+					// If the recent session's CLI id is live in the registry,
+					// pin to it (same as the ls- prefix path above).
+					if resumeFromLogical != "" {
+						if entry, found := s.agentSessions.get(resumeFromLogical); found {
+							drv2, found2 := s.router.Get(entry.driverName)
+							if found2 {
+								drv = drv2
+								driverName = entry.driverName
+								sid = entry.sid
+								isNew = false
+							}
+						}
+					}
+					s.log.Infof("agent: reusing recent logical=%s device=%s driver=%s", logicalID, deviceID, driverName)
+					break
+				}
+			}
+			// No recent session found — mint a new logical session (existing behaviour).
 			ls, err := s.sessions.Create(deviceID, driverName, "", "")
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, response{
@@ -679,6 +704,16 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			if err := s.sessions.Touch(logicalID); err != nil {
 				s.log.Warnf("agent: Touch logical=%s err=%v", logicalID, err)
 			}
+			// T1: Auto-title — if the session has no title yet, use the
+			// first 20 runes of the user's message as a title.
+			if ls, ok := s.sessions.Get(logicalID); ok && ls.Title == "" {
+				title := truncateRunes(text, 20)
+				if title != "" {
+					if err := s.sessions.SetTitle(logicalID, title); err != nil {
+						s.log.Warnf("agent: auto-title logical=%s err=%v", logicalID, err)
+					}
+				}
+			}
 		}
 		if turnEnded {
 			notifType := "turn_end"
@@ -768,7 +803,8 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 
 // handleAgentSessionsLogical lists rows from the logical-session manager
 // (ADR-014). Filters: deviceId (empty matches any), driver (empty matches
-// any). Limit defaults to 50, capped at 200.
+// any). Limit defaults to 50, capped at 200. Sessions older than
+// SessionMaxAge are excluded from the response.
 func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Request) {
 	if s.sessions == nil {
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "LOGICAL_SESSIONS_DISABLED"})
@@ -788,6 +824,17 @@ func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Reque
 	sessions := s.sessions.List(deviceID, driverName, limit)
 	if sessions == nil {
 		sessions = []*logicalsession.LogicalSession{}
+	}
+	// T4: Filter out expired sessions so the picker doesn't show stale entries.
+	if s.cfg.SessionMaxAge > 0 {
+		cutoff := time.Now().Add(-s.cfg.SessionMaxAge)
+		filtered := sessions[:0]
+		for _, sess := range sessions {
+			if sess.LastUsedAt.After(cutoff) {
+				filtered = append(filtered, sess)
+			}
+		}
+		sessions = filtered
 	}
 	writeJSON(w, http.StatusOK, response{
 		OK:   true,
@@ -960,4 +1007,14 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 		return false
 	}
 	return true
+}
+
+// truncateRunes returns the first n runes of s. If s has fewer than n runes
+// it is returned unchanged.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }

@@ -54,6 +54,10 @@ type Config struct {
 	ASRReadinessProbe    bool
 	ASRReadinessTimeout  time.Duration
 
+	// Session management tunables.
+	SessionReuseWindow time.Duration // BBCLAW_SESSION_REUSE_WINDOW — reuse recent session within this window
+	SessionMaxAge      time.Duration // BBCLAW_SESSION_MAX_AGE — sweep sessions older than this
+
 	// Cloud relay fields.
 	CloudWSURL     string
 	CloudAuthToken string
@@ -155,6 +159,8 @@ func LoadFromEnv() (Config, error) {
 		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
 		HomeSiteID:           strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
 		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
+		SessionReuseWindow:   getEnvDuration("BBCLAW_SESSION_REUSE_WINDOW", 5*time.Minute),
+		SessionMaxAge:        getEnvDuration("BBCLAW_SESSION_MAX_AGE", 7*24*time.Hour),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -354,4 +360,26 @@ func getEnvBool(name string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+// getEnvDuration parses a duration from an env var. Supports Go duration
+// strings (e.g. "5m", "24h", "7d") with a special case for the "d" suffix
+// (days) which time.ParseDuration doesn't handle natively.
+func getEnvDuration(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	// Handle "Nd" shorthand for days (e.g. "7d" → 7*24h).
+	if strings.HasSuffix(raw, "d") {
+		numStr := strings.TrimSuffix(raw, "d")
+		if n, err := strconv.Atoi(numStr); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour
+		}
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
