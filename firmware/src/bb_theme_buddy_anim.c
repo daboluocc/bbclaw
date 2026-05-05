@@ -45,7 +45,8 @@ static const char* TAG = "bb_theme_anim";
 
 #define TOPBAR_H       20
 #define BUDDY_TOPBAR_W 86   /* fixed width for buddy face+mood in topbar */
-#define MIDDLE_H       (172 - TOPBAR_H - SCREEN_CORNER_INSET_Y)
+#define TOPBAR_GAP     3
+#define MIDDLE_H       (172 - TOPBAR_H - SCREEN_CORNER_INSET_Y - TOPBAR_GAP)
 #define MSG_PAD        4
 #define MSG_RADIUS     6
 #define MSG_HMARGIN    SCREEN_CORNER_INSET_X
@@ -419,7 +420,7 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
                                 lv_text_align_t align, int italic) {
   lv_obj_t* lbl = lv_label_create(s_st.transcript);
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_WRAP);
-  lv_obj_set_width(lbl, lv_pct(95));
+  lv_obj_set_width(lbl, lv_pct(100));
   lv_obj_set_style_text_font(lbl, theme_font(), 0);
   lv_obj_set_style_text_color(lbl, lv_color_hex(fg_color), 0);
   lv_obj_set_style_text_align(lbl, align, 0);
@@ -520,17 +521,18 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_clear_flag(s_st.topbar_buddy, LV_OBJ_FLAG_SCROLLABLE);
 
   s_st.face_lbl = lv_label_create(s_st.topbar_buddy);
-  lv_obj_set_size(s_st.face_lbl, 50, TOPBAR_H);
+  lv_obj_set_size(s_st.face_lbl, 54, TOPBAR_H);
+  lv_label_set_long_mode(s_st.face_lbl, LV_LABEL_LONG_MODE_CLIP);
   lv_obj_set_pos(s_st.face_lbl, FACE_X0, FACE_Y0);
   lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
   lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, 25, 0);
+  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, 27, 0);
   lv_obj_set_style_transform_pivot_y(s_st.face_lbl, TOPBAR_H / 2, 0);
 
   s_st.mood_lbl = lv_label_create(s_st.topbar_buddy);
-  lv_obj_set_size(s_st.mood_lbl, 36, TOPBAR_H);
-  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0 + 50, MOOD_Y0);
+  lv_obj_set_size(s_st.mood_lbl, 32, TOPBAR_H);
+  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0 + 54, MOOD_Y0);
   lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
   lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_LEFT, 0);
@@ -541,7 +543,7 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_remove_style_all(s_st.transcript);
   lv_obj_set_size(s_st.transcript, 320, MIDDLE_H);
   lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0,
-               SCREEN_CORNER_INSET_Y + TOPBAR_H);
+               SCREEN_CORNER_INSET_Y + TOPBAR_H + TOPBAR_GAP);
   lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
   lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(s_st.transcript, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
