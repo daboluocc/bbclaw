@@ -638,6 +638,10 @@ static esp_err_t ws_send_text_message(const char* payload) {
   return sent >= 0 ? ESP_OK : ESP_FAIL;
 }
 
+esp_err_t bb_adapter_client_send_text(const char* payload) {
+  return ws_send_text_message(payload);
+}
+
 static esp_err_t ws_send_binary_message(const uint8_t* data, size_t len) {
   if (data == NULL || len == 0U) {
     return ESP_ERR_INVALID_ARG;
