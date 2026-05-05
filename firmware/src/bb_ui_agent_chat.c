@@ -2505,11 +2505,26 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
 
   s_chat.session_id[0] = '\0';
 
+  /* ── Restore new driver's last session + history (issue #41) ── */
+  /* 1. Load the new driver's last-used session_id from NVS (per-driver store). */
+  load_nvs_on_internal_stack();
+
+  /* 2. Rebuild transcript UI: clear stale content, re-init theme for new session. */
+  apply_session_switch_ui(s_chat.session_id);
+
+  /* 3. Fetch history for the restored session (or just reset state if none). */
+  if (s_chat.session_id[0] != '\0') {
+    history_state_reset();
+    spawn_history_fetch_task(-1, /*is_initial=*/1);
+  } else {
+    history_state_reset();
+  }
+
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->set_driver != NULL) {
     theme->set_driver(name);
   }
-  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session reset",
+  ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session restored",
            name, delta, next, n);
   return ESP_OK;
 }
