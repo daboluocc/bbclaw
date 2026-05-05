@@ -128,7 +128,41 @@ func (s *Server) Handler() http.Handler {
 	// UI for dogfooding agent drivers. Protect your adapter by not exposing
 	// it to the internet.
 	mux.HandleFunc("GET /playground", s.handlePlayground)
-	return mux
+	return withCORS(mux)
+}
+
+// withCORS wraps a handler with permissive CORS so a browser-hosted client
+// (e.g. the BBClaw web portal at a different port during local dev) can reach
+// the LAN-direct API. The Adapter is intended for trusted local networks, so
+// `*` is acceptable; tighten this later if the surface becomes public.
+//
+// Behaviour:
+//   - Adds `Access-Control-Allow-Origin: *`, exposed methods, headers, and a
+//     long max-age on every response.
+//   - Short-circuits OPTIONS preflight requests with 204 No Content so the
+//     net/http ServeMux's default 405 doesn't leak through. (Without this the
+//     browser sees a preflight failure and blocks the real request.)
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		// Echo the Origin when present so credentialed requests work; fall
+		// back to "*" when no Origin is sent (curl, server-to-server).
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
+		} else {
+			h.Set("Access-Control-Allow-Origin", "*")
+		}
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		h.Set("Access-Control-Max-Age", "600")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
