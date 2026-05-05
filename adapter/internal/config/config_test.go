@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadFromEnvDefaultsAndRequireds(t *testing.T) {
@@ -163,5 +164,37 @@ func TestLoadFromEnvCloudModeDisablesLocalIngress(t *testing.T) {
 	}
 	if !cfg.EnableCloudRelay() {
 		t.Fatal("expected cloud relay enabled in cloud mode")
+	}
+}
+
+func TestGetEnvDuration(t *testing.T) {
+	tests := []struct {
+		envVal   string
+		fallback time.Duration
+		want     time.Duration
+	}{
+		{"", 5 * time.Minute, 5 * time.Minute},           // empty → fallback
+		{"5m", 0, 5 * time.Minute},                       // Go duration
+		{"24h", 0, 24 * time.Hour},                       // hours
+		{"7d", 0, 7 * 24 * time.Hour},                    // days shorthand
+		{"1d", 0, 24 * time.Hour},                        // 1 day
+		{"30s", 0, 30 * time.Second},                     // seconds
+		{"invalid", 3 * time.Minute, 3 * time.Minute},    // invalid → fallback
+		{"0d", 5 * time.Minute, 5 * time.Minute},         // 0d → fallback (n must be > 0)
+		{"-1d", 5 * time.Minute, 5 * time.Minute},        // negative day → fallback
+	}
+	for _, tt := range tests {
+		t.Run(tt.envVal, func(t *testing.T) {
+			const envKey = "TEST_DURATION_PARSE"
+			if tt.envVal != "" {
+				t.Setenv(envKey, tt.envVal)
+			} else {
+				os.Unsetenv(envKey)
+			}
+			got := getEnvDuration(envKey, tt.fallback)
+			if got != tt.want {
+				t.Errorf("getEnvDuration(%q, %v) = %v, want %v", tt.envVal, tt.fallback, got, tt.want)
+			}
+		})
 	}
 }

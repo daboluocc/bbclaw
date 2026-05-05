@@ -34,6 +34,8 @@ type AppConfig struct {
 	AudioInDir           string
 	AudioOutDir          string
 	ASRTranscribeTimeout time.Duration
+	SessionReuseWindow   time.Duration // 0 disables reuse
+	SessionMaxAge        time.Duration // 0 disables sweep
 }
 
 type ASRProvider interface {

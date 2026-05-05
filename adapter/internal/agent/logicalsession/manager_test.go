@@ -368,3 +368,131 @@ func TestUpdateCwd(t *testing.T) {
 		t.Errorf("UpdateCwd on missing id should fail")
 	}
 }
+
+func TestFindRecent(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// Create sessions for different devices and drivers.
+	s1, err := m.Create("dev-1", "claude-code", "/p", "session1")
+	if err != nil {
+		t.Fatalf("Create s1: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	s2, err := m.Create("dev-1", "claude-code", "/p", "session2")
+	if err != nil {
+		t.Fatalf("Create s2: %v", err)
+	}
+	// s2 is more recent for dev-1 + claude-code.
+	_ = s1
+
+	// FindRecent should return s2 (most recent for dev-1 + claude-code).
+	got := m.FindRecent("dev-1", "claude-code", 1*time.Minute)
+	if got == nil {
+		t.Fatal("FindRecent returned nil, expected s2")
+	}
+	if got.ID != s2.ID {
+		t.Errorf("FindRecent returned %s, want %s", got.ID, s2.ID)
+	}
+
+	// Different driver → no match.
+	got = m.FindRecent("dev-1", "opencode", 1*time.Minute)
+	if got != nil {
+		t.Errorf("FindRecent should return nil for unmatched driver, got %s", got.ID)
+	}
+
+	// Different device → no match.
+	got = m.FindRecent("dev-2", "claude-code", 1*time.Minute)
+	if got != nil {
+		t.Errorf("FindRecent should return nil for unmatched device, got %s", got.ID)
+	}
+
+	// Empty device matches any device.
+	got = m.FindRecent("", "claude-code", 1*time.Minute)
+	if got == nil {
+		t.Fatal("FindRecent with empty deviceID returned nil")
+	}
+	if got.ID != s2.ID {
+		t.Errorf("FindRecent with empty deviceID returned %s, want %s", got.ID, s2.ID)
+	}
+
+	// Zero-duration window → nothing qualifies (sessions are at least a few ms old).
+	got = m.FindRecent("dev-1", "claude-code", 0)
+	if got != nil {
+		t.Errorf("FindRecent with 0 window should return nil, got %s", got.ID)
+	}
+
+	// Empty driver → always nil.
+	got = m.FindRecent("dev-1", "", 1*time.Minute)
+	if got != nil {
+		t.Errorf("FindRecent with empty driver should return nil, got %s", got.ID)
+	}
+}
+
+func TestSweep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	m, err := NewManager(path, "/tmp", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Create 3 sessions.
+	s1, err := m.Create("dev-1", "claude-code", "/p", "old1")
+	if err != nil {
+		t.Fatalf("Create s1: %v", err)
+	}
+	s2, err := m.Create("dev-1", "claude-code", "/p", "old2")
+	if err != nil {
+		t.Fatalf("Create s2: %v", err)
+	}
+	s3, err := m.Create("dev-1", "claude-code", "/p", "recent")
+	if err != nil {
+		t.Fatalf("Create s3: %v", err)
+	}
+
+	// Manually backdate s1 and s2 to simulate old sessions.
+	m.mu.Lock()
+	oldTime := time.Now().UTC().Add(-8 * 24 * time.Hour) // 8 days ago
+	m.sessions[s1.ID].LastUsedAt = oldTime
+	m.sessions[s2.ID].LastUsedAt = oldTime
+	m.mu.Unlock()
+	// Persist the backdated state.
+	m.mu.Lock()
+	_ = m.persistLocked()
+	m.mu.Unlock()
+
+	// Sweep with 7-day max age should remove s1 and s2.
+	n := m.Sweep(7 * 24 * time.Hour)
+	if n != 2 {
+		t.Errorf("Sweep returned %d, want 2", n)
+	}
+
+	// s3 should still exist.
+	if _, ok := m.Get(s3.ID); !ok {
+		t.Error("s3 should survive sweep")
+	}
+	if _, ok := m.Get(s1.ID); ok {
+		t.Error("s1 should be swept")
+	}
+	if _, ok := m.Get(s2.ID); ok {
+		t.Error("s2 should be swept")
+	}
+
+	// Verify persistence — reload from disk.
+	m2, err := NewManager(path, "/tmp", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager reload: %v", err)
+	}
+	if _, ok := m2.Get(s1.ID); ok {
+		t.Error("s1 should not survive reload after sweep")
+	}
+	if _, ok := m2.Get(s3.ID); !ok {
+		t.Error("s3 should survive reload after sweep")
+	}
+
+	// Sweep with nothing to remove returns 0.
+	n = m.Sweep(7 * 24 * time.Hour)
+	if n != 0 {
+		t.Errorf("Sweep on clean state returned %d, want 0", n)
+	}
+}

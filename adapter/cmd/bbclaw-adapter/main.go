@@ -158,6 +158,8 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 			AudioInDir:           cfg.AudioInDir,
 			AudioOutDir:          cfg.AudioOutDir,
 			ASRTranscribeTimeout: cfg.ASRTranscribeTimeout,
+			SessionReuseWindow:   cfg.SessionReuseWindow,
+			SessionMaxAge:        cfg.SessionMaxAge,
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
@@ -439,6 +441,15 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sink := buildSink(cfg, logger, metrics)
 	agentRouter := buildAgentRouter(cfg, logger)
 	sessionMgr := buildSessionManager(logger)
+
+	// T4: Session expiration sweep — run once at startup and then every 24h.
+	if sessionMgr != nil && cfg.SessionMaxAge > 0 {
+		n := sessionMgr.Sweep(cfg.SessionMaxAge)
+		if n > 0 {
+			logger.Infof("logicalsession: startup sweep removed %d expired sessions (max_age=%s)", n, cfg.SessionMaxAge)
+		}
+	}
+
 	var cloudRelay *homeadapter.Adapter
 	var err error
 	if cfg.EnableCloudRelay() {
@@ -454,6 +465,11 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// T4: Periodic session sweep goroutine (every 24h).
+	if sessionMgr != nil && cfg.SessionMaxAge > 0 {
+		go runSessionSweepTicker(ctx, sessionMgr, cfg.SessionMaxAge, logger)
+	}
 
 	errCh := make(chan error, 2)
 	active := 0
@@ -511,6 +527,24 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				logger.Errorf("adapter stopped: %v", err)
 				os.Exit(1)
+			}
+		}
+	}
+}
+
+// runSessionSweepTicker runs the logical-session expiration sweep every 24h
+// until ctx is cancelled.
+func runSessionSweepTicker(ctx context.Context, mgr *logicalsession.Manager, maxAge time.Duration, logger *obs.Logger) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n := mgr.Sweep(maxAge)
+			if n > 0 {
+				logger.Infof("logicalsession: periodic sweep removed %d expired sessions (max_age=%s)", n, maxAge)
 			}
 		}
 	}
