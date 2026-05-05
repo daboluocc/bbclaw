@@ -198,6 +198,7 @@ func (a *Adapter) handleAgentSessionsCreateRequest(write func(CloudEnvelope) err
 
 	title, _ := env.Payload["title"].(string)
 	cwd, _ := env.Payload["cwd"].(string)
+	cwdName, _ := env.Payload["cwdName"].(string)
 	deviceID, _ := env.Payload["deviceId"].(string)
 	if deviceID == "" {
 		// Cloud should always thread this through; fall back to envelope's
@@ -205,7 +206,17 @@ func (a *Adapter) handleAgentSessionsCreateRequest(write func(CloudEnvelope) err
 		deviceID = env.DeviceID
 	}
 
-	sess, err := a.sessions.Create(strings.TrimSpace(deviceID), driver, strings.TrimSpace(cwd), strings.TrimSpace(title))
+	// Resolve cwd: cwdName takes priority over raw cwd field (issue #30).
+	resolvedCwd := strings.TrimSpace(cwd)
+	if name := strings.TrimSpace(cwdName); name != "" {
+		if path, ok := a.resolveCwdByName(name); ok {
+			resolvedCwd = path
+		} else {
+			return reply(map[string]any{"error": "UNKNOWN_CWD_NAME", "detail": name})
+		}
+	}
+
+	sess, err := a.sessions.Create(strings.TrimSpace(deviceID), driver, resolvedCwd, strings.TrimSpace(title))
 	if err != nil {
 		return reply(map[string]any{"error": "CREATE_SESSION_FAILED", "detail": err.Error()})
 	}
@@ -401,6 +412,23 @@ func (a *Adapter) handleAgentMessagesRequest(write func(CloudEnvelope) error, en
 	if sid == "" {
 		return reply(map[string]any{"error": "SESSION_ID_REQUIRED"})
 	}
+
+	// ADR-014: resolve logical session ids (ls-*) to the underlying CLI
+	// session id, same as the LAN-direct HTTP path in agent_messages.go.
+	// Without this, LoadMessages receives an id the driver doesn't recognise
+	// and returns an empty page.
+	if a.sessions != nil && strings.HasPrefix(sid, "ls-") {
+		ls, ok := a.sessions.Get(logicalsession.ID(sid))
+		if !ok {
+			return reply(map[string]any{"error": "SESSION_NOT_FOUND", "detail": "logical session not found: " + sid})
+		}
+		if ls.CLISessionID == "" {
+			// Session exists but no CLI conversation started yet — empty page.
+			return reply(map[string]any{"messages": []any{}, "total": 0, "hasMore": false})
+		}
+		sid = ls.CLISessionID
+	}
+
 	driverName, _ := env.Payload["driver"].(string)
 	driverName = strings.TrimSpace(driverName)
 	if driverName == "" {
@@ -465,6 +493,17 @@ func (a *Adapter) handleAgentDriversRequest(write func(CloudEnvelope) error, env
 		Kind:       "agent.drivers.reply",
 		Payload:    map[string]any{"drivers": drivers},
 	})
+}
+
+// resolveCwdByName looks up a cwd path by name in the configured pool.
+// Returns ("", false) when the name is not found.
+func (a *Adapter) resolveCwdByName(name string) (string, bool) {
+	for _, entry := range a.cwdPool {
+		if entry.Name == name {
+			return entry.Path, true
+		}
+	}
+	return "", false
 }
 
 // handleAgentCwdPoolRequest replies with the configured CWD pool entries.

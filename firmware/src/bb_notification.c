@@ -10,6 +10,7 @@
 #include "bb_transport.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -308,7 +309,12 @@ void bb_notification_on_ws_event(const char* sid, const char* driver,
     if (a != NULL) {
         if (preview) strncpy(a->preview, preview, sizeof(a->preview) - 1);
         a->unread = s_store.unread_total;
-        lv_async_call(on_notify_async, a);
+        if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+            lv_async_call(on_notify_async, a);
+            lvgl_port_unlock();
+        } else {
+            free(a);
+        }
     }
 }
 

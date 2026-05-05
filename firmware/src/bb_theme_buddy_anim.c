@@ -475,7 +475,7 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_pos(s_st.topbar_driver_lbl, SCREEN_CORNER_INSET_X + 20, 2);
 
   s_st.topbar_session_lbl = lv_label_create(s_st.topbar);
-  lv_obj_set_width(s_st.topbar_session_lbl, 60);
+  lv_obj_set_width(s_st.topbar_session_lbl, 68);
   lv_obj_set_style_text_font(s_st.topbar_session_lbl, theme_font(), 0);
   lv_obj_set_style_text_color(s_st.topbar_session_lbl, lv_color_hex(UI_TEXT_DIM), 0);
   lv_label_set_long_mode(s_st.topbar_session_lbl, LV_LABEL_LONG_MODE_DOTS);

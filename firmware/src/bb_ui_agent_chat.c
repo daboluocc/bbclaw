@@ -26,6 +26,25 @@
 
 static const char* TAG = "bb_agent_ui";
 
+/* Thread-safe wrapper around lv_async_call(). LVGL is configured with
+ * LV_OS_NONE so lv_malloc/lv_timer_create inside lv_async_call have no
+ * internal mutex. Without this wrapper, calling lv_async_call from worker
+ * tasks races with lv_timer_handler on the LVGL task, corrupting the TLSF
+ * heap and causing infinite-loop watchdog triggers.
+ *
+ * lvgl_port_lock uses a recursive mutex, so it's safe to call from both
+ * the LVGL task (already holds the lock) and from worker tasks (blocks
+ * until the LVGL task releases between timer handler iterations). */
+static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) {
+  if (!lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    ESP_LOGW(TAG, "safe_lv_async_call: lock timeout, dropping");
+    return LV_RESULT_INVALID;
+  }
+  lv_result_t res = lv_async_call(cb, user_data);
+  lvgl_port_unlock();
+  return res;
+}
+
 /* 6 KB on internal heap. 8 KB was too generous: PTT/voice loop already
  * fragments internal heap so the largest free block is ~7.9 KB on a fresh
  * boot — xTaskCreate(8192) reliably fails. The agent task only spawns
@@ -361,7 +380,7 @@ static void on_lvgl_dispatch(void* user_data) {
 static void async_post(bb_async_payload_t* p) {
   if (p == NULL) return;
   /* lv_async_call 内部把 cb 排到下一帧；可在任意线程调用。 */
-  lv_async_call(on_lvgl_dispatch, p);
+  safe_lv_async_call(on_lvgl_dispatch, p);
 }
 
 static void post_state(bb_agent_state_t st) {
@@ -402,7 +421,7 @@ static void post_assistant_chunk(const char* delta) {
   taskEXIT_CRITICAL(&s_chunk_mux);
 
   if (need_queue) {
-    lv_async_call(on_lvgl_chunk_dispatch, NULL);
+    safe_lv_async_call(on_lvgl_chunk_dispatch, NULL);
   }
 }
 
@@ -435,6 +454,26 @@ static void post_session(const char* sid_short) {
   async_post(p);
 }
 
+/* Build a short display string from a full session ID (e.g. "ls-234049fd34da990c").
+ * Strips the common "ls-" prefix and takes the TAIL (most distinguishing part).
+ * Result fits in a 16-char buffer: up to 12 hex chars shown. */
+static void session_id_short(const char* full_sid, char* out, size_t out_sz) {
+  if (full_sid == NULL || full_sid[0] == '\0') {
+    snprintf(out, out_sz, "--------");
+    return;
+  }
+  const char* hex = full_sid;
+  /* Skip known prefixes: "ls-", "cs-", etc. */
+  if (hex[0] != '\0' && hex[1] != '\0' && hex[2] == '-') {
+    hex += 3;
+  }
+  size_t hlen = strlen(hex);
+  /* Take the last 10 chars (or all if shorter) — tail has highest entropy. */
+  const int show = 10;
+  const char* tail = hlen > (size_t)show ? hex + hlen - show : hex;
+  snprintf(out, out_sz, "%s", tail);
+}
+
 /* ── stream callback：在 agent 任务里同步调用 ── */
 
 static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
@@ -451,8 +490,7 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         strncpy(s_chat.session_id, evt->session_id, sizeof(s_chat.session_id) - 1);
         s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
         char shortbuf[16] = {0};
-        strncpy(shortbuf, evt->session_id, 8);
-        shortbuf[8] = '\0';
+        session_id_short(evt->session_id, shortbuf, sizeof(shortbuf));
         post_session(shortbuf);
 
         /* Phase S2 — save session ID to NVS for current driver */
@@ -1044,8 +1082,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   }
   if (s_chat.session_id[0] != '\0' && theme->set_session != NULL) {
     char shortbuf[16] = {0};
-    strncpy(shortbuf, s_chat.session_id, 8);
-    shortbuf[8] = '\0';
+    session_id_short(s_chat.session_id, shortbuf, sizeof(shortbuf));
     theme->set_session(shortbuf);
   }
   /* Phase S3 — if we resumed a session from NVS, fetch its history so the
@@ -1383,7 +1420,7 @@ static void driver_fetch_task(void* arg) {
     if (res->err == ESP_OK && res->total > 0) break;
     if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(3000));
   }
-  lv_async_call(on_driver_fetch_done, res);
+  safe_lv_async_call(on_driver_fetch_done, res);
   vTaskDelete(NULL);
 }
 
@@ -1472,7 +1509,7 @@ static void session_fetch_task(void* arg) {
   const char* drv = s_chat.driver_name[0] != '\0'
                       ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
   res->err = bb_agent_list_sessions(drv, res->entries, BB_SESSION_PICKER_MAX, &res->total);
-  lv_async_call(on_session_fetch_done, res);
+  safe_lv_async_call(on_session_fetch_done, res);
   vTaskDelete(NULL);
 }
 
@@ -1560,7 +1597,7 @@ static void history_fetch_task(void* arg) {
                                     args->before, BB_HISTORY_PAGE_SIZE,
                                     &res->msgs, &res->count, &res->total, &res->has_more);
   free(args);
-  lv_async_call(on_history_fetch_done, res);
+  safe_lv_async_call(on_history_fetch_done, res);
   vTaskDelete(NULL);
 }
 
@@ -1909,10 +1946,7 @@ void bb_ui_agent_chat_session_picker_move(int delta) {
  * to NVS. Must run on the LVGL task. */
 static void apply_session_switch_ui(const char* sid) {
   char shortbuf[16] = {0};
-  if (sid != NULL) {
-    strncpy(shortbuf, sid, 8);
-    shortbuf[8] = '\0';
-  }
+  session_id_short(sid, shortbuf, sizeof(shortbuf));
   post_session(shortbuf);
 
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
@@ -1996,7 +2030,7 @@ static void new_session_task(void* arg) {
                                      args->cwd_name[0] != '\0' ? args->cwd_name : NULL,
                                      res->session_id, sizeof(res->session_id));
   free(args);
-  lv_async_call(on_new_session_done, res);
+  safe_lv_async_call(on_new_session_done, res);
   vTaskDelete(NULL);
 }
 
@@ -2104,7 +2138,7 @@ static void cwd_pool_fetch_task(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(200));
   }
   res->err = bb_agent_list_cwd_pool(res->entries, BB_CWD_PICKER_MAX, &res->total);
-  lv_async_call(on_cwd_pool_fetch_done, res);
+  safe_lv_async_call(on_cwd_pool_fetch_done, res);
   vTaskDelete(NULL);
 }
 
@@ -2124,7 +2158,7 @@ static void spawn_cwd_pool_fetch_or_use_cache(void) {
     res->total = s_chat.cwd_pool_count;
     memcpy(res->entries, s_chat.cwd_pool,
            sizeof(res->entries[0]) * (size_t)s_chat.cwd_pool_count);
-    lv_async_call(on_cwd_pool_fetch_done, res);
+    safe_lv_async_call(on_cwd_pool_fetch_done, res);
     return;
   }
   if (s_chat.cwd_pool_fetch_pending) return;
@@ -2404,12 +2438,7 @@ static void post_listening_topbar(int begin) {
     post_session("LISTEN..");
   } else {
     char shortbuf[16] = {0};
-    if (s_chat.session_id[0] != '\0') {
-      strncpy(shortbuf, s_chat.session_id, 8);
-      shortbuf[8] = '\0';
-    } else {
-      snprintf(shortbuf, sizeof(shortbuf), "--------");
-    }
+    session_id_short(s_chat.session_id, shortbuf, sizeof(shortbuf));
     post_session(shortbuf);
   }
 }

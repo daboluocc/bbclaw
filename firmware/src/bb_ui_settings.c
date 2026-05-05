@@ -7,6 +7,7 @@
 #include "bb_session_store.h"
 #include "bb_ui_agent_chat.h"
 #include "esp_log.h"
+#include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -149,7 +150,12 @@ static void session_fetch_task(void* arg) {
     return;
   }
   r->err = bb_agent_list_sessions(r->driver_name, r->entries, BB_SETTINGS_SESSION_CACHE_MAX, &r->total);
-  lv_async_call(on_session_fetch_done, r);
+  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+    lv_async_call(on_session_fetch_done, r);
+    lvgl_port_unlock();
+  } else {
+    free(r);
+  }
   vTaskDelete(NULL);
 }
 
