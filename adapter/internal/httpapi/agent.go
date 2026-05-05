@@ -488,36 +488,17 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !usingLogical && requestedSession != "" {
-		// Legacy raw CLI id path (Phase A backward compat).
-		if entry, found := s.agentSessions.get(requestedSession); found {
-			// Sessions are pinned to the driver that started them. If the
-			// caller supplied an explicit driver that disagrees, fail loudly
-			// with a 400 instead of silently switching drivers mid-
-			// conversation.
-			if requestedDriver != "" && requestedDriver != entry.driverName {
-				writeJSON(w, http.StatusBadRequest, response{
-					OK:     false,
-					Error:  "SESSION_DRIVER_MISMATCH",
-					Detail: "sessionId is pinned to driver=" + entry.driverName + ", request asked for driver=" + requestedDriver,
-				})
-				return
-			}
-			// Ignore any candidate driver from the resolution above and use
-			// the pinned one.
-			pinned, found2 := s.router.Get(entry.driverName)
-			if !found2 {
-				writeJSON(w, http.StatusInternalServerError, response{
-					OK:     false,
-					Error:  "UNKNOWN_DRIVER",
-					Detail: "session references unregistered driver: " + entry.driverName,
-				})
-				return
-			}
-			drv = pinned
-			driverName = entry.driverName
-			sid = entry.sid
-			isNew = false
-		}
+		// ADR-014 Phase C: bare CLI session ids (no "ls-" prefix) are no
+		// longer accepted. All firmware >= v0.5 sends logical ids; v0.4.x
+		// firmware is past the backward-compat window defined in ADR-014.
+		// Return a clear 400 so operators know to upgrade rather than
+		// silently misbehaving.
+		writeJSON(w, http.StatusBadRequest, response{
+			OK:     false,
+			Error:  "INVALID_SESSION_ID",
+			Detail: "sessionId must be a logical id (ls- prefix) or empty; bare CLI session ids are no longer accepted — please upgrade firmware to v0.5+",
+		})
+		return
 	}
 
 	sw, ok := newFinishStreamWriter(w)

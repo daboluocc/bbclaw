@@ -242,39 +242,28 @@ func TestHandleAgentMessage_UnknownLogicalSession(t *testing.T) {
 
 func TestHandleAgentMessage_LegacyCliIdUntouched(t *testing.T) {
 	drv := newRecordingDriver("cc-fresh-legacy")
-	_, ts, mgr := newServerWithManager(t, drv)
+	_, ts, _ := newServerWithManager(t, drv)
 
-	// A legacy id without ls- prefix — Phase A backward-compat path. The
-	// raw id should pass straight through to ResumeID and the manager must
-	// remain empty.
+	// ADR-014 Phase C: bare CLI session ids (no ls- prefix) are now rejected
+	// with 400 INVALID_SESSION_ID. The backward-compat window closed when
+	// v0.5 firmware shipped logical ids universally.
 	body, _ := json.Marshal(map[string]any{"text": "hi", "sessionId": "cc-legacy"})
 	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 (bare CLI ids rejected since Phase C)", resp.StatusCode)
 	}
-	frames := readNDJSONFrames(t, resp.Body)
-	if len(frames) == 0 || frames[0]["type"] != "session" {
-		t.Fatalf("first frame must be session, got %+v", frames)
+	var r struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
 	}
-	// Device sees the cli id (legacy path emits the cli sid, not the
-	// requested id, since requested != minted).
-	if got, _ := frames[0]["sessionId"].(string); got != "cc-fresh-legacy" {
-		t.Errorf("legacy session frame sessionId=%q want cc-fresh-legacy (mint)", got)
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-
-	// Driver got the raw id as ResumeID.
-	resumeIDs := drv.resumeIDsCopy()
-	if len(resumeIDs) != 1 || resumeIDs[0] != "cc-legacy" {
-		t.Errorf("driver ResumeIDs=%v want [cc-legacy]", resumeIDs)
-	}
-
-	// Manager state must remain empty — legacy ids do NOT promote to
-	// logical entries.
-	if got := mgr.List("", "", 0); len(got) != 0 {
-		t.Errorf("manager List len=%d want 0 (legacy ids must not promote)", len(got))
+	if r.OK || r.Error != "INVALID_SESSION_ID" {
+		t.Fatalf("resp=%+v want {ok:false, error:INVALID_SESSION_ID}", r)
 	}
 }
