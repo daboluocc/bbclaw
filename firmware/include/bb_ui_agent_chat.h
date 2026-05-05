@@ -196,3 +196,31 @@ int bb_ui_agent_chat_session_picker_select(void);
  * Returns 1 if the session picker is currently visible (loading or shown).
  */
 int bb_ui_agent_chat_session_picker_is_visible(void);
+
+/* ── CWD Pool Picker (issue #30) ── */
+
+/**
+ * Returns 1 if the CWD project picker is currently visible (loading or shown).
+ * When visible, key events should be routed to the CWD picker instead of the
+ * session picker.
+ */
+int bb_ui_agent_chat_cwd_picker_is_visible(void);
+
+/**
+ * Move the CWD picker highlight. delta = -1 (up) / +1 (down), wraps.
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_cwd_picker_move(int delta);
+
+/**
+ * Confirm the currently highlighted CWD picker entry (OK key).
+ * Creates a new session with the selected project's cwd_name.
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_cwd_picker_confirm(void);
+
+/**
+ * Cancel the CWD picker (BACK key). Hides the picker without creating a session.
+ * Must be called inside the LVGL lock.
+ */
+void bb_ui_agent_chat_cwd_picker_cancel(void);

@@ -160,6 +160,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 			ASRTranscribeTimeout: cfg.ASRTranscribeTimeout,
 			SessionReuseWindow:   cfg.SessionReuseWindow,
 			SessionMaxAge:        cfg.SessionMaxAge,
+			CwdPool:              cfg.CwdPool,
 		},
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)

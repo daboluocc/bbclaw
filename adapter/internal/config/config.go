@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// CwdEntry is one entry in the CWD pool: a human-readable name and the
+// absolute filesystem path it maps to.
+type CwdEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
 type Config struct {
 	// AdapterMode: "auto" (default, local HTTP always on + cloud relay when configured),
 	// "local" (force local only), or "cloud" (force cloud relay only).
@@ -57,6 +64,12 @@ type Config struct {
 	// Session management tunables.
 	SessionReuseWindow time.Duration // BBCLAW_SESSION_REUSE_WINDOW — reuse recent session within this window
 	SessionMaxAge      time.Duration // BBCLAW_SESSION_MAX_AGE — sweep sessions older than this
+
+	// CWD pool (issue #30 / T3).
+	// BBCLAW_CWD_POOL="name:path,name:path,..." — multi-project working directory selection.
+	// BBCLAW_DEFAULT_CWD is kept as a single-entry fallback when the pool is empty.
+	DefaultCwd string     // BBCLAW_DEFAULT_CWD
+	CwdPool    []CwdEntry // parsed from BBCLAW_CWD_POOL
 
 	// Cloud relay fields.
 	CloudWSURL     string
@@ -161,6 +174,8 @@ func LoadFromEnv() (Config, error) {
 		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
 		SessionReuseWindow:   getEnvDuration("BBCLAW_SESSION_REUSE_WINDOW", 5*time.Minute),
 		SessionMaxAge:        getEnvDuration("BBCLAW_SESSION_MAX_AGE", 7*24*time.Hour),
+		DefaultCwd:           strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD")),
+		CwdPool:              parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -360,6 +375,39 @@ func getEnvBool(name string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+// parseCwdPool parses BBCLAW_CWD_POOL="name:path,name:path,..." into a slice
+// of CwdEntry. Malformed entries (missing colon, empty name or path) are
+// silently skipped. When the pool string is empty and defaultCwd is non-empty,
+// a single synthetic entry named "default" is returned so callers always have
+// at least one entry to work with. When both are empty, nil is returned.
+func parseCwdPool(poolEnv, defaultCwd string) []CwdEntry {
+	poolEnv = strings.TrimSpace(poolEnv)
+	var entries []CwdEntry
+	if poolEnv != "" {
+		for _, part := range strings.Split(poolEnv, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			idx := strings.IndexByte(part, ':')
+			if idx <= 0 {
+				continue // no colon or empty name
+			}
+			name := strings.TrimSpace(part[:idx])
+			path := strings.TrimSpace(part[idx+1:])
+			if name == "" || path == "" {
+				continue
+			}
+			entries = append(entries, CwdEntry{Name: name, Path: path})
+		}
+	}
+	// Fall back to BBCLAW_DEFAULT_CWD as a single-entry pool when pool is empty.
+	if len(entries) == 0 && defaultCwd != "" {
+		entries = []CwdEntry{{Name: "default", Path: defaultCwd}}
+	}
+	return entries
 }
 
 // getEnvDuration parses a duration from an env var. Supports Go duration

@@ -143,9 +143,28 @@ esp_err_t bb_agent_send_message(const char* text, const char* session_id, const 
  *
  * @param driver               Driver name (e.g. "claude-code"); NULL/"" → adapter picks default.
  * @param title                Human-friendly title; NULL/"" allowed (set later via control panel).
+ * @param cwd_name             CWD pool entry name (issue #30); NULL/"" → adapter uses default cwd.
  * @param out_session_id       Buffer to receive the id, NUL-terminated; empty string on failure.
  * @param out_session_id_len   Capacity of buffer (must be >= 40 to fit "ls-" + uuid).
  * @return ESP_OK on success; ESP_ERR_INVALID_ARG / ESP_ERR_NO_MEM / ESP_FAIL otherwise.
  */
-esp_err_t bb_agent_create_session(const char* driver, const char* title,
+esp_err_t bb_agent_create_session(const char* driver, const char* title, const char* cwd_name,
                                   char* out_session_id, size_t out_session_id_len);
+
+/**
+ * One entry in the CWD pool returned by GET /v1/agent/cwd-pool.
+ * Only the name is sent by the adapter (path is not exposed to the device).
+ */
+typedef struct {
+  char name[32];
+} bb_agent_cwd_entry_t;
+
+/**
+ * GET /v1/agent/cwd-pool — list available project working directories (issue #30).
+ *
+ * @param out_list   Caller-provided array; may be NULL (count-only query).
+ * @param cap        Capacity of out_list; ignored when out_list is NULL.
+ * @param out_count  Total entries available (not capped by cap).
+ * @return ESP_OK / error code.
+ */
+esp_err_t bb_agent_list_cwd_pool(bb_agent_cwd_entry_t* out_list, int cap, int* out_count);
