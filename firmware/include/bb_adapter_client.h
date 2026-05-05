@@ -91,3 +91,6 @@ void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);
 void bb_adapter_tts_chunks_free(bb_tts_chunk_t* head);
 esp_err_t bb_adapter_display_pull(bb_display_task_t* out_task);
 esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
+
+/* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
+esp_err_t bb_adapter_client_send_text(const char* payload);

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bb_adapter_client.h"
 #include "bb_agent_theme.h"
 #include "bb_config.h"
 #include "bb_transport.h"
@@ -203,9 +204,17 @@ static void send_ws_ack(const char* session_id) {
     if (session_id == NULL || session_id[0] == '\0') return;
 
     if (bb_transport_is_cloud_saas()) {
-        /* cloud_saas: ACK goes through the existing cloud WS in bb_adapter_client.
-         * TODO: wire bb_adapter_client_ws_send() for ACK envelopes. */
-        ESP_LOGI(TAG, "ack via cloud WS session=%s (TODO: wire adapter_client)", session_id);
+        /* cloud_saas: send ACK through the adapter client's WS connection. */
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+            "{\"type\":\"request\",\"kind\":\"session.notification.ack\","
+            "\"payload\":{\"sessionId\":\"%s\"}}", session_id);
+        esp_err_t err = bb_adapter_client_send_text(msg);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "ack: cloud WS send failed session=%s err=%d", session_id, (int)err);
+        } else {
+            ESP_LOGI(TAG, "ack: sent via cloud WS session=%s", session_id);
+        }
         return;
     }
 
