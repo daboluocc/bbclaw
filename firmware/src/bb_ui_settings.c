@@ -382,7 +382,7 @@ void bb_ui_settings_handle_click(void) {
          * ADR-014: POST /v1/agent/sessions with current driver, no cwd. */
         const char* driver = bb_ui_agent_chat_get_current_driver();
         char new_sid[64] = {0};
-        esp_err_t create_err = bb_agent_create_session(driver, NULL, new_sid, sizeof(new_sid));
+        esp_err_t create_err = bb_agent_create_session(driver, NULL, NULL, new_sid, sizeof(new_sid));
         if (create_err == ESP_OK && new_sid[0] != '\0') {
           strncpy(s_st.selected_session, new_sid, sizeof(s_st.selected_session) - 1);
           s_st.selected_session[sizeof(s_st.selected_session) - 1] = '\0';
