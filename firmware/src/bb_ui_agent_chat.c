@@ -1339,11 +1339,20 @@ static void driver_fetch_task(void* arg) {
   }
   res->gen = my_gen;
   /* Wait for WiFi before making HTTP calls — avoids lwIP assert crash
-   * when CHAT enters before network is ready (miyu_enabled=false path). */
-  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+   * when CHAT enters before network is ready. 60 s upper bound so a
+   * stale saved-SSID retries + compile-time fallback (~15 s on observed
+   * boots) finish before we even attempt the request. */
+  for (int i = 0; i < 300 && !bb_wifi_is_connected(); ++i) {
     vTaskDelay(pdMS_TO_TICKS(200));
   }
-  res->err = bb_agent_list_drivers(res->entries, BB_CHAT_DRIVER_CACHE_MAX, &res->total);
+  /* Up to 3 attempts so a single transient failure (DNS race right after
+   * fallback, cloud 5xx, adapter still booting) does not lock the chat
+   * UI into permanent "OFFLINE" / "! adapter offline" state. */
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    res->err = bb_agent_list_drivers(res->entries, BB_CHAT_DRIVER_CACHE_MAX, &res->total);
+    if (res->err == ESP_OK && res->total > 0) break;
+    if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(3000));
+  }
   lv_async_call(on_driver_fetch_done, res);
   vTaskDelete(NULL);
 }
