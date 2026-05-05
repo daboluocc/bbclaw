@@ -217,6 +217,50 @@ func TestLoadMessages_MissingSession(t *testing.T) {
 	}
 }
 
+// Regression (issue #41 follow-up): the adapter mints session ids with a "cc-"
+// prefix (e.g. "cc-460fd894-..."), but the Claude CLI stores JSONL transcripts
+// using the bare UUID as the filename ("460fd894-....jsonl"). findHistoryPath
+// must strip the prefix when the prefixed name doesn't match any file on disk.
+func TestLoadMessages_CcPrefixStripped(t *testing.T) {
+	tmp := t.TempDir()
+	sessionsDir := filepath.Join(tmp, "sessions")
+	projectsDir := filepath.Join(tmp, "projects")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// On-disk file uses bare UUID (as Claude CLI creates it).
+	bareUUID := "460fd894-1bd6-4788-9d8d-4ad93a86b8ba"
+	cwd := "/Users/test/myproject"
+	historyDir := filepath.Join(projectsDir, cwdToProjectDir(cwd))
+	if err := os.MkdirAll(historyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := []string{
+		`{"type":"user","message":{"role":"user","content":"hello from device"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}`,
+	}
+	if err := os.WriteFile(filepath.Join(historyDir, bareUUID+".jsonl"),
+		[]byte(strings.Join(rows, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CLAUDE_SESSIONS_DIR", sessionsDir)
+	d := New(Options{}, obs.NewLogger())
+
+	// Query with "cc-" prefixed id (as stored in logical session's CLISessionID).
+	page, err := d.LoadMessages(context.Background(), "cc-"+bareUUID, -1, 50)
+	if err != nil {
+		t.Fatalf("LoadMessages with cc- prefix: %v", err)
+	}
+	if page.Total != 2 {
+		t.Errorf("expected total=2 with cc- prefix lookup, got %d", page.Total)
+	}
+	if len(page.Messages) != 2 || page.Messages[0].Content != "hello from device" {
+		t.Errorf("unexpected messages: %+v", page.Messages)
+	}
+}
+
 func TestLoadMessages_SkipsToolCallsAndMalformed(t *testing.T) {
 	tmp := t.TempDir()
 	sessionsDir := filepath.Join(tmp, "sessions")

@@ -105,13 +105,25 @@ func (d *Driver) findHistoryPath(sid string) (string, error) {
 		}
 		return "", fmt.Errorf("claude-code: read projects dir %s: %w", projectsDir, err)
 	}
+
+	// The adapter mints session ids with a "cc-" prefix (e.g. "cc-<uuid>"),
+	// but the Claude CLI stores JSONL transcripts using the bare UUID as the
+	// filename. Try the id as-is first, then fall back to the stripped version
+	// so history lookup works regardless of which form was persisted.
+	candidates := []string{sid}
+	if stripped := strings.TrimPrefix(sid, "cc-"); stripped != sid {
+		candidates = append(candidates, stripped)
+	}
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		candidate := filepath.Join(projectsDir, entry.Name(), sid+".jsonl")
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			return candidate, nil
+		for _, name := range candidates {
+			candidate := filepath.Join(projectsDir, entry.Name(), name+".jsonl")
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				return candidate, nil
+			}
 		}
 	}
 	return "", nil

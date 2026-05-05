@@ -1523,8 +1523,38 @@ static void stream_task(void* arg) {
 
           case BBCLAW_STATE_CHAT: {
             int busy = agent_chat_is_busy_locked();
+            int cwd_up = bb_ui_agent_chat_cwd_picker_is_visible();
             int picker_up = bb_ui_agent_chat_session_picker_is_visible();
-            if (picker_up) {
+            if (cwd_up) {
+              /* CWD picker is open — route nav to it. */
+              switch (nav) {
+                case BB_NAV_EVENT_UP:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_cwd_picker_move(-1);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_DOWN:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_cwd_picker_move(+1);
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_OK:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_cwd_picker_confirm();
+                    lvgl_port_unlock();
+                  }
+                  break;
+                case BB_NAV_EVENT_BACK:
+                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                    bb_ui_agent_chat_cwd_picker_cancel();
+                    lvgl_port_unlock();
+                  }
+                  break;
+                default: break;
+              }
+            } else if (picker_up) {
               /* Session picker is open — route nav to picker. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
