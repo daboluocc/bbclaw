@@ -65,6 +65,7 @@ func (d *Driver) ListSessions(ctx context.Context, limit int) ([]agent.SessionIn
 			Preview:      preview,
 			LastUsed:     s.LastUsed,
 			MessageCount: s.MessageCount,
+			Cwd:          filepath.Base(s.Cwd),
 		})
 	}
 

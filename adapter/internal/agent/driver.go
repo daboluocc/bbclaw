@@ -98,6 +98,7 @@ type SessionInfo struct {
 	Preview      string `json:"preview"`
 	LastUsed     int64  `json:"lastUsed"`     // Unix seconds
 	MessageCount int    `json:"messageCount"`
+	Cwd          string `json:"cwd,omitempty"` // basename of the working directory; empty for drivers that don't track cwd
 }
 
 // SessionLister is an optional capability for drivers that can enumerate

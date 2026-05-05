@@ -1732,7 +1732,14 @@ static void format_relative_time(int64_t last_used_ms, char* buf, int buf_len) {
     buf[0] = '\0';
     return;
   }
-  int64_t now_ms = bb_now_ms();
+  /* Use wall-clock time. Guard against SNTP not yet synced: if the system
+   * clock is still near the epoch (< 2020-01-01), the time is unreliable. */
+  time_t now_sec = time(NULL);
+  if (now_sec < 1577836800LL) { /* 2020-01-01 00:00:00 UTC */
+    buf[0] = '\0';
+    return;
+  }
+  int64_t now_ms = (int64_t)now_sec * 1000LL;
   int64_t diff_s = (now_ms - last_used_ms) / 1000;
   if (diff_s < 0) diff_s = 0;
   if (diff_s < 60) {
@@ -1824,13 +1831,16 @@ static void session_picker_build_ui(void) {
     char time_buf[8] = {0};
     format_relative_time(si->last_used_ms, time_buf, sizeof(time_buf));
 
-    char suffix[24] = {0};
+    char suffix[32] = {0};
     int off = 0;
     if (si->message_count > 0) {
       off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %dm", si->message_count);
     }
     if (time_buf[0] != '\0') {
       off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", time_buf);
+    }
+    if (si->cwd[0] != '\0') {
+      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", si->cwd);
     }
     if (i == s_chat.session_picker_active_idx) {
       snprintf(suffix + off, sizeof(suffix) - (size_t)off, " <");

@@ -465,7 +465,15 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
        * present for backward compat with non-logical responses. */
       const cJSON* last_used = cJSON_GetObjectItemCaseSensitive(item, "lastUsed");
       if (cJSON_IsNumber(last_used)) {
-        slot->last_used_ms = (int64_t)last_used->valuedouble;
+        /* Adapter returns Unix seconds; convert to ms for format_relative_time */
+        slot->last_used_ms = (int64_t)last_used->valuedouble * 1000;
+      }
+
+      /* cwd: adapter sends the basename of the working directory */
+      const cJSON* cwd = cJSON_GetObjectItemCaseSensitive(item, "cwd");
+      if (cJSON_IsString(cwd) && cwd->valuestring != NULL) {
+        strncpy(slot->cwd, cwd->valuestring, sizeof(slot->cwd) - 1);
+        slot->cwd[sizeof(slot->cwd) - 1] = '\0';
       }
     }
   }
