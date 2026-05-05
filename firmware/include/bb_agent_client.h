@@ -48,7 +48,7 @@ typedef struct {
 
 typedef struct {
   char id[64];
-  char preview[24];
+  char title[24];
   int message_count;
   int64_t last_used_ms;
 } bb_agent_session_info_t;

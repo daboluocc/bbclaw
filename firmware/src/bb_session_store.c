@@ -12,18 +12,20 @@ static const char* TAG = "bb_session_store";
 #define BB_SESSION_NVS_NS "bbclaw"
 #define BB_SESSION_PERSIST_TASK_STACK 4096
 #define BB_SESSION_PERSIST_TASK_PRIO 3
+#define BB_SESSION_MIGRATE_FLAG "ls_migrated"
 
-/* Driver name → NVS key short prefix mapping */
+/* Driver name → NVS key short prefix mapping (ADR-014: ls/ prefix) */
 typedef struct {
   const char* driver_name;
   const char* nvs_key;
+  const char* legacy_key;  /* v0.4.x key for migration cleanup */
 } driver_key_map_t;
 
 static const driver_key_map_t s_driver_map[] = {
-  {"claude-code", "s/cc"},
-  {"opencode",    "s/oc"},
-  {"openclaw",    "s/op"},
-  {"ollama",      "s/ol"},
+  {"claude-code", "ls/cc", "s/cc"},
+  {"opencode",    "ls/oc", "s/oc"},
+  {"openclaw",    "ls/op", "s/op"},
+  {"ollama",      "ls/ol", "s/ol"},
 };
 
 static const char* driver_to_nvs_key(const char* driver_name) {
@@ -34,6 +36,43 @@ static const char* driver_to_nvs_key(const char* driver_name) {
     }
   }
   return NULL;
+}
+
+void bb_session_store_migrate(void) {
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READWRITE, &h);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "migrate: nvs_open failed (%s)", esp_err_to_name(err));
+    return;
+  }
+
+  /* Check if migration already ran */
+  uint8_t migrated = 0;
+  err = nvs_get_u8(h, BB_SESSION_MIGRATE_FLAG, &migrated);
+  if (err == ESP_OK && migrated == 1) {
+    nvs_close(h);
+    ESP_LOGD(TAG, "migrate: already done, skipping");
+    return;
+  }
+
+  /* Erase all legacy "s/xx" keys (don't migrate values -- old CLI session IDs
+   * are likely invalid after upgrade per ADR-014) */
+  int erased = 0;
+  for (size_t i = 0; i < sizeof(s_driver_map) / sizeof(s_driver_map[0]); ++i) {
+    err = nvs_erase_key(h, s_driver_map[i].legacy_key);
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "migrate: erased legacy key '%s'", s_driver_map[i].legacy_key);
+      erased++;
+    }
+    /* ESP_ERR_NVS_NOT_FOUND is fine — key didn't exist */
+  }
+
+  /* Set migration flag so we don't repeat on next boot */
+  nvs_set_u8(h, BB_SESSION_MIGRATE_FLAG, 1);
+  nvs_commit(h);
+  nvs_close(h);
+
+  ESP_LOGI(TAG, "migrate: complete, erased %d legacy keys", erased);
 }
 
 esp_err_t bb_session_store_load(const char* driver_name, char* out_sid, size_t sz) {
