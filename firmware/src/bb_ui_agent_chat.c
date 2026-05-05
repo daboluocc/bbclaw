@@ -379,8 +379,19 @@ static void on_lvgl_dispatch(void* user_data) {
 
 static void async_post(bb_async_payload_t* p) {
   if (p == NULL) return;
-  /* lv_async_call 内部把 cb 排到下一帧；可在任意线程调用。 */
-  safe_lv_async_call(on_lvgl_dispatch, p);
+  /* Retry up to 5 times (total ~1 s) before giving up. Dropping a session or
+   * state frame leaves the UI stale until the next event arrives, which is
+   * worse than a brief blocking wait. */
+  for (int i = 0; i < 5; i++) {
+    if (safe_lv_async_call(on_lvgl_dispatch, p) == LV_RESULT_OK) {
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  ESP_LOGW(TAG, "async_post: giving up after retries, kind=%d", (int)p->kind);
+  free(p->s1);
+  free(p->s2);
+  free(p);
 }
 
 static void post_state(bb_agent_state_t st) {
@@ -421,7 +432,14 @@ static void post_assistant_chunk(const char* delta) {
   taskEXIT_CRITICAL(&s_chunk_mux);
 
   if (need_queue) {
-    safe_lv_async_call(on_lvgl_chunk_dispatch, NULL);
+    if (safe_lv_async_call(on_lvgl_chunk_dispatch, NULL) != LV_RESULT_OK) {
+      /* Failed to queue — reset flag so the next chunk (or turn_end flush)
+       * will retry. Data is safe in the buffer, just not yet scheduled for
+       * rendering. */
+      taskENTER_CRITICAL(&s_chunk_mux);
+      s_chunk_queued = 0;
+      taskEXIT_CRITICAL(&s_chunk_mux);
+    }
   }
 }
 
@@ -534,6 +552,31 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       break;
 
     case BB_AGENT_EVENT_TURN_END: {
+      /* Flush any pending chunk data that failed to queue earlier due to
+       * LVGL lock contention. After turn_end no more chunks will arrive,
+       * so this is the last chance to render them. */
+      {
+        int has_pending = 0;
+        taskENTER_CRITICAL(&s_chunk_mux);
+        has_pending = (s_chunk_len[s_chunk_widx] > 0);
+        if (has_pending && !s_chunk_queued) {
+          s_chunk_queued = 1;
+        }
+        taskEXIT_CRITICAL(&s_chunk_mux);
+        if (has_pending) {
+          /* Retry with the same patience as async_post — this text is the
+           * user's reply, losing it is unacceptable. */
+          for (int i = 0; i < 5; i++) {
+            if (safe_lv_async_call(on_lvgl_chunk_dispatch, NULL) == LV_RESULT_OK) {
+              break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            taskENTER_CRITICAL(&s_chunk_mux);
+            s_chunk_queued = 0;  /* allow retry */
+            taskEXIT_CRITICAL(&s_chunk_mux);
+          }
+        }
+      }
       /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
        * Phase 4.5.2 — set turn_complete so the streaming task will flush the
        * tail (any text after the last sentence boundary) and then exit. The
