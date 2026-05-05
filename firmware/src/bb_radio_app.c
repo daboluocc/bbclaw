@@ -2620,6 +2620,12 @@ static void stream_task(void* arg) {
                      state.supports_display, s_transport_adapter_connected, state.detail);
             if (prev_adapter_connected != s_transport_adapter_connected) {
               ESP_LOGW(TAG, "adapter_connected changed %d -> %d", prev_adapter_connected, s_transport_adapter_connected);
+              if (s_transport_adapter_connected == 1 && agent_chat_is_active()) {
+                if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+                  bb_ui_agent_chat_retry_adapter();
+                  lvgl_port_unlock();
+                }
+              }
             }
             show_cloud_transport_or_locked(&state);
           }

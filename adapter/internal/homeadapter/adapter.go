@@ -51,6 +51,10 @@ type Adapter struct {
 	// adapter falls back to legacy behaviour (raw CLI session ids on the
 	// wire). Set via SetSessionManager from main.go.
 	sessions *logicalsession.Manager
+
+	// cwdPool holds the configured CWD pool entries (issue #30). Set via
+	// SetCwdPool from main.go so cloud-proxied GET /v1/agent/cwd-pool works.
+	cwdPool []CwdPoolEntry
 }
 
 type Status struct {
@@ -103,6 +107,17 @@ func (a *Adapter) SetRouter(r *agent.Router) { a.router = r }
 // to the underlying CLI session id, and SESSION_NOT_FOUND retries write the
 // new CLI id back. nil disables the manager-aware path entirely.
 func (a *Adapter) SetSessionManager(m *logicalsession.Manager) { a.sessions = m }
+
+// CwdPoolEntry is a name+path pair for the CWD pool, mirroring config.CwdEntry
+// without importing the config package (to avoid circular deps).
+type CwdPoolEntry struct {
+	Name string
+	Path string
+}
+
+// SetCwdPool attaches the configured CWD pool so cloud-proxied
+// GET /v1/agent/cwd-pool requests can be served.
+func (a *Adapter) SetCwdPool(pool []CwdPoolEntry) { a.cwdPool = pool }
 
 func (a *Adapter) setStatus(connected bool, lastErr error) {
 	a.mu.Lock()
@@ -304,6 +319,10 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 	case "agent.sessions.delete":
 		// ADR-014 admin: cloud proxies web admin DELETE /v1/agent/sessions/{id}.
 		return a.handleAgentSessionsDeleteRequest(write, env)
+	case "agent.cwd_pool":
+		// Issue #30: cloud proxies firmware GET /v1/agent/cwd-pool through
+		// this kind so device-side CWD picker works in cloud_saas mode.
+		return a.handleAgentCwdPoolRequest(write, env)
 	case "agent.messages":
 		// Phase S3 cloud proxy: cloud reverse-proxies firmware
 		// /v1/agent/sessions/{id}/messages history requests through this kind.
