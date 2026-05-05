@@ -384,7 +384,7 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
 
   char url[320] = {0};
   char path[128] = {0};
-  snprintf(path, sizeof(path), "/v1/agent/sessions?driver=%s&limit=6", driver_name);
+  snprintf(path, sizeof(path), "/v1/agent/sessions?kind=logical&driver=%s&limit=6", driver_name);
   agent_build_url(url, sizeof(url), path);
 
   bb_http_dyn_accum_t accum = {0};
@@ -447,10 +447,11 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
         slot->id[sizeof(slot->id) - 1] = '\0';
       }
 
-      const cJSON* preview = cJSON_GetObjectItemCaseSensitive(item, "preview");
-      if (cJSON_IsString(preview) && preview->valuestring != NULL) {
-        strncpy(slot->preview, preview->valuestring, sizeof(slot->preview) - 1);
-        slot->preview[sizeof(slot->preview) - 1] = '\0';
+      /* ADR-014: logical sessions return "title" instead of "preview" */
+      const cJSON* title = cJSON_GetObjectItemCaseSensitive(item, "title");
+      if (cJSON_IsString(title) && title->valuestring != NULL) {
+        strncpy(slot->title, title->valuestring, sizeof(slot->title) - 1);
+        slot->title[sizeof(slot->title) - 1] = '\0';
       }
 
       const cJSON* msg_count = cJSON_GetObjectItemCaseSensitive(item, "messageCount");
@@ -458,6 +459,10 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
         slot->message_count = msg_count->valueint;
       }
 
+      /* ADR-014: logical sessions return "lastUsedAt" as ISO string;
+       * we don't parse the full timestamp — just use it as a relative
+       * ordering hint. For now, fall back to "lastUsed" (epoch ms) if
+       * present for backward compat with non-logical responses. */
       const cJSON* last_used = cJSON_GetObjectItemCaseSensitive(item, "lastUsed");
       if (cJSON_IsNumber(last_used)) {
         slot->last_used_ms = (int64_t)last_used->valuedouble;

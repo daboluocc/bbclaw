@@ -1779,8 +1779,8 @@ static void session_picker_build_ui(void) {
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
 
     const bb_agent_session_info_t* si = &s_chat.session_list[i];
-    const char* preview = si->preview;
-    if (preview == NULL || preview[0] == '\0') preview = "(empty)";
+    const char* title = si->title;
+    if (title == NULL || title[0] == '\0') title = "(untitled)";
 
     char time_buf[8] = {0};
     format_relative_time(si->last_used_ms, time_buf, sizeof(time_buf));
@@ -1797,11 +1797,11 @@ static void session_picker_build_ui(void) {
       snprintf(suffix + off, sizeof(suffix) - (size_t)off, " <");
     }
 
-    int preview_max = 22 - (int)strlen(suffix);
-    if (preview_max < 6) preview_max = 6;
+    int title_max = 22 - (int)strlen(suffix);
+    if (title_max < 6) title_max = 6;
 
     char row_buf[48];
-    snprintf(row_buf, sizeof(row_buf), "%.*s%s", preview_max, preview, suffix);
+    snprintf(row_buf, sizeof(row_buf), "%.*s%s", title_max, title, suffix);
     lv_label_set_text(row, row_buf);
     /* Sessions occupy visual rows [1 .. n_sessions]; row 0 is "+ 新建". */
     s_chat.session_picker_items[1 + i] = row;

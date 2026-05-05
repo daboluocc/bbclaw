@@ -5,6 +5,7 @@
 #include "bb_identity.h"
 #include "bb_ota.h"
 #include "bb_radio_app.h"
+#include "bb_session_store.h"
 
 static const char* TAG = "bbclaw_main";
 
@@ -18,6 +19,11 @@ void app_main(void) {
 
   ESP_LOGI(TAG, "starting BBClaw firmware bootstrap");
   bbclaw_identity_init();
+
+  /* ADR-014 Phase B: migrate legacy NVS session keys on first boot
+   * after OTA from v0.4.x. Must run on internal-RAM stack before any
+   * session_store_load calls. */
+  bb_session_store_migrate();
 
   // Initialize OTA
   bb_ota_init();
