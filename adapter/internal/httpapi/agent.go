@@ -632,6 +632,11 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 					errorCount++
 					lastError = ev.Text
 					s.agentSessions.setState(string(sid), "error")
+					broadcastSID := string(sid)
+					if usingLogical && logicalID != "" {
+						broadcastSID = string(logicalID)
+					}
+					s.broadcastSessionStateChange(broadcastSID, "error", ev.Text)
 					if strings.HasPrefix(ev.Text, "SESSION_NOT_FOUND") {
 						sessionNotFound = true
 					}
@@ -671,6 +676,11 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		// Final attempt: finalize state and notification, then return.
 		if !channelClosed {
 			s.agentSessions.setState(string(sid), "completed")
+			completedSID := string(sid)
+			if usingLogical && logicalID != "" {
+				completedSID = string(logicalID)
+			}
+			s.broadcastSessionStateChange(completedSID, "completed", lastText)
 		}
 		// Bump LastUsedAt on the logical session so the picker can sort by
 		// recency. Done after the turn settles (post-retry) so a transient
@@ -932,6 +942,28 @@ func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request
 	}
 	s.log.Infof("agent: deleted session=%s driver=%s", sessionID, entry.driverName)
 	writeJSON(w, http.StatusOK, response{OK: true})
+}
+
+// broadcastSessionStateChange emits a session.state_change WebSocket event to
+// all connected clients. It is a no-op when the hub is nil (no WS clients).
+//
+// Payload shape:
+//
+//	{"type":"event","kind":"session.state_change",
+//	 "payload":{"sessionId":"ls-xxx","state":"completed","preview":"..."}}
+func (s *Server) broadcastSessionStateChange(sessionID, state, preview string) {
+	if s.wsHub == nil {
+		return
+	}
+	s.wsHub.Broadcast(map[string]any{
+		"type": "event",
+		"kind": "session.state_change",
+		"payload": map[string]any{
+			"sessionId": sessionID,
+			"state":     state,
+			"preview":   truncatePreview(preview, 48),
+		},
+	})
 }
 
 // writeAgentEvent serialises an agent.Event to the NDJSON stream.

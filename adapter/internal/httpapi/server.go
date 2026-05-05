@@ -113,8 +113,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
 	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
+	mux.HandleFunc("GET /v1/agent/sessions/{id}", s.withAuth(s.handleAgentSessionGet))
 	mux.HandleFunc("PATCH /v1/agent/sessions/{id}", s.withAuth(s.handleAgentSessionUpdate))
 	mux.HandleFunc("GET /v1/agent/sessions/{id}/messages", s.withAuth(s.handleAgentSessionMessages))
+	mux.HandleFunc("POST /v1/agent/sessions/{id}/approve", s.withAuth(s.handleAgentSessionApprove))
 	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", s.withAuth(s.handleAgentDeleteSession))
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 	// Playground is unauthenticated on purpose — it's a dev-only single-page
