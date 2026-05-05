@@ -159,7 +159,10 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	args := []string{"-p", text, "--output-format", "stream-json", "--verbose"}
 	if s.resumeID != "" {
-		args = append(args, "--resume", s.resumeID)
+		// The adapter mints session ids with a "cc-" prefix, but the Claude
+		// CLI only accepts bare UUIDs for --resume. Strip the prefix.
+		resumeArg := strings.TrimPrefix(s.resumeID, "cc-")
+		args = append(args, "--resume", resumeArg)
 	}
 	args = append(args, d.extra...)
 
