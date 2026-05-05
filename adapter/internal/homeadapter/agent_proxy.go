@@ -467,6 +467,29 @@ func (a *Adapter) handleAgentDriversRequest(write func(CloudEnvelope) error, env
 	})
 }
 
+// handleAgentCwdPoolRequest replies with the configured CWD pool entries.
+// The cloud HTTP layer reshapes that into the response.data.pool envelope
+// the firmware reads via GET /v1/agent/cwd-pool.
+func (a *Adapter) handleAgentCwdPoolRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	type poolItem struct {
+		Name string `json:"name"`
+	}
+	var items []poolItem
+	for _, e := range a.cwdPool {
+		items = append(items, poolItem{Name: e.Name})
+	}
+	if items == nil {
+		items = []poolItem{}
+	}
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "agent.cwd_pool.reply",
+		Payload:    map[string]any{"pool": items},
+	})
+}
+
 // handleAgentMessageRequest runs one agent turn end-to-end and emits one
 // `event` envelope per agent.Event, then a final `reply` envelope marking
 // the turn complete (or failed). The cloud HTTP handler turns each `event`

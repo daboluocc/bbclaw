@@ -463,6 +463,14 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
 		}
+		// Wire CWD pool so cloud-proxied GET /v1/agent/cwd-pool works.
+		if len(cfg.CwdPool) > 0 {
+			pool := make([]homeadapter.CwdPoolEntry, len(cfg.CwdPool))
+			for i, e := range cfg.CwdPool {
+				pool[i] = homeadapter.CwdPoolEntry{Name: e.Name, Path: e.Path}
+			}
+			cloudRelay.SetCwdPool(pool)
+		}
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
