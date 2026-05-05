@@ -167,6 +167,136 @@ func TestLoadFromEnvCloudModeDisablesLocalIngress(t *testing.T) {
 	}
 }
 
+func TestParseCwdPool(t *testing.T) {
+	tests := []struct {
+		name       string
+		poolEnv    string
+		defaultCwd string
+		want       []CwdEntry
+	}{
+		{
+			name:       "empty pool and no default → nil",
+			poolEnv:    "",
+			defaultCwd: "",
+			want:       nil,
+		},
+		{
+			name:       "empty pool with default → single default entry",
+			poolEnv:    "",
+			defaultCwd: "/home/user/code",
+			want:       []CwdEntry{{Name: "default", Path: "/home/user/code"}},
+		},
+		{
+			name:       "single entry",
+			poolEnv:    "myproject:/Users/mikas/code/myproject",
+			defaultCwd: "",
+			want:       []CwdEntry{{Name: "myproject", Path: "/Users/mikas/code/myproject"}},
+		},
+		{
+			name:       "multiple entries",
+			poolEnv:    "myproject:/Users/mikas/code/myproject,side:/Users/mikas/code/side",
+			defaultCwd: "",
+			want: []CwdEntry{
+				{Name: "myproject", Path: "/Users/mikas/code/myproject"},
+				{Name: "side", Path: "/Users/mikas/code/side"},
+			},
+		},
+		{
+			name:       "pool present overrides default",
+			poolEnv:    "a:/path/a",
+			defaultCwd: "/fallback",
+			want:       []CwdEntry{{Name: "a", Path: "/path/a"}},
+		},
+		{
+			name:       "malformed entry (no colon) is skipped",
+			poolEnv:    "nocolon,good:/path/good",
+			defaultCwd: "",
+			want:       []CwdEntry{{Name: "good", Path: "/path/good"}},
+		},
+		{
+			name:       "empty name is skipped",
+			poolEnv:    ":/path/bad,ok:/path/ok",
+			defaultCwd: "",
+			want:       []CwdEntry{{Name: "ok", Path: "/path/ok"}},
+		},
+		{
+			name:       "empty path is skipped",
+			poolEnv:    "bad:,ok:/path/ok",
+			defaultCwd: "",
+			want:       []CwdEntry{{Name: "ok", Path: "/path/ok"}},
+		},
+		{
+			name:       "whitespace trimmed",
+			poolEnv:    "  proj : /path/proj , other : /path/other ",
+			defaultCwd: "",
+			want: []CwdEntry{
+				{Name: "proj", Path: "/path/proj"},
+				{Name: "other", Path: "/path/other"},
+			},
+		},
+		{
+			name:       "all malformed falls back to default",
+			poolEnv:    "nocolon,alsono",
+			defaultCwd: "/fallback",
+			want:       []CwdEntry{{Name: "default", Path: "/fallback"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCwdPool(tt.poolEnv, tt.defaultCwd)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseCwdPool() len=%d, want %d; got=%v", len(got), len(tt.want), got)
+			}
+			for i, e := range got {
+				if e.Name != tt.want[i].Name || e.Path != tt.want[i].Path {
+					t.Errorf("entry[%d] = {%q,%q}, want {%q,%q}", i, e.Name, e.Path, tt.want[i].Name, tt.want[i].Path)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadFromEnvCwdPool(t *testing.T) {
+	t.Setenv("ASR_LOCAL_BIN", "/bin/echo")
+	t.Setenv("OPENCLAW_RPC_URL", "https://gateway.example.com/rpc")
+	t.Setenv("TTS_WS_URL", "wss://openspeech.bytedance.com/api/v1/tts/ws_binary")
+	t.Setenv("TTS_APP_ID", "appid")
+	t.Setenv("TTS_TOKEN", "token")
+	t.Setenv("TTS_CLUSTER", "volcano_tts")
+	t.Setenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+
+	t.Run("pool parsed from env", func(t *testing.T) {
+		t.Setenv("BBCLAW_CWD_POOL", "a:/path/a,b:/path/b")
+		cfg, err := LoadFromEnv()
+		if err != nil {
+			t.Fatalf("LoadFromEnv() error = %v", err)
+		}
+		if len(cfg.CwdPool) != 2 {
+			t.Fatalf("CwdPool len=%d, want 2", len(cfg.CwdPool))
+		}
+		if cfg.CwdPool[0].Name != "a" || cfg.CwdPool[0].Path != "/path/a" {
+			t.Errorf("CwdPool[0] = %+v", cfg.CwdPool[0])
+		}
+		if cfg.CwdPool[1].Name != "b" || cfg.CwdPool[1].Path != "/path/b" {
+			t.Errorf("CwdPool[1] = %+v", cfg.CwdPool[1])
+		}
+	})
+
+	t.Run("default cwd becomes single pool entry when pool empty", func(t *testing.T) {
+		t.Setenv("BBCLAW_DEFAULT_CWD", "/home/user/work")
+		cfg, err := LoadFromEnv()
+		if err != nil {
+			t.Fatalf("LoadFromEnv() error = %v", err)
+		}
+		if len(cfg.CwdPool) != 1 {
+			t.Fatalf("CwdPool len=%d, want 1", len(cfg.CwdPool))
+		}
+		if cfg.CwdPool[0].Name != "default" || cfg.CwdPool[0].Path != "/home/user/work" {
+			t.Errorf("CwdPool[0] = %+v", cfg.CwdPool[0])
+		}
+	})
+}
+
 func TestGetEnvDuration(t *testing.T) {
 	tests := []struct {
 		envVal   string

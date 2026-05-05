@@ -759,9 +759,10 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 // adapter's `BBCLAW_DEFAULT_CWD` (or, future: a named cwd pool selected by
 // the cloud admin console).
 type agentSessionCreateRequest struct {
-	Driver string `json:"driver,omitempty"`
-	Title  string `json:"title,omitempty"`
-	Cwd    string `json:"cwd,omitempty"` // optional override; defaults to manager's default
+	Driver  string `json:"driver,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`     // optional override; defaults to manager's default
+	CwdName string `json:"cwdName,omitempty"` // issue #30: select cwd by pool name
 }
 
 // handleAgentSessionCreate mints a new logical session (ADR-014).
@@ -803,7 +804,17 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 	}
 
 	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
-	sess, err := s.sessions.Create(deviceID, driver, strings.TrimSpace(req.Cwd), strings.TrimSpace(req.Title))
+	// Resolve cwd: cwdName takes priority over raw cwd field.
+	cwd := strings.TrimSpace(req.Cwd)
+	if cwdName := strings.TrimSpace(req.CwdName); cwdName != "" {
+		if resolved, ok := s.resolveCwdByName(cwdName); ok {
+			cwd = resolved
+		} else {
+			writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "UNKNOWN_CWD_NAME", Detail: cwdName})
+			return
+		}
+	}
+	sess, err := s.sessions.Create(deviceID, driver, cwd, strings.TrimSpace(req.Title))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "CREATE_SESSION_FAILED", Detail: err.Error()})
 		return
@@ -989,6 +1000,39 @@ func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request
 	}
 	s.log.Infof("agent: deleted session=%s driver=%s", sessionID, entry.driverName)
 	writeJSON(w, http.StatusOK, response{OK: true})
+}
+
+// resolveCwdByName looks up a cwd path by name in the configured pool.
+// Returns ("", false) when the name is not found.
+func (s *Server) resolveCwdByName(name string) (string, bool) {
+	for _, entry := range s.cfg.CwdPool {
+		if entry.Name == name {
+			return entry.Path, true
+		}
+	}
+	return "", false
+}
+
+// handleAgentCwdPool returns the configured CWD pool entries.
+//
+//	GET /v1/agent/cwd-pool
+//	response: {"ok":true,"data":{"pool":[{"name":"myproject"},{"name":"side"}]}}
+//
+// Only the name is returned to the device — the full filesystem path is not
+// sent over the wire (it leaks host info and the device only needs the name
+// to pass back as cwdName in POST /v1/agent/sessions).
+func (s *Server) handleAgentCwdPool(w http.ResponseWriter, r *http.Request) {
+	type poolItem struct {
+		Name string `json:"name"`
+	}
+	items := make([]poolItem, 0, len(s.cfg.CwdPool))
+	for _, e := range s.cfg.CwdPool {
+		items = append(items, poolItem{Name: e.Name})
+	}
+	writeJSON(w, http.StatusOK, response{
+		OK:   true,
+		Data: map[string]any{"pool": items},
+	})
 }
 
 // broadcastSessionStateChange emits a session.state_change WebSocket event to

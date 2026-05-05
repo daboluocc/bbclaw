@@ -19,6 +19,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 )
@@ -36,6 +37,7 @@ type AppConfig struct {
 	ASRTranscribeTimeout time.Duration
 	SessionReuseWindow   time.Duration // 0 disables reuse
 	SessionMaxAge        time.Duration // 0 disables sweep
+	CwdPool              []config.CwdEntry // populated from BBCLAW_CWD_POOL / BBCLAW_DEFAULT_CWD
 }
 
 type ASRProvider interface {
@@ -114,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
+	mux.HandleFunc("GET /v1/agent/cwd-pool", s.withAuth(s.handleAgentCwdPool))
 	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
 	mux.HandleFunc("GET /v1/agent/sessions/{id}", s.withAuth(s.handleAgentSessionGet))
 	mux.HandleFunc("PATCH /v1/agent/sessions/{id}", s.withAuth(s.handleAgentSessionUpdate))

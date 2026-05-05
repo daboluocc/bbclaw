@@ -643,7 +643,7 @@ esp_err_t bb_agent_load_messages(const char* session_id,
 
 /* ── public: create logical session (ADR-014) ── */
 
-esp_err_t bb_agent_create_session(const char* driver, const char* title,
+esp_err_t bb_agent_create_session(const char* driver, const char* title, const char* cwd_name,
                                   char* out_session_id, size_t out_session_id_len) {
   if (out_session_id == NULL || out_session_id_len < 40) {
     return ESP_ERR_INVALID_ARG;
@@ -659,6 +659,9 @@ esp_err_t bb_agent_create_session(const char* driver, const char* title,
   }
   if (title != NULL && title[0] != '\0') {
     cJSON_AddStringToObject(req, "title", title);
+  }
+  if (cwd_name != NULL && cwd_name[0] != '\0') {
+    cJSON_AddStringToObject(req, "cwdName", cwd_name);
   }
   char* body = cJSON_PrintUnformatted(req);
   cJSON_Delete(req);
@@ -683,9 +686,10 @@ esp_err_t bb_agent_create_session(const char* driver, const char* title,
   esp_http_client_set_header(client, "Content-Type", "application/json");
   esp_http_client_set_post_field(client, body, (int)strlen(body));
 
-  ESP_LOGI(TAG, "create_session url=%s driver=%s title=%s", url,
+  ESP_LOGI(TAG, "create_session url=%s driver=%s title=%s cwd_name=%s", url,
            (driver != NULL && driver[0] != '\0') ? driver : "(default)",
-           (title != NULL && title[0] != '\0') ? title : "(none)");
+           (title != NULL && title[0] != '\0') ? title : "(none)",
+           (cwd_name != NULL && cwd_name[0] != '\0') ? cwd_name : "(none)");
 
   esp_err_t err = esp_http_client_perform(client);
   int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
@@ -734,6 +738,81 @@ esp_err_t bb_agent_create_session(const char* driver, const char* title,
   strncpy(out_session_id, id->valuestring, out_session_id_len - 1);
   out_session_id[out_session_id_len - 1] = '\0';
   ESP_LOGI(TAG, "create_session ok sid=%s", out_session_id);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
+/* ── public: list CWD pool (issue #30) ── */
+
+esp_err_t bb_agent_list_cwd_pool(bb_agent_cwd_entry_t* out_list, int cap, int* out_count) {
+  if (out_count != NULL) {
+    *out_count = 0;
+  }
+
+  char url[256] = {0};
+  agent_build_url(url, sizeof(url), "/v1/agent/cwd-pool");
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_GET, http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+
+  if (err != ESP_OK) {
+    free(accum.buf);
+    ESP_LOGE(TAG, "list_cwd_pool transport err=%s", esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300 || accum.buf == NULL) {
+    ESP_LOGE(TAG, "list_cwd_pool http status=%d body=%.120s", status,
+             accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+
+  cJSON* root = cJSON_Parse(accum.buf);
+  free(accum.buf);
+  accum.buf = NULL;
+  if (root == NULL) {
+    ESP_LOGE(TAG, "list_cwd_pool parse failed");
+    return ESP_FAIL;
+  }
+
+  const cJSON* data = cJSON_GetObjectItemCaseSensitive(root, "data");
+  const cJSON* pool = cJSON_GetObjectItemCaseSensitive(data, "pool");
+  if (!cJSON_IsArray(pool)) {
+    ESP_LOGE(TAG, "list_cwd_pool missing data.pool[]");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  int total = cJSON_GetArraySize(pool);
+  if (out_count != NULL) {
+    *out_count = total;
+  }
+  if (out_list != NULL && cap > 0) {
+    int n = total < cap ? total : cap;
+    for (int i = 0; i < n; i++) {
+      const cJSON* item = cJSON_GetArrayItem(pool, i);
+      if (item == NULL) continue;
+      bb_agent_cwd_entry_t* slot = &out_list[i];
+      memset(slot, 0, sizeof(*slot));
+      const cJSON* name = cJSON_GetObjectItemCaseSensitive(item, "name");
+      if (cJSON_IsString(name) && name->valuestring != NULL) {
+        strncpy(slot->name, name->valuestring, sizeof(slot->name) - 1);
+        slot->name[sizeof(slot->name) - 1] = '\0';
+      }
+    }
+  }
+
+  ESP_LOGI(TAG, "list_cwd_pool ok total=%d", total);
   cJSON_Delete(root);
   return ESP_OK;
 }

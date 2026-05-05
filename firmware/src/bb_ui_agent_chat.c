@@ -67,6 +67,12 @@ static const char* TAG = "bb_agent_ui";
 #define BB_HISTORY_PAGE_SIZE   50
 #define BB_HISTORY_MAX_LOADED  300
 
+/* CWD pool picker (issue #30) — shown when creating a new session and the
+ * adapter has more than one project configured. */
+#define BB_CWD_PICKER_MAX      8
+#define BB_CWD_PICKER_VISIBLE  5
+#define BB_CWD_PICKER_ROW_H    20
+
 /* Action codes returned by session_picker_select(). */
 #define BB_SESSION_PICKER_ACTION_SWITCH       0
 #define BB_SESSION_PICKER_ACTION_SETTINGS     1
@@ -157,6 +163,19 @@ typedef struct {
   int history_has_more;
   volatile int history_fetch_pending;
   volatile uint32_t history_fetch_generation;
+
+  /* CWD pool picker (issue #30) — shown when creating a new session and the
+   * adapter has more than one project configured. Fetched once per session-
+   * picker open; cached for the lifetime of the chat overlay. */
+  bb_agent_cwd_entry_t cwd_pool[BB_CWD_PICKER_MAX];
+  int cwd_pool_count;
+  volatile int cwd_pool_fetch_pending;
+  volatile uint32_t cwd_pool_fetch_generation;
+  /* CWD picker UI state (only active when cwd_picker_visible > 0). */
+  int cwd_picker_visible;   /* 0=hidden, 1=loading, 2=visible */
+  int cwd_picker_sel;
+  lv_obj_t* cwd_picker_root;
+  lv_obj_t* cwd_picker_items[BB_CWD_PICKER_MAX];
 
   /* Phase 4.5.1 — TTS reply toggle + per-turn accumulator.
    * Phase 4.5.2 — sentence-level streaming + cancel-and-replace.
@@ -1080,6 +1099,17 @@ void bb_ui_agent_chat_hide(void) {
   s_chat.picker_sel = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
 
+  /* CWD picker cleanup (issue #30). */
+  if (s_chat.cwd_picker_root != NULL) {
+    lv_obj_del(s_chat.cwd_picker_root);
+    s_chat.cwd_picker_root = NULL;
+    memset(s_chat.cwd_picker_items, 0, sizeof(s_chat.cwd_picker_items));
+  }
+  s_chat.cwd_picker_visible = 0;
+  /* Invalidate the pool cache so it's re-fetched on next chat entry. */
+  s_chat.cwd_pool_count = 0;
+  s_chat.cwd_pool_fetch_generation++;
+
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->on_exit != NULL) {
     theme->on_exit();
@@ -1896,6 +1926,7 @@ typedef struct {
 
 typedef struct {
   char driver_name[24];
+  char cwd_name[32]; /* issue #30: selected project name; "" = no selection */
 } new_session_args_t;
 
 static void on_new_session_done(void* user_data) {
@@ -1950,14 +1981,16 @@ static void new_session_task(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(200));
   }
 
-  res->err = bb_agent_create_session(res->driver_name, NULL,
+  res->err = bb_agent_create_session(res->driver_name,
+                                     NULL,
+                                     args->cwd_name[0] != '\0' ? args->cwd_name : NULL,
                                      res->session_id, sizeof(res->session_id));
   free(args);
   lv_async_call(on_new_session_done, res);
   vTaskDelete(NULL);
 }
 
-static void spawn_new_session_task(void) {
+static void spawn_new_session_task(const char* cwd_name) {
   new_session_args_t* args = (new_session_args_t*)heap_caps_calloc(
       1, sizeof(*args), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (args == NULL) {
@@ -1967,6 +2000,9 @@ static void spawn_new_session_task(void) {
   const char* drv = s_chat.driver_name[0] != '\0'
                       ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
   strncpy(args->driver_name, drv, sizeof(args->driver_name) - 1);
+  if (cwd_name != NULL && cwd_name[0] != '\0') {
+    strncpy(args->cwd_name, cwd_name, sizeof(args->cwd_name) - 1);
+  }
 
   TaskHandle_t t = NULL;
   BaseType_t ok = xTaskCreateWithCaps(new_session_task, "new_session",
@@ -1979,6 +2015,262 @@ static void spawn_new_session_task(void) {
   }
 }
 
+/* ── CWD pool fetch + picker (issue #30) ──────────────────────────────────
+ *
+ * When the user selects "+ 新建 session" and the adapter has more than one
+ * project configured, we show a project-selection sub-menu before creating
+ * the session. If the pool has 0 or 1 entries we skip the picker entirely
+ * (backward-compatible with single-project setups).
+ *
+ * Lifecycle:
+ *   1. session_picker_select() detects the "+ 新建" row.
+ *   2. If cwd_pool_count > 1 (already cached) → show picker immediately.
+ *      If not yet fetched → spawn cwd_pool_fetch_task, show picker when done.
+ *      If pool has ≤ 1 entry → create session directly (existing behaviour).
+ *   3. User navigates with UP/DOWN, confirms with OK → spawn_new_session_task(name).
+ *   4. BACK → hide picker, return to session picker (or just close).
+ */
+
+#define BB_CWD_FETCH_TASK_STACK 4096
+#define BB_CWD_FETCH_TASK_PRIO  4
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int total;
+  bb_agent_cwd_entry_t entries[BB_CWD_PICKER_MAX];
+} cwd_pool_fetch_result_t;
+
+static void cwd_picker_build_ui(void);
+
+static void on_cwd_pool_fetch_done(void* user_data) {
+  cwd_pool_fetch_result_t* res = (cwd_pool_fetch_result_t*)user_data;
+  if (res == NULL) return;
+  s_chat.cwd_pool_fetch_pending = 0;
+  if (!s_chat.active || res->gen != s_chat.cwd_pool_fetch_generation) {
+    free(res);
+    return;
+  }
+  if (res->err != ESP_OK || res->total <= 0) {
+    ESP_LOGW(TAG, "cwd_pool fetch failed (%s), creating session without cwd_name",
+             esp_err_to_name(res->err));
+    s_chat.cwd_pool_count = 0;
+    /* Fall back: create session directly without a cwd_name. */
+    if (s_chat.cwd_picker_visible) {
+      s_chat.cwd_picker_visible = 0;
+      spawn_new_session_task(NULL);
+    }
+    free(res);
+    return;
+  }
+  int total = res->total > BB_CWD_PICKER_MAX ? BB_CWD_PICKER_MAX : res->total;
+  memcpy(s_chat.cwd_pool, res->entries, sizeof(res->entries[0]) * (size_t)total);
+  s_chat.cwd_pool_count = total;
+  free(res);
+
+  if (total <= 1) {
+    /* Single entry or empty — skip picker, create directly. */
+    s_chat.cwd_picker_visible = 0;
+    const char* name = (total == 1) ? s_chat.cwd_pool[0].name : NULL;
+    spawn_new_session_task(name);
+    return;
+  }
+  /* Multiple entries — show the picker. */
+  s_chat.cwd_picker_visible = 2;
+  s_chat.cwd_picker_sel = 0;
+  cwd_picker_build_ui();
+}
+
+static void cwd_pool_fetch_task(void* arg) {
+  uint32_t my_gen = (uint32_t)(uintptr_t)arg;
+  cwd_pool_fetch_result_t* res = (cwd_pool_fetch_result_t*)calloc(1, sizeof(*res));
+  if (res == NULL) {
+    s_chat.cwd_pool_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  res->gen = my_gen;
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  res->err = bb_agent_list_cwd_pool(res->entries, BB_CWD_PICKER_MAX, &res->total);
+  lv_async_call(on_cwd_pool_fetch_done, res);
+  vTaskDelete(NULL);
+}
+
+/* Fetch the CWD pool from the adapter. If already cached (count > 0), calls
+ * on_cwd_pool_fetch_done synchronously via lv_async_call with the cached data
+ * so the caller always gets a consistent callback-driven flow. */
+static void spawn_cwd_pool_fetch_or_use_cache(void) {
+  if (s_chat.cwd_pool_count > 0) {
+    /* Already have data — synthesise a result from cache. */
+    cwd_pool_fetch_result_t* res = (cwd_pool_fetch_result_t*)calloc(1, sizeof(*res));
+    if (res == NULL) {
+      spawn_new_session_task(NULL);
+      return;
+    }
+    res->gen = s_chat.cwd_pool_fetch_generation;
+    res->err = ESP_OK;
+    res->total = s_chat.cwd_pool_count;
+    memcpy(res->entries, s_chat.cwd_pool,
+           sizeof(res->entries[0]) * (size_t)s_chat.cwd_pool_count);
+    lv_async_call(on_cwd_pool_fetch_done, res);
+    return;
+  }
+  if (s_chat.cwd_pool_fetch_pending) return;
+  s_chat.cwd_pool_fetch_pending = 1;
+  uint32_t gen = ++s_chat.cwd_pool_fetch_generation;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(cwd_pool_fetch_task, "cwd_fetch",
+                              BB_CWD_FETCH_TASK_STACK,
+                              (void*)(uintptr_t)gen,
+                              BB_CWD_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_cwd_pool_fetch: xTaskCreate failed");
+    s_chat.cwd_pool_fetch_pending = 0;
+    spawn_new_session_task(NULL);
+  }
+}
+
+/* ── CWD picker UI ── */
+
+#define BB_CWDPICKER_BG      0x12211b
+#define BB_CWDPICKER_FG      0xc8e2d6
+#define BB_CWDPICKER_FG_DIM  0x6b8c80
+#define BB_CWDPICKER_SEL_BG  0x2ec4a0
+#define BB_CWDPICKER_SEL_FG  0x0a0e0c
+#define BB_CWDPICKER_TITLE_H 22
+
+static void cwd_picker_apply_styles(void) {
+  const int total = s_chat.cwd_pool_count;
+  if (total == 0) return;
+  int first = s_chat.cwd_picker_sel - BB_CWD_PICKER_VISIBLE / 2;
+  if (first < 0) first = 0;
+  if (first + BB_CWD_PICKER_VISIBLE > total) {
+    first = total - BB_CWD_PICKER_VISIBLE;
+    if (first < 0) first = 0;
+  }
+  for (int i = 0; i < total; ++i) {
+    lv_obj_t* row = s_chat.cwd_picker_items[i];
+    if (row == NULL) continue;
+    int visible = (i >= first && i < first + BB_CWD_PICKER_VISIBLE);
+    if (visible) {
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (i == s_chat.cwd_picker_sel) {
+      lv_obj_set_style_bg_color(row, lv_color_hex(BB_CWDPICKER_SEL_BG), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_CWDPICKER_SEL_FG), 0);
+    } else {
+      lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_text_color(row, lv_color_hex(BB_CWDPICKER_FG_DIM), 0);
+    }
+  }
+}
+
+static void cwd_picker_build_ui(void) {
+  if (s_chat.parent == NULL) return;
+
+#ifdef BBCLAW_HAVE_CJK_FONT
+  extern const lv_font_t lv_font_bbclaw_cjk;
+  const lv_font_t* font = &lv_font_bbclaw_cjk;
+#else
+  const lv_font_t* font = lv_font_get_default();
+#endif
+
+  /* Tear down previous picker if any. */
+  if (s_chat.cwd_picker_root != NULL) {
+    lv_obj_del(s_chat.cwd_picker_root);
+    s_chat.cwd_picker_root = NULL;
+    memset(s_chat.cwd_picker_items, 0, sizeof(s_chat.cwd_picker_items));
+  }
+
+  const int n = s_chat.cwd_pool_count;
+
+  s_chat.cwd_picker_root = lv_obj_create(s_chat.parent);
+  lv_obj_remove_style_all(s_chat.cwd_picker_root);
+  lv_obj_set_size(s_chat.cwd_picker_root, lv_pct(100), lv_pct(100));
+  lv_obj_align(s_chat.cwd_picker_root, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(s_chat.cwd_picker_root, lv_color_hex(BB_CWDPICKER_BG), 0);
+  lv_obj_set_style_bg_opa(s_chat.cwd_picker_root, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(s_chat.cwd_picker_root, 2, 0);
+  lv_obj_set_flex_flow(s_chat.cwd_picker_root, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(s_chat.cwd_picker_root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_move_foreground(s_chat.cwd_picker_root);
+
+  /* Title row. */
+  lv_obj_t* title = lv_label_create(s_chat.cwd_picker_root);
+  lv_obj_set_size(title, lv_pct(100), BB_CWDPICKER_TITLE_H);
+  lv_obj_set_style_text_color(title, lv_color_hex(BB_CWDPICKER_FG), 0);
+  lv_obj_set_style_text_font(title, font, 0);
+  lv_obj_set_style_pad_left(title, 2, 0);
+  lv_label_set_text(title, "新建 Session");
+
+  /* Project rows. */
+  for (int i = 0; i < n; ++i) {
+    lv_obj_t* row = lv_label_create(s_chat.cwd_picker_root);
+    lv_obj_set_size(row, lv_pct(100), BB_CWD_PICKER_ROW_H);
+    lv_obj_set_style_pad_left(row, 4, 0);
+    lv_obj_set_style_pad_right(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_font(row, font, 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text(row, s_chat.cwd_pool[i].name);
+    s_chat.cwd_picker_items[i] = row;
+  }
+
+  cwd_picker_apply_styles();
+  ESP_LOGI(TAG, "cwd_picker: built %d project entries", n);
+}
+
+/* Hide and destroy the CWD picker overlay. */
+static void cwd_picker_hide(void) {
+  if (s_chat.cwd_picker_root != NULL) {
+    lv_obj_del(s_chat.cwd_picker_root);
+    s_chat.cwd_picker_root = NULL;
+    memset(s_chat.cwd_picker_items, 0, sizeof(s_chat.cwd_picker_items));
+  }
+  s_chat.cwd_picker_visible = 0;
+}
+
+/* Move selection up/down in the CWD picker. */
+void bb_ui_agent_chat_cwd_picker_move(int delta) {
+  if (!s_chat.active || s_chat.cwd_picker_visible != 2) return;
+  const int total = s_chat.cwd_pool_count;
+  if (total == 0) return;
+  int sel = ((s_chat.cwd_picker_sel + delta) % total + total) % total;
+  if (sel == s_chat.cwd_picker_sel) return;
+  s_chat.cwd_picker_sel = sel;
+  cwd_picker_apply_styles();
+}
+
+/* Confirm selection in the CWD picker (OK key). Creates the session with the
+ * selected project name. */
+void bb_ui_agent_chat_cwd_picker_confirm(void) {
+  if (!s_chat.active || s_chat.cwd_picker_visible != 2) return;
+  const int sel = s_chat.cwd_picker_sel;
+  if (sel < 0 || sel >= s_chat.cwd_pool_count) return;
+  const char* name = s_chat.cwd_pool[sel].name;
+  ESP_LOGI(TAG, "cwd_picker: selected '%s'", name);
+  cwd_picker_hide();
+  spawn_new_session_task(name);
+}
+
+/* Cancel the CWD picker (BACK key). Returns to the session picker. */
+void bb_ui_agent_chat_cwd_picker_cancel(void) {
+  if (!s_chat.active || !s_chat.cwd_picker_visible) return;
+  ESP_LOGI(TAG, "cwd_picker: cancelled");
+  cwd_picker_hide();
+}
+
+/* Returns non-zero when the CWD picker is visible (so the key handler can
+ * route UP/DOWN/OK/BACK to it instead of the session picker). */
+int bb_ui_agent_chat_cwd_picker_is_visible(void) {
+  return (s_chat.active && s_chat.cwd_picker_visible > 0) ? 1 : 0;
+}
+
 int bb_ui_agent_chat_session_picker_select(void) {
   if (!s_chat.active || s_chat.session_picker_visible != 2) {
     return BB_SESSION_PICKER_ACTION_NONE;
@@ -1987,10 +2279,13 @@ int bb_ui_agent_chat_session_picker_select(void) {
   const int n = s_chat.session_list_count;
 
   if (sel == 0) {
-    /* "+ 新建 session" row — kick off async create then converge with switch flow. */
+    /* "+ 新建 session" row — fetch CWD pool; if > 1 entry show project picker,
+     * otherwise create directly (backward-compatible). */
     ESP_LOGI(TAG, "session_picker: new session requested");
     bb_ui_agent_chat_session_picker_hide();
-    spawn_new_session_task();
+    /* Mark cwd_picker as loading so key handler routes to it. */
+    s_chat.cwd_picker_visible = 1;
+    spawn_cwd_pool_fetch_or_use_cache();
     return BB_SESSION_PICKER_ACTION_NEW_SESSION;
   }
 
