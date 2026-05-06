@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -40,6 +41,7 @@ type Driver struct {
 	bin    string
 	log    *obs.Logger
 	extra  []string
+	pool   *WarmPool
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
@@ -54,6 +56,13 @@ type Options struct {
 	// "claude-sonnet-4-6"). Do not include `-p` or `--output-format` —
 	// the driver sets those itself.
 	ExtraArgs []string
+	// PoolSize is the number of pre-warmed sessions to maintain. 0 disables
+	// the pool (default cold-spawn behaviour). Corresponds to
+	// BBCLAW_CLAUDE_POOL_SIZE.
+	PoolSize int
+	// PoolIdleTTL is how long a pre-warmed entry is kept before being
+	// discarded. Corresponds to BBCLAW_CLAUDE_POOL_IDLE_TTL.
+	PoolIdleTTL time.Duration
 }
 
 // New constructs a Driver. The logger is required; pass obs.NewLogger() if
@@ -70,10 +79,20 @@ func New(opts Options, log *obs.Logger) *Driver {
 		bin = resolved
 		log.Infof("claude-code: resolved binary %q", bin)
 	}
+	idleTTL := opts.PoolIdleTTL
+	if idleTTL <= 0 {
+		idleTTL = 10 * time.Minute
+	}
+	extra := append([]string(nil), opts.ExtraArgs...)
+	pool := NewWarmPool(bin, extra, opts.PoolSize, idleTTL, log)
+	if opts.PoolSize > 0 {
+		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s", opts.PoolSize, idleTTL)
+	}
 	return &Driver{
 		bin:      bin,
 		log:      log,
-		extra:    append([]string(nil), opts.ExtraArgs...),
+		extra:    extra,
+		pool:     pool,
 		sessions: make(map[agent.SessionID]*session),
 	}
 }
@@ -158,10 +177,24 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	}()
 
 	args := []string{"-p", text, "--output-format", "stream-json", "--verbose"}
+
+	// Determine the --resume argument. Priority:
+	//   1. Session already has a resumeID from a prior turn → use it directly.
+	//   2. No resumeID yet → try the warm pool for a pre-warmed session ID.
+	//   3. Pool miss → fresh spawn (existing behaviour).
+	resumeArg := ""
 	if s.resumeID != "" {
 		// The adapter mints session ids with a "cc-" prefix, but the Claude
 		// CLI only accepts bare UUIDs for --resume. Strip the prefix.
-		resumeArg := strings.TrimPrefix(s.resumeID, "cc-")
+		resumeArg = strings.TrimPrefix(s.resumeID, "cc-")
+	} else if warmID, ok := d.pool.Acquire(s.cwd); ok {
+		resumeArg = warmID
+		// Adopt the pre-warmed CLI session as this session's resume ID so
+		// subsequent turns continue the same conversation.
+		s.setResumeID(warmID)
+		d.log.Infof("claude-code: pool hit sid=%s cliSession=%s cwd=%q", sid, warmID, s.cwd)
+	}
+	if resumeArg != "" {
 		args = append(args, "--resume", resumeArg)
 	}
 	args = append(args, d.extra...)
@@ -191,7 +224,11 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.cancel = cancel
 	s.mu.Unlock()
 
-	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, s.resumeID, cmd.Process.Pid)
+	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, resumeArg, cmd.Process.Pid)
+
+	// After a successful spawn, signal the pool to backfill so the next
+	// request can benefit from a pre-warmed session.
+	d.pool.signalReplenish()
 
 	// Capture stderr while logging it: if claude-code refuses to resume a
 	// locked session, we want to surface SESSION_BUSY to the device rather
@@ -244,6 +281,12 @@ func (d *Driver) Stop(sid agent.SessionID) error {
 	s.mu.Unlock()
 	close(s.events)
 	return nil
+}
+
+// Shutdown drains the warm pool and stops its background goroutine. Should be
+// called once during adapter graceful shutdown to avoid orphan claude processes.
+func (d *Driver) Shutdown() {
+	d.pool.Drain()
 }
 
 // ─── session ────────────────────────────────────────────────────────────
