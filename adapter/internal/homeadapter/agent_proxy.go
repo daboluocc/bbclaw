@@ -708,6 +708,23 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 	a.metrics.Inc("agent_proxy_message_start")
 	routeStart := time.Now()
 
+	// Proactive resume validation: if the driver can check whether a CLI
+	// conversation still exists on disk, do so before the attempt loop.
+	// A missing transcript means --resume would immediately fail with
+	// SESSION_NOT_FOUND, wasting 4-7s on a doomed cold-start. Clearing
+	// resumeFromLogical here lets the first attempt go straight to a fresh
+	// session instead of triggering the retry cascade.
+	if resumeFromLogical != "" {
+		if checker, ok := drv.(agent.CLISessionChecker); ok {
+			if !checker.CLISessionExists(resumeFromLogical) {
+				a.log.Infof("agent_proxy: resume target missing on disk, skipping resume cli=%s logical=%s",
+					resumeFromLogical, logicalID)
+				a.metrics.Inc("agent_proxy_resume_skipped_missing")
+				resumeFromLogical = ""
+			}
+		}
+	}
+
 	// Outer loop wraps one or two attempts. Attempt 0 is the normal path
 	// (start with ResumeID if the device asked to resume); attempt 1 fires
 	// only when the driver emitted SESSION_NOT_FOUND on attempt 0 — see

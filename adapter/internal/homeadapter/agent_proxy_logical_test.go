@@ -367,6 +367,88 @@ func TestAgentProxySessionsListLogical(t *testing.T) {
 	mu.Unlock()
 }
 
+// checkingProxyDriver wraps recordingProxyDriver and additionally implements
+// agent.CLISessionChecker so we can test the proactive resume-skip path.
+type checkingProxyDriver struct {
+	*recordingProxyDriver
+	existingIDs map[string]bool
+}
+
+func newCheckingProxyDriver(mintedSid agent.SessionID, existingIDs ...string) *checkingProxyDriver {
+	m := make(map[string]bool, len(existingIDs))
+	for _, id := range existingIDs {
+		m[id] = true
+	}
+	return &checkingProxyDriver{
+		recordingProxyDriver: newRecordingProxyDriver(mintedSid),
+		existingIDs:          m,
+	}
+}
+
+func (d *checkingProxyDriver) CLISessionExists(cliSessionID string) bool {
+	return d.existingIDs[cliSessionID]
+}
+
+// TestAgentProxySkipsResumeWhenCLISessionMissing verifies that when the driver
+// implements CLISessionChecker and reports the stored CLI session id is absent
+// on disk, the proxy clears resumeFromLogical before the attempt loop — so the
+// driver is started with an empty ResumeID (fresh session) rather than a stale
+// one that would immediately fail with SESSION_NOT_FOUND and trigger a costly
+// retry.
+func TestAgentProxySkipsResumeWhenCLISessionMissing(t *testing.T) {
+	// Driver reports "cc-stale" does NOT exist on disk.
+	drv := newCheckingProxyDriver("cc-fresh-after-skip")
+	a, mgr := newProxyTestAdapterWithMgr(t, drv)
+
+	ls, err := mgr.Create("device-skip", "claude-code", "/tmp/wd", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Store a stale CLI session id that the checker will report as missing.
+	if err := mgr.UpdateCLISessionID(ls.ID, "cc-stale"); err != nil {
+		t.Fatalf("UpdateCLISessionID: %v", err)
+	}
+
+	var (
+		mu  sync.Mutex
+		got []CloudEnvelope
+	)
+	write := func(env CloudEnvelope) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, env)
+		return nil
+	}
+	err = a.handleRequest(context.Background(), write, CloudEnvelope{
+		Type: "request", MessageID: "m-skip", DeviceID: "device-skip", Kind: "agent.message",
+		Payload: map[string]any{"text": "hello", "sessionId": string(ls.ID)},
+	})
+	if err != nil {
+		t.Fatalf("handleRequest: %v", err)
+	}
+
+	// Driver must have been started exactly once (no retry) with an empty
+	// ResumeID — the stale id was discarded before the attempt loop.
+	if drv.startCount() != 1 {
+		t.Errorf("driver Start count=%d want 1 (no retry)", drv.startCount())
+	}
+	resumeIDs := drv.resumeIDsCopy()
+	if len(resumeIDs) != 1 || resumeIDs[0] != "" {
+		t.Errorf("driver ResumeIDs=%v want [\"\"] (stale id should have been skipped)", resumeIDs)
+	}
+
+	// The logical session's CLISessionID should be updated to the new minted id.
+	mu.Lock()
+	defer mu.Unlock()
+	updated, ok := mgr.Get(ls.ID)
+	if !ok {
+		t.Fatalf("logical session not found after turn")
+	}
+	if updated.CLISessionID != "cc-fresh-after-skip" {
+		t.Errorf("CLISessionID=%q want cc-fresh-after-skip", updated.CLISessionID)
+	}
+}
+
 func TestAgentProxyUnknownLogicalSession(t *testing.T) {
 	drv := newRecordingProxyDriver("never-used")
 	a, mgr := newProxyTestAdapterWithMgr(t, drv)

@@ -2,6 +2,8 @@ package claudecode
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -187,5 +189,44 @@ func TestDriverName(t *testing.T) {
 	d := New(Options{}, obs.NewLogger())
 	if d.Name() != "claude-code" {
 		t.Errorf("Name: want 'claude-code', got %q", d.Name())
+	}
+}
+
+// TestCLISessionExists verifies the filesystem check used by the agent proxy
+// to skip doomed --resume attempts. The driver should return false when no
+// matching JSONL exists and true when one is present.
+func TestCLISessionExists(t *testing.T) {
+	d := New(Options{}, obs.NewLogger())
+
+	// Point CLAUDE_SESSIONS_DIR at a temp dir so we don't touch ~/.claude.
+	// The driver derives projectsDir as filepath.Join(filepath.Dir(sessionsDir), "projects").
+	sessionsDir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", sessionsDir)
+
+	// No projects dir yet → false, no panic.
+	if d.CLISessionExists("abc-123") {
+		t.Error("CLISessionExists: want false when projects dir is absent")
+	}
+	if d.CLISessionExists("") {
+		t.Error("CLISessionExists: want false for empty id")
+	}
+
+	// Create a fake JSONL transcript under projects/<project>/abc-123.jsonl.
+	projectsDir := filepath.Join(filepath.Dir(sessionsDir), "projects")
+	projectSubdir := filepath.Join(projectsDir, "-tmp-myproject")
+	if err := os.MkdirAll(projectSubdir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	jsonlPath := filepath.Join(projectSubdir, "abc-123.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !d.CLISessionExists("abc-123") {
+		t.Error("CLISessionExists: want true when JSONL file exists")
+	}
+	// A different id in the same project dir should still return false.
+	if d.CLISessionExists("xyz-999") {
+		t.Error("CLISessionExists: want false for id with no matching file")
 	}
 }
