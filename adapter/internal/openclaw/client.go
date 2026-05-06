@@ -37,6 +37,29 @@ type VoiceTranscriptStreamEvent struct {
 	Text string
 }
 
+// AgentParams holds the parameters for a method:"agent" request.
+type AgentParams struct {
+	// SessionKey is the openclaw session key (multi-turn continuity).
+	SessionKey string
+	// Text is the user message to send.
+	Text string
+	// StreamID is an optional per-turn idempotency key.
+	StreamID string
+	// Source identifies the caller (e.g. "bbclaw.adapter.agent").
+	Source string
+	// NodeID identifies this adapter node.
+	NodeID string
+}
+
+// AgentStreamEvent is a single event received from the method:"agent" event stream.
+type AgentStreamEvent struct {
+	// Type is one of: "agent.delta", "agent.tool_call", "agent.tool_done",
+	// "agent.thinking", "agent.done", or any other gateway-defined type.
+	Type string
+	// Text carries the text payload (delta text, tool name, etc.).
+	Text string
+}
+
 // SendSlashCommand sends a slash command via the WS protocol using chat.send
 // with operator role. Gateway parses /commands from chat.send when senderIsOwner.
 func (c *Client) SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error) {
@@ -1000,6 +1023,238 @@ func extractChatText(payload map[string]any) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// SendAgentStream sends a method:"agent" request over the WS connection and
+// streams the resulting events to onEvent. It uses an idle-based timeout
+// (resolveReplyWaitTimeout) rather than a fixed HTTP timeout, so long-running
+// tool chains (>30 s) are supported as long as the gateway keeps sending
+// events.
+//
+// Event types forwarded to onEvent:
+//
+//	"agent.delta"     — incremental text from the assistant
+//	"agent.tool_call" — tool invocation started
+//	"agent.tool_done" — tool invocation finished
+//	"agent.thinking"  — internal reasoning (callers may drop this)
+//	"agent.done"      — turn complete; onEvent is called once then the method returns
+//
+// Any other event type is forwarded as-is so callers can handle future types.
+func (c *Client) SendAgentStream(
+	ctx context.Context,
+	params AgentParams,
+	onEvent func(AgentStreamEvent),
+) error {
+	// Normalize session key — gateway canonicalises to lowercase.
+	params.SessionKey = strings.ToLower(strings.TrimSpace(params.SessionKey))
+
+	conn, _, err := c.dialer.DialContext(ctx, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("dial openclaw ws: %w", err)
+	}
+	defer conn.Close()
+
+	// ── auth handshake ──────────────────────────────────────────────────────
+	nonce, err := c.waitConnectChallenge(conn)
+	if err != nil {
+		return err
+	}
+	connectParams, err := c.buildConnectParams(nonce)
+	if err != nil {
+		return err
+	}
+	connectReqID := "connect-" + uuid.NewString()
+	if err := c.writeJSON(ctx, conn, map[string]any{
+		"type":   "req",
+		"id":     connectReqID,
+		"method": "connect",
+		"params": connectParams,
+	}); err != nil {
+		return err
+	}
+	if err := c.waitResponseOK(conn, connectReqID); err != nil {
+		return fmt.Errorf("openclaw connect failed: %w", err)
+	}
+
+	// ── send method:"agent" request ─────────────────────────────────────────
+	agentReqID := "agent-" + uuid.NewString()
+	if err := c.writeJSON(ctx, conn, map[string]any{
+		"type":   "req",
+		"id":     agentReqID,
+		"method": "agent",
+		"params": map[string]any{
+			"sessionKey": params.SessionKey,
+			"text":       params.Text,
+			"streamId":   params.StreamID,
+			"source":     params.Source,
+			"nodeId":     params.NodeID,
+		},
+	}); err != nil {
+		return err
+	}
+	// Wait for the initial ack (ok:true) before entering the stream loop.
+	if err := c.waitResponseOK(conn, agentReqID); err != nil {
+		return fmt.Errorf("openclaw agent request failed: %w", err)
+	}
+
+	// ── stream event loop ───────────────────────────────────────────────────
+	// Use idle timeout: any message from the gateway resets the deadline.
+	idleTimeout := resolveAgentIdleTimeout(c.replyWaitTimeout)
+	deadline := time.Now().Add(idleTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return fmt.Errorf("set read deadline: %w", err)
+		}
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			if isTimeoutErr(err) {
+				return fmt.Errorf("openclaw agent stream idle timeout after %s", idleTimeout)
+			}
+			return fmt.Errorf("read agent stream: %w", err)
+		}
+		// Any message resets the idle deadline.
+		deadline = time.Now().Add(idleTimeout)
+		if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+			deadline = ctxDeadline
+		}
+
+		var frame map[string]any
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			continue
+		}
+
+		// We expect event frames: {"type":"event","event":"agent","payload":{...}}
+		if frame["type"] != "event" || frame["event"] != "agent" {
+			continue
+		}
+		payload, _ := frame["payload"].(map[string]any)
+		if payload == nil {
+			continue
+		}
+		// Verify session key matches.
+		payloadSessionKey, _ := payload["sessionKey"].(string)
+		if !sessionKeyMatches(payloadSessionKey, params.SessionKey) {
+			continue
+		}
+
+		evtType, _ := payload["type"].(string)
+		evtType = strings.TrimSpace(evtType)
+		if evtType == "" {
+			continue
+		}
+
+		// Extract text from common payload shapes.
+		text := extractAgentEventText(payload)
+
+		if onEvent != nil {
+			onEvent(AgentStreamEvent{Type: evtType, Text: text})
+		}
+
+		if evtType == "agent.done" {
+			return nil
+		}
+	}
+}
+
+// extractAgentEventText pulls the text value out of an agent event payload.
+// The gateway may use "text", "delta", or "name" depending on event type.
+func extractAgentEventText(payload map[string]any) string {
+	for _, key := range []string{"text", "delta", "name"} {
+		if v, ok := payload[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	// Nested data object (some gateway versions wrap in data:{text:...})
+	if data, ok := payload["data"].(map[string]any); ok {
+		for _, key := range []string{"text", "delta", "name"} {
+			if v, ok := data[key].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
+}
+
+// SendChatAbort sends a chat.abort request to the gateway for the given
+// sessionKey. This notifies the server to cancel any in-progress agent turn.
+// It is best-effort: errors are logged but not returned to the caller.
+//
+// SendChatAbort opens its own short-lived WS connection so it can be called
+// from Stop() independently of the Send() connection.
+func (c *Client) SendChatAbort(ctx context.Context, sessionKey string) error {
+	sessionKey = strings.ToLower(strings.TrimSpace(sessionKey))
+	if sessionKey == "" {
+		return nil
+	}
+
+	// Use a short timeout for the abort — we don't want Stop() to block.
+	abortTimeout := 5 * time.Second
+	dialCtx, cancel := context.WithTimeout(ctx, abortTimeout)
+	defer cancel()
+
+	conn, _, err := c.dialer.DialContext(dialCtx, c.endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("dial openclaw ws for abort: %w", err)
+	}
+	defer conn.Close()
+
+	nonce, err := c.waitConnectChallenge(conn)
+	if err != nil {
+		return fmt.Errorf("abort connect challenge: %w", err)
+	}
+	// Use operator role for abort — same as slash command path.
+	connectParams, err := c.buildOperatorConnectParams(nonce)
+	if err != nil {
+		return fmt.Errorf("abort build connect params: %w", err)
+	}
+	connectReqID := "abort-connect-" + uuid.NewString()
+	if err := c.writeJSON(dialCtx, conn, map[string]any{
+		"type":   "req",
+		"id":     connectReqID,
+		"method": "connect",
+		"params": connectParams,
+	}); err != nil {
+		return fmt.Errorf("abort connect write: %w", err)
+	}
+	if err := c.waitResponseOK(conn, connectReqID); err != nil {
+		return fmt.Errorf("abort connect failed: %w", err)
+	}
+
+	abortReqID := "abort-" + uuid.NewString()
+	if err := c.writeJSON(dialCtx, conn, map[string]any{
+		"type":   "req",
+		"id":     abortReqID,
+		"method": "chat.abort",
+		"params": map[string]any{
+			"sessionKey": sessionKey,
+		},
+	}); err != nil {
+		return fmt.Errorf("abort write: %w", err)
+	}
+	// Best-effort wait for ack — ignore errors (gateway may not support abort yet).
+	_ = c.waitResponseOK(conn, abortReqID)
+	return nil
+}
+
+// resolveAgentIdleTimeout returns the idle timeout for the agent event stream.
+// It is more generous than the HTTP timeout to support long tool chains.
+func resolveAgentIdleTimeout(override time.Duration) time.Duration {
+	const defaultIdle = 120 * time.Second
+	const maxIdle = 300 * time.Second
+	if override > 0 {
+		if override > maxIdle {
+			return maxIdle
+		}
+		return override
+	}
+	return defaultIdle
 }
 
 func isTimeoutErr(err error) bool {
