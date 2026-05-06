@@ -320,7 +320,11 @@ func buildSessionManager(logger *obs.Logger) *logicalsession.Manager {
 		logger.Warnf("logicalsession: load failed at %s, manager disabled: %v", path, err)
 		return nil
 	}
-	logger.Infof("logicalsession: ready path=%s default_cwd=%q", path, defaultCwd)
+	if defaultCwd != "" {
+		logger.Infof("logicalsession: ready path=%s default_cwd=%q", path, defaultCwd)
+	} else {
+		logger.Infof("logicalsession: ready path=%s", path)
+	}
 	return mgr
 }
 
@@ -445,6 +449,14 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sink := buildSink(cfg, logger, metrics)
 	agentRouter := buildAgentRouter(cfg, logger)
 	sessionMgr := buildSessionManager(logger)
+
+	if len(cfg.CwdPool) > 0 {
+		names := make([]string, len(cfg.CwdPool))
+		for i, e := range cfg.CwdPool {
+			names[i] = e.Name
+		}
+		logger.Infof("cwd pool: %s", strings.Join(names, ", "))
+	}
 
 	// T4: Session expiration sweep — run once at startup and then every 24h.
 	if sessionMgr != nil && cfg.SessionMaxAge > 0 {

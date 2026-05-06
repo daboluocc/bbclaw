@@ -11,4 +11,4 @@ tmp/
 !.env.example
 
 # the binary itself, in case someone builds in adapter/ root
-bbclaw-adapter
+/bbclaw-adapter
