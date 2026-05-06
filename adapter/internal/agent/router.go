@@ -8,6 +8,8 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -23,9 +25,10 @@ type DriverInfo struct {
 // Router keeps a name -> Driver map plus a pointer to the default driver
 // (the first one registered). Drivers are looked up by their Name().
 type Router struct {
-	mu          sync.RWMutex
-	drivers     map[string]Driver
-	defaultName string
+	mu              sync.RWMutex
+	drivers         map[string]Driver
+	defaultName     string
+	sessionResolver SessionResolver
 }
 
 // NewRouter returns an empty Router. Call Register for each driver you want
@@ -104,4 +107,85 @@ func (r *Router) SetDefault(name string) bool {
 	}
 	r.defaultName = name
 	return true
+}
+
+// SessionResolver resolves a device-visible session key (logical id or raw
+// CLI id) to the driver name and SessionID that are currently live. It is
+// implemented by the HTTP layer's sessionRegistry + logicalsession.Manager
+// and injected into the Router so SendSlashCommand can stop the right session
+// without creating a circular import.
+type SessionResolver interface {
+	// ResolveSession returns the driver name and SessionID for the given key,
+	// or ("", "", false) when the key is not found.
+	ResolveSession(sessionKey string) (driverName string, sid SessionID, ok bool)
+	// ResetSession clears the live session binding for sessionKey so the next
+	// agent turn starts a fresh CLI conversation.
+	ResetSession(sessionKey string)
+}
+
+// SetSessionResolver attaches a resolver used by SendSlashCommand. When nil
+// (the default), /stop and /new fall back to operating on the default driver
+// without a specific session.
+func (r *Router) SetSessionResolver(sr SessionResolver) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessionResolver = sr
+}
+
+// SendSlashCommand implements the commandSender interface expected by
+// pipeline.Wrap. It handles /stop, /new, and /status for Agent Bus drivers
+// (claudecode, opencode, ollama, aider) so voice commands are not silently
+// dropped when the openclaw driver is not active.
+//
+// sessionKey is the device-visible session id (logical "ls-" id or raw CLI
+// id). The resolver, when set, maps it to the live (driver, SessionID) pair.
+func (r *Router) SendSlashCommand(ctx context.Context, command, sessionKey string) (string, error) {
+	r.mu.RLock()
+	defaultName := r.defaultName
+	resolver := r.sessionResolver
+	r.mu.RUnlock()
+
+	switch command {
+	case "/stop":
+		if resolver != nil {
+			driverName, sid, ok := resolver.ResolveSession(sessionKey)
+			if ok {
+				drv, found := r.Get(driverName)
+				if !found {
+					return "", fmt.Errorf("agent router: driver %q not registered", driverName)
+				}
+				if err := drv.Stop(sid); err != nil {
+					return "", fmt.Errorf("agent router: stop sid=%s driver=%s: %w", sid, driverName, err)
+				}
+				return "", nil
+			}
+		}
+		// No live session found — stop on the default driver is a no-op but
+		// not an error (nothing was running).
+		return "", nil
+
+	case "/new":
+		if resolver != nil {
+			resolver.ResetSession(sessionKey)
+		}
+		return "", nil
+
+	case "/status":
+		r.mu.RLock()
+		name := defaultName
+		r.mu.RUnlock()
+		if resolver != nil {
+			if driverName, sid, ok := resolver.ResolveSession(sessionKey); ok {
+				name = driverName
+				return fmt.Sprintf("driver: %s  session: %s", name, sid), nil
+			}
+		}
+		if name == "" {
+			return "no driver configured", nil
+		}
+		return fmt.Sprintf("driver: %s", name), nil
+
+	default:
+		return "", fmt.Errorf("agent router: unsupported command: %s", command)
+	}
 }
