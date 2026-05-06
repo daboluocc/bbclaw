@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
@@ -176,12 +178,26 @@ func TestHandleAgentMessage_StreamsEvents(t *testing.T) {
 
 func TestHandleAgentMessage_MultiTurn(t *testing.T) {
 	mock := newMockDriver()
+	// ADR-014 Phase C: multi-turn requires a session manager so the server
+	// mints an ls- logical id on turn 1 that the client can echo back on
+	// turn 2. Without a manager the server has no logical id to return and
+	// bare CLI ids are now rejected.
 	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
-	srv.SetAgentDriver(mock)
+	r := agent.NewRouter()
+	r.Register(mock, obs.NewLogger())
+	srv.SetAgentRouter(r)
+
+	mgrPath := filepath.Join(t.TempDir(), "sessions.json")
+	mgr, err := logicalsession.NewManager(mgrPath, "/tmp/default", obs.NewLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	srv.SetSessionManager(mgr)
+
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// First turn: no sessionId supplied, expect isNew=true.
+	// First turn: no sessionId supplied, expect isNew=true and an ls- id.
 	resp1, err := http.Post(ts.URL+"/v1/agent/message", "application/json",
 		bytes.NewBufferString(`{"text":"hi"}`))
 	if err != nil {
@@ -200,8 +216,11 @@ func TestHandleAgentMessage_MultiTurn(t *testing.T) {
 	if !ok || sid1 == "" {
 		t.Fatalf("turn 1: missing sessionId: %+v", frames1[0])
 	}
+	if !strings.HasPrefix(sid1, "ls-") {
+		t.Fatalf("turn 1: sessionId=%q must have ls- prefix (Phase C)", sid1)
+	}
 
-	// Second turn: pass the sid back, expect isNew=false and the same sid.
+	// Second turn: pass the logical id back, expect isNew=false and the same id.
 	body2, _ := json.Marshal(map[string]any{"text": "bye", "sessionId": sid1})
 	resp2, err := http.Post(ts.URL+"/v1/agent/message", "application/json",
 		bytes.NewReader(body2))
@@ -386,6 +405,14 @@ func TestHandleAgentMessage_DriverMismatch(t *testing.T) {
 	router.Register(m2, obs.NewLogger())
 	srv.SetAgentRouter(router)
 
+	// Session manager required so turn 1 returns an ls- id.
+	mgrPath := filepath.Join(t.TempDir(), "sessions.json")
+	mgr, err := logicalsession.NewManager(mgrPath, "/tmp/default", obs.NewLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	srv.SetSessionManager(mgr)
+
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -401,13 +428,16 @@ func TestHandleAgentMessage_DriverMismatch(t *testing.T) {
 	if sid1 == "" {
 		t.Fatalf("turn 1: missing sessionId: %+v", frames1)
 	}
+	if !strings.HasPrefix(sid1, "ls-") {
+		t.Fatalf("turn 1: sessionId=%q must have ls- prefix (Phase C)", sid1)
+	}
 	if frames1[0]["driver"] != "mock1" {
 		t.Fatalf("turn 1 driver=%v want mock1", frames1[0]["driver"])
 	}
 
-	// Turn 2: same sessionId, but force driver=mock2. Expect a plain JSON
-	// 400 with SESSION_DRIVER_MISMATCH since we validate the pin before
-	// committing to NDJSON.
+	// Turn 2: same logical sessionId, but force driver=mock2. Expect a plain
+	// JSON 400 with SESSION_DRIVER_MISMATCH since the logical session is
+	// pinned to mock1.
 	body, _ := json.Marshal(map[string]any{"text": "hi again", "sessionId": sid1, "driver": "mock2"})
 	resp2, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
 	if err != nil {
