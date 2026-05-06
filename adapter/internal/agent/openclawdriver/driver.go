@@ -1,6 +1,6 @@
 // Package openclawdriver implements agent.Driver on top of the existing
 // openclaw WebSocket client. It wraps internal/openclaw's Client and
-// translates VoiceTranscriptStream events into the unified agent.Event
+// translates the method:"agent" event stream into the unified agent.Event
 // stream.
 //
 // Why a separate package next to internal/openclaw:
@@ -12,13 +12,12 @@
 //     internal/openclaw — both can be imported in the same file.
 //
 // Capabilities:
-//   - ToolApproval: false. openclaw emits session.tool / toolCall events but
-//     has no approval round-trip — the agent just runs the tool itself.
+//   - ToolApproval: false. openclaw runs tools server-side; no approval
+//     round-trip is exposed to the adapter.
 //   - Resume: true. Multi-turn continuity is achieved by reusing the same
-//     session_key across Send calls (see openclaw.Client chat.subscribe /
-//     waitChatFinalText, which maintains server-side history under that
-//     key).
-//   - Streaming: true. SendVoiceTranscriptStream emits reply.delta chunks.
+//     session_key across Send calls — the gateway maintains chat history
+//     keyed off the session_key.
+//   - Streaming: true. SendAgentStream emits agent.delta chunks in real time.
 //   - MaxInputBytes: 64 KiB.
 package openclawdriver
 
@@ -46,11 +45,12 @@ const (
 // indirection exists purely so tests can swap in a mock without spinning up
 // a real WebSocket gateway.
 type openclawClient interface {
-	SendVoiceTranscriptStream(
+	SendAgentStream(
 		ctx context.Context,
-		event openclaw.VoiceTranscriptEvent,
-		onEvent func(openclaw.VoiceTranscriptStreamEvent),
-	) (openclaw.VoiceTranscriptDelivery, error)
+		params openclaw.AgentParams,
+		onEvent func(openclaw.AgentStreamEvent),
+	) error
+	SendChatAbort(ctx context.Context, sessionKey string) error
 }
 
 // Options configures the driver.
@@ -60,16 +60,16 @@ type Options struct {
 	// AuthToken is forwarded to openclaw.NewClient.
 	AuthToken string
 	// NodeID identifies this adapter on the openclaw bus and is threaded
-	// into every VoiceTranscriptEvent.NodeID.
+	// into every AgentParams.NodeID.
 	NodeID string
 	// DeviceIdentityPath is the on-disk path for the persistent device
 	// keypair openclaw expects. Empty means use openclaw's default.
 	DeviceIdentityPath string
-	// ReplyWaitTimeout is the idle window the openclaw client waits for the
-	// final chat reply after the initial RPC ack.
+	// ReplyWaitTimeout overrides the agent stream idle timeout. Zero means
+	// use the openclaw default (120 s).
 	ReplyWaitTimeout time.Duration
 	// HTTPTimeout is the per-request timeout used by the underlying
-	// http/websocket client.
+	// http/websocket client (connect handshake, etc.).
 	HTTPTimeout time.Duration
 }
 
@@ -163,13 +163,14 @@ func (d *Driver) Events(sid agent.SessionID) <-chan agent.Event {
 	return s.events
 }
 
-// Send forwards text to openclaw via SendVoiceTranscriptStream. Stream
-// events are translated 1:1 into agent.Event:
+// Send forwards text to openclaw via the method:"agent" + event stream
+// protocol. Stream events are translated into agent.Event:
 //
-//	reply.delta -> EvText
-//	thinking    -> dropped (would confuse end users; logs only)
-//	tool_call   -> EvToolCall (display-only; ToolApproval=false)
-//	others      -> dropped
+//	agent.delta     -> EvText  (emitted immediately, no buffering)
+//	agent.tool_call -> EvToolCall (display-only; ToolApproval=false)
+//	agent.thinking  -> dropped (logs only; confusing on small screens)
+//	agent.done      -> triggers EvTurnEnd
+//	others          -> dropped (logged)
 //
 // On stream completion (or error) an EvTurnEnd is always emitted.
 func (d *Driver) Send(sid agent.SessionID, text string) error {
@@ -187,7 +188,7 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 	s.setCancel(cancel)
 	defer cancel()
 
-	event := openclaw.VoiceTranscriptEvent{
+	params := openclaw.AgentParams{
 		Text:       text,
 		SessionKey: s.sessionKey,
 		StreamID:   streamID,
@@ -199,13 +200,13 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 		sid, s.sessionKey, streamID, len(text))
 
 	tStart := time.Now()
-	_, err := d.client.SendVoiceTranscriptStream(ctx, event, func(evt openclaw.VoiceTranscriptStreamEvent) {
+	err := d.client.SendAgentStream(ctx, params, func(evt openclaw.AgentStreamEvent) {
 		switch evt.Type {
-		case "reply.delta":
+		case "agent.delta":
 			if evt.Text != "" {
 				s.emit(agent.Event{Type: agent.EvText, Text: evt.Text})
 			}
-		case "thinking":
+		case "agent.thinking":
 			// Intentionally dropped: the agent_bus event schema doesn't have a
 			// "thinking" channel and surfacing partial reasoning to a small
 			// device screen is more confusing than helpful. We log it for
@@ -213,23 +214,25 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 			if evt.Text != "" {
 				d.log.Infof("openclaw: thinking sid=%s preview=%q", sid, truncate(evt.Text, 80))
 			}
-		case "tool_call":
+		case "agent.tool_call":
 			if evt.Text != "" {
 				s.emit(agent.Event{
 					Type: agent.EvToolCall,
 					Tool: &agent.ToolCall{
 						// openclaw doesn't expose a stable per-call ID today;
 						// best-effort empty IDs are fine while ToolApproval
-						// stays false (no round-trip needs to address this
-						// call).
+						// stays false (no round-trip needs to address this call).
 						Tool: evt.Text,
 						Hint: "",
 					},
 				})
 			}
+		case "agent.done":
+			// Stream complete — EvTurnEnd is emitted below after SendAgentStream
+			// returns; nothing to do here.
 		default:
-			// tool.running / tool.done etc. — not part of the unified schema
-			// today; logged but not emitted.
+			// agent.tool_done and any future event types — not part of the
+			// unified schema today; logged but not emitted.
 			d.log.Infof("openclaw: stream evt sid=%s type=%s preview=%q",
 				sid, evt.Type, truncate(evt.Text, 80))
 		}
@@ -251,7 +254,8 @@ func (d *Driver) Approve(sid agent.SessionID, tid agent.ToolID, decision agent.D
 	return agent.ErrUnsupported
 }
 
-// Stop cancels any in-flight Send and closes the session's event channel.
+// Stop cancels any in-flight Send, sends chat.abort to the gateway
+// (best-effort, non-blocking), and closes the session's event channel.
 // Safe to call multiple times for the same sid (subsequent calls return
 // ErrUnknownSession).
 func (d *Driver) Stop(sid agent.SessionID) error {
@@ -262,13 +266,27 @@ func (d *Driver) Stop(sid agent.SessionID) error {
 	if !ok {
 		return agent.ErrUnknownSession
 	}
+
+	// Cancel the in-flight Send context first so the stream loop exits.
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.cancel()
 	}
 	closed := s.closed
 	s.closed = true
+	sessionKey := s.sessionKey
 	s.mu.Unlock()
+
+	// Send chat.abort to the gateway in the background — best-effort.
+	// We use a fresh background context because s.rootCtx may already be done.
+	go func() {
+		abortCtx, abortCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer abortCancel()
+		if err := d.client.SendChatAbort(abortCtx, sessionKey); err != nil {
+			d.log.Infof("openclaw: chat.abort sid=%s err=%v (best-effort, ignored)", sid, err)
+		}
+	}()
+
 	if !closed {
 		close(s.events)
 	}
@@ -299,6 +317,15 @@ func (s *session) setCancel(c context.CancelFunc) {
 
 func (s *session) emit(e agent.Event) {
 	e.Seq = atomic.AddUint64(&s.seq, 1)
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return
+	}
+	// Use recover to guard against the rare race where Stop() closes the
+	// channel between the closed-check above and the channel send below.
+	defer func() { recover() }() //nolint:errcheck
 	select {
 	case s.events <- e:
 	case <-s.rootCtx.Done():

@@ -13,33 +13,32 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 )
 
-// fakeClient is a mock implementation of openclawClient. Each call to
-// SendVoiceTranscriptStream replays the canned events list and then returns
-// the canned err.
+// fakeClient is a mock implementation of openclawClient using the new
+// method:"agent" interface. Each call to SendAgentStream replays the canned
+// events list and then returns the canned err.
 type fakeClient struct {
 	mu sync.Mutex
 
 	// events is the list of stream events to feed onEvent on each call.
-	events []openclaw.VoiceTranscriptStreamEvent
-	// err is returned from SendVoiceTranscriptStream after replaying events.
+	events []openclaw.AgentStreamEvent
+	// err is returned from SendAgentStream after replaying events.
 	err error
-	// reply is returned in the VoiceTranscriptDelivery.
-	reply string
 
-	// recorded:
-	calls []openclaw.VoiceTranscriptEvent
+	// recorded calls:
+	agentCalls []openclaw.AgentParams
+	abortCalls []string // session keys passed to SendChatAbort
+	abortErr   error    // error to return from SendChatAbort
 }
 
-func (f *fakeClient) SendVoiceTranscriptStream(
+func (f *fakeClient) SendAgentStream(
 	ctx context.Context,
-	event openclaw.VoiceTranscriptEvent,
-	onEvent func(openclaw.VoiceTranscriptStreamEvent),
-) (openclaw.VoiceTranscriptDelivery, error) {
+	params openclaw.AgentParams,
+	onEvent func(openclaw.AgentStreamEvent),
+) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, event)
-	evs := append([]openclaw.VoiceTranscriptStreamEvent(nil), f.events...)
+	f.agentCalls = append(f.agentCalls, params)
+	evs := append([]openclaw.AgentStreamEvent(nil), f.events...)
 	err := f.err
-	reply := f.reply
 	f.mu.Unlock()
 
 	if onEvent != nil {
@@ -47,14 +46,30 @@ func (f *fakeClient) SendVoiceTranscriptStream(
 			onEvent(e)
 		}
 	}
-	return openclaw.VoiceTranscriptDelivery{ReplyText: reply}, err
+	return err
 }
 
-func (f *fakeClient) snapshot() []openclaw.VoiceTranscriptEvent {
+func (f *fakeClient) SendChatAbort(ctx context.Context, sessionKey string) error {
+	f.mu.Lock()
+	f.abortCalls = append(f.abortCalls, sessionKey)
+	err := f.abortErr
+	f.mu.Unlock()
+	return err
+}
+
+func (f *fakeClient) snapshotAgentCalls() []openclaw.AgentParams {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]openclaw.VoiceTranscriptEvent, len(f.calls))
-	copy(out, f.calls)
+	out := make([]openclaw.AgentParams, len(f.agentCalls))
+	copy(out, f.agentCalls)
+	return out
+}
+
+func (f *fakeClient) snapshotAbortCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.abortCalls))
+	copy(out, f.abortCalls)
 	return out
 }
 
@@ -95,25 +110,26 @@ func TestCapabilitiesAndName(t *testing.T) {
 		t.Error("Resume must be true: session_key reuse provides continuity")
 	}
 	if !caps.Streaming {
-		t.Error("Streaming must be true: SendVoiceTranscriptStream emits deltas")
+		t.Error("Streaming must be true: SendAgentStream emits deltas")
 	}
 	if caps.MaxInputBytes != 64*1024 {
 		t.Errorf("MaxInputBytes=%d want 65536", caps.MaxInputBytes)
 	}
 }
 
-// TestSendTranslatesStreamEvents feeds reply.delta + thinking + tool_call
-// events through the driver and verifies the unified agent.Event mapping.
+// TestSendTranslatesStreamEvents feeds agent.delta + agent.thinking +
+// agent.tool_call + agent.done events through the driver and verifies the
+// unified agent.Event mapping.
 func TestSendTranslatesStreamEvents(t *testing.T) {
 	fake := &fakeClient{
-		events: []openclaw.VoiceTranscriptStreamEvent{
-			{Type: "reply.delta", Text: "Hello"},
-			{Type: "thinking", Text: "let me think..."}, // must be dropped
-			{Type: "reply.delta", Text: " world"},
-			{Type: "tool_call", Text: "Bash"},
-			{Type: "tool.running", Text: "Bash"}, // unknown — dropped
+		events: []openclaw.AgentStreamEvent{
+			{Type: "agent.delta", Text: "Hello"},
+			{Type: "agent.thinking", Text: "let me think..."}, // must be dropped
+			{Type: "agent.delta", Text: " world"},
+			{Type: "agent.tool_call", Text: "Bash"},
+			{Type: "agent.tool_done", Text: "Bash"}, // unknown to schema — dropped
+			{Type: "agent.done", Text: ""},
 		},
-		reply: "Hello world",
 	}
 
 	d := newWithClient(fake, "test-node", obs.NewLogger())
@@ -165,11 +181,11 @@ func TestSendTranslatesStreamEvents(t *testing.T) {
 		t.Errorf("errs=%d want 0", errs)
 	}
 
-	// Outbound event must carry the resumed session_key and the configured
+	// Outbound params must carry the resumed session_key and the configured
 	// node id. StreamID is per-turn, prefixed with the session id.
-	calls := fake.snapshot()
+	calls := fake.snapshotAgentCalls()
 	if len(calls) != 1 {
-		t.Fatalf("calls=%d want 1", len(calls))
+		t.Fatalf("agentCalls=%d want 1", len(calls))
 	}
 	if calls[0].SessionKey != "session-123" {
 		t.Errorf("SessionKey=%q want session-123 (resume id was provided)", calls[0].SessionKey)
@@ -250,9 +266,9 @@ func TestStartGeneratesSessionKeyWhenNoResume(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	calls := fake.snapshot()
+	calls := fake.snapshotAgentCalls()
 	if len(calls) != 1 {
-		t.Fatalf("calls=%d want 1", len(calls))
+		t.Fatalf("agentCalls=%d want 1", len(calls))
 	}
 	if strings.TrimSpace(calls[0].SessionKey) == "" {
 		t.Error("auto-generated session_key must not be empty")
@@ -284,4 +300,98 @@ func TestApproveUnsupported(t *testing.T) {
 	if err := d.Approve(sid, "tool-1", agent.DecisionOnce); !errors.Is(err, agent.ErrUnsupported) {
 		t.Errorf("Approve err=%v want ErrUnsupported", err)
 	}
+}
+
+// TestStopSendsChatAbort verifies that Stop() triggers a SendChatAbort call
+// with the correct session key. This is the server-side cancel path.
+func TestStopSendsChatAbort(t *testing.T) {
+	fake := &fakeClient{}
+	blockingFake := &blockingClient{fakeClient: fake}
+
+	d := newWithClient(blockingFake, "n", obs.NewLogger())
+	sid, err := d.Start(context.Background(), agent.StartOpts{ResumeID: "abort-session-key"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	sendStarted := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(sendStarted)
+		done <- d.Send(sid, "long task")
+	}()
+	<-sendStarted
+	// Give Send a moment to enter the blocking client.
+	time.Sleep(10 * time.Millisecond)
+
+	if err := d.Stop(sid); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Wait for Send to finish (context cancelled by Stop).
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Send returned err=%v; want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not return after Stop")
+	}
+
+	// Give the background abort goroutine time to run.
+	time.Sleep(50 * time.Millisecond)
+
+	aborts := fake.snapshotAbortCalls()
+	if len(aborts) == 0 {
+		t.Fatal("SendChatAbort was not called after Stop")
+	}
+	if aborts[0] != "abort-session-key" {
+		t.Errorf("SendChatAbort sessionKey=%q want abort-session-key", aborts[0])
+	}
+}
+
+// TestStopChatAbortErrorIsIgnored verifies that a SendChatAbort failure does
+// not propagate — it is best-effort.
+func TestStopChatAbortErrorIsIgnored(t *testing.T) {
+	fake := &fakeClient{
+		abortErr: errors.New("gateway unreachable"),
+	}
+	d := newWithClient(fake, "n", obs.NewLogger())
+	sid, err := d.Start(context.Background(), agent.StartOpts{ResumeID: "key-x"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Stop without an active Send — should not panic or return error.
+	if err := d.Stop(sid); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// Give the background goroutine time to run.
+	time.Sleep(50 * time.Millisecond)
+	// No assertion needed — the test passes if it doesn't panic.
+}
+
+// ─── blockingClient ──────────────────────────────────────────────────────────
+
+// blockingClient wraps fakeClient but blocks SendAgentStream until ctx is
+// cancelled. Used to simulate an in-flight long-running agent turn.
+type blockingClient struct {
+	fakeClient *fakeClient
+}
+
+func (b *blockingClient) SendAgentStream(
+	ctx context.Context,
+	params openclaw.AgentParams,
+	onEvent func(openclaw.AgentStreamEvent),
+) error {
+	b.fakeClient.mu.Lock()
+	b.fakeClient.agentCalls = append(b.fakeClient.agentCalls, params)
+	b.fakeClient.mu.Unlock()
+
+	// Block until context is cancelled.
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (b *blockingClient) SendChatAbort(ctx context.Context, sessionKey string) error {
+	return b.fakeClient.SendChatAbort(ctx, sessionKey)
 }
