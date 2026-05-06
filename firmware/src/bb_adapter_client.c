@@ -1407,15 +1407,19 @@ esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx) {
   ctx->next_seq = 1;
   ctx->ws_chunk_count = 0;
 
+  /* Create Ogg/Opus encoder for both transport modes.
+   * local_home: encoder output is base64-encoded and POSTed to /v1/stream/chunk.
+   * cloud_saas: encoder output is sent as binary WebSocket frames. */
+  log_mem_snapshot("stream start before encoder");
+  ctx->ws_encoder = bb_ogg_opus_encoder_create(BBCLAW_AUDIO_SAMPLE_RATE, BBCLAW_AUDIO_CHANNELS, BBCLAW_STREAM_CHUNK_MS);
+  if (ctx->ws_encoder == NULL) {
+    ESP_LOGE(TAG, "encoder create failed stream=%s", ctx->stream_id);
+    log_mem_snapshot("stream start encoder failed");
+    return ESP_ERR_NO_MEM;
+  }
+  log_mem_snapshot("stream start after encoder");
+
   if (bb_transport_is_cloud_saas()) {
-    log_mem_snapshot("stream start before encoder");
-    ctx->ws_encoder = bb_ogg_opus_encoder_create(BBCLAW_AUDIO_SAMPLE_RATE, BBCLAW_AUDIO_CHANNELS, BBCLAW_STREAM_CHUNK_MS);
-    if (ctx->ws_encoder == NULL) {
-      ESP_LOGE(TAG, "ws encoder create failed stream=%s", ctx->stream_id);
-      log_mem_snapshot("stream start encoder failed");
-      return ESP_ERR_NO_MEM;
-    }
-    log_mem_snapshot("stream start after encoder");
     char body[384] = {0};
     snprintf(body, sizeof(body),
              "{\"type\":\"request\",\"messageId\":\"start-%s\",\"deviceId\":\"%s\",\"kind\":\"voice.stream.start\","
@@ -1440,10 +1444,18 @@ esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx) {
            BBCLAW_AUDIO_CHANNELS);
 
   bb_http_resp_t resp = {0};
-  ESP_RETURN_ON_ERROR(http_post_json("/v1/stream/start", body, &resp), TAG, "stream start request failed");
+  esp_err_t http_err = http_post_json("/v1/stream/start", body, &resp);
+  if (http_err != ESP_OK) {
+    bb_ogg_opus_encoder_destroy((bb_ogg_opus_encoder_t*)ctx->ws_encoder);
+    ctx->ws_encoder = NULL;
+    ESP_LOGE(TAG, "stream start request failed err=%s", esp_err_to_name(http_err));
+    return http_err;
+  }
 
   if (resp.status_code < 200 || resp.status_code >= 300 || !body_contains_ok_true(resp.body)) {
     ESP_LOGE(TAG, "stream start failed status=%d body=%s", resp.status_code, resp.body);
+    bb_ogg_opus_encoder_destroy((bb_ogg_opus_encoder_t*)ctx->ws_encoder);
+    ctx->ws_encoder = NULL;
     return ESP_FAIL;
   }
 #if BBCLAW_ADAPTER_STREAM_CHUNK_DIAG
@@ -1693,6 +1705,25 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
     xSemaphoreGive(s_ws.lock);
     ESP_LOGI(TAG, "ws voice.stream.finish stream=%s", ctx->stream_id);
     return ESP_OK;
+  }
+
+  /* local_home: flush any remaining PCM samples from the Ogg/Opus encoder,
+   * send the final Ogg pages as a chunk, then destroy the encoder. */
+  bb_stream_ctx_t* mutable_ctx = (bb_stream_ctx_t*)ctx;
+  if (mutable_ctx->ws_encoder != NULL) {
+    uint8_t* ogg_tail = NULL;
+    size_t ogg_tail_len = 0;
+    esp_err_t flush_err =
+        bb_ogg_opus_encoder_flush((bb_ogg_opus_encoder_t*)mutable_ctx->ws_encoder, &ogg_tail, &ogg_tail_len);
+    if (flush_err == ESP_OK && ogg_tail != NULL && ogg_tail_len > 0U) {
+      /* Send the final Ogg pages as a regular HTTP chunk before finishing. */
+      (void)bb_adapter_stream_chunk(mutable_ctx, ogg_tail, ogg_tail_len, bb_now_ms());
+      bb_ogg_opus_free(ogg_tail);
+    } else if (ogg_tail != NULL) {
+      bb_ogg_opus_free(ogg_tail);
+    }
+    bb_ogg_opus_encoder_destroy((bb_ogg_opus_encoder_t*)mutable_ctx->ws_encoder);
+    mutable_ctx->ws_encoder = NULL;
   }
 
   memset(out_result, 0, sizeof(*out_result));

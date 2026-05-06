@@ -8,16 +8,11 @@ import (
 	"strings"
 )
 
-var bbclawPCMEnvelope = []byte("BBPCM16\n")
-
 func DecodeToPCM16LE(ctx context.Context, codec string, sampleRate int, channels int, payload []byte) ([]byte, error) {
 	switch normalizeCodec(codec) {
 	case "pcm16", "pcm_s16le":
 		return payload, nil
 	case "opus":
-		if bytes.HasPrefix(payload, bbclawPCMEnvelope) {
-			return payload[len(bbclawPCMEnvelope):], nil
-		}
 		return decodeOpusWithFFmpeg(ctx, sampleRate, channels, payload)
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s", codec)
