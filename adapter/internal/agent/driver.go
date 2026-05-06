@@ -134,3 +134,13 @@ type MessagesPage struct {
 type MessageLoader interface {
 	LoadMessages(ctx context.Context, sid string, before, limit int) (MessagesPage, error)
 }
+
+// CLISessionChecker is an optional capability for drivers that store
+// conversation history on disk. When implemented, the agent proxy uses it to
+// validate a resume target before spawning a subprocess — if the on-disk
+// transcript is missing the resume attempt is skipped entirely, avoiding the
+// 4-7s cold-start penalty of a process that would immediately fail with
+// SESSION_NOT_FOUND.
+type CLISessionChecker interface {
+	CLISessionExists(cliSessionID string) bool
+}

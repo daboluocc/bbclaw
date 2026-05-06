@@ -228,6 +228,19 @@ func (d *Driver) Approve(sid agent.SessionID, tid agent.ToolID, decision agent.D
 	return agent.ErrUnsupported
 }
 
+// CLISessionExists reports whether the on-disk JSONL transcript for the given
+// CLI session id can be found under ~/.claude/projects/. Used by the agent
+// proxy to skip a doomed --resume attempt when the conversation file has been
+// deleted or GC'd by the CLI, avoiding the 4-7s cold-start penalty of
+// spawning a process that will immediately fail with SESSION_NOT_FOUND.
+func (d *Driver) CLISessionExists(cliSessionID string) bool {
+	if strings.TrimSpace(cliSessionID) == "" {
+		return false
+	}
+	path, err := d.findHistoryPath(cliSessionID)
+	return err == nil && path != ""
+}
+
 // Stop terminates any in-flight subprocess and closes the session.
 func (d *Driver) Stop(sid agent.SessionID) error {
 	d.mu.Lock()
