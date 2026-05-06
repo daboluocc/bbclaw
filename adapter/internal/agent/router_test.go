@@ -104,3 +104,139 @@ func TestRouter_NilRegisterNoop(t *testing.T) {
 		t.Fatal("nil Register should not add entries")
 	}
 }
+
+// stubResolver is a minimal SessionResolver for testing SendSlashCommand.
+type stubResolver struct {
+	driverName string
+	sid        SessionID
+	found      bool
+	resetCalls []string
+	stopCalled bool
+}
+
+func (s *stubResolver) ResolveSession(sessionKey string) (string, SessionID, bool) {
+	return s.driverName, s.sid, s.found
+}
+
+func (s *stubResolver) ResetSession(sessionKey string) {
+	s.resetCalls = append(s.resetCalls, sessionKey)
+}
+
+func TestRouter_SendSlashCommand_Stop(t *testing.T) {
+	r := NewRouter()
+	log := obs.NewLogger()
+	d := &stubDriver{name: "alpha"}
+	r.Register(d, log)
+
+	// /stop with a live session should call Stop on the driver.
+	resolver := &stubResolver{driverName: "alpha", sid: "alpha-sid", found: true}
+	r.SetSessionResolver(resolver)
+
+	ctx := context.Background()
+	reply, err := r.SendSlashCommand(ctx, "/stop", "ls-abc")
+	if err != nil {
+		t.Fatalf("/stop unexpected error: %v", err)
+	}
+	// reply is empty — pipeline layer adds the confirmation text.
+	if reply != "" {
+		t.Errorf("/stop reply want empty got %q", reply)
+	}
+}
+
+func TestRouter_SendSlashCommand_StopNoSession(t *testing.T) {
+	r := NewRouter()
+	log := obs.NewLogger()
+	r.Register(&stubDriver{name: "alpha"}, log)
+
+	// /stop with no live session is a no-op, not an error.
+	resolver := &stubResolver{found: false}
+	r.SetSessionResolver(resolver)
+
+	ctx := context.Background()
+	reply, err := r.SendSlashCommand(ctx, "/stop", "ls-missing")
+	if err != nil {
+		t.Fatalf("/stop no-session unexpected error: %v", err)
+	}
+	if reply != "" {
+		t.Errorf("/stop no-session reply want empty got %q", reply)
+	}
+}
+
+func TestRouter_SendSlashCommand_New(t *testing.T) {
+	r := NewRouter()
+	log := obs.NewLogger()
+	r.Register(&stubDriver{name: "alpha"}, log)
+
+	resolver := &stubResolver{found: false}
+	r.SetSessionResolver(resolver)
+
+	ctx := context.Background()
+	reply, err := r.SendSlashCommand(ctx, "/new", "ls-abc")
+	if err != nil {
+		t.Fatalf("/new unexpected error: %v", err)
+	}
+	if reply != "" {
+		t.Errorf("/new reply want empty got %q", reply)
+	}
+	if len(resolver.resetCalls) != 1 || resolver.resetCalls[0] != "ls-abc" {
+		t.Errorf("/new: ResetSession not called with correct key, got %v", resolver.resetCalls)
+	}
+}
+
+func TestRouter_SendSlashCommand_Status(t *testing.T) {
+	r := NewRouter()
+	log := obs.NewLogger()
+	r.Register(&stubDriver{name: "alpha"}, log)
+
+	// With a live session, /status includes driver + session id.
+	resolver := &stubResolver{driverName: "alpha", sid: "alpha-sid", found: true}
+	r.SetSessionResolver(resolver)
+
+	ctx := context.Background()
+	reply, err := r.SendSlashCommand(ctx, "/status", "ls-abc")
+	if err != nil {
+		t.Fatalf("/status unexpected error: %v", err)
+	}
+	if !contains(reply, "alpha") {
+		t.Errorf("/status reply %q should contain driver name", reply)
+	}
+}
+
+func TestRouter_SendSlashCommand_StatusNoResolver(t *testing.T) {
+	r := NewRouter()
+	log := obs.NewLogger()
+	r.Register(&stubDriver{name: "beta"}, log)
+	// No resolver set — /status falls back to default driver name.
+
+	ctx := context.Background()
+	reply, err := r.SendSlashCommand(ctx, "/status", "")
+	if err != nil {
+		t.Fatalf("/status no-resolver unexpected error: %v", err)
+	}
+	if !contains(reply, "beta") {
+		t.Errorf("/status no-resolver reply %q should contain driver name", reply)
+	}
+}
+
+func TestRouter_SendSlashCommand_Unknown(t *testing.T) {
+	r := NewRouter()
+	r.Register(&stubDriver{name: "alpha"}, obs.NewLogger())
+
+	ctx := context.Background()
+	_, err := r.SendSlashCommand(ctx, "/unknown", "")
+	if err == nil {
+		t.Fatal("/unknown should return error")
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
+}

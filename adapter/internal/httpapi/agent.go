@@ -12,6 +12,7 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
+	"github.com/daboluocc/bbclaw/adapter/internal/voicecmd"
 )
 
 // Session sweeper tunables. Sessions inactive for more than sessionTTL are
@@ -130,6 +131,68 @@ func (s *Server) SetAgentRouter(r *agent.Router) {
 	s.wsHub = newWSHub(s.log)
 	s.notifQueue = newNotificationQueue(32)
 	go s.runSessionSweeper(s.agentCtx, sweepInterval, sessionTTL)
+	// Wire the server as the session resolver so the router's SendSlashCommand
+	// can stop/reset live sessions for Agent Bus drivers (issue #53).
+	r.SetSessionResolver(s)
+}
+
+// ResolveSession implements agent.SessionResolver. It maps a device-visible
+// session key (logical "ls-" id or raw CLI id) to the live (driverName,
+// SessionID) pair held in the session registry.
+//
+// For logical ids the CLISessionID stored in the logical-session manager is
+// used to look up the registry entry. For raw CLI ids the registry is
+// consulted directly.
+func (s *Server) ResolveSession(sessionKey string) (driverName string, sid agent.SessionID, ok bool) {
+	if s.agentSessions == nil {
+		return "", "", false
+	}
+	// Logical session path: resolve ls- id → CLI session id → registry entry.
+	if s.sessions != nil && strings.HasPrefix(sessionKey, "ls-") {
+		ls, found := s.sessions.Get(logicalsession.ID(sessionKey))
+		if found && ls.CLISessionID != "" {
+			if entry, found2 := s.agentSessions.get(ls.CLISessionID); found2 {
+				return entry.driverName, entry.sid, true
+			}
+		}
+		return "", "", false
+	}
+	// Raw CLI id path.
+	if entry, found := s.agentSessions.get(sessionKey); found {
+		return entry.driverName, entry.sid, true
+	}
+	return "", "", false
+}
+
+// ResetSession implements agent.SessionResolver. It clears the live session
+// binding for the given key so the next agent turn starts a fresh CLI
+// conversation. For logical ids the CLISessionID is cleared in the manager;
+// for raw CLI ids the registry entry is removed.
+func (s *Server) ResetSession(sessionKey string) {
+	if s.agentSessions == nil {
+		return
+	}
+	// Logical session path.
+	if s.sessions != nil && strings.HasPrefix(sessionKey, "ls-") {
+		ls, found := s.sessions.Get(logicalsession.ID(sessionKey))
+		if found {
+			// Remove the live registry entry so the next turn starts fresh.
+			if ls.CLISessionID != "" {
+				s.agentSessions.mu.Lock()
+				delete(s.agentSessions.sessions, ls.CLISessionID)
+				s.agentSessions.mu.Unlock()
+			}
+			// Clear the stored CLI session id so drv.Start won't try to resume it.
+			if err := s.sessions.UpdateCLISessionID(ls.ID, ""); err != nil {
+				s.log.Warnf("agent: ResetSession clear cli id logical=%s err=%v", ls.ID, err)
+			}
+		}
+		return
+	}
+	// Raw CLI id path.
+	s.agentSessions.mu.Lock()
+	delete(s.agentSessions.sessions, sessionKey)
+	s.agentSessions.mu.Unlock()
 }
 
 // runSessionSweeper periodically evicts sessions that have been idle for
@@ -338,6 +401,40 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestedDriver := strings.TrimSpace(req.Driver)
+
+	// Voice command interception: if the transcript matches a slash command
+	// (e.g. "停止" → /stop, "新对话" → /new, "状态" → /status), dispatch it
+	// directly to the router and return a confirmation — no agent turn needed.
+	// This mirrors the pipeline.Wrap interception used on the stream/finish
+	// path and fixes silent command drops for Agent Bus drivers (issue #53).
+	if vcmd := voicecmd.Match(text); vcmd != nil {
+		sessionKey := strings.TrimSpace(req.SessionId)
+		s.log.Infof("agent: voice_command cmd=%s session=%s", vcmd.Command, sessionKey)
+		reply, err := s.router.SendSlashCommand(r.Context(), vcmd.Command, sessionKey)
+		if err != nil {
+			s.log.Errorf("agent: voice_command failed cmd=%s err=%v", vcmd.Command, err)
+		}
+		if reply == "" {
+			switch vcmd.Command {
+			case "/stop":
+				reply = "已停止"
+			case "/new":
+				reply = "新对话已开始"
+			case "/status":
+				reply = "状态已查询"
+			default:
+				reply = "已执行"
+			}
+		}
+		sw, ok := newFinishStreamWriter(w)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "STREAMING_NOT_SUPPORTED"})
+			return
+		}
+		_ = sw.write(map[string]any{"type": "text", "text": reply, "seq": 0})
+		_ = sw.write(map[string]any{"type": string(agent.EvTurnEnd), "seq": 1})
+		return
+	}
 
 	// Resolve an initial candidate driver. If the caller named one, it must
 	// exist; otherwise we fall back to the router default. A reused session

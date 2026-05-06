@@ -519,3 +519,80 @@ func readNDJSONFrames(t *testing.T, r interface {
 	}
 	return frames
 }
+
+// TestHandleAgentMessage_VoiceCommand verifies that voice command phrases
+// (e.g. "停止", "新对话", "状态") are intercepted in handleAgentMessage and
+// return a confirmation reply without forwarding to the driver (issue #53).
+func TestHandleAgentMessage_VoiceCommand(t *testing.T) {
+	cases := []struct {
+		phrase  string
+		wantKey string // substring expected in reply text
+	}{
+		{"停止", "停止"},
+		{"新对话", "新对话"},
+		{"状态", "driver"},
+		{"stop", "停止"},
+		{"new", "新对话"},
+		{"status", "driver"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.phrase, func(t *testing.T) {
+			drv := newMockDriver()
+			r := agent.NewRouter()
+			r.Register(drv, obs.NewLogger())
+
+			dir := t.TempDir()
+			mgr, err := logicalsession.NewManager(
+				filepath.Join(dir, "sessions.json"), dir, obs.NewLogger(),
+			)
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+
+			srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+			srv.SetAgentRouter(r)
+			srv.SetSessionManager(mgr)
+
+			body, _ := json.Marshal(map[string]any{"text": tc.phrase})
+			req := httptest.NewRequest(http.MethodPost, "/v1/agent/message", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			srv.handleAgentMessage(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+
+			frames := readNDJSONFrames(t, rr.Body)
+			if len(frames) < 2 {
+				t.Fatalf("expected at least 2 frames (text + turn_end), got %d: %v", len(frames), frames)
+			}
+
+			// First frame must be a text frame with the confirmation.
+			first := frames[0]
+			if first["type"] != "text" {
+				t.Errorf("first frame type=%v want text", first["type"])
+			}
+			replyText, _ := first["text"].(string)
+			if !strings.Contains(replyText, tc.wantKey) {
+				t.Errorf("reply %q does not contain %q", replyText, tc.wantKey)
+			}
+
+			// Last frame must be turn_end.
+			last := frames[len(frames)-1]
+			if last["type"] != "turn_end" {
+				t.Errorf("last frame type=%v want turn_end", last["type"])
+			}
+
+			// The driver must NOT have received the voice command text.
+			drv.mu.Lock()
+			received := drv.received
+			drv.mu.Unlock()
+			if len(received) != 0 {
+				t.Errorf("driver should not have received any text, got %v", received)
+			}
+		})
+	}
+}
