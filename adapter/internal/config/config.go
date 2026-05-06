@@ -65,6 +65,12 @@ type Config struct {
 	SessionReuseWindow time.Duration // BBCLAW_SESSION_REUSE_WINDOW — reuse recent session within this window
 	SessionMaxAge      time.Duration // BBCLAW_SESSION_MAX_AGE — sweep sessions older than this
 
+	// Claude Code warm pool (issue #47).
+	// BBCLAW_CLAUDE_POOL_SIZE — number of pre-warmed sessions (default 1, 0 disables).
+	// BBCLAW_CLAUDE_POOL_IDLE_TTL — max age of a pool entry before eviction (default 10m).
+	ClaudePoolSize    int
+	ClaudePoolIdleTTL time.Duration
+
 	// CWD pool (issue #30 / T3).
 	// BBCLAW_CWD_POOL="name:path,name:path,..." — multi-project working directory selection.
 	// BBCLAW_DEFAULT_CWD is kept as a single-entry fallback when the pool is empty.
@@ -176,6 +182,8 @@ func LoadFromEnv() (Config, error) {
 		SessionMaxAge:        getEnvDuration("BBCLAW_SESSION_MAX_AGE", 7*24*time.Hour),
 		DefaultCwd:           strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD")),
 		CwdPool:              parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
+		ClaudePoolSize:       getEnvInt("BBCLAW_CLAUDE_POOL_SIZE", 1),
+		ClaudePoolIdleTTL:    getEnvDuration("BBCLAW_CLAUDE_POOL_IDLE_TTL", 10*time.Minute),
 	}
 
 	if err := cfg.Validate(); err != nil {

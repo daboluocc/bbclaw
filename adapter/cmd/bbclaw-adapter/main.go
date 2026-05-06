@@ -213,7 +213,10 @@ var k_driver_registry = []driverReg{
 	{
 		name: "claude-code",
 		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
-			return claudecode.New(claudecode.Options{}, logger), nil
+			return claudecode.New(claudecode.Options{
+				PoolSize:    cfg.ClaudePoolSize,
+				PoolIdleTTL: cfg.ClaudePoolIdleTTL,
+			}, logger), nil
 		},
 		autoEnable: func(cfg config.Config) bool { return true },
 	},
@@ -519,6 +522,12 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			// 5-second deadline.
 			_ = agentSrv.Shutdown(shutdownCtx)
 			_ = httpSrv.Shutdown(shutdownCtx)
+			// Drain the claude-code warm pool to avoid orphan processes.
+			if drv, ok := agentRouter.Get("claude-code"); ok {
+				if cd, ok := drv.(*claudecode.Driver); ok {
+					cd.Shutdown()
+				}
+			}
 		}()
 	}
 
