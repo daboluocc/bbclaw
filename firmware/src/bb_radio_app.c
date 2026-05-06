@@ -1090,6 +1090,53 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
   }
 }
 
+/* Agent-mode variant: only enqueue TTS chunks/done into the stream queue.
+ * All display-surface events (ASR_FINAL, REPLY_DELTA, THINKING, TOOL_CALL)
+ * are intentionally ignored — the agent chat overlay owns that surface. */
+static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, void* user_ctx) {
+  bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)user_ctx;
+  if (event == NULL || ui == NULL) {
+    return;
+  }
+
+  if (event->type == BB_FINISH_STREAM_EVENT_TTS_CHUNK && event->tts_chunk != NULL) {
+    int seq = event->tts_chunk->seq;
+    if (seq <= 0) {
+      seq = ui->tts_chunk_received + 1;
+    }
+    ui->tts_chunk_received++;
+    ESP_LOGI(TAG, "phase=tts_chunk_recv_agent seq=%d pcm_bytes=%u rate=%d ch=%d", seq,
+             (unsigned)event->tts_chunk->pcm_len, event->tts_chunk->sample_rate, event->tts_chunk->channels);
+    if (ui->tts_queue != NULL) {
+      bb_tts_queue_evt_t evt = {
+          .type = BB_TTS_QUEUE_EVT_CHUNK,
+          .chunk = event->tts_chunk,
+      };
+      if (xQueueSend(ui->tts_queue, &evt, 0) == pdTRUE) {
+        ESP_LOGI(TAG, "phase=tts_chunk_enqueue_agent seq=%d queue_depth=%u", seq,
+                 (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
+        return;
+      }
+      ESP_LOGW(TAG, "phase=tts_chunk_drop_agent seq=%d queue_full=1", seq);
+    }
+    free_single_tts_chunk(event->tts_chunk);
+    return;
+  }
+
+  if (event->type == BB_FINISH_STREAM_EVENT_TTS_DONE) {
+    ui->tts_done_received = 1;
+    ESP_LOGI(TAG, "phase=tts_done_recv_agent chunks=%d queue_depth=%u", ui->tts_chunk_received,
+             ui->tts_queue != NULL ? (unsigned)uxQueueMessagesWaiting(ui->tts_queue) : 0U);
+    if (ui->tts_queue != NULL) {
+      bb_tts_queue_evt_t evt = {
+          .type = BB_TTS_QUEUE_EVT_DONE,
+      };
+      (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(20));
+    }
+    return;
+  }
+}
+
 static void remember_transport_state(const bb_transport_state_t* state) {
   if (state == NULL) {
     return;
@@ -2119,14 +2166,14 @@ static void stream_task(void* arg) {
         log_heap_snapshot("before cloud_wait");
         s_cloud_wait_busy = 1;
         /* Phase 4.5 — when routing to agent bus we don't want assistant
-         * deltas / TTS chunks piped into the openclaw chat surface. Pass
-         * NULL callbacks; finish->transcript is still populated, which is
-         * all we need. tts chunks land in finish->tts_chunks and get freed
-         * below. */
+         * deltas / TTS chunks piped into the openclaw chat surface.
+         * Use the TTS-only handler so tts.chunk events are enqueued for
+         * streaming playback while display-surface events are suppressed.
+         * finish->transcript is still populated for the agent send below. */
         esp_err_t finish_err =
             bb_adapter_stream_finish_stream(&stream, finish,
-                                            voice_target_agent ? NULL : on_finish_stream_event,
-                                            voice_target_agent ? NULL : ui_stream);
+                                            voice_target_agent ? on_finish_stream_event_tts_only : on_finish_stream_event,
+                                            ui_stream);
         s_cloud_wait_busy = 0;
         log_heap_snapshot("after cloud_wait");
         if (finish_err == ESP_OK) {
