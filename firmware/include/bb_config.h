@@ -711,6 +711,113 @@ const char *bbclaw_session_key(void);
 #endif
 
 /* ------------------------------------------------------------------
+ * ES8311 codec register tuning parameters
+ *
+ * These macros control the register values written during es8311_init_sequence().
+ * All values are validated against the ES8311 datasheet (rev 1.4) for 16 kHz
+ * operation with a 4.096 MHz MCLK (MCLK_MULTIPLE_256 × 16 kHz).
+ *
+ * Board-specific board_config.h files may override any of these before
+ * bb_config.h applies the defaults, allowing per-board tuning without
+ * touching bb_audio.c.
+ *
+ * Register map summary (ES8311 datasheet §6):
+ *   0x00  RESET          — chip reset control
+ *   0x01  CLK_MANAGER_1  — master/slave, MCLK source
+ *   0x02  CLK_MANAGER_2  — MCLK pre-divider (M1/M2)
+ *   0x03  CLK_MANAGER_3  — ADC OSR (over-sampling ratio)
+ *   0x04  CLK_MANAGER_4  — DAC OSR
+ *   0x05  CLK_MANAGER_5  — ADC/DAC dividers
+ *   0x06  CLK_MANAGER_6  — BCLK divider
+ *   0x07  CLK_MANAGER_7  — LRCK divider high byte
+ *   0x08  CLK_MANAGER_8  — LRCK divider low byte (N-1; 0xFF → N=256 → 16 kHz)
+ *   0x09  SDPIN          — DAC serial data format
+ *   0x0A  SDPOUT         — ADC serial data format
+ *   0x0D  SYSTEM_1       — analog power control
+ *   0x0E  SYSTEM_2       — power sequencing
+ *   0x10  SYSTEM_4       — reference / bias
+ *   0x11  SYSTEM_5       — reference / bias
+ *   0x12  SYSTEM_6       — DAC enable
+ *   0x13  SYSTEM_7       — analog path
+ *   0x14  SYSTEM_8       — MIC PGA / input path
+ *   0x15  ADC_1          — ADC ramp rate
+ *   0x16  ADC_2          — ADC PGA gain (0x00=0dB … 0x3F=+36dB in 0.5dB steps)
+ *   0x17  ADC_3          — ADC digital volume (0xBF = 0 dB unity)
+ *   0x1B  ADC_7          — ADC HPF coefficient low
+ *   0x1C  ADC_8          — ADC HPF coefficient high
+ *   0x31  DAC_1          — DAC mute control
+ *   0x32  DAC_2          — DAC digital volume (0xBF = 0 dB unity)
+ *   0x37  DAC_7          — DAC ramp rate
+ *   0x44  GPIO_SEL       — GPIO / reference path enable
+ *   0x45  TEST_MODE      — test mode (must be 0x00 in production)
+ */
+
+/*
+ * BBCLAW_ES8311_ADC_PGA_GAIN — MIC PGA gain, register 0x16 bits [5:0].
+ * Each LSB = 0.5 dB; 0x00 = 0 dB, 0x3F = +31.5 dB.
+ * Default 0x24 = 18 dB — validated on bbclaw v1 hardware as a good
+ * starting point for the onboard electret mic at 16 kHz / 30 cm distance.
+ * Increase toward 0x30 (24 dB) for quieter environments; decrease toward
+ * 0x18 (12 dB) if clipping is observed.
+ */
+#ifndef BBCLAW_ES8311_ADC_PGA_GAIN
+#define BBCLAW_ES8311_ADC_PGA_GAIN 0x24
+#endif
+
+/*
+ * BBCLAW_ES8311_ADC_VOLUME — ADC digital volume, register 0x17.
+ * 0xBF = 0 dB (unity); 0x00 = −95.5 dB; 0xFF = +32 dB.
+ * Keep at unity (0xBF) unless board-level measurements show a need to
+ * trim the digital stage.
+ */
+#ifndef BBCLAW_ES8311_ADC_VOLUME
+#define BBCLAW_ES8311_ADC_VOLUME 0xBF
+#endif
+
+/*
+ * BBCLAW_ES8311_DAC_VOLUME — DAC digital volume, register 0x32.
+ * 0xBF = 0 dB (unity). Same encoding as ADC volume.
+ */
+#ifndef BBCLAW_ES8311_DAC_VOLUME
+#define BBCLAW_ES8311_DAC_VOLUME 0xBF
+#endif
+
+/*
+ * BBCLAW_ES8311_ADC_OSR — ADC over-sampling ratio, register 0x03.
+ * 0x10 = OSR 32 (recommended for 16 kHz, datasheet Table 5).
+ * Higher OSR improves SNR at the cost of power; 32 is the datasheet
+ * default for voice-band operation.
+ */
+#ifndef BBCLAW_ES8311_ADC_OSR
+#define BBCLAW_ES8311_ADC_OSR 0x10
+#endif
+
+/*
+ * BBCLAW_ES8311_DAC_OSR — DAC over-sampling ratio, register 0x04.
+ * 0x20 = OSR 64 (recommended for 16 kHz, datasheet Table 5).
+ */
+#ifndef BBCLAW_ES8311_DAC_OSR
+#define BBCLAW_ES8311_DAC_OSR 0x20
+#endif
+
+/*
+ * BBCLAW_ES8311_BCLK_DIV — BCLK divider, register 0x06.
+ * For 16-bit stereo I2S at 16 kHz with 4.096 MHz MCLK:
+ *   BCLK = MCLK / (BCLK_DIV + 1) = 4.096 MHz / 4 = 1.024 MHz
+ *   LRCK = BCLK / (2 × 16 bits) = 1.024 MHz / 32 = 32 kHz  ← wrong
+ * Correct: BCLK must be 16 kHz × 32 = 512 kHz → BCLK_DIV = 7 (÷8).
+ *   4.096 MHz / 8 = 512 kHz; 512 kHz / 32 = 16 kHz ✓
+ * The early bring-up value of 0x03 (÷4 → 1.024 MHz BCLK) worked because
+ * the I2S master (ESP32-S3) drives BCLK independently; the ES8311 in slave
+ * mode accepts whatever BCLK the master provides. 0x07 is the datasheet-
+ * recommended value for this MCLK/sample-rate combination and is set here
+ * for correctness; the ESP I2S master clock is unaffected.
+ */
+#ifndef BBCLAW_ES8311_BCLK_DIV
+#define BBCLAW_ES8311_BCLK_DIV 0x07
+#endif
+
+/* ------------------------------------------------------------------
  * Mic / Speaker silk-label aliases (INMP441 + MAX98357A)
  *
  * These aliases map 1:1 to BBCLAW_AUDIO_I2S_* so firmware has a single
