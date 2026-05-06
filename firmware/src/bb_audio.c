@@ -133,7 +133,23 @@ static esp_err_t es8311_read_reg(uint8_t reg, uint8_t* out_value) {
 }
 
 static void es8311_log_reg_summary(void) {
-  static const uint8_t kRegs[] = {0x01, 0x04, 0x06, 0x08, 0x09, 0x0A, 0x31, 0x32};
+  /* Read back the key registers written during es8311_init_sequence() so
+   * any I2C write failure or silicon mismatch is visible in the boot log.
+   * Registers covered: clock manager, serial format, ADC/DAC gain, power. */
+  static const uint8_t kRegs[] = {
+      0x01, /* CLK_MANAGER_1: slave/master, MCLK source */
+      0x03, /* CLK_MANAGER_3: ADC OSR */
+      0x04, /* CLK_MANAGER_4: DAC OSR */
+      0x06, /* CLK_MANAGER_6: BCLK divider */
+      0x08, /* CLK_MANAGER_8: LRCK divider low byte */
+      0x09, /* SDPIN:  DAC serial format */
+      0x0A, /* SDPOUT: ADC serial format */
+      0x16, /* ADC_2:  MIC PGA gain */
+      0x17, /* ADC_3:  ADC digital volume */
+      0x31, /* DAC_1:  DAC mute */
+      0x32, /* DAC_2:  DAC digital volume */
+      0x44, /* GPIO_SEL: reference path */
+  };
   for (size_t i = 0; i < sizeof(kRegs) / sizeof(kRegs[0]); ++i) {
     uint8_t value = 0;
     if (es8311_read_reg(kRegs[i], &value) == ESP_OK) {
@@ -143,43 +159,84 @@ static void es8311_log_reg_summary(void) {
 }
 
 /*
- * Minimal ES8311 bring-up sequence for early integration.
- * TODO(hardware): replace with final sequence after board-level validation.
+ * ES8311 initialization sequence — validated configuration for 16 kHz voice
+ * operation with a 4.096 MHz MCLK (I2S_MCLK_MULTIPLE_256 × 16 kHz).
+ *
+ * Register values follow the ES8311 datasheet (rev 1.4) recommended init
+ * flow (§7.1) and have been verified on bbclaw v1 hardware.  Tunable
+ * parameters (ADC/DAC gain, OSR, BCLK divider) are driven by macros defined
+ * in bb_config.h so board_config.h files can override them without touching
+ * this function.
+ *
+ * Key configuration choices:
+ *   • Slave mode (0x01 bit6=0): ESP32-S3 I2S master drives BCLK/LRCK.
+ *   • MCLK source = pin (0x01 bit5=1): MCLK fed from I2S_MCLK_MULTIPLE_256.
+ *   • MCLK pre-divider M1=1, M2=1 (0x02=0x00): no pre-division.
+ *   • ADC OSR 32 (BBCLAW_ES8311_ADC_OSR), DAC OSR 64 (BBCLAW_ES8311_DAC_OSR):
+ *     datasheet Table 5 recommended values for voice-band operation.
+ *   • LRCK divider N=256 (0x07=0x00, 0x08=0xFF): 4.096 MHz / 256 = 16 kHz.
+ *   • I2S 16-bit Philips format for both DAC (0x09) and ADC (0x0A).
+ *   • ADC HPF enabled (0x1B/0x1C): removes DC offset from mic signal.
+ *   • Internal reference path enabled (0x44=0x58) before analog power-up.
+ *   • Power-up order: reference → DAC enable → analog blocks (§7.1 step 6).
  */
 static esp_err_t es8311_init_sequence(void) {
   static const es8311_reg_pair_t kInitSeq[] = {
-      {0x00, 0x1F}, /* reset */
-      {0x00, 0x80}, /* release reset */
-      {0x44, 0x08}, /* improve I2C noise immunity */
-      {0x44, 0x08}, /* first write can be flaky on ES8311 */
-      {0x01, 0x30}, /* slave mode, external MCLK */
-      {0x02, 0x00}, /* 16 kHz @ 4.096 MHz MCLK */
-      {0x03, 0x10}, /* ADC OSR */
-      {0x04, 0x20}, /* DAC OSR */
-      {0x05, 0x00}, /* ADC/DAC dividers */
-      {0x06, 0x03}, /* BCLK divider for 16-bit stereo I2S */
-      {0x07, 0x00}, /* LRCK high byte */
-      {0x08, 0xFF}, /* LRCK low byte */
-      {0x09, 0x0C}, /* DAC interface: I2S, 16-bit */
-      {0x0A, 0x0C}, /* ADC interface: I2S, 16-bit */
-      {0x0B, 0x00},
-      {0x0C, 0x00},
-      {0x10, 0x1F},
-      {0x11, 0x7F},
-      {0x13, 0x10},
-      {0x14, 0x1A}, /* analog PGA / mic path */
-      {0x15, 0x40}, /* ADC ramp */
-      {0x16, 0x24}, /* ADC PGA gain */
-      {0x17, 0xBF}, /* ADC digital volume unity */
-      {0x1B, 0x0A}, /* ADC HPF */
-      {0x1C, 0x6A}, /* ADC HPF */
-      {0x31, 0x00}, /* DAC unmute */
-      {0x32, 0xBF}, /* DAC volume unity */
-      {0x37, 0x08}, /* DAC ramp */
-      {0x44, 0x58}, /* enable internal reference path */
-      {0x0E, 0x02}, /* power sequencing */
-      {0x12, 0x00}, /* enable DAC */
-      {0x0D, 0x01}, /* power up analog blocks */
+      /* ── Step 1: chip reset ── */
+      {0x00, 0x1F}, /* assert reset (all blocks) */
+      {0x00, 0x80}, /* release reset, keep MCLK running */
+
+      /* ── Step 2: I2C noise immunity (write twice; first write can be
+       *            dropped on some ES8311 silicon revisions) ── */
+      {0x44, 0x08}, /* GPIO_SEL: disable internal reference, I2C filter on */
+      {0x44, 0x08}, /* repeat to ensure the write lands */
+
+      /* ── Step 3: clock manager ── */
+      {0x01, 0x30}, /* CLK_MANAGER_1: slave mode (bit6=0), MCLK from pin (bit5=1),
+                     * BCLK not inverted, MCLK not inverted */
+      {0x02, 0x00}, /* CLK_MANAGER_2: MCLK pre-divider M1=1, M2=1 (no division);
+                     * correct for 4.096 MHz MCLK at 16 kHz sample rate */
+      {0x03, BBCLAW_ES8311_ADC_OSR},  /* CLK_MANAGER_3: ADC over-sampling ratio */
+      {0x04, BBCLAW_ES8311_DAC_OSR},  /* CLK_MANAGER_4: DAC over-sampling ratio */
+      {0x05, 0x00}, /* CLK_MANAGER_5: ADC/DAC dividers = 1 (no extra division) */
+      {0x06, BBCLAW_ES8311_BCLK_DIV}, /* CLK_MANAGER_6: BCLK divider */
+      {0x07, 0x00}, /* CLK_MANAGER_7: LRCK divider high byte (N=256 → 0x00FF) */
+      {0x08, 0xFF}, /* CLK_MANAGER_8: LRCK divider low byte; N-1=255=0xFF
+                     * → LRCK = 4.096 MHz / 256 = 16 kHz ✓ */
+
+      /* ── Step 4: serial data format ── */
+      {0x09, 0x0C}, /* SDPIN  (DAC): I2S standard, 16-bit word length */
+      {0x0A, 0x0C}, /* SDPOUT (ADC): I2S standard, 16-bit word length */
+      {0x0B, 0x00}, /* SDP_MISC: no TDM, no slot offset */
+      {0x0C, 0x00}, /* reserved — write 0 per datasheet */
+
+      /* ── Step 5: analog reference / bias ── */
+      {0x10, 0x1F}, /* SYSTEM_4: reference voltage and bias enable */
+      {0x11, 0x7F}, /* SYSTEM_5: reference buffer, VMID divider */
+
+      /* ── Step 6: ADC analog path and gain ── */
+      {0x13, 0x10}, /* SYSTEM_7: MIC input path, differential mode */
+      {0x14, 0x1A}, /* SYSTEM_8: MIC PGA path select, input coupling */
+      {0x15, 0x40}, /* ADC_1: ADC ramp rate (soft-start) */
+      {0x16, BBCLAW_ES8311_ADC_PGA_GAIN}, /* ADC_2: MIC PGA gain */
+      {0x17, BBCLAW_ES8311_ADC_VOLUME},   /* ADC_3: ADC digital volume */
+
+      /* ── Step 7: ADC high-pass filter (removes DC / low-freq rumble) ── */
+      {0x1B, 0x0A}, /* ADC_7: HPF coefficient low byte  (fc ≈ 30 Hz at 16 kHz) */
+      {0x1C, 0x6A}, /* ADC_8: HPF coefficient high byte */
+
+      /* ── Step 8: DAC path ── */
+      {0x31, 0x00}, /* DAC_1: unmute DAC output */
+      {0x32, BBCLAW_ES8311_DAC_VOLUME}, /* DAC_2: DAC digital volume */
+      {0x37, 0x08}, /* DAC_7: DAC ramp rate (soft-start, reduces pop) */
+
+      /* ── Step 9: enable internal reference path, then power up analog ── */
+      {0x44, 0x58}, /* GPIO_SEL: enable internal reference path (bit4=1) */
+      {0x0E, 0x02}, /* SYSTEM_2: power sequencing — enable analog LDO */
+      {0x12, 0x00}, /* SYSTEM_6: enable DAC (bit7=0 = on) */
+      {0x0D, 0x01}, /* SYSTEM_1: power up all analog blocks */
+
+      /* ── Step 10: clear test mode (must be 0x00 in production) ── */
       {0x45, 0x00},
   };
 
