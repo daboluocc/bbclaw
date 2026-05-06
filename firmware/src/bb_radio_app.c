@@ -208,7 +208,6 @@ static char s_spoken_registration_code[16];
 static uint8_t s_stream_task_pcm_read_buf[1024];
 static uint8_t s_stream_pcm_chunk_buf[(BBCLAW_AUDIO_SAMPLE_RATE * BBCLAW_STREAM_CHUNK_MS / 1000) * sizeof(int16_t) *
                                       BBCLAW_AUDIO_CHANNELS];
-static uint8_t s_stream_encoded_chunk_buf[sizeof(s_stream_pcm_chunk_buf) + 64];
 
 /*
  * Ring buffer for decoupling I2S capture from HTTP upload.
@@ -1366,15 +1365,29 @@ static esp_err_t flush_stream_chunk(bb_stream_ctx_t* stream, uint8_t* pcm_buf, s
     return ESP_OK;
   }
 
-  size_t encoded_len = 0;
-  esp_err_t err = bb_audio_encode_opus(pcm_buf, *pending_pcm_len, s_stream_encoded_chunk_buf,
-                                       sizeof(s_stream_encoded_chunk_buf), &encoded_len);
+  /* local_home: encode PCM as Ogg/Opus using the stream's encoder, then POST
+   * the resulting Ogg pages to the adapter via bb_adapter_stream_chunk(). */
+  if (stream->ws_encoder == NULL) {
+    ESP_LOGE(TAG, "flush_stream_chunk: encoder not initialized for local_home");
+    return ESP_ERR_INVALID_STATE;
+  }
+  uint8_t* ogg_data = NULL;
+  size_t ogg_len = 0;
+  esp_err_t err = bb_ogg_opus_encoder_append_pcm16((bb_ogg_opus_encoder_t*)stream->ws_encoder,
+                                                   (const int16_t*)pcm_buf,
+                                                   *pending_pcm_len / sizeof(int16_t),
+                                                   &ogg_data, &ogg_len);
   if (err != ESP_OK) {
     return err;
   }
-  err = bb_adapter_stream_chunk(stream, s_stream_encoded_chunk_buf, encoded_len, bb_now_ms());
-  if (err != ESP_OK) {
-    return err;
+  if (ogg_data != NULL && ogg_len > 0U) {
+    err = bb_adapter_stream_chunk(stream, ogg_data, ogg_len, bb_now_ms());
+    bb_ogg_opus_free(ogg_data);
+    if (err != ESP_OK) {
+      return err;
+    }
+  } else if (ogg_data != NULL) {
+    bb_ogg_opus_free(ogg_data);
   }
   *pending_pcm_len = 0U;
   return ESP_OK;

@@ -34,7 +34,6 @@ static i2c_master_dev_handle_t s_codec_dev;
 static i2s_chan_handle_t s_tx_chan;
 static i2s_chan_handle_t s_rx_chan;
 static uint8_t s_codec_addr = BBCLAW_ES8311_I2C_ADDR;
-static const uint8_t kPCMEnvelope[] = {'B', 'B', 'P', 'C', 'M', '1', '6', '\n'};
 static uint8_t s_rx_raw_buf[4096];
 static int s_rx_use_32bit;
 static int s_tx_use_stereo32;
@@ -1227,24 +1226,6 @@ esp_err_t bb_audio_play_test_tone(uint32_t freq_hz, uint32_t duration_ms, int16_
   return ESP_OK;
 }
 
-esp_err_t bb_audio_encode_opus(const uint8_t* pcm, size_t pcm_len, uint8_t* out_buf, size_t out_buf_len, size_t* out_len) {
-  if (pcm == NULL || out_buf == NULL || out_len == NULL) {
-    return ESP_ERR_INVALID_ARG;
-  }
-
-  /*
-   * TODO(audio): replace with real Opus encoder on device.
-   * Current transport sends a BBClaw PCM envelope accepted by adapter's opus path.
-   */
-  size_t need = sizeof(kPCMEnvelope) + pcm_len;
-  if (need > out_buf_len) {
-    return ESP_ERR_NO_MEM;
-  }
-  memcpy(out_buf, kPCMEnvelope, sizeof(kPCMEnvelope));
-  memcpy(out_buf + sizeof(kPCMEnvelope), pcm, pcm_len);
-  *out_len = need;
-  return ESP_OK;
-}
 
 void bb_audio_set_volume_pct(int pct) {
   if (pct < 0) { pct = 0; }
