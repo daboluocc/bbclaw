@@ -606,6 +606,24 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	s.metrics.Inc("agent_message_start")
 	ctx := r.Context()
 
+	// Proactive resume validation: if the driver can check whether a CLI
+	// conversation still exists on disk, do so before the attempt loop.
+	// A missing transcript means --resume would immediately fail with
+	// SESSION_NOT_FOUND, wasting 4-7s on a doomed cold-start. Clearing
+	// resumeFromLogical here lets the first attempt go straight to a fresh
+	// session instead of triggering the reactive retry cascade (issue #58,
+	// mirrors homeadapter/agent_proxy.go).
+	if resumeFromLogical != "" {
+		if checker, ok := drv.(agent.CLISessionChecker); ok {
+			if !checker.CLISessionExists(resumeFromLogical) {
+				s.log.Infof("agent: resume target missing on disk, skipping resume cli=%s logical=%s",
+					resumeFromLogical, logicalID)
+				s.metrics.Inc("agent_message_resume_skipped_missing")
+				resumeFromLogical = ""
+			}
+		}
+	}
+
 	// Outer loop wraps one or two attempts. Attempt 0 resumes the requested
 	// session; attempt 1 fires only if the driver emits SESSION_NOT_FOUND
 	// (ADR-014) — we mint a fresh session and re-send the user text so the
@@ -742,14 +760,20 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				case agent.EvError:
 					errorCount++
 					lastError = ev.Text
-					s.agentSessions.setState(string(sid), "error")
-					broadcastSID := string(sid)
-					if usingLogical && logicalID != "" {
-						broadcastSID = string(logicalID)
-					}
-					s.broadcastSessionStateChange(broadcastSID, "error", ev.Text)
 					if strings.HasPrefix(ev.Text, "SESSION_NOT_FOUND") {
 						sessionNotFound = true
+					}
+					// Only broadcast the error state when we are NOT going to
+					// retry transparently. Broadcasting before the retry fires
+					// leaks a transient SESSION_NOT_FOUND to WebSocket-connected
+					// devices as AGENT_TURN_FAILED (ADR-014 Phase A gap, issue #58).
+					if !sessionNotFound || attempt+1 >= maxAttempts {
+						s.agentSessions.setState(string(sid), "error")
+						broadcastSID := string(sid)
+						if usingLogical && logicalID != "" {
+							broadcastSID = string(logicalID)
+						}
+						s.broadcastSessionStateChange(broadcastSID, "error", ev.Text)
 					}
 				case agent.EvTurnEnd:
 					turnEnded = true
