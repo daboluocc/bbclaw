@@ -22,6 +22,7 @@ set(_bb_srcs
     "bb_ptt.c"
     "bb_radio_app.c"
     "bb_session_store.c"
+    "bb_state.c"
     "bb_theme_buddy_anim.c"
     "bb_time.c"
     "bb_ui_agent_chat.c"

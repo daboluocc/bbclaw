@@ -19,6 +19,7 @@
 #include "bb_ogg_opus.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
+#include "bb_state.h"
 #include "bb_time.h"
 #include "bb_transport.h"
 #include "bb_agent_theme.h"
@@ -286,10 +287,27 @@ static const char* radio_app_state_name(bb_radio_app_state_t state) {
 
 static void set_radio_app_state(bb_radio_app_state_t state) {
   if (s_app_state != state) {
+    bb_radio_app_state_t prev = s_app_state;
     ESP_LOGI(TAG, "STATE_TRANSITION: %s -> %s",
-             radio_app_state_name(s_app_state), radio_app_state_name(state));
+             radio_app_state_name(prev), radio_app_state_name(state));
     s_app_state = state;
     refresh_lock_screen_visibility();
+    /* Phase 4.9: 同步 bb_state 协调器。dispatch 内的转换表会校验合法性
+     * 并打结构化日志。事件选取遵循"原因优先"原则：解锁 → VERIFY_OK，
+     * 进设置 → REQUEST_SETTINGS_ENTER，退设置 → REQUEST_SETTINGS_EXIT。 */
+    switch (state) {
+      case BBCLAW_STATE_LOCKED:
+        bb_state_dispatch_simple(BB_EVT_VOICE_VERIFY_FAIL);
+        break;
+      case BBCLAW_STATE_CHAT:
+        bb_state_dispatch_simple(
+          (prev == BBCLAW_STATE_LOCKED) ? BB_EVT_VOICE_VERIFY_OK
+                                        : BB_EVT_REQUEST_SETTINGS_EXIT);
+        break;
+      case BBCLAW_STATE_SETTINGS:
+        bb_state_dispatch_simple(BB_EVT_REQUEST_SETTINGS_ENTER);
+        break;
+    }
   }
 }
 
@@ -678,12 +696,21 @@ static void on_ptt_changed(int pressed) {
   /* Phase 4.5: when the agent-chat overlay is up, PTT routes audio capture
    * into the agent voice bridge (ASR transcript → bb_ui_agent_chat_send).
    * Phase 4.7: settings is its own overlay (mutually exclusive with chat) —
-   * drop PTT silently while settings is up so accidental presses don't
-   * trigger voice capture. */
+   * drop PTT while settings is up. */
+  int new_pressed = pressed > 0 ? 1 : 0;
+
+  /* Phase 4.9: 不管丢不丢，都要发 bb_state dispatch 让协调器记录日志和决定。
+   * 旧代码里 SETTINGS 早返回 + cloud_wait 期间静默吞 PTT 的两个场景，
+   * dispatch 内部会输出 WARN action=DROPPED reason=...，便于诊断。 */
+  bb_state_dispatch_simple(new_pressed ? BB_EVT_PTT_DOWN : BB_EVT_PTT_UP);
+
   if (s_settings_active) {
+    /* SSoT 那边已经记了 reason=page_settings；这里再补一条贴近 PTT 子系统的
+     * INFO 方便老日志格式 grep。 */
+    ESP_LOGI(TAG, "ptt: dropped (settings overlay active) pressed=%d", new_pressed);
     return;
   }
-  s_ptt_pressed = pressed > 0 ? 1 : 0;
+  s_ptt_pressed = new_pressed;
   if (s_ptt_pressed && !s_cloud_wait_busy) {
     s_tts_interrupt_requested = 1;
     bb_audio_request_playback_interrupt();
@@ -701,6 +728,21 @@ static void on_ptt_changed(int pressed) {
 static void on_nav_event(bb_nav_event_t event) {
   if ((int)event >= 0 && event < BB_NAV_EVENT_COUNT) {
     s_nav_event_versions[event]++;
+  }
+  /* Phase 4.9: 同步分发到 bb_state 用于状态日志和未来的转换决策。
+   * 旧版本依然保留 versions 计数器供 main loop 消费，dispatch 仅做观察用途。 */
+  bb_event_t mapped = BB_EVT__COUNT;
+  switch (event) {
+    case BB_NAV_EVENT_UP:    mapped = BB_EVT_NAV_UP; break;
+    case BB_NAV_EVENT_DOWN:  mapped = BB_EVT_NAV_DOWN; break;
+    case BB_NAV_EVENT_LEFT:  mapped = BB_EVT_NAV_LEFT; break;
+    case BB_NAV_EVENT_RIGHT: mapped = BB_EVT_NAV_RIGHT; break;
+    case BB_NAV_EVENT_OK:    mapped = BB_EVT_NAV_OK; break;
+    case BB_NAV_EVENT_BACK:  mapped = BB_EVT_NAV_BACK; break;
+    default: break;
+  }
+  if (mapped != BB_EVT__COUNT) {
+    bb_state_dispatch_simple(mapped);
   }
 }
 
@@ -2231,6 +2273,20 @@ static void stream_task(void* arg) {
             log_phase_text_chunks("phase=assistant text=", reply_text);
           }
 
+          /* Phase 4.9: 通知 bb_state ASR 完成。dispatch 内会把 ptt 阶段
+           * 复位为 IDLE。空 transcript 视为 ASR 错误（与既有 voice_post_error
+           * 流程对齐）。 */
+          {
+            int empty = (finish->transcript[0] == '\0');
+            bb_event_payload_t asr_evt = (bb_event_payload_t){
+              .type = empty ? BB_EVT_ASR_ERROR : BB_EVT_ASR_RESULT,
+            };
+            if (!empty) {
+              strncpy(asr_evt.text, finish->transcript, sizeof(asr_evt.text) - 1);
+            }
+            bb_state_dispatch(asr_evt);
+          }
+
           if (voice_target_agent) {
             /* Phase 4.5 — feed transcript into the agent bus instead of the
              * openclaw chat turn surface. Skip TTS playback; the agent reply
@@ -2729,6 +2785,11 @@ static void stream_task(void* arg) {
             adapter_health_is_up = 1;
             ESP_LOGI(TAG, "transport heartbeat recovered profile=%s status=%d", bb_transport_profile_name(),
                      health_status);
+            /* Phase 4.9: 通知 bb_state 网络恢复 — PTT 解禁 */
+            bb_state_dispatch((bb_event_payload_t){
+              .type = BB_EVT_NET_UP,
+              .error_code = bb_transport_is_cloud_saas() ? (int)BB_NET_CLOUD : (int)BB_NET_LOCAL,
+            });
             if (bb_transport_is_cloud_saas()) {
               show_cloud_transport_or_locked(&state);
             } else {
@@ -2767,6 +2828,9 @@ static void stream_task(void* arg) {
             s_transport_health_ok = 0;
             s_transport_ready = 0;
             s_transport_audio_streaming_ready = 0;
+            /* Phase 4.9: 通知 bb_state 网络掉线 — PTT 在 net=OFFLINE 会被
+             * dispatch DROPPED reason=net_offline，留下结构化日志。 */
+            bb_state_dispatch_simple(BB_EVT_NET_DOWN);
             if (bb_transport_is_cloud_saas()) {
               show_status_error("CLOUD ERR");
               (void)bb_display_show_chat_turn("Cloud unreachable", "Check " BBCLAW_CLOUD_BASE_URL);
@@ -2794,6 +2858,12 @@ static void stream_task(void* arg) {
 }
 
 esp_err_t bb_radio_app_start(void) {
+  /* Phase 4.9: 全局状态协调器初始化 — 必须在任何 PTT/nav 回调可能触发
+   * dispatch 之前调用。bb_state.c 的 dispatch 走 lv_async_call，要求 LVGL
+   * 已经初始化，所以也必须在 bb_display_init()（启动 LVGL）之前留出
+   * dispatch 缓冲；本函数仅初始化状态字段，不调用 LVGL。 */
+  bb_state_init();
+
   /* Register the only built-in agent chat theme. The constructor approach
    * gets DCE'd on ESP-IDF static-archive links; explicit init ensures the
    * symbols are force-linked. text-only and buddy-ascii were retired —

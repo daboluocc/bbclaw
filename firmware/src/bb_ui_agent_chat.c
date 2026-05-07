@@ -11,6 +11,7 @@
 #include "bb_config.h"
 #include "bb_notification.h"
 #include "bb_session_store.h"
+#include "bb_state.h"
 #include "bb_time.h"
 #include "bb_wifi.h"
 #include "esp_err.h"
@@ -399,6 +400,19 @@ static void post_state(bb_agent_state_t st) {
   if (p == NULL) return;
   p->state = st;
   async_post(p);
+
+  /* Phase 4.9: 同步 bb_state 协调器 — 让 buddy 也能从 SSoT 拿到状态。
+   * 旧路径继续刷 s_chat.state（其它代码仍读它），新路径通过
+   * BB_EVT_FORCE_AGENT_STATE 把 agent 字段写到 bb_state，driver listener
+   * 会触发 theme->set_state 二次刷新（idempotent）。
+   *
+   * 修复 buddy 不同步 bug：旧路径若因 LVGL 锁超时丢帧，bb_state 这条
+   * 路径会兜底 — 因为它独立做了一次 dispatch，listener 在 LVGL 下次
+   * idle tick 时仍能把 buddy 拉到正确状态。 */
+  bb_state_dispatch((bb_event_payload_t){
+    .type = BB_EVT_FORCE_AGENT_STATE,
+    .error_code = (int)st,
+  });
 }
 
 static void post_user(const char* text) {
@@ -522,6 +536,20 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         strncpy(s_chat.driver_name, evt->driver, sizeof(s_chat.driver_name) - 1);
         s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
         post_driver(evt->driver);
+        /* Phase 4.9: 同步到 bb_state，listener 会刷主题 */
+        bb_event_payload_t drv_evt = (bb_event_payload_t){ .type = BB_EVT_DRIVER_NAME_UPDATE };
+        strncpy(drv_evt.text, evt->driver, sizeof(drv_evt.text) - 1);
+        bb_state_dispatch(drv_evt);
+      }
+      /* Phase 4.9: SSoT 接管 — dispatch BB_EVT_AGENT_SESSION 让协调器
+       * 更新 session_id / agent_in_flight。下面的 post_state(BUSY) 仍然
+       * 走老路径（s_chat.state = BUSY + theme->set_state via async）。 */
+      {
+        bb_event_payload_t sess_evt = (bb_event_payload_t){ .type = BB_EVT_AGENT_SESSION };
+        if (evt->session_id != NULL) {
+          strncpy(sess_evt.text, evt->session_id, sizeof(sess_evt.text) - 1);
+        }
+        bb_state_dispatch(sess_evt);
       }
       /* 收到 session 帧通常意味着马上要开始流式回复。先切到 BUSY，
        * 让顶部状态条变化更明确（首个 TEXT 帧到达前就有反馈）。 */
@@ -586,6 +614,8 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
        * the streaming task posts SPEAKING on entry and IDLE/HEART on exit,
        * so posting IDLE here would just cause a brief flicker. */
       s_chat.reply_turn_complete = 1;
+      /* Phase 4.9: 通知 bb_state agent_in_flight 结束 */
+      bb_state_dispatch_simple(BB_EVT_AGENT_TURN_END);
       const int will_speak = s_chat.tts_enabled && reply_buf_has_content();
       if (will_speak) {
         tts_kick_or_spawn();  /* TTS task will handle final state. */
@@ -602,6 +632,7 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
     }
 
     case BB_AGENT_EVENT_ERROR:
+      bb_state_dispatch_simple(BB_EVT_AGENT_ERROR);
       post_state(BB_AGENT_STATE_DIZZY);
       if (evt->text != NULL && evt->text[0] != '\0') {
         post_error(evt->text);
@@ -984,6 +1015,10 @@ static esp_err_t tts_synth_and_play(const char* text) {
 static void tts_playback_task(void* arg) {
   (void)arg;
   ESP_LOGI(TAG, "tts: streaming task start → SPEAKING");
+  /* Phase 4.9: 通知 bb_state TTS 在飞 — 用于不变量 INV_4 检查。
+   * post_state(SPEAKING) 也会通过 FORCE_AGENT_STATE 改 bb_state.agent，
+   * 但 tts_in_flight 标志只能由 BB_EVT_TTS_START 设置。 */
+  bb_state_dispatch_simple(BB_EVT_TTS_START);
   /* Phase 4.8.x: dedicated SPEAKING state while the audio is being
    * synthesized + played. Buddy shows "(^o^)~ speaking..." through the
    * whole reply playback (overrides any IDLE/HEART that EvTurnEnd might
@@ -1028,6 +1063,9 @@ static void tts_playback_task(void* arg) {
       post_state(BB_AGENT_STATE_IDLE);
     }
   }
+  /* Phase 4.9: 通知 bb_state TTS 已完成或被取消，清掉 tts_in_flight */
+  bb_state_dispatch_simple(s_chat.tts_cancel_requested ? BB_EVT_TTS_CANCELLED
+                                                       : BB_EVT_TTS_DONE);
   ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d) → IDLE/HEART",
            s_chat.tts_cancel_requested ? 1 : 0,
            s_chat.reply_turn_complete ? 1 : 0);
@@ -1075,6 +1113,37 @@ static void tts_cancel_in_flight(void) {
   }
 }
 
+/* Phase 4.9: bb_state subscriber — buddy 主题的 SSoT 驱动入口。
+ * 每当 bb_state.agent / driver_name / session_id 变化，自动同步到主题。
+ *
+ * 修复"buddy 不同步"bug 的关键：以前 theme->set_state 由 BB_ASYNC_SET_STATE
+ * 直接调用，链路是 post_state → async LVGL → theme->set_state。如果
+ * lvgl_port_lock 超时或 dispatch 队列满，这条链路会丢帧 → buddy 卡住。
+ *
+ * 现在 post_state 还会同时 dispatch BB_EVT_FORCE_AGENT_STATE 给 bb_state，
+ * bb_state 内部独立走自己的 LVGL async 队列，listener 在 LVGL 任务上回调
+ * 时再次调 theme->set_state。哪怕老路径丢一帧，新路径下次仍能把 buddy 拉
+ * 到正确状态（idempotent — 同 state 重复 set 等于动画重置）。 */
+static void buddy_state_listener(const bb_state_t* prev,
+                                 const bb_state_t* next,
+                                 const bb_event_payload_t* evt) {
+  (void)evt;
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme == NULL) return;
+  if (prev->agent != next->agent) {
+    if (theme->set_state) theme->set_state(next->agent);
+  }
+  if (strcmp(prev->driver_name, next->driver_name) != 0 && next->driver_name[0]) {
+    if (theme->set_driver) theme->set_driver(next->driver_name);
+  }
+  if (strcmp(prev->session_id, next->session_id) != 0 && next->session_id[0]) {
+    /* 主题只显示前 8 位 */
+    if (theme->set_session) theme->set_session(next->session_id);
+  }
+}
+
+static int s_buddy_listener_registered = 0;
+
 void bb_ui_agent_chat_show(lv_obj_t* parent) {
   if (parent == NULL) {
     ESP_LOGE(TAG, "show: parent is NULL");
@@ -1088,6 +1157,13 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   if (theme == NULL) {
     ESP_LOGE(TAG, "show: no active theme registered");
     return;
+  }
+  /* 注册 bb_state buddy listener (幂等：内部去重) */
+  if (!s_buddy_listener_registered) {
+    if (bb_state_subscribe(buddy_state_listener) == 0) {
+      s_buddy_listener_registered = 1;
+      ESP_LOGI(TAG, "buddy listener registered with bb_state");
+    }
   }
   s_chat.parent = parent;
   s_chat.state = BB_AGENT_STATE_SLEEP;
@@ -2499,6 +2575,11 @@ void bb_ui_agent_chat_voice_listening(int begin) {
      * once agent_task starts after PTT release + ASR. */
     post_state(BB_AGENT_STATE_LISTENING);
     post_listening_topbar(1);
+    /* Phase 4.9: 通知 bb_state PTT 已 ARMED（VAD 触发会再升级到 STREAMING） */
+    bb_state_dispatch((bb_event_payload_t){
+      .type = BB_EVT_FORCE_PTT_PHASE,
+      .error_code = (int)BB_PTT_ARMED,
+    });
   } else {
     post_listening_topbar(0);
     /* Don't force IDLE here — caller follows up with bb_ui_agent_chat_send
@@ -2512,6 +2593,11 @@ void bb_ui_agent_chat_voice_processing(void) {
   ESP_LOGI(TAG, "voice_processing → BUSY (ASR/cloud wait)");
   post_listening_topbar(0);
   post_state(BB_AGENT_STATE_BUSY);
+  /* Phase 4.9: PTT 进入 RELEASED_WAIT 等 ASR 返回 */
+  bb_state_dispatch((bb_event_payload_t){
+    .type = BB_EVT_FORCE_PTT_PHASE,
+    .error_code = (int)BB_PTT_RELEASED_WAIT,
+  });
 }
 
 void bb_ui_agent_chat_voice_error(void) {
@@ -2591,6 +2677,16 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
 
   s_chat.session_id[0] = '\0';
 
+  /* Phase 4.9: 通知 bb_state — 这一步会让 request_id ++ 并清掉
+   * request_id_in_flight / agent_in_flight / tts_in_flight / session_id。
+   * 后续从老 driver 来的延迟响应会被 should_drop() 标记 stale_request 拒绝。
+   *
+   * 修复"切换 driver 后老 driver 的回复污染新 UI"bug 的关键。 */
+  bb_state_dispatch((bb_event_payload_t){
+    .type = BB_EVT_DRIVER_CYCLE,
+    .delta = delta,
+  });
+
   /* ── Restore new driver's last session + history (issue #41) ── */
   /* 1. Load the new driver's last-used session_id from NVS (per-driver store). */
   load_nvs_on_internal_stack();
@@ -2610,6 +2706,16 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   if (theme != NULL && theme->set_driver != NULL) {
     theme->set_driver(name);
   }
+  /* Phase 4.9: 通知 bb_state 新 driver 落地，listener 会刷主题 */
+  {
+    bb_event_payload_t drv_evt = (bb_event_payload_t){ .type = BB_EVT_DRIVER_NAME_UPDATE };
+    strncpy(drv_evt.text, name, sizeof(drv_evt.text) - 1);
+    bb_state_dispatch(drv_evt);
+  }
+  /* 兜底刷 buddy：driver 切换后 agent 应该回到 IDLE（除非新 driver 正巧
+   * 有 in-flight session，那由后续 SESSION 帧覆盖）。
+   * 修复"切 driver 后 buddy 卡在前一 driver 的 BUSY"bug。 */
+  post_state(BB_AGENT_STATE_IDLE);
   ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session restored",
            name, delta, next, n);
   return ESP_OK;
