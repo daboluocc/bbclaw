@@ -118,6 +118,22 @@ void bb_ui_agent_chat_retry_adapter(void);
 void bb_ui_agent_chat_cancel(void);
 
 /**
+ * Post a user transcript line into the agent chat overlay.
+ * Used by cloud_saas streaming path where ASR text arrives via WS events
+ * rather than through bb_ui_agent_chat_send().
+ * Safe to call from any task.
+ */
+void bb_ui_agent_chat_post_user_text(const char* text);
+
+/**
+ * Post an assistant reply delta into the agent chat overlay.
+ * Used by cloud_saas streaming path where reply text arrives via WS events
+ * rather than through the agent HTTP callback.
+ * Safe to call from any task.
+ */
+void bb_ui_agent_chat_post_reply_delta(const char* text);
+
+/**
  * Returns the current driver name from the last adapter SESSION frame.
  * Used by Settings to fetch sessions for the active driver.
  * Returns "claude-code" if no driver has been set yet.

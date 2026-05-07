@@ -455,7 +455,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		for i, e := range cfg.CwdPool {
 			names[i] = e.Name
 		}
-		logger.Infof("cwd pool: %s", strings.Join(names, ", "))
+		logger.Infof("cwd-pool: projects=%s", strings.Join(names, ","))
 	}
 
 	// T4: Session expiration sweep — run once at startup and then every 24h.

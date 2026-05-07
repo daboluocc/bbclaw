@@ -96,7 +96,12 @@ func (a *Adapter) pollHomePairingOnce(ctx context.Context, client *http.Client, 
 	}
 	switch strings.ToLower(strings.TrimSpace(env.Data.Status)) {
 	case "approved":
-		a.log.Infof("home-adapter registration approved home_site=%s (HTTP /v1/pairings/request)", a.cfg.HomeSiteID)
+		a.log.Infof("")
+		a.log.Infof("╔══════════════════════════════════════════════════════════╗")
+		a.log.Infof("║  PAIRING SUCCESS — adapter claimed and ready             ║")
+		a.log.Infof("║  home_site=%s            ║", a.cfg.HomeSiteID)
+		a.log.Infof("╚══════════════════════════════════════════════════════════╝")
+		a.log.Infof("")
 		return true
 	case "claim_required":
 		a.announceRegistrationCode("http", env.Data.Code, env.Data.ExpiresAt)

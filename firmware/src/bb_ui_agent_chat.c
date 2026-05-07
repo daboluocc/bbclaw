@@ -2520,6 +2520,20 @@ void bb_ui_agent_chat_voice_error(void) {
   post_state(BB_AGENT_STATE_DIZZY);
 }
 
+void bb_ui_agent_chat_post_user_text(const char* text) {
+  if (!s_chat.active || text == NULL || text[0] == '\0') return;
+  post_user(text);
+}
+
+void bb_ui_agent_chat_post_reply_delta(const char* text) {
+  if (!s_chat.active || text == NULL || text[0] == '\0') return;
+  if (!s_chat.saw_text_in_turn) {
+    s_chat.saw_text_in_turn = 1;
+    post_state(BB_AGENT_STATE_BUSY);
+  }
+  post_assistant_chunk(text);
+}
+
 esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   /* Phase 5 — LEFT/RIGHT quick driver switch from picker mode.
    *

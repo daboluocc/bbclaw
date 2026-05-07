@@ -684,7 +684,7 @@ static void on_ptt_changed(int pressed) {
     return;
   }
   s_ptt_pressed = pressed > 0 ? 1 : 0;
-  if (s_ptt_pressed && s_tts_playback_active) {
+  if (s_ptt_pressed && !s_cloud_wait_busy) {
     s_tts_interrupt_requested = 1;
     bb_audio_request_playback_interrupt();
   }
@@ -1089,12 +1089,34 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
   }
 }
 
-/* Agent-mode variant: only enqueue TTS chunks/done into the stream queue.
- * All display-surface events (ASR_FINAL, REPLY_DELTA, THINKING, TOOL_CALL)
- * are intentionally ignored — the agent chat overlay owns that surface. */
+/* Agent-mode variant: enqueue TTS chunks/done into the stream queue AND
+ * forward ASR/reply text to the agent chat overlay for display.
+ * In cloud_saas mode the cloud already routes the transcript to the agent,
+ * so the reply deltas arrive here via WS — we must display them rather than
+ * waiting for a second (duplicate) HTTP agent call after cloud_wait. */
 static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, void* user_ctx) {
   bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)user_ctx;
   if (event == NULL || ui == NULL) {
+    return;
+  }
+
+  if (event->type == BB_FINISH_STREAM_EVENT_ASR_FINAL) {
+    const char* text = (event->text != NULL && event->text[0] != '\0') ? event->text : NULL;
+    if (text != NULL) {
+      strncpy(ui->transcript, text, sizeof(ui->transcript) - 1);
+      ui->transcript[sizeof(ui->transcript) - 1] = '\0';
+      bb_ui_agent_chat_post_user_text(text);
+    }
+    return;
+  }
+
+  if (event->type == BB_FINISH_STREAM_EVENT_REPLY_DELTA && event->text != NULL && event->text[0] != '\0') {
+    size_t cur = strlen(ui->reply_text);
+    size_t remain = sizeof(ui->reply_text) - cur - 1;
+    if (remain > 0) {
+      strncat(ui->reply_text + cur, event->text, remain);
+    }
+    bb_ui_agent_chat_post_reply_delta(event->text);
     return;
   }
 
@@ -1854,6 +1876,10 @@ static void stream_task(void* arg) {
     }
 
     if (s_ptt_pressed && !streaming && !arming && !session_busy) {
+      if (bb_audio_is_playback_active()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
       /* Only start capture in LOCKED (verify) or CHAT (record).
        * SETTINGS swallows PTT entirely. */
       if (s_app_state != BBCLAW_STATE_LOCKED &&
@@ -2217,6 +2243,15 @@ static void stream_task(void* arg) {
               ESP_LOGW(TAG, "agent_chat: empty transcript, no send");
               agent_chat_voice_post_error("no speech detected");
               signal_error_haptic();
+            } else if (ui_stream != NULL && ui_stream->reply_text[0] != '\0') {
+              /* cloud_saas path: the cloud already routed the transcript to
+               * the adapter agent during cloud_wait — reply deltas and TTS
+               * chunks arrived via WS and were displayed/enqueued above.
+               * Do NOT call agent_chat_voice_send_locked (would invoke the
+               * agent a second time). Just clear the listening hint. */
+              ESP_LOGI(TAG, "agent_chat: cloud already routed, skip duplicate send (reply_len=%u)",
+                       (unsigned)strlen(ui_stream->reply_text));
+              agent_chat_voice_post_error(NULL);
             } else {
               ESP_LOGI(TAG, "agent_chat: routing transcript len=%u", (unsigned)strlen(t));
               agent_chat_voice_post_error(NULL);  /* clear listening hint only */

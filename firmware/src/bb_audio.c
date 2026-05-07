@@ -835,6 +835,10 @@ int bb_audio_is_playback_interrupt_requested(void) {
   return s_playback_interrupt_requested ? 1 : 0;
 }
 
+int bb_audio_is_playback_active(void) {
+  return (s_tx_active != 0 && !s_rx_enabled) ? 1 : 0;
+}
+
 esp_err_t bb_audio_set_playback_sample_rate(int sample_rate) {
   if (!s_audio_ready || sample_rate <= 0) {
     return ESP_ERR_INVALID_ARG;

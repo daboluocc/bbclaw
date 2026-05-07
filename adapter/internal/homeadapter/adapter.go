@@ -286,8 +286,17 @@ func (a *Adapter) announceRegistrationCode(source, code, expiresAt string) {
 	}
 	a.lastRegCode = code
 	expiresAt = strings.TrimSpace(expiresAt)
-	a.log.Infof("home-adapter registration claim_required code=%s expires_at=%s home_site=%s source=%s — claim in BBClaw Cloud portal: POST /v1/registrations/claim",
-		code, expiresAt, a.cfg.HomeSiteID, source)
+	a.log.Infof("")
+	a.log.Infof("╔══════════════════════════════════════════════════════════╗")
+	a.log.Infof("║  PAIRING REQUIRED — this adapter is not yet claimed     ║")
+	a.log.Infof("║                                                          ║")
+	a.log.Infof("║  Code:  %s                                        ║", code)
+	a.log.Infof("║  Expires: %s  ║", expiresAt)
+	a.log.Infof("║                                                          ║")
+	a.log.Infof("║  Go to BBClaw Cloud portal and claim this adapter:       ║")
+	a.log.Infof("║    POST /v1/registrations/claim {\"code\":\"%s\"}     ║", code)
+	a.log.Infof("╚══════════════════════════════════════════════════════════╝")
+	a.log.Infof("")
 }
 
 func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) error, env CloudEnvelope) error {
