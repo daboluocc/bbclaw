@@ -2856,9 +2856,21 @@ static void stream_task(void* arg) {
     if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy) {
       int64_t now_ms = bb_now_ms();
       if (agent_chat_is_active()) {
-        if (now_ms - s_last_activity_ms > BBCLAW_CHAT_IDLE_TIMEOUT_MS) {
+        /* Don't idle-exit while pickers are open or agent is still busy
+         * (e.g. creating a new session, streaming reply, fetching sessions).
+         * Those states represent an in-progress user interaction and must
+         * not trip the 30s idle timer. */
+        int picker_open = bb_ui_agent_chat_session_picker_is_visible() ||
+                          bb_ui_agent_chat_cwd_picker_is_visible();
+        int busy = agent_chat_is_busy_locked();
+        if (!picker_open && !busy &&
+            now_ms - s_last_activity_ms > BBCLAW_CHAT_IDLE_TIMEOUT_MS) {
           ESP_LOGI(TAG, "idle: chat timeout, returning to standby");
           agent_chat_exit();
+          s_last_activity_ms = now_ms;
+        } else if (picker_open || busy) {
+          /* Keep activity fresh while the user is mid-interaction so the
+           * timer doesn't fire the moment the picker closes / reply ends. */
           s_last_activity_ms = now_ms;
         }
       } else if (s_app_state == BBCLAW_STATE_CHAT && !radio_app_is_locked()) {
