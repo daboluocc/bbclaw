@@ -1681,25 +1681,28 @@ static void stream_task(void* arg) {
                 default: break;
               }
             } else if (picker_up) {
-              /* Session picker is open — route nav to picker. */
+              /* Session picker is open — route nav to picker. Longer lock
+               * timeout (600ms) tolerates LVGL congestion during TTS playback. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_move(-1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_move(+1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_OK: {
                   int action = -1;
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     action = bb_ui_agent_chat_session_picker_select();
                     lvgl_port_unlock();
+                  } else {
+                    ESP_LOGW(TAG, "CHAT picker: OK select lock timeout");
                   }
                   if (action == 1) { /* Settings */
                     if (settings_overlay_enter() == 0) {
@@ -1710,7 +1713,7 @@ static void stream_task(void* arg) {
                   break;
                 }
                 case BB_NAV_EVENT_BACK:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_hide();
                     lvgl_port_unlock();
                   }
@@ -1718,7 +1721,7 @@ static void stream_task(void* arg) {
                 case BB_NAV_EVENT_LEFT:
                 case BB_NAV_EVENT_RIGHT:
                   /* Close picker, then cycle driver. */
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_hide();
                     lvgl_port_unlock();
                   }
@@ -1752,11 +1755,15 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_OK:
-                  if (busy) {
-                    ESP_LOGI(TAG, "CHAT: OK blocked (turn in flight)");
-                  } else if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  /* Allow opening session picker even while TTS/agent is busy —
+                   * picker is a passive list overlay and does not disturb the
+                   * background stream. Longer lock timeout accommodates LVGL
+                   * task congestion during TTS chunk playback. */
+                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_show();
                     lvgl_port_unlock();
+                  } else {
+                    ESP_LOGW(TAG, "CHAT: OK session picker lock timeout");
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
