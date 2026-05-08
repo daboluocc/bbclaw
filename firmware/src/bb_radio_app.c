@@ -361,8 +361,6 @@ static int agent_chat_enter(void) {
   lvgl_port_unlock();
   s_agent_chat_active = 1;
   ESP_LOGI(TAG, "agent_chat: ENTER");
-  /* LED hint that we're in a different mode. */
-  (void)bb_led_set_status(BB_LED_PROCESSING);
   return 0;
 }
 
@@ -799,40 +797,36 @@ static void shadow_transport_state_for_ui(bb_transport_state_t* state) {
 static void show_status_idle(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_IDLE);
 }
 
 static void show_status_recording(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_RECORDING);
 }
 
 static void show_status_processing(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_PROCESSING);
 }
 
 #if BBCLAW_ENABLE_DISPLAY_PULL
 static void show_status_notification(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_NOTIFICATION);
+  (void)bb_led_pulse(BB_LED_PULSE_NOTIFY);
 }
 #endif
 
 static void show_status_error(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_ERROR);
+  (void)bb_led_pulse(BB_LED_PULSE_ERROR);
 }
 
 static void pulse_success_on_idle(const char* status) {
   bb_display_set_record_level(0, 0);
   (void)bb_display_show_status(status);
-  (void)bb_led_set_status(BB_LED_IDLE);
-  (void)bb_led_set_status(BB_LED_SUCCESS);
+  (void)bb_led_pulse(BB_LED_PULSE_SUCCESS);
 }
 
 static void show_idle_ready_or_locked(void) {
@@ -934,7 +928,6 @@ static void tts_stream_task(void* arg) {
       ESP_LOGI(TAG, "phase=tts_play_start mono_ms=%lld first_chunk=1 queue_depth=%u", (long long)bb_now_ms(),
                (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
       (void)bb_display_show_status(BB_STATUS_SPEAK);
-      (void)bb_led_set_status(BB_LED_REPLY);
       bb_display_set_tts_playing(1);
       esp_err_t start_err = bb_audio_start_playback();
       if (start_err != ESP_OK) {
@@ -2319,15 +2312,8 @@ static void stream_task(void* arg) {
               }
             }
           } else {
-            if (reply_text[0] != '\0') {
+            if (reply_text[0] != '\0' || finish->transcript[0] != '\0') {
               (void)bb_display_show_status(BB_STATUS_RESULT);
-              (void)bb_led_set_status(BB_LED_REPLY);
-            } else if (finish->transcript[0] != '\0') {
-              (void)bb_display_show_status(BB_STATUS_RESULT);
-              (void)bb_led_set_status(BB_LED_SUCCESS);
-            } else {
-              (void)bb_display_show_status(BB_STATUS_RESULT);
-              (void)bb_led_set_status(BB_LED_SUCCESS);
             }
 
             {
@@ -2404,7 +2390,6 @@ static void stream_task(void* arg) {
           /* Play pre-synthesized TTS chunks from streaming finish. */
           ESP_LOGI(TAG, "phase=tts_stream_play mono_ms=%lld (playing streamed chunks)", (long long)bb_now_ms());
           (void)bb_display_show_status(BB_STATUS_SPEAK);
-          (void)bb_led_set_status(BB_LED_REPLY);
           bb_display_set_tts_playing(1);
           esp_err_t tts_tx = bb_audio_start_playback();
           if (tts_tx == ESP_OK) {
@@ -2458,10 +2443,9 @@ static void stream_task(void* arg) {
           /* Fallback: synthesize full text in one shot. */
           bb_tts_audio_t tts = {0};
           if (bb_adapter_tts_synthesize_pcm16(tts_text, &tts) == ESP_OK && tts.pcm_data != NULL && tts.pcm_len > 0U) {
-            ESP_LOGI(TAG, "phase=tts_play mono_ms=%lld pcm_bytes=%u (REPLY pulse then SPEAK)", (long long)bb_now_ms(),
+            ESP_LOGI(TAG, "phase=tts_play mono_ms=%lld pcm_bytes=%u", (long long)bb_now_ms(),
                      (unsigned)tts.pcm_len);
             (void)bb_display_show_status(BB_STATUS_SPEAK);
-            (void)bb_led_set_status(BB_LED_REPLY);
             bb_display_set_tts_playing(1);
             esp_err_t tts_tx = bb_audio_start_playback();
             if (tts_tx == ESP_OK) {

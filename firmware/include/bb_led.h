@@ -2,15 +2,28 @@
 
 #include "esp_err.h"
 
-typedef enum {
-  BB_LED_IDLE = 0,
-  BB_LED_RECORDING = 1,
-  BB_LED_PROCESSING = 2,
-  BB_LED_REPLY = 3,
-  BB_LED_NOTIFICATION = 4,
-  BB_LED_SUCCESS = 5,
-  BB_LED_ERROR = 6,
-} bb_led_status_t;
+/**
+ * BBClaw 状态灯 — state-driven 实现
+ *
+ * 设计：见 design/firmware_status_led.md
+ *
+ * 语义：LED 任务每 30ms 从 bb_state_get() 和 bb_power_get_state() 读快照，
+ *       按优先级表合成颜色和动画。业务层不再主动 set_status，只在需要"瞬时
+ *       提示"时调 bb_led_pulse()。
+ *
+ * 初始化顺序：bb_state_init() → bb_power_init() → bb_led_init()
+ */
 
+typedef enum {
+  BB_LED_PULSE_SUCCESS = 0,   /* 绿色 200ms 实心：turn 正常结束 */
+  BB_LED_PULSE_ERROR,         /* 红色 3 快闪 600ms：事件级错误 */
+  BB_LED_PULSE_CELEBRATE,     /* 粉色 1s 呼吸：快速响应（<5s） */
+  BB_LED_PULSE_NOTIFY,        /* 白色 400ms 实心：新通知 */
+  BB_LED_PULSE__COUNT,
+} bb_led_pulse_t;
+
+/** 启动 LED 任务并注册 bb_state listener。必须在 bb_state_init() 之后调用。 */
 esp_err_t bb_led_init(void);
-esp_err_t bb_led_set_status(bb_led_status_t status);
+
+/** 触发一次瞬时提示 overlay；期间覆盖状态合成出的基态。任意线程安全。 */
+esp_err_t bb_led_pulse(bb_led_pulse_t kind);
