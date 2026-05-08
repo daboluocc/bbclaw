@@ -112,6 +112,9 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_BATTERY_FILL_W  18
 #define UI_BATTERY_FILL_H  8
 
+/* Bottom info bar (session / cwd pool) */
+#define UI_BOTTOM_BAR_H    16
+
 /* Recording speaking view */
 #define UI_RECORD_UPDATE_MS       48
 #define UI_RECORD_BAR_COUNT       10
@@ -181,6 +184,8 @@ static int s_scroll_you;
 static int s_scroll_ai;
 static int s_focus_ai;
 static char s_status[32];
+static char s_bottom_session[64];
+static char s_bottom_cwd[48];
 
 /* LVGL objects — locked */
 static lv_obj_t* s_view_locked;
@@ -203,6 +208,11 @@ static lv_obj_t* s_obj_status_battery;
 static lv_obj_t* s_obj_status_battery_fill;
 static lv_obj_t* s_img_status_battery;
 static lv_obj_t* s_lbl_status_battery;
+
+/* Bottom info bar (session id / cwd pool name) */
+static lv_obj_t* s_obj_bottom_bar;
+static lv_obj_t* s_lbl_bottom_session;
+static lv_obj_t* s_lbl_bottom_cwd;
 static lv_obj_t* s_view_speaking;
 static lv_obj_t* s_obj_record_halo_outer;
 static lv_obj_t* s_obj_record_halo_inner;
@@ -330,6 +340,42 @@ static void apply_battery_widget(void) {
   char pct[8];
   snprintf(pct, sizeof(pct), "%d", percent);
   lv_label_set_text(s_lbl_status_battery, pct);
+}
+
+static void apply_bottom_bar(void) {
+  if (s_lbl_bottom_session == NULL || s_lbl_bottom_cwd == NULL) return;
+
+  char session_text[32];
+  char cwd_text[48];
+  portENTER_CRITICAL(&s_state_lock);
+  const char* sid = s_bottom_session;
+  if (sid[0] == '\0') {
+    session_text[0] = '\0';
+  } else {
+    int n = 0;
+    while (n < 12 && sid[n] != '\0') {
+      session_text[n] = sid[n];
+      n++;
+    }
+    session_text[n] = '\0';
+  }
+  strncpy(cwd_text, s_bottom_cwd, sizeof(cwd_text) - 1);
+  cwd_text[sizeof(cwd_text) - 1] = '\0';
+  portEXIT_CRITICAL(&s_state_lock);
+
+  if (session_text[0] == '\0') {
+    lv_label_set_text(s_lbl_bottom_session, "no session");
+  } else {
+    char buf[40];
+    snprintf(buf, sizeof(buf), "sid %s", session_text);
+    lv_label_set_text(s_lbl_bottom_session, buf);
+  }
+
+  if (cwd_text[0] == '\0') {
+    lv_label_set_text(s_lbl_bottom_cwd, "default");
+  } else {
+    lv_label_set_text(s_lbl_bottom_cwd, cwd_text);
+  }
 }
 
 /* ── Status icon ── */
@@ -678,7 +724,7 @@ static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
 
   s_lbl_status_battery = lv_label_create(container);
   lv_obj_set_width(s_lbl_status_battery, 16);
-  lv_obj_set_style_text_color(s_lbl_status_battery, lv_color_hex(UI_STATUS_FG), 0);
+  lv_obj_set_style_text_color(s_lbl_status_battery, lv_color_hex(UI_TEXT_MAIN), 0);
   lv_obj_set_style_text_font(s_lbl_status_battery, font, 0);
   lv_obj_set_style_text_align(s_lbl_status_battery, LV_TEXT_ALIGN_RIGHT, 0);
   lv_label_set_long_mode(s_lbl_status_battery, LV_LABEL_LONG_MODE_CLIP);
@@ -739,7 +785,8 @@ static void create_ui(void) {
   const int body_w = DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT;
   const int status_h = (lh + 2 > UI_STATUS_ICON_SZ + 2) ? (lh + 2) : (UI_STATUS_ICON_SZ + 2);
   const int content_y = UI_SAFE_TOP + status_h + UI_GAP;
-  const int content_h = DISP_H - content_y - UI_SAFE_BOTTOM;
+  const int content_h = DISP_H - content_y - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H - UI_GAP;
+  const int bottom_bar_y = DISP_H - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H;
 
   /* ── LOCKED view: padlock + unlock prompt ── */
 
@@ -857,6 +904,42 @@ static void create_ui(void) {
         UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w - battery_gap - wifi_w,
         UI_SAFE_TOP + (status_h - 16) / 2,
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
+  }
+
+  /* Bottom info bar — session id (left) + cwd pool name (right) */
+  {
+    s_obj_bottom_bar = lv_obj_create(s_view_active);
+    lv_obj_remove_style_all(s_obj_bottom_bar);
+    lv_obj_set_size(s_obj_bottom_bar, body_w, UI_BOTTOM_BAR_H);
+    lv_obj_set_pos(s_obj_bottom_bar, UI_SAFE_LEFT, bottom_bar_y);
+    lv_obj_clear_flag(s_obj_bottom_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_obj_bottom_bar, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_border_width(s_obj_bottom_bar, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_side(s_obj_bottom_bar, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_obj_bottom_bar, lv_color_hex(UI_TEXT_DIM), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(s_obj_bottom_bar, LV_OPA_30, LV_PART_MAIN);
+
+    const int bottom_half = body_w / 2;
+
+    s_lbl_bottom_session = lv_label_create(s_obj_bottom_bar);
+    lv_obj_set_width(s_lbl_bottom_session, bottom_half - 4);
+    lv_obj_set_height(s_lbl_bottom_session, lh + 2);
+    lv_obj_set_style_text_color(s_lbl_bottom_session, lv_color_hex(UI_STATUS_FG), 0);
+    lv_obj_set_style_text_font(s_lbl_bottom_session, font, 0);
+    lv_obj_set_style_text_align(s_lbl_bottom_session, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(s_lbl_bottom_session, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_text(s_lbl_bottom_session, "");
+    lv_obj_set_pos(s_lbl_bottom_session, 0, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
+
+    s_lbl_bottom_cwd = lv_label_create(s_obj_bottom_bar);
+    lv_obj_set_width(s_lbl_bottom_cwd, bottom_half - 4);
+    lv_obj_set_height(s_lbl_bottom_cwd, lh + 2);
+    lv_obj_set_style_text_color(s_lbl_bottom_cwd, lv_color_hex(UI_TEXT_MAIN), 0);
+    lv_obj_set_style_text_font(s_lbl_bottom_cwd, font, 0);
+    lv_obj_set_style_text_align(s_lbl_bottom_cwd, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(s_lbl_bottom_cwd, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_text(s_lbl_bottom_cwd, "");
+    lv_obj_set_pos(s_lbl_bottom_cwd, bottom_half + 4, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
   }
 
   /* Speaking area — shown only while TX is active */
@@ -1045,6 +1128,7 @@ static void refresh_ui(void) {
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
     apply_battery_widget();
     lv_label_set_text(s_lbl_status_clock, hm);
+    apply_bottom_bar();
 
     set_view_visible(s_view_speaking, recording);
     set_view_visible(s_scroll_text, !recording);
@@ -1469,6 +1553,30 @@ void bb_display_set_battery(int supported, int available, int percent, int low) 
   s_battery_available = available ? 1 : 0;
   s_battery_percent = percent;
   s_battery_low = low ? 1 : 0;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
+}
+
+void bb_display_set_session_id(const char* session_id) {
+  portENTER_CRITICAL(&s_state_lock);
+  if (session_id == NULL) {
+    s_bottom_session[0] = '\0';
+  } else {
+    strncpy(s_bottom_session, session_id, sizeof(s_bottom_session) - 1);
+    s_bottom_session[sizeof(s_bottom_session) - 1] = '\0';
+  }
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
+}
+
+void bb_display_set_cwd_name(const char* cwd_name) {
+  portENTER_CRITICAL(&s_state_lock);
+  if (cwd_name == NULL) {
+    s_bottom_cwd[0] = '\0';
+  } else {
+    strncpy(s_bottom_cwd, cwd_name, sizeof(s_bottom_cwd) - 1);
+    s_bottom_cwd[sizeof(s_bottom_cwd) - 1] = '\0';
+  }
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
 }

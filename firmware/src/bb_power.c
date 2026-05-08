@@ -146,6 +146,8 @@ esp_err_t bb_power_refresh(void) {
   s_state.millivolts = vbat_mv;
   s_state.percent = battery_percent_from_mv(vbat_mv);
   s_state.low = s_state.percent <= BBCLAW_POWER_LOW_PERCENT ? 1 : 0;
+  ESP_LOGD(TAG, "battery raw=%d adc_mv=%d vbat_mv=%d percent=%d low=%d cali=%d",
+           raw_avg, adc_mv, vbat_mv, s_state.percent, s_state.low, s_adc_cali_ready);
   return ESP_OK;
 #else
   s_state.supported = 0;

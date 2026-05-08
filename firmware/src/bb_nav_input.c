@@ -100,7 +100,20 @@ static int read_key_pressed(void) {
 }
 #endif
 
+static const char* nav_event_name(bb_nav_event_t event) {
+  switch (event) {
+    case BB_NAV_EVENT_UP:    return "UP";
+    case BB_NAV_EVENT_DOWN:  return "DOWN";
+    case BB_NAV_EVENT_LEFT:  return "LEFT";
+    case BB_NAV_EVENT_RIGHT: return "RIGHT";
+    case BB_NAV_EVENT_OK:    return "OK";
+    case BB_NAV_EVENT_BACK:  return "BACK";
+    default:                 return "?";
+  }
+}
+
 static void emit_event(bb_nav_event_t event) {
+  ESP_LOGI(TAG, "event=%s", nav_event_name(event));
   if (s_callback != NULL) {
     s_callback(event);
   }
@@ -145,6 +158,22 @@ static void nav_poll_cb(void* arg) {
   const int debounce_samples =
       (BBCLAW_NAV_KEY_DEBOUNCE_MS + BBCLAW_NAV_POLL_MS - 1) / BBCLAW_NAV_POLL_MS;
   const int eff_debounce = debounce_samples > 0 ? debounce_samples : 1;
+
+#if !BBCLAW_NAV_FLIPPER_6BUTTON && BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
+  /* Diag: dump instantaneous GPIO levels every 1s. If PUSH is pressed but
+   * key= never drops from 1 to 0, GPIO1 is not wired to the switch. */
+  static int64_t s_last_dump_ms = 0;
+  int64_t now_dump_ms = esp_timer_get_time() / 1000;
+  if (now_dump_ms - s_last_dump_ms >= 1000) {
+    s_last_dump_ms = now_dump_ms;
+    int lvl_a = gpio_get_level(BBCLAW_NAV_ENC_A_GPIO);
+    int lvl_b = gpio_get_level(BBCLAW_NAV_ENC_B_GPIO);
+    int lvl_k = gpio_get_level(BBCLAW_NAV_KEY_GPIO);
+    ESP_LOGI(TAG, "snapshot a(gpio%d)=%d b(gpio%d)=%d key(gpio%d)=%d (1=idle,0=pressed)",
+             BBCLAW_NAV_ENC_A_GPIO, lvl_a, BBCLAW_NAV_ENC_B_GPIO, lvl_b,
+             BBCLAW_NAV_KEY_GPIO, lvl_k);
+  }
+#endif
 
 #if BBCLAW_NAV_FLIPPER_6BUTTON
   /* Flipper 6-button mode (Phase 5 / Option B).
@@ -210,11 +239,14 @@ static void nav_poll_cb(void* arg) {
     emit_event(BB_NAV_EVENT_BACK);
   }
 #elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
-  if (debounce_step(&s_a_raw, &s_a_stable, &s_a_stable_count, read_a_pressed(), eff_debounce) > 0) {
-    emit_event(BB_NAV_EVENT_ROTATE_CCW);
-  }
-  if (debounce_step(&s_b_raw, &s_b_stable, &s_b_stable_count, read_b_pressed(), eff_debounce) > 0) {
-    emit_event(BB_NAV_EVENT_ROTATE_CW);
+  {
+    int a_edge = debounce_step(&s_a_raw, &s_a_stable, &s_a_stable_count, read_a_pressed(), eff_debounce);
+    if (a_edge != 0) ESP_LOGI(TAG, "a edge=%+d raw=%d stable=%d", a_edge, s_a_raw, s_a_stable);
+    if (a_edge > 0) emit_event(BB_NAV_EVENT_ROTATE_CCW);
+
+    int b_edge = debounce_step(&s_b_raw, &s_b_stable, &s_b_stable_count, read_b_pressed(), eff_debounce);
+    if (b_edge != 0) ESP_LOGI(TAG, "b edge=%+d raw=%d stable=%d", b_edge, s_b_raw, s_b_stable);
+    if (b_edge > 0) emit_event(BB_NAV_EVENT_ROTATE_CW);
   }
 #else
   static const int8_t kQuadTable[16] = {
@@ -227,6 +259,7 @@ static void nav_poll_cb(void* arg) {
   uint8_t ab = read_ab_state();
   if (ab != s_last_ab) {
     int8_t delta = kQuadTable[((int)s_last_ab << 2) | ab];
+    ESP_LOGD(TAG, "quad prev=%u curr=%u delta=%d accum=%d", s_last_ab, ab, delta, s_step_accum + delta);
     if (delta != 0) {
       s_step_accum += delta;
       if (s_step_accum >= 4) {
@@ -248,12 +281,14 @@ static void nav_poll_cb(void* arg) {
   if (key_raw == s_key_raw) {
     s_key_stable_count++;
   } else {
+    ESP_LOGI(TAG, "key raw %d->%d (pre-debounce)", s_key_raw, key_raw);
     s_key_raw = key_raw;
     s_key_stable_count = 0;
   }
 
   if (s_key_stable_count >= eff_debounce && key_raw != s_key_stable) {
     s_key_stable = key_raw;
+    ESP_LOGI(TAG, "key stable=%d", s_key_stable);
     if (s_key_stable) {
       s_key_press_start_ms = esp_timer_get_time() / 1000;
       s_long_press_sent = 0;

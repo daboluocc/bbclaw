@@ -46,13 +46,20 @@
 #define BBCLAW_PTT_ACTIVE_LEVEL 0
 #define BBCLAW_PTT_PULL_UP      1
 
-/* ── Navigation wheel (rotary encoder + push) ── */
-#define BBCLAW_NAV_ENABLE            1
-#define BBCLAW_NAV_ENC_A_GPIO        6
-#define BBCLAW_NAV_ENC_B_GPIO        8
-#define BBCLAW_NAV_KEY_GPIO          1
-#define BBCLAW_NAV_PULL_UP           1
-#define BBCLAW_NAV_KEY_ACTIVE_LEVEL  0
+/* ── Navigation wheel (WS-003 3-way thumb-wheel: CCW / PUSH / CW) ──
+ * Not a quadrature encoder — each direction is an independent momentary
+ * contact to GND. BUTTONS_INSTEAD_OF_ENC=1 treats ENC_A / ENC_B as two
+ * separate buttons (A → ROTATE_CCW / UP, B → ROTATE_CW / DOWN).
+ *
+ * GPIOs 6/8 are swapped relative to the silk "CCW/CW" labels so that
+ * pushing the wheel in the UP direction emits BB_NAV_EVENT_UP. */
+#define BBCLAW_NAV_ENABLE                   1
+#define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC   1
+#define BBCLAW_NAV_ENC_A_GPIO               8   /* UP   side */
+#define BBCLAW_NAV_ENC_B_GPIO               6   /* DOWN side */
+#define BBCLAW_NAV_KEY_GPIO                 1
+#define BBCLAW_NAV_PULL_UP                  1
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL         0
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21

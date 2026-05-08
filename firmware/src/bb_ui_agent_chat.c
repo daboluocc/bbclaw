@@ -9,6 +9,7 @@
 #include "bb_agent_theme.h"
 #include "bb_audio.h"
 #include "bb_config.h"
+#include "bb_display.h"
 #include "bb_notification.h"
 #include "bb_session_store.h"
 #include "bb_state.h"
@@ -524,6 +525,7 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         char shortbuf[16] = {0};
         session_id_short(evt->session_id, shortbuf, sizeof(shortbuf));
         post_session(shortbuf);
+        bb_display_set_session_id(evt->session_id);
 
         /* Phase S2 — save session ID to NVS for current driver */
         if (evt->driver != NULL && evt->driver[0] != '\0') {
@@ -719,6 +721,7 @@ static void load_nvs_task(void* arg) {
     esp_err_t err = bb_session_store_load(driver, s_chat.session_id, sizeof(s_chat.session_id));
     if (err == ESP_OK) {
       ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, driver);
+      bb_display_set_session_id(s_chat.session_id);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
       ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
     }
@@ -2417,6 +2420,7 @@ void bb_ui_agent_chat_cwd_picker_confirm(void) {
   if (sel < 0 || sel >= s_chat.cwd_pool_count) return;
   const char* name = s_chat.cwd_pool[sel].name;
   ESP_LOGI(TAG, "cwd_picker: selected '%s'", name);
+  bb_display_set_cwd_name(name);
   cwd_picker_hide();
   spawn_new_session_task(name);
 }
