@@ -17,9 +17,6 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(err);
 
-  esp_log_level_set("bb_nav_input", ESP_LOG_DEBUG);
-  esp_log_level_set("bb_power", ESP_LOG_DEBUG);
-
   ESP_LOGI(TAG, "starting BBClaw firmware bootstrap");
   bbclaw_identity_init();
 

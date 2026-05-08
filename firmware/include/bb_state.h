@@ -123,7 +123,7 @@ typedef enum {
 
   /* 自检 / 内部 */
   BB_EVT_LVGL_LOCK_TIMEOUT,      /* subscriber 报告 LVGL 锁超时 */
-  BB_EVT_TIMER_TICK,             /* 周期不变量自检 */
+  BB_EVT_DIZZY_TIMEOUT,          /* DIZZY one-shot 超时：自动恢复到 IDLE */
 
   BB_EVT__COUNT,
 } bb_event_t;
@@ -168,6 +168,9 @@ typedef struct {
   uint32_t lvgl_lock_failures;        /* 累计计数，便于诊断 */
   uint32_t dropped_events;            /* 累计 DROPPED 事件数 */
 } bb_state_t;
+
+/** DIZZY 自动恢复到 IDLE 的超时时间 (ms) */
+#define BB_DIZZY_TIMEOUT_MS 3000
 
 /* ========== 公共 API ========== */
 

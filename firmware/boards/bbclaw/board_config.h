@@ -46,20 +46,25 @@
 #define BBCLAW_PTT_ACTIVE_LEVEL 0
 #define BBCLAW_PTT_PULL_UP      1
 
-/* ── Navigation wheel (WS-003 3-way thumb-wheel: CCW / PUSH / CW) ──
- * Not a quadrature encoder — each direction is an independent momentary
- * contact to GND. BUTTONS_INSTEAD_OF_ENC=1 treats ENC_A / ENC_B as two
- * separate buttons (A → ROTATE_CCW / UP, B → ROTATE_CW / DOWN).
- *
- * GPIOs 6/8 are swapped relative to the silk "CCW/CW" labels so that
- * pushing the wheel in the UP direction emits BB_NAV_EVENT_UP. */
-#define BBCLAW_NAV_ENABLE                   1
-#define BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC   1
-#define BBCLAW_NAV_ENC_A_GPIO               8   /* UP   side */
-#define BBCLAW_NAV_ENC_B_GPIO               6   /* DOWN side */
-#define BBCLAW_NAV_KEY_GPIO                 1
-#define BBCLAW_NAV_PULL_UP                  1
-#define BBCLAW_NAV_KEY_ACTIVE_LEVEL         0
+/* ── Navigation: WS-003 thumb-wheel + 2 dedicated keys ──
+ * WS-003 PUSH contact is not wired out on this PCB, so we use the two
+ * dedicated side buttons (KEY1/KEY2) for OK/BACK. Flipper 6-button mode
+ * treats every direction as its own edge-detected button:
+ *   wheel UP side (GPIO8) → BB_NAV_EVENT_UP   (with auto-repeat while held)
+ *   wheel DOWN side (GPIO6) → BB_NAV_EVENT_DOWN (with auto-repeat while held)
+ *   KEY1 (GPIO42)          → BB_NAV_EVENT_OK
+ *   KEY2 (GPIO41)          → BB_NAV_EVENT_BACK (short press)
+ * LEFT/RIGHT are intentionally unmapped on this board. */
+#define BBCLAW_NAV_ENABLE            1
+#define BBCLAW_NAV_FLIPPER_6BUTTON   1
+#define BBCLAW_NAV_BTN_UP_GPIO       8
+#define BBCLAW_NAV_BTN_DOWN_GPIO     6
+#define BBCLAW_NAV_BTN_LEFT_GPIO    -1
+#define BBCLAW_NAV_BTN_RIGHT_GPIO   -1
+#define BBCLAW_NAV_BTN_OK_GPIO      42
+#define BBCLAW_NAV_BTN_BACK_GPIO    41
+#define BBCLAW_NAV_PULL_UP           1
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL  0
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21

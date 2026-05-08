@@ -32,6 +32,7 @@
 
 #include "bb_time.h"
 #include "bb_transport.h"
+#include "esp_timer.h"
 
 static const char* TAG = "bb_state";
 
@@ -101,7 +102,7 @@ static const char* k_event_names[BB_EVT__COUNT] = {
   [BB_EVT_FORCE_AGENT_STATE]      = "FORCE_AGENT",
   [BB_EVT_FORCE_PTT_PHASE]        = "FORCE_PTT",
   [BB_EVT_LVGL_LOCK_TIMEOUT]      = "LVGL_TO",
-  [BB_EVT_TIMER_TICK]             = "TICK",
+  [BB_EVT_DIZZY_TIMEOUT]          = "DIZZY_TO",
 };
 
 const char* bb_page_name(bb_page_t p) {
@@ -143,6 +144,12 @@ static bool s_initialized = false;
 #define BB_STATE_LISTENER_MAX 8
 static bb_state_listener_t s_listeners[BB_STATE_LISTENER_MAX];
 static int s_listener_count = 0;
+
+static esp_timer_handle_t s_dizzy_timer = NULL;
+
+static void dizzy_timer_cb(void* arg) {
+  bb_state_dispatch_simple(BB_EVT_DIZZY_TIMEOUT);
+}
 
 /* ================ 不变量检查 ================ */
 
@@ -280,6 +287,10 @@ static const bb_transition_t k_transitions[] = {
   /* ===== 密语解锁失败 ===== */
   { BB_PAGE_LOCKED, ANY_AGENT, BB_EVT_VOICE_VERIFY_FAIL,
     KEEP_PAGE, BB_AGENT_STATE_DIZZY, BB_PTT_IDLE, "verify_fail" },
+
+  /* ===== DIZZY 自动恢复 ===== */
+  { ANY_PAGE, BB_AGENT_STATE_DIZZY, BB_EVT_DIZZY_TIMEOUT,
+    KEEP_PAGE, BB_AGENT_STATE_IDLE, KEEP_PTT, "dizzy_timeout" },
 };
 
 #define BB_TRANSITION_COUNT (sizeof(k_transitions) / sizeof(k_transitions[0]))
@@ -405,6 +416,11 @@ static void apply_side_effects(bb_state_t* st, const bb_event_payload_t* evt) {
           st->agent_in_flight = false;
           st->tts_in_flight = false;
         }
+        /* DIZZY 是错误/休息状态，不应有 in-flight 标志残留 */
+        if (st->agent == BB_AGENT_STATE_DIZZY) {
+          st->agent_in_flight = false;
+          st->tts_in_flight = false;
+        }
       }
       break;
 
@@ -481,6 +497,12 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
     return "stale_request_no_inflight";
   }
 
+  /* DIZZY_TIMEOUT：正常只在 DIZZY 时发；若已离开 DIZZY（timer stop 和 fire
+   * 的 race）则丢弃。 */
+  if (evt->type == BB_EVT_DIZZY_TIMEOUT && st->agent != BB_AGENT_STATE_DIZZY) {
+    return "dizzy_timeout_stale";
+  }
+
   return NULL;
 }
 
@@ -522,6 +544,30 @@ static void dispatch_on_lvgl(void* user_data) {
 
   /* 3) 副作用：累积字段 */
   apply_side_effects(&next, evt);
+
+  /* 3b) DIZZY→非DIZZY 恢复时清理残留的 in-flight 标志 */
+  if (prev.agent == BB_AGENT_STATE_DIZZY && next.agent != BB_AGENT_STATE_DIZZY) {
+    next.agent_in_flight = false;
+    next.request_id_in_flight = 0;
+    next.tts_in_flight = false;
+  }
+
+  /* 3c) DIZZY 进入/离开时启停 one-shot 恢复 timer。
+   * 进入：启动 BB_DIZZY_TIMEOUT_MS 后 dispatch BB_EVT_DIZZY_TIMEOUT。
+   * 离开：stop；若 fire 已在队列，should_drop 会以 dizzy_timeout_stale 丢弃。
+   * 重复进入 DIZZY：重启 timer，让超时从最新一次进入点算起。 */
+  if (s_dizzy_timer != NULL) {
+    bool was_dizzy = (prev.agent == BB_AGENT_STATE_DIZZY);
+    bool is_dizzy  = (next.agent == BB_AGENT_STATE_DIZZY);
+    if (is_dizzy) {
+      if (was_dizzy) esp_timer_stop(s_dizzy_timer);
+      esp_timer_start_once(s_dizzy_timer,
+                           (uint64_t)BB_DIZZY_TIMEOUT_MS * 1000);
+    } else if (was_dizzy) {
+      esp_timer_stop(s_dizzy_timer);
+    }
+  }
+
   next.last_event_ms = (uint64_t)bb_now_ms();
 
   /* 4) 写回（sequence lock）*/
@@ -637,6 +683,20 @@ void bb_state_init(void) {
   s_state.dropped_events = 0;
 
   s_initialized = true;
+
+  /* DIZZY 自动恢复 one-shot 定时器：由 dispatch_on_lvgl 在进入 DIZZY
+   * 时启动，离开 DIZZY 时 stop。非 DIZZY 态下 timer 不运行，零开销。 */
+  esp_timer_create_args_t dizzy_args = {
+    .callback = dizzy_timer_cb,
+    .arg = NULL,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "bb_state_dizzy",
+  };
+  if (esp_timer_create(&dizzy_args, &s_dizzy_timer) != ESP_OK) {
+    ESP_LOGE(TAG, "init: failed to create dizzy timer");
+    s_dizzy_timer = NULL;
+  }
+
   ESP_LOGI(TAG, "init: page=%s agent=%s net=%s transport=%s",
            bb_page_name(s_state.page),
            bb_agent_state_name(s_state.agent),
