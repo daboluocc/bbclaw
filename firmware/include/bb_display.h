@@ -33,3 +33,6 @@ void bb_display_set_battery(int supported, int available, int percent, int low);
 void bb_display_set_session_id(const char* session_id);
 /** 底栏 CWD pool 名；NULL/"" 清空 */
 void bb_display_set_cwd_name(const char* cwd_name);
+/** Chat 激活状态：为 1 时强制显示 ACTIVE 视图（顶栏+底栏），
+ *  并隐藏底层的简单对话文本区，让 chat overlay 的 transcript 占据中间区域。 */
+void bb_display_set_chat_active(int active);

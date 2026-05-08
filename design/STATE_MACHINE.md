@@ -123,25 +123,58 @@ typedef enum {
 
 ## 3. UI 显示态
 
-LVGL 屏幕的显示模式。
+2026-05-09 重构：三层独立页面模型，代码拆分到独立文件。
 
 ```c
 typedef enum {
-  UI_VIEW_STANDBY = 0,  // 时钟 + 品牌图标（待机）
-  UI_VIEW_LOCKED,       // 锁图标 + 解锁提示
-  UI_VIEW_ACTIVE,       // 状态栏 + 滚动文本区（对话）
+  UI_VIEW_STANDBY = 0,  // 纯 "BBClaw" 品牌文字 + 大时钟，无顶底栏
+  UI_VIEW_LOCKED,       // 挂锁图标 + 密语提示
+  UI_VIEW_ACTIVE,       // 顶栏 + 中间对话区 + 底栏（session/cwd）
 } ui_view_mode_t;
 ```
 
-### 3.1 状态说明
+### 3.1 文件组织
 
-| 状态 | 屏幕内容 | 进入条件 |
-|------|----------|----------|
-| `UI_VIEW_STANDBY` | 时钟动画、品牌图标 | 无对话历史 + status 为 READY/null |
-| `UI_VIEW_LOCKED` | 挂锁图标、解锁提示文案 | `radio_app_is_locked()` 为 true |
-| `UI_VIEW_ACTIVE` | 顶部状态栏、中部滚动文本、录音波形 | 有对话历史 或 status 非空闲 |
+| 文件 | 职责 |
+|------|------|
+| `src/bb_page_standby.c` | STANDBY 独立视图：BBClaw + 时钟 |
+| `src/bb_page_locked.c` | LOCKED 独立视图：挂锁 + 密语提示 |
+| `src/bb_page_chat.c` | CHAT 主容器（Phase 3 骨架） |
+| `src/bb_chat_topbar.c` | CHAT 顶栏（骨架） |
+| `src/bb_chat_bottombar.c` | CHAT 底栏（骨架） |
+| `src/bb_chat_transcript.c` | 对话气泡渲染（消息气泡、流式 append、历史） |
+| `src/bb_chat_recording.c` | 录音波形遮罩（骨架） |
+| `src/bb_chat_pickers.c` | session/cwd/driver picker 转发层 |
+| `src/bb_lvgl_display.c` | LVGL 初始化 + 视图切换调度 |
+| `src/bb_theme_buddy_anim.c` | Chat overlay（Phase 7 后变透明，只剩 transcript） |
 
-### 3.2 状态栏模式指示器
+### 3.2 状态转换
+
+```
+LOCKED(锁屏) ──密语解锁──▶ STANDBY(待机) ──PTT按下──▶ CHAT(聊天)
+                                                        │
+                                         idle 30s ─────▶ STANDBY
+STANDBY ──idle 120s(cloud_saas)──▶ LOCKED
+```
+
+### 3.3 CHAT 页面组成
+
+Phase 7 架构：底层 ACTIVE 视图提供顶栏+底栏骨架，overlay 透明覆盖只填中间对话区。
+
+- **顶栏**（底层 `bb_lvgl_display.c`）：mode icon + status icon + status text + WiFi + battery + clock
+- **对话区**（overlay `bb_chat_transcript.c`）：消息气泡流
+- **底栏**（底层 `bb_lvgl_display.c`）：session id + cwd name
+- **录音时**：底层 `s_view_speaking` 在对话区位置显示波形动画
+- **picker 时**：overlay 弹出 session/cwd 选择器覆盖对话区
+
+### 3.4 空闲超时
+
+| 超时 | 默认值 | 源→目标 |
+|------|--------|----------|
+| `BBCLAW_CHAT_IDLE_TIMEOUT_MS` | 30s | CHAT → STANDBY |
+| `BBCLAW_STANDBY_LOCK_TIMEOUT_MS` | 120s | STANDBY → LOCKED（仅 cloud_saas） |
+
+### 3.5 状态栏模式指示器
 
 在 `UI_VIEW_ACTIVE` 状态下，状态栏左侧显示当前运行模式：
 

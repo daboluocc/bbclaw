@@ -29,6 +29,12 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_wifi_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_assets.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_display.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_standby.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_locked.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_chat.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_topbar.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_bottombar.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_transcript.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c"
 )
 

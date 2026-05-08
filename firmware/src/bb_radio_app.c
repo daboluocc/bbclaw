@@ -323,6 +323,7 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
 static void show_status_idle(const char* status); /* fwd: defined later in file */
 static volatile int s_agent_chat_active;
 static lv_obj_t* s_agent_chat_root;
+static int64_t s_last_activity_ms;
 
 /* Phase 4.9: Picker phrases removed — input is via PTT voice only. */
 
@@ -350,9 +351,9 @@ static int agent_chat_enter(void) {
   lv_obj_set_size(s_agent_chat_root, lv_pct(100), lv_pct(100));
   lv_obj_set_pos(s_agent_chat_root, 0, 0);
   lv_obj_clear_flag(s_agent_chat_root, LV_OBJ_FLAG_SCROLLABLE);
-  /* Solid bg ensures we cover the underlying standby/active view. */
-  lv_obj_set_style_bg_color(s_agent_chat_root, lv_color_hex(0x0a0e0c), 0);
-  lv_obj_set_style_bg_opa(s_agent_chat_root, LV_OPA_COVER, 0);
+  /* Phase 7: overlay root transparent — underlying ACTIVE view's
+   * top/bottom bars show through; chat only owns the middle transcript. */
+  lv_obj_set_style_bg_opa(s_agent_chat_root, LV_OPA_TRANSP, 0);
   lv_obj_move_foreground(s_agent_chat_root);
 
   bb_ui_agent_chat_show(s_agent_chat_root);
@@ -360,6 +361,10 @@ static int agent_chat_enter(void) {
 
   lvgl_port_unlock();
   s_agent_chat_active = 1;
+  s_last_activity_ms = bb_now_ms();
+  /* Notify display layer: force ACTIVE view and hide its scroll_text
+   * so only the overlay's transcript is visible in the middle area. */
+  bb_display_set_chat_active(1);
   ESP_LOGI(TAG, "agent_chat: ENTER");
   return 0;
 }
@@ -382,6 +387,8 @@ static void agent_chat_exit(void) {
   } else {
     ESP_LOGW(TAG, "agent_chat_exit: lvgl_port_lock timeout, leaking overlay");
   }
+  /* Notify display layer: chat no longer active, standby can take over. */
+  bb_display_set_chat_active(0);
   ESP_LOGI(TAG, "agent_chat: EXIT");
   /* Repaint the radio's normal status so the underlying view is current. */
   if (bb_wifi_is_connected()) {
@@ -709,6 +716,7 @@ static void on_ptt_changed(int pressed) {
     return;
   }
   s_ptt_pressed = new_pressed;
+  s_last_activity_ms = bb_now_ms();
   if (s_ptt_pressed && !s_cloud_wait_busy) {
     s_tts_interrupt_requested = 1;
     bb_audio_request_playback_interrupt();
@@ -1639,6 +1647,7 @@ static void stream_task(void* arg) {
             break;
 
           case BBCLAW_STATE_CHAT: {
+            s_last_activity_ms = bb_now_ms();
             int busy = agent_chat_is_busy_locked();
             int cwd_up = bb_ui_agent_chat_cwd_picker_is_visible();
             int picker_up = bb_ui_agent_chat_session_picker_is_visible();
@@ -1816,6 +1825,19 @@ static void stream_task(void* arg) {
       int ptt_dispatch = (s_app_state == BBCLAW_STATE_LOCKED ||
                           s_app_state == BBCLAW_STATE_CHAT);
       if (ptt_dispatch) {
+      /* STANDBY → CHAT: PTT activates agent chat from standby view. */
+      if (s_ptt_pressed && s_app_state == BBCLAW_STATE_CHAT &&
+          !agent_chat_is_active() && !radio_app_is_locked()) {
+        if (agent_chat_enter() != 0) {
+          ESP_LOGW(TAG, "ptt: agent_chat_enter from standby failed");
+          vTaskDelay(pdMS_TO_TICKS(20));
+          continue;
+        }
+        s_last_activity_ms = bb_now_ms();
+        /* Chat is now active; next loop iteration picks up the PTT. */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
       /* Phase 4.5: agent voice bridge — chat overlay is on the LCD, so the
        * legacy show_status_* writes go to a hidden surface. Use the chat
        * theme's topbar hint instead. Otherwise fall through to the normal
@@ -2128,13 +2150,8 @@ static void stream_task(void* arg) {
         pulse_success_on_idle(BB_STATUS_READY);
         (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
-        /* Unlock → CHAT directly. */
-        if (agent_chat_enter() == 0) {
-          set_radio_app_state(BBCLAW_STATE_CHAT);
-        } else {
-          ESP_LOGE(TAG, "unlock: agent_chat_enter failed, forcing CHAT state");
-          set_radio_app_state(BBCLAW_STATE_CHAT);
-        }
+        /* Unlock → CHAT state, STANDBY view (PTT activates agent chat). */
+        set_radio_app_state(BBCLAW_STATE_CHAT);
       } else {
         ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
                  verify_result.message);
@@ -2835,6 +2852,26 @@ static void stream_task(void* arg) {
       }
     }
 
+    /* ── Dual-level idle timeout: CHAT → STANDBY → LOCKED ── */
+    if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy) {
+      int64_t now_ms = bb_now_ms();
+      if (agent_chat_is_active()) {
+        if (now_ms - s_last_activity_ms > BBCLAW_CHAT_IDLE_TIMEOUT_MS) {
+          ESP_LOGI(TAG, "idle: chat timeout, returning to standby");
+          agent_chat_exit();
+          s_last_activity_ms = now_ms;
+        }
+      } else if (s_app_state == BBCLAW_STATE_CHAT && !radio_app_is_locked()) {
+        if (now_ms - s_last_activity_ms > BBCLAW_STANDBY_LOCK_TIMEOUT_MS) {
+          if (passphrase_unlock_enabled()) {
+            ESP_LOGI(TAG, "idle: standby timeout, entering LOCKED");
+            set_radio_app_state(BBCLAW_STATE_LOCKED);
+          }
+          s_last_activity_ms = now_ms;
+        }
+      }
+    }
+
     if (!streaming) {
       vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -2847,6 +2884,7 @@ esp_err_t bb_radio_app_start(void) {
    * 已经初始化，所以也必须在 bb_display_init()（启动 LVGL）之前留出
    * dispatch 缓冲；本函数仅初始化状态字段，不调用 LVGL。 */
   bb_state_init();
+  s_last_activity_ms = bb_now_ms();
 
   /* Register the only built-in agent chat theme. The constructor approach
    * gets DCE'd on ESP-IDF static-archive links; explicit init ensures the
@@ -2888,7 +2926,7 @@ esp_err_t bb_radio_app_start(void) {
     set_radio_app_state(BBCLAW_STATE_LOCKED);
   } else {
     set_radio_app_state(BBCLAW_STATE_CHAT);
-    (void)agent_chat_enter();
+    /* STANDBY view shows BBClaw logo + clock; PTT activates agent chat */
   }
   {
     esp_err_t power_err = bb_power_init();

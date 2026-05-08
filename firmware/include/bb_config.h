@@ -614,6 +614,15 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_ADAPTER_HEARTBEAT_INTERVAL_MS 5000
 #endif
 
+/* ── Idle timeout: dual-level standby → lock ── */
+#ifndef BBCLAW_CHAT_IDLE_TIMEOUT_MS
+#define BBCLAW_CHAT_IDLE_TIMEOUT_MS 30000
+#endif
+
+#ifndef BBCLAW_STANDBY_LOCK_TIMEOUT_MS
+#define BBCLAW_STANDBY_LOCK_TIMEOUT_MS 120000
+#endif
+
 #ifndef BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD
 #define BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD 2
 #endif

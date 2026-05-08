@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
+#include "bb_chat_transcript.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_power.h"
@@ -401,43 +402,14 @@ static void apply_state_anim(bb_agent_state_t state) {
 }
 
 static void scroll_to_bottom(void) {
-  if (s_st.transcript == NULL) return;
-  uint32_t cnt = lv_obj_get_child_count(s_st.transcript);
-  if (cnt == 0) return;
-  lv_obj_t* last = lv_obj_get_child(s_st.transcript, cnt - 1);
-  if (last != NULL) {
-    lv_obj_scroll_to_view(last, LV_ANIM_OFF);
-  }
+  bb_chat_transcript_scroll_to_bottom();
 }
 
 static void theme_scroll_transcript(int lines) {
-  if (s_st.transcript == NULL || lines == 0) return;
-  int32_t step = lv_font_get_line_height(theme_font()) * lines;
-  lv_obj_scroll_by_bounded(s_st.transcript, 0, step, LV_ANIM_OFF);
+  bb_chat_transcript_scroll(lines);
 }
 
-static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
-                                lv_text_align_t align, int italic) {
-  lv_obj_t* lbl = lv_label_create(s_st.transcript);
-  lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_WRAP);
-  lv_obj_set_width(lbl, lv_pct(100));
-  lv_obj_set_style_text_font(lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(lbl, lv_color_hex(fg_color), 0);
-  lv_obj_set_style_text_align(lbl, align, 0);
-  lv_obj_set_style_bg_color(lbl, lv_color_hex(bg_color), 0);
-  lv_obj_set_style_bg_opa(lbl, LV_OPA_30, 0);
-  lv_obj_set_style_radius(lbl, MSG_RADIUS, 0);
-  lv_obj_set_style_pad_all(lbl, MSG_PAD, 0);
-  lv_obj_set_style_margin_top(lbl, 2, 0);
-  lv_obj_set_style_margin_bottom(lbl, 2, 0);
-  if (italic) {
-    lv_obj_set_style_text_opa(lbl, LV_OPA_70, 0);
-  }
-  if (align == LV_TEXT_ALIGN_RIGHT) {
-    lv_obj_set_style_align(lbl, LV_ALIGN_RIGHT_MID, 0);
-  }
-  return lbl;
-}
+/* Message rendering is delegated to bb_chat_transcript.c. */
 
 /* ── theme callbacks ── */
 
@@ -448,121 +420,40 @@ static void theme_on_enter(lv_obj_t* parent) {
   }
   if (parent == NULL) return;
 
+  /* Phase 7: overlay root transparent — let underlying ACTIVE view's
+   * top bar (status/WiFi/battery/clock) and bottom bar (session/cwd)
+   * show through. Chat only owns the middle transcript area. */
   s_st.root = lv_obj_create(parent);
   lv_obj_remove_style_all(s_st.root);
   lv_obj_set_size(s_st.root, lv_pct(100), lv_pct(100));
-  lv_obj_set_style_bg_color(s_st.root, lv_color_hex(UI_SCR_BG), 0);
-  lv_obj_set_style_bg_opa(s_st.root, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(s_st.root, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
 
-  /* ── Topbar: [icon] driver  session  [battery]  (^_^) ready ── */
-  s_st.topbar = lv_obj_create(s_st.root);
-  lv_obj_remove_style_all(s_st.topbar);
-  lv_obj_set_size(s_st.topbar, 320, TOPBAR_H);
-  lv_obj_align(s_st.topbar, LV_ALIGN_TOP_LEFT, 0, SCREEN_CORNER_INSET_Y);
-  lv_obj_clear_flag(s_st.topbar, LV_OBJ_FLAG_SCROLLABLE);
+  /* Phase 7: buddy-anim's own topbar/face/mood/battery removed.
+   * Those now live in bb_lvgl_display.c's ACTIVE view underneath. */
+  s_st.topbar = NULL;
+  s_st.topbar_icon = NULL;
+  s_st.topbar_driver_lbl = NULL;
+  s_st.topbar_session_lbl = NULL;
+  s_st.topbar_bat_container = NULL;
+  s_st.topbar_bat_fill = NULL;
+  s_st.topbar_bat_frame = NULL;
+  s_st.topbar_bat_lbl = NULL;
+  s_st.topbar_buddy = NULL;
+  s_st.face_lbl = NULL;
+  s_st.mood_lbl = NULL;
 
-  s_st.topbar_icon = lv_image_create(s_st.topbar);
-  lv_image_set_src(s_st.topbar_icon, &bb_img_ready);
-  lv_obj_set_size(s_st.topbar_icon, 16, 16);
-  lv_obj_set_pos(s_st.topbar_icon, SCREEN_CORNER_INSET_X, (TOPBAR_H - 16) / 2);
-
-  s_st.topbar_driver_lbl = lv_label_create(s_st.topbar);
-  lv_obj_set_width(s_st.topbar_driver_lbl, 80);
-  lv_obj_set_style_text_font(s_st.topbar_driver_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.topbar_driver_lbl, lv_color_hex(UI_STATUS_FG), 0);
-  lv_label_set_long_mode(s_st.topbar_driver_lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_pos(s_st.topbar_driver_lbl, SCREEN_CORNER_INSET_X + 20, 2);
-
-  s_st.topbar_session_lbl = lv_label_create(s_st.topbar);
-  lv_obj_set_width(s_st.topbar_session_lbl, 68);
-  lv_obj_set_style_text_font(s_st.topbar_session_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.topbar_session_lbl, lv_color_hex(UI_TEXT_DIM), 0);
-  lv_label_set_long_mode(s_st.topbar_session_lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_pos(s_st.topbar_session_lbl, SCREEN_CORNER_INSET_X + 104, 2);
-
-  /* Battery widget — positioned left of the buddy area */
-  {
-    s_st.topbar_bat_container = lv_obj_create(s_st.topbar);
-    lv_obj_remove_style_all(s_st.topbar_bat_container);
-    lv_obj_set_size(s_st.topbar_bat_container, 44, 14);
-    lv_obj_set_pos(s_st.topbar_bat_container,
-                   320 - SCREEN_CORNER_INSET_X - BUDDY_TOPBAR_W - 48,
-                   (TOPBAR_H - 14) / 2);
-    lv_obj_clear_flag(s_st.topbar_bat_container, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_st.topbar_bat_fill = lv_obj_create(s_st.topbar_bat_container);
-    lv_obj_remove_style_all(s_st.topbar_bat_fill);
-    lv_obj_set_size(s_st.topbar_bat_fill, 18, 8);
-    lv_obj_set_pos(s_st.topbar_bat_fill, 2, 3);
-    lv_obj_set_style_radius(s_st.topbar_bat_fill, 1, 0);
-    lv_obj_set_style_bg_color(s_st.topbar_bat_fill, lv_color_hex(UI_ME_ACCENT), 0);
-    lv_obj_set_style_bg_opa(s_st.topbar_bat_fill, LV_OPA_COVER, 0);
-
-    s_st.topbar_bat_frame = lv_image_create(s_st.topbar_bat_container);
-    lv_image_set_src(s_st.topbar_bat_frame, &bb_el_battery_frame_26x12);
-    lv_obj_set_pos(s_st.topbar_bat_frame, 0, 1);
-
-    s_st.topbar_bat_lbl = lv_label_create(s_st.topbar_bat_container);
-    lv_obj_set_width(s_st.topbar_bat_lbl, 16);
-    lv_obj_set_style_text_color(s_st.topbar_bat_lbl, lv_color_hex(UI_STATUS_FG), 0);
-    lv_obj_set_style_text_font(s_st.topbar_bat_lbl, theme_font(), 0);
-    lv_obj_set_style_text_align(s_st.topbar_bat_lbl, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_long_mode(s_st.topbar_bat_lbl, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(s_st.topbar_bat_lbl, "--");
-    lv_obj_set_pos(s_st.topbar_bat_lbl, 28, 0);
-  }
-
-  /* ── Buddy area in topbar (right side): face + mood side by side ── */
-  s_st.topbar_buddy = lv_obj_create(s_st.topbar);
-  lv_obj_remove_style_all(s_st.topbar_buddy);
-  lv_obj_set_size(s_st.topbar_buddy, BUDDY_TOPBAR_W, TOPBAR_H);
-  lv_obj_set_pos(s_st.topbar_buddy, 320 - SCREEN_CORNER_INSET_X - BUDDY_TOPBAR_W, 0);
-  lv_obj_clear_flag(s_st.topbar_buddy, LV_OBJ_FLAG_SCROLLABLE);
-
-  s_st.face_lbl = lv_label_create(s_st.topbar_buddy);
-  lv_obj_set_size(s_st.face_lbl, 54, TOPBAR_H);
-  lv_label_set_long_mode(s_st.face_lbl, LV_LABEL_LONG_MODE_CLIP);
-  lv_obj_set_pos(s_st.face_lbl, FACE_X0, FACE_Y0);
-  lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
-  lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_transform_pivot_x(s_st.face_lbl, 27, 0);
-  lv_obj_set_style_transform_pivot_y(s_st.face_lbl, TOPBAR_H / 2, 0);
-
-  s_st.mood_lbl = lv_label_create(s_st.topbar_buddy);
-  lv_obj_set_size(s_st.mood_lbl, 32, TOPBAR_H);
-  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0 + 54, MOOD_Y0);
-  lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
-  lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
-  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_LEFT, 0);
-  lv_label_set_long_mode(s_st.mood_lbl, LV_LABEL_LONG_MODE_DOTS);
-
-  /* ── Transcript (full width, below topbar) ── */
-  s_st.transcript = lv_obj_create(s_st.root);
-  lv_obj_remove_style_all(s_st.transcript);
-  lv_obj_set_size(s_st.transcript, 320, MIDDLE_H);
-  lv_obj_align(s_st.transcript, LV_ALIGN_TOP_LEFT, 0,
-               SCREEN_CORNER_INSET_Y + TOPBAR_H + TOPBAR_GAP);
-  lv_obj_set_style_bg_opa(s_st.transcript, LV_OPA_TRANSP, 0);
-  lv_obj_set_flex_flow(s_st.transcript, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_flex_align(s_st.transcript, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
-                        LV_FLEX_ALIGN_START);
-  lv_obj_set_style_pad_left(s_st.transcript, MSG_HMARGIN, 0);
-  lv_obj_set_style_pad_right(s_st.transcript, MSG_HMARGIN, 0);
-  lv_obj_set_style_pad_top(s_st.transcript, 2, 0);
-  lv_obj_set_style_pad_bottom(s_st.transcript, 2, 0);
-  lv_obj_add_flag(s_st.transcript, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_scroll_dir(s_st.transcript, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(s_st.transcript, LV_SCROLLBAR_MODE_AUTO);
+  /* ── Transcript — aligned with underlying ACTIVE view's content area ── */
+  /* Underlying content_y ≈ 32, content_h ≈ 112 (172 - 32 - 10 - 16 - 2).
+   * Leave a small safety margin to avoid clipping the bottom bar border. */
+  const int transcript_y = 32;
+  const int transcript_h = 112;
+  s_st.transcript = bb_chat_transcript_create(s_st.root, 320, transcript_h, transcript_y);
 
   s_st.active_assistant = NULL;
   s_st.dots_timer = NULL;
   s_st.dots_phase = 0;
   s_st.built = 1;
-  refresh_topbar();
-  refresh_buddy_text();
-  apply_state_anim(s_st.state);
 }
 
 static void theme_on_exit(void) {
@@ -586,6 +477,7 @@ static void theme_on_exit(void) {
   s_st.mood_lbl = NULL;
   s_st.active_assistant = NULL;
   s_st.built = 0;
+  bb_chat_transcript_destroy();  /* reset internal pointers (root del cascaded) */
 }
 
 static void theme_set_state(bb_agent_state_t state) {
@@ -598,50 +490,30 @@ static void theme_set_state(bb_agent_state_t state) {
 }
 
 static void theme_append_user(const char* text) {
-  if (!s_st.built || text == NULL) return;
-  lv_obj_t* lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_label_set_text(lbl, text);
+  if (!s_st.built) return;
+  bb_chat_transcript_append_user(text);
   s_st.active_assistant = NULL;
-  scroll_to_bottom();
 }
 
 static void theme_append_assistant_chunk(const char* delta) {
-  if (!s_st.built || delta == NULL) return;
-  if (s_st.active_assistant == NULL) {
-    s_st.active_assistant = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN,
-                                           LV_TEXT_ALIGN_LEFT, 0);
-    lv_label_set_text(s_st.active_assistant, delta);
-  } else {
-    lv_label_ins_text(s_st.active_assistant, LV_LABEL_POS_LAST, delta);
+  if (!s_st.built) return;
+  bb_chat_transcript_append_assistant_chunk(delta);
+  /* active_assistant tracked inside bb_chat_transcript; sync local flag */
+  if (s_st.active_assistant == NULL && delta != NULL) {
+    s_st.active_assistant = (lv_obj_t*)1;  /* non-null marker */
   }
-  scroll_to_bottom();
 }
 
 static void theme_append_tool_call(const char* tool, const char* hint) {
   if (!s_st.built) return;
-  lv_obj_t* lbl = make_msg_label(UI_TEXT_DIM, UI_TOOL_FG, LV_TEXT_ALIGN_LEFT, 1);
-  lv_obj_set_style_bg_opa(lbl, LV_OPA_10, 0);
-  char buf[160];
-  if (hint != NULL && hint[0] != '\0') {
-    snprintf(buf, sizeof(buf), "[tool] %s: %s", tool != NULL ? tool : "tool", hint);
-  } else {
-    snprintf(buf, sizeof(buf), "[tool] %s", tool != NULL ? tool : "tool");
-  }
-  lv_label_set_text(lbl, buf);
+  bb_chat_transcript_append_tool_call(tool, hint);
   s_st.active_assistant = NULL;
-  scroll_to_bottom();
 }
 
 static void theme_append_error(const char* msg) {
   if (!s_st.built) return;
-  lv_obj_t* lbl = make_msg_label(UI_ERROR_FG, UI_ERROR_FG, LV_TEXT_ALIGN_LEFT, 0);
-  lv_obj_set_style_bg_opa(lbl, LV_OPA_20, 0);
-  lv_obj_set_style_text_color(lbl, lv_color_hex(UI_ERROR_FG), 0);
-  char buf[200];
-  snprintf(buf, sizeof(buf), "! %s", msg != NULL ? msg : "error");
-  lv_label_set_text(lbl, buf);
+  bb_chat_transcript_append_error(msg);
   s_st.active_assistant = NULL;
-  scroll_to_bottom();
 }
 
 static void theme_set_driver(const char* driver_name) {
@@ -661,42 +533,25 @@ static void theme_set_session(const char* sid_short) {
   if (s_st.built) refresh_topbar();
 }
 
-/* Phase S3 — history replay. Same structure as text-only theme: append at
- * end without claiming active_assistant (avoids streaming chunk pollution),
- * prepend at index 0 for "scroll-to-top → load earlier" pagination. */
+/* Phase S3 — history replay. Delegated to bb_chat_transcript. */
 static void theme_append_history_message(const char* role, const char* content) {
-  if (!s_st.built || role == NULL || content == NULL) return;
-  int is_user = strcmp(role, "user") == 0;
-  lv_obj_t* lbl;
-  if (is_user) {
-    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
-  } else {
-    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
-  }
-  lv_label_set_text(lbl, content);
+  if (!s_st.built) return;
+  bb_chat_transcript_append_history(role, content);
   s_st.active_assistant = NULL;
 }
 
 static void theme_prepend_history_message(const char* role, const char* content) {
-  if (!s_st.built || role == NULL || content == NULL) return;
-  int is_user = strcmp(role, "user") == 0;
-  lv_obj_t* lbl;
-  if (is_user) {
-    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
-  } else {
-    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
-  }
-  lv_label_set_text(lbl, content);
-  lv_obj_move_to_index(lbl, 0);
+  if (!s_st.built) return;
+  bb_chat_transcript_prepend_history(role, content);
 }
 
 static int theme_is_transcript_at_top(void) {
-  if (!s_st.built || s_st.transcript == NULL) return 0;
-  return lv_obj_get_scroll_top(s_st.transcript) <= 4 ? 1 : 0;
+  if (!s_st.built) return 0;
+  return bb_chat_transcript_is_at_top();
 }
 
 static void theme_scroll_transcript_to_bottom(void) {
-  scroll_to_bottom();
+  bb_chat_transcript_scroll_to_bottom();
 }
 
 static const bb_agent_theme_t s_buddy_anim_theme = {
