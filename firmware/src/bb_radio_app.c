@@ -1650,6 +1650,17 @@ static void stream_task(void* arg) {
 
           case BBCLAW_STATE_CHAT: {
             s_last_activity_ms = bb_now_ms();
+            /* STANDBY → CHAT: any nav key wakes to chat overlay, mirroring
+             * the PTT guard above.  The first edge is consumed (not forwarded
+             * to chat internals) so the wake-up key does not double as a
+             * scroll / driver-cycle / OK event.  LOCKED state is unaffected:
+             * nav is already silently dropped in BBCLAW_STATE_LOCKED above. */
+            if (!agent_chat_is_active() && !radio_app_is_locked()) {
+              if (agent_chat_enter() != 0) {
+                ESP_LOGW(TAG, "nav: agent_chat_enter from standby failed");
+              }
+              break; /* consume the edge; do not forward to chat internals */
+            }
             int busy = agent_chat_is_busy_locked();
             int cwd_up = bb_ui_agent_chat_cwd_picker_is_visible();
             int picker_up = bb_ui_agent_chat_session_picker_is_visible();
