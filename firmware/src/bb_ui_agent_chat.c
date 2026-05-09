@@ -1905,7 +1905,7 @@ static void session_picker_apply_styles(void) {
     const int n_sessions = s_chat.session_list_count;
     const char* drv = s_chat.driver_name[0] != '\0'
                         ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-    char title_buf[48];
+    char title_buf[64];
     if (n_sessions > 0 && s_chat.session_picker_sel >= 2) {
       /* sel >= 2 means a session row is highlighted; show 1-based index */
       int cur = s_chat.session_picker_sel - 1; /* 1-based among session rows */
