@@ -433,9 +433,8 @@ static volatile int s_settings_active;
 static lv_obj_t* s_settings_root;
 
 /* settings_overlay_enter: entry point for the SETTINGS overlay.
- * The session picker no longer exposes a Settings row (issue #64); this
- * function is kept for a future entry point (e.g. long-press OK in CHAT). */
-static int __attribute__((unused)) settings_overlay_enter(void) {
+ * Triggered by long-press OK in CHAT (issue #67). */
+static int settings_overlay_enter(void) {
   if (s_settings_active) return 0;
   if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
     ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
@@ -1770,6 +1769,16 @@ static void stream_task(void* arg) {
                     lvgl_port_unlock();
                   } else {
                     ESP_LOGW(TAG, "CHAT: OK session picker lock timeout");
+                  }
+                  break;
+                case BB_NAV_EVENT_OK_LONG:
+                  /* Long-press OK in CHAT → enter SETTINGS (issue #67).
+                   * Always allowed regardless of busy state — SETTINGS is safe
+                   * to enter mid-reply; the streaming turn continues in the
+                   * background and is visible when the user returns to CHAT. */
+                  if (settings_overlay_enter() == 0) {
+                    set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                    ESP_LOGI(TAG, "CHAT: OK_LONG -> SETTINGS");
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
