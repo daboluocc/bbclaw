@@ -4,6 +4,7 @@
  */
 #include "bb_page_locked.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "bb_config.h"
