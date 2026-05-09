@@ -20,7 +20,12 @@
  * LEFT and RIGHT are NEW events — only the Flipper 6-button mode emits them;
  * legacy modes never do, so call sites must treat them as optional.
  *
- * Keep BB_NAV_EVENT_COUNT immediately after the 6 real values so it is the
+ * OK_LONG is a NEW event — only the Flipper 6-button mode emits it. It fires
+ * when the OK button is held for BBCLAW_NAV_LONG_PRESS_MS (700 ms). When
+ * OK_LONG fires, the subsequent release edge does NOT also emit OK, so the
+ * two gestures are mutually exclusive.
+ *
+ * Keep BB_NAV_EVENT_COUNT immediately after all real values so it is the
  * size used for any per-event versioning array. Aliases sit AFTER the count
  * marker so they do not inflate it.
  */
@@ -31,6 +36,7 @@ typedef enum {
   BB_NAV_EVENT_RIGHT,
   BB_NAV_EVENT_OK,
   BB_NAV_EVENT_BACK,
+  BB_NAV_EVENT_OK_LONG, /* long-press OK: enter SETTINGS from CHAT (Flipper mode only) */
   BB_NAV_EVENT_COUNT,
 
   /* Backwards-compat aliases (Option A naming). Same numeric value as the

@@ -50,6 +50,9 @@ static bb_nav_btn_t s_btn_left = {.gpio = BBCLAW_NAV_BTN_LEFT_GPIO};
 static bb_nav_btn_t s_btn_right = {.gpio = BBCLAW_NAV_BTN_RIGHT_GPIO};
 static bb_nav_btn_t s_btn_ok = {.gpio = BBCLAW_NAV_BTN_OK_GPIO};
 static bb_nav_btn_t s_btn_back = {.gpio = BBCLAW_NAV_BTN_BACK_GPIO};
+/* Tracks whether a long-press has already been emitted for the current OK
+ * hold, so the subsequent release edge does NOT also fire BB_NAV_EVENT_OK. */
+static int s_ok_long_press_sent;
 #elif BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 /* Two-buttons-as-encoder mode: each press on the A pin emits ROTATE_CCW,
  * each press on the B pin emits ROTATE_CW. Same debounce logic as the
@@ -102,13 +105,14 @@ static int read_key_pressed(void) {
 
 static const char* nav_event_name(bb_nav_event_t event) {
   switch (event) {
-    case BB_NAV_EVENT_UP:    return "UP";
-    case BB_NAV_EVENT_DOWN:  return "DOWN";
-    case BB_NAV_EVENT_LEFT:  return "LEFT";
-    case BB_NAV_EVENT_RIGHT: return "RIGHT";
-    case BB_NAV_EVENT_OK:    return "OK";
-    case BB_NAV_EVENT_BACK:  return "BACK";
-    default:                 return "?";
+    case BB_NAV_EVENT_UP:      return "UP";
+    case BB_NAV_EVENT_DOWN:    return "DOWN";
+    case BB_NAV_EVENT_LEFT:    return "LEFT";
+    case BB_NAV_EVENT_RIGHT:   return "RIGHT";
+    case BB_NAV_EVENT_OK:      return "OK";
+    case BB_NAV_EVENT_BACK:    return "BACK";
+    case BB_NAV_EVENT_OK_LONG: return "OK_LONG";
+    default:                   return "?";
   }
 }
 
@@ -229,9 +233,37 @@ static void nav_poll_cb(void* arg) {
   if (poll_btn(&s_btn_right, eff_debounce) > 0) {
     emit_event(BB_NAV_EVENT_RIGHT);
   }
-  /* OK: release edge → click (so a quick tap doesn't fire on press too). */
-  if (poll_btn(&s_btn_ok, eff_debounce) < 0) {
-    emit_event(BB_NAV_EVENT_OK);
+  /* OK: release edge → click (short-press), OR long-press → BB_NAV_EVENT_OK_LONG.
+   *
+   * On press edge: record the press timestamp and clear the long-press flag.
+   * While held: once BBCLAW_NAV_LONG_PRESS_MS elapses, emit OK_LONG and set
+   *   s_ok_long_press_sent so the release edge is swallowed.
+   * On release edge: emit OK only if no long-press was already sent.
+   *
+   * This makes short-press and long-press mutually exclusive — the user gets
+   * exactly one event per OK gesture regardless of hold duration.
+   */
+  {
+    int ok_edge = poll_btn(&s_btn_ok, eff_debounce);
+    if (ok_edge > 0) {
+      /* Press edge: arm long-press timer. */
+      s_btn_ok.press_started_ms = now_ms;
+      s_ok_long_press_sent = 0;
+    } else if (ok_edge < 0) {
+      /* Release edge: emit short-press only if long-press was not already sent. */
+      if (!s_ok_long_press_sent) {
+        emit_event(BB_NAV_EVENT_OK);
+      }
+      s_btn_ok.press_started_ms = 0;
+      s_ok_long_press_sent = 0;
+    } else if (s_btn_ok.stable && s_btn_ok.press_started_ms > 0 && !s_ok_long_press_sent) {
+      /* Still held: check if threshold reached. */
+      int64_t held_ms = now_ms - s_btn_ok.press_started_ms;
+      if (held_ms >= BBCLAW_NAV_LONG_PRESS_MS) {
+        s_ok_long_press_sent = 1;
+        emit_event(BB_NAV_EVENT_OK_LONG);
+      }
+    }
   }
   /* BACK: explicit dedicated key — press edge maps to the "exit overlay"
    * gesture that was previously a long-press hold on the encoder click. */
@@ -347,6 +379,7 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
     b->press_started_ms = 0;
     b->last_repeat_ms = 0;
   }
+  s_ok_long_press_sent = 0;
 #else
   gpio_config_t io_conf = {
       .pin_bit_mask =
