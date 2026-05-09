@@ -109,11 +109,25 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_WIFI_BAR_GAP    2
 #define UI_WIFI_BAR_H_STEP 4
 
-/* Battery widget */
-#define UI_BATTERY_W       44
-#define UI_BATTERY_H       14
-#define UI_BATTERY_FILL_W  18
-#define UI_BATTERY_FILL_H  8
+/* Battery widget — iOS-style icon (no percent text in topbar) */
+#define UI_BATTERY_W        24  /* total container width (frame 22 + cap 2) */
+#define UI_BATTERY_H        11  /* total container height */
+#define UI_BATTERY_FRAME_W  22  /* outer rounded-rect width */
+#define UI_BATTERY_FRAME_H  11  /* outer rounded-rect height */
+#define UI_BATTERY_FILL_W   18  /* max fill width inside frame */
+#define UI_BATTERY_FILL_H    7  /* fill height inside frame */
+#define UI_BATTERY_CAP_W     2  /* positive terminal cap width */
+#define UI_BATTERY_CAP_H     5  /* positive terminal cap height */
+
+/* Large battery for LOCKED page */
+#define UI_BATTERY_LG_W         60  /* total container width (frame 56 + cap 4) */
+#define UI_BATTERY_LG_H         24  /* total container height */
+#define UI_BATTERY_LG_FRAME_W   56  /* outer rounded-rect width */
+#define UI_BATTERY_LG_FRAME_H   24  /* outer rounded-rect height */
+#define UI_BATTERY_LG_FILL_W    50  /* max fill width inside frame */
+#define UI_BATTERY_LG_FILL_H    18  /* fill height inside frame */
+#define UI_BATTERY_LG_CAP_W      4  /* positive terminal cap width */
+#define UI_BATTERY_LG_CAP_H     12  /* positive terminal cap height */
 
 /* Bottom info bar (session / cwd pool) */
 #define UI_BOTTOM_BAR_H    16
@@ -203,9 +217,10 @@ static lv_obj_t* s_obj_status_wifi;
 static lv_obj_t* s_lbl_status_wifi_info;
 static lv_obj_t* s_bar_status_wifi[UI_WIFI_BAR_COUNT];
 static lv_obj_t* s_obj_status_battery;
+static lv_obj_t* s_obj_status_battery_frame;
 static lv_obj_t* s_obj_status_battery_fill;
-static lv_obj_t* s_img_status_battery;
-static lv_obj_t* s_lbl_status_battery;
+static lv_obj_t* s_obj_status_battery_cap;
+static lv_obj_t* s_obj_status_battery_charge_lbl; /* ⚡ overlay for charging state */
 
 /* Bottom info bar (session id / cwd pool name) */
 static lv_obj_t* s_obj_bottom_bar;
@@ -251,6 +266,7 @@ static int s_battery_available;
 static int s_battery_percent = -1;
 static int s_battery_low;
 static int s_battery_supported;
+static int s_battery_charging;
 static int s_cloud_mode;  /* 1 = cloud_saas, 0 = local_home */
 static int s_chat_active; /* 1 when agent chat overlay is active */
 
@@ -307,17 +323,19 @@ static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* st
 }
 
 static void apply_battery_widget(void) {
-  if (s_obj_status_battery == NULL || s_obj_status_battery_fill == NULL || s_lbl_status_battery == NULL) return;
+  if (s_obj_status_battery == NULL || s_obj_status_battery_fill == NULL) return;
 
   int supported = 0;
   int available = 0;
   int percent = -1;
   int low = 0;
+  int charging = 0;
   portENTER_CRITICAL(&s_state_lock);
   supported = s_battery_supported;
   available = s_battery_available;
   percent = s_battery_percent;
   low = s_battery_low;
+  charging = s_battery_charging;
   portEXIT_CRITICAL(&s_state_lock);
 
   if (!supported) {
@@ -327,20 +345,48 @@ static void apply_battery_widget(void) {
 
   lv_obj_clear_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
   if (!available || percent < 0) {
+    /* No reading yet — show empty frame, hide fill */
     lv_obj_add_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_lbl_status_battery, "--");
+    if (s_obj_status_battery_charge_lbl != NULL)
+      lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
   if (percent > 100) percent = 100;
   if (percent < 0) percent = 0;
-  lv_obj_clear_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_width(s_obj_status_battery_fill, (percent * UI_BATTERY_FILL_W) / 100);
-  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(low ? 0xe66f6f : UI_ME_ACCENT), 0);
 
-  char pct[8];
-  snprintf(pct, sizeof(pct), "%d", percent);
-  lv_label_set_text(s_lbl_status_battery, pct);
+  /* Choose fill color by state: charging > low > normal */
+  uint32_t fill_color;
+  if (charging) {
+    fill_color = 0x4cd964; /* green */
+  } else if (low) {
+    fill_color = 0xe66f6f; /* red */
+  } else {
+    fill_color = UI_ME_ACCENT; /* theme green */
+  }
+
+  /* Fill width: charging shows full bar regardless of percent */
+  int fill_w = charging ? UI_BATTERY_FILL_W : (percent * UI_BATTERY_FILL_W) / 100;
+  if (fill_w < 1 && percent > 0) fill_w = 1; /* always show at least 1px when non-zero */
+
+  lv_obj_clear_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_width(s_obj_status_battery_fill, fill_w);
+  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(fill_color), 0);
+
+  /* Frame border color matches fill for charging/low, dim otherwise */
+  if (s_obj_status_battery_frame != NULL) {
+    lv_obj_set_style_border_color(s_obj_status_battery_frame,
+                                  lv_color_hex(charging ? 0x4cd964 : (low ? 0xe66f6f : UI_STATUS_FG)), 0);
+  }
+
+  /* Charging lightning overlay */
+  if (s_obj_status_battery_charge_lbl != NULL) {
+    if (charging) {
+      lv_obj_clear_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
 }
 
 static void apply_bottom_bar(void) {
@@ -734,33 +780,54 @@ static lv_obj_t* create_wifi_widget(lv_obj_t* parent, int x, int y, lv_obj_t* ba
 }
 
 static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
-  const lv_font_t* font = ui_font();
+  /* iOS-style battery icon: rounded-rect frame + fill bar + positive terminal cap.
+   * No percent text — topbar space is tight. Charging state shown via ⚡ overlay. */
   lv_obj_t* container = lv_obj_create(parent);
   lv_obj_remove_style_all(container);
   lv_obj_set_size(container, UI_BATTERY_W, UI_BATTERY_H);
   lv_obj_set_pos(container, x, y);
   lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
 
+  /* Fill bar — drawn first so frame border renders on top */
   s_obj_status_battery_fill = lv_obj_create(container);
   lv_obj_remove_style_all(s_obj_status_battery_fill);
+  /* Position: 1px inset from frame border on all sides */
   lv_obj_set_size(s_obj_status_battery_fill, UI_BATTERY_FILL_W, UI_BATTERY_FILL_H);
-  lv_obj_set_pos(s_obj_status_battery_fill, 2, 3);
+  lv_obj_set_pos(s_obj_status_battery_fill, 2, 2);
   lv_obj_set_style_radius(s_obj_status_battery_fill, 1, 0);
   lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(UI_ME_ACCENT), 0);
   lv_obj_set_style_bg_opa(s_obj_status_battery_fill, LV_OPA_COVER, 0);
 
-  s_img_status_battery = lv_image_create(container);
-  lv_image_set_src(s_img_status_battery, &bb_el_battery_frame_26x12);
-  lv_obj_set_pos(s_img_status_battery, 0, 1);
+  /* Outer frame — rounded rect, no background fill, just border */
+  s_obj_status_battery_frame = lv_obj_create(container);
+  lv_obj_remove_style_all(s_obj_status_battery_frame);
+  lv_obj_set_size(s_obj_status_battery_frame, UI_BATTERY_FRAME_W, UI_BATTERY_FRAME_H);
+  lv_obj_set_pos(s_obj_status_battery_frame, 0, 0);
+  lv_obj_set_style_radius(s_obj_status_battery_frame, 2, 0);
+  lv_obj_set_style_border_width(s_obj_status_battery_frame, 1, 0);
+  lv_obj_set_style_border_color(s_obj_status_battery_frame, lv_color_hex(UI_STATUS_FG), 0);
+  lv_obj_set_style_border_opa(s_obj_status_battery_frame, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(s_obj_status_battery_frame, LV_OPA_0, 0);
+  lv_obj_clear_flag(s_obj_status_battery_frame, LV_OBJ_FLAG_SCROLLABLE);
 
-  s_lbl_status_battery = lv_label_create(container);
-  lv_obj_set_width(s_lbl_status_battery, 16);
-  lv_obj_set_style_text_color(s_lbl_status_battery, lv_color_hex(UI_TEXT_MAIN), 0);
-  lv_obj_set_style_text_font(s_lbl_status_battery, font, 0);
-  lv_obj_set_style_text_align(s_lbl_status_battery, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_label_set_long_mode(s_lbl_status_battery, LV_LABEL_LONG_MODE_CLIP);
-  lv_label_set_text(s_lbl_status_battery, "--");
-  lv_obj_set_pos(s_lbl_status_battery, 28, 0);
+  /* Positive terminal cap — small rect on the right side, vertically centered */
+  s_obj_status_battery_cap = lv_obj_create(container);
+  lv_obj_remove_style_all(s_obj_status_battery_cap);
+  lv_obj_set_size(s_obj_status_battery_cap, UI_BATTERY_CAP_W, UI_BATTERY_CAP_H);
+  lv_obj_set_pos(s_obj_status_battery_cap,
+                 UI_BATTERY_FRAME_W,
+                 (UI_BATTERY_FRAME_H - UI_BATTERY_CAP_H) / 2);
+  lv_obj_set_style_radius(s_obj_status_battery_cap, 1, 0);
+  lv_obj_set_style_bg_color(s_obj_status_battery_cap, lv_color_hex(UI_STATUS_FG), 0);
+  lv_obj_set_style_bg_opa(s_obj_status_battery_cap, LV_OPA_COVER, 0);
+
+  /* Charging lightning label — centered over the frame, hidden by default */
+  s_obj_status_battery_charge_lbl = lv_label_create(container);
+  lv_obj_set_style_text_color(s_obj_status_battery_charge_lbl, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_text_font(s_obj_status_battery_charge_lbl, lv_font_get_default(), 0);
+  lv_label_set_text(s_obj_status_battery_charge_lbl, LV_SYMBOL_CHARGE);
+  lv_obj_set_pos(s_obj_status_battery_charge_lbl, 4, 0);
+  lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
 
   return container;
 }
@@ -1094,6 +1161,17 @@ static void refresh_ui(void) {
     s_record_view_visible = 0;
   } else if (mode == UI_VIEW_LOCKED) {
     bb_page_locked_update_status(status);
+    {
+      int bat_supported, bat_available, bat_percent, bat_low, bat_charging;
+      portENTER_CRITICAL(&s_state_lock);
+      bat_supported = s_battery_supported;
+      bat_available = s_battery_available;
+      bat_percent   = s_battery_percent;
+      bat_low       = s_battery_low;
+      bat_charging  = s_battery_charging;
+      portEXIT_CRITICAL(&s_state_lock);
+      bb_page_locked_update_battery(bat_supported, bat_available, bat_percent, bat_low, bat_charging);
+    }
     s_record_view_visible = 0;
   } else {
     /* ACTIVE view (chat) — full layout with top bar + bottom bar */
@@ -1262,6 +1340,7 @@ esp_err_t bb_display_init(void) {
   s_battery_percent = -1;
   s_battery_low = 0;
   s_battery_supported = 0;
+  s_battery_charging = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   create_ui();
@@ -1293,6 +1372,7 @@ esp_err_t bb_display_init(void) {
   s_battery_percent = -1;
   s_battery_low = 0;
   s_battery_supported = 0;
+  s_battery_charging = 0;
   memset(&s_auto_scroll_text, 0, sizeof(s_auto_scroll_text));
 
   ESP_RETURN_ON_ERROR(init_panel(), TAG, "panel init failed");
@@ -1526,12 +1606,13 @@ void bb_display_set_record_level(uint8_t level_pct, int voiced) {
   portEXIT_CRITICAL(&s_state_lock);
 }
 
-void bb_display_set_battery(int supported, int available, int percent, int low) {
+void bb_display_set_battery(int supported, int available, int percent, int low, int charging) {
   portENTER_CRITICAL(&s_state_lock);
   s_battery_supported = supported ? 1 : 0;
   s_battery_available = available ? 1 : 0;
   s_battery_percent = percent;
   s_battery_low = low ? 1 : 0;
+  s_battery_charging = charging ? 1 : 0;
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
 }

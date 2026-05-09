@@ -18,6 +18,7 @@ static bb_power_state_t s_state = {
     .millivolts = 0,
     .percent = -1,
     .low = 0,
+    .charging = 0,
 };
 
 #if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)
@@ -45,6 +46,10 @@ static int battery_percent_from_mv(int mv) {
 void bb_power_get_state(bb_power_state_t* out_state) {
   if (out_state == NULL) return;
   *out_state = s_state;
+}
+
+int bbclaw_power_is_charging(void) {
+  return s_state.charging;
 }
 
 esp_err_t bb_power_init(void) {
@@ -146,6 +151,7 @@ esp_err_t bb_power_refresh(void) {
   s_state.millivolts = vbat_mv;
   s_state.percent = battery_percent_from_mv(vbat_mv);
   s_state.low = s_state.percent <= BBCLAW_POWER_LOW_PERCENT ? 1 : 0;
+  s_state.charging = 0; /* TODO: set from VBUS GPIO detection when hardware supports it */
   ESP_LOGD(TAG, "battery raw=%d adc_mv=%d vbat_mv=%d percent=%d low=%d cali=%d",
            raw_avg, adc_mv, vbat_mv, s_state.percent, s_state.low, s_adc_cali_ready);
   return ESP_OK;
@@ -155,6 +161,7 @@ esp_err_t bb_power_refresh(void) {
   s_state.millivolts = 0;
   s_state.percent = -1;
   s_state.low = 0;
+  s_state.charging = 0; /* TODO: set from VBUS GPIO detection when hardware supports it */
   return ESP_OK;
 #endif
 }

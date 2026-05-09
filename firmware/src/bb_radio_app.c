@@ -660,7 +660,7 @@ typedef struct {
 static void refresh_power_display(void) {
   bb_power_state_t power = {0};
   bb_power_get_state(&power);
-  bb_display_set_battery(power.supported, power.available, power.percent, power.low);
+  bb_display_set_battery(power.supported, power.available, power.percent, power.low, power.charging);
 }
 
 static void log_pin_summary(void) {

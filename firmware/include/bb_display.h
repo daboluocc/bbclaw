@@ -27,8 +27,9 @@ void bb_display_set_tts_playing(int playing);
 void bb_display_set_tts_sentence(const char* sentence_text);
 /** PTT 录音阶段的实时输入电平（0-100）与是否检测到有效声音 */
 void bb_display_set_record_level(uint8_t level_pct, int voiced);
-/** 状态栏电池信息；supported=0 时整个组件隐藏，available=0 时显示占位 */
-void bb_display_set_battery(int supported, int available, int percent, int low);
+/** 状态栏电池信息；supported=0 时整个组件隐藏，available=0 时显示占位。
+ *  charging=1 时顶栏图标显示绿色满格+闪电（数据层当前恒 0，等 VBUS GPIO 接好后启用）。 */
+void bb_display_set_battery(int supported, int available, int percent, int low, int charging);
 /** 底栏 session id；NULL/"" 清空。长 id 会自动截短为前 8 位展示 */
 void bb_display_set_session_id(const char* session_id);
 /** 底栏 CWD pool 名；NULL/"" 清空 */
