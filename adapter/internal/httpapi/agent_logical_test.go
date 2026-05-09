@@ -29,13 +29,14 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
-// recordingDriver is a minimal agent.Driver that records the ResumeID it
+// recordingDriver is a minimal agent.Driver that records the StartOpts it
 // was started with and emits a fixed reply on Send. Each test gets its
 // own instance so assertions don't interfere across tests.
 type recordingDriver struct {
 	mu        sync.Mutex
 	mintedSid agent.SessionID
 	resumeIDs []string
+	cwds      []string // Cwd values seen by Start, in call order
 	startN    int
 	sentTexts []string
 	events    chan agent.Event
@@ -48,13 +49,14 @@ func newRecordingDriver(mintedSid agent.SessionID) *recordingDriver {
 	}
 }
 
-func (d *recordingDriver) Name() string                   { return "claude-code" }
+func (d *recordingDriver) Name() string                      { return "claude-code" }
 func (d *recordingDriver) Capabilities() agent.Capabilities { return agent.Capabilities{Streaming: true} }
 
 func (d *recordingDriver) Start(_ context.Context, opts agent.StartOpts) (agent.SessionID, error) {
 	d.mu.Lock()
 	d.startN++
 	d.resumeIDs = append(d.resumeIDs, opts.ResumeID)
+	d.cwds = append(d.cwds, opts.Cwd)
 	d.mu.Unlock()
 	return d.mintedSid, nil
 }
@@ -80,6 +82,15 @@ func (d *recordingDriver) resumeIDsCopy() []string {
 	defer d.mu.Unlock()
 	out := make([]string, len(d.resumeIDs))
 	copy(out, d.resumeIDs)
+	return out
+}
+
+// cwdsCopy returns a snapshot of all Cwd values seen by Start.
+func (d *recordingDriver) cwdsCopy() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, len(d.cwds))
+	copy(out, d.cwds)
 	return out
 }
 
@@ -265,5 +276,74 @@ func TestHandleAgentMessage_LegacyCliIdUntouched(t *testing.T) {
 	}
 	if r.OK || r.Error != "INVALID_SESSION_ID" {
 		t.Fatalf("resp=%+v want {ok:false, error:INVALID_SESSION_ID}", r)
+	}
+}
+
+// TestHandleAgentMessage_LogicalSessionCwdPassedToDriver verifies that the
+// Cwd stored in a logical session is forwarded to the driver's StartOpts.Cwd
+// on every new Start call (issue #60).
+func TestHandleAgentMessage_LogicalSessionCwdPassedToDriver(t *testing.T) {
+	drv := newRecordingDriver("cc-cwd-test-1")
+	_, ts, mgr := newServerWithManager(t, drv)
+
+	// Create a logical session with an explicit cwd.
+	ls, err := mgr.Create("dev-cwd", "claude-code", "/tmp/myproject", "cwd test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"text": "what is my cwd?", "sessionId": string(ls.ID)})
+	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	// Drain the response so the handler completes.
+	readNDJSONFrames(t, resp.Body)
+
+	// Driver must have been started with the session's cwd.
+	cwds := drv.cwdsCopy()
+	if len(cwds) != 1 || cwds[0] != "/tmp/myproject" {
+		t.Errorf("driver Start Cwd=%v want [\"/tmp/myproject\"]", cwds)
+	}
+}
+
+// TestHandleAgentMessage_LogicalSessionCwdPassedAfterDriverSwitch verifies
+// that switching driver (which clears CLISessionID and creates a new logical
+// session) still delivers the correct cwd to the new driver (issue #60).
+func TestHandleAgentMessage_LogicalSessionCwdPassedAfterDriverSwitch(t *testing.T) {
+	drv := newRecordingDriver("cc-cwd-switch-1")
+	_, ts, mgr := newServerWithManager(t, drv)
+
+	// Simulate a driver-switch: create a fresh logical session (no CLISessionID)
+	// with the user's chosen cwd.
+	ls, err := mgr.Create("dev-switch", "claude-code", "/tmp/switched", "switch test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// CLISessionID is empty — this is the state after a driver switch.
+	if ls.CLISessionID != "" {
+		t.Fatalf("expected empty CLISessionID after Create, got %q", ls.CLISessionID)
+	}
+
+	body, _ := json.Marshal(map[string]any{"text": "hello after switch", "sessionId": string(ls.ID)})
+	resp, err := http.Post(ts.URL+"/v1/agent/message", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	readNDJSONFrames(t, resp.Body)
+
+	// Driver must have been started with the session's cwd, not the adapter's
+	// process working directory.
+	cwds := drv.cwdsCopy()
+	if len(cwds) != 1 || cwds[0] != "/tmp/switched" {
+		t.Errorf("driver Start Cwd=%v want [\"/tmp/switched\"]", cwds)
 	}
 }

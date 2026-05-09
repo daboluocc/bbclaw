@@ -489,6 +489,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	var (
 		logicalID         logicalsession.ID
 		resumeFromLogical string
+		logicalCwd        string
 		usingLogical      bool
 	)
 	if s.sessions != nil {
@@ -513,6 +514,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			}
 			logicalID = ls.ID
 			resumeFromLogical = ls.CLISessionID
+			logicalCwd = ls.Cwd
 			usingLogical = true
 			// If the logical session's CLISessionID matches a live cli entry,
 			// honor the existing pinning behaviour by treating that as a hit.
@@ -551,6 +553,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				if recent := s.sessions.FindRecent(deviceID, driverName, s.cfg.SessionReuseWindow); recent != nil {
 					logicalID = recent.ID
 					resumeFromLogical = recent.CLISessionID
+					logicalCwd = recent.Cwd
 					usingLogical = true
 					// If the recent session's CLI id is live in the registry,
 					// pin to it (same as the ls- prefix path above).
@@ -580,6 +583,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			logicalID = ls.ID
+			logicalCwd = ls.Cwd
 			usingLogical = true
 		}
 	}
@@ -650,6 +654,9 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			//      --resume continues the same JSONL.
 			//   3. Retry after SESSION_NOT_FOUND (attempt > 0) → no resume.
 			startOpts := agent.StartOpts{}
+			if logicalCwd != "" {
+				startOpts.Cwd = logicalCwd
+			}
 			isResumeAttempt := false
 			if attempt == 0 {
 				switch {
@@ -717,7 +724,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.agentSessions.touch(string(sid))
 
 		if attempt == 0 {
-			s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v text_chars=%d", driverName, sid, isNew, len(text))
+			s.log.Infof("phase=agent_start driver=%s sid=%s is_new=%v cwd=%q text_chars=%d", driverName, sid, isNew, logicalCwd, len(text))
 		} else {
 			s.log.Warnf("phase=agent_retry driver=%s sid=%s attempt=%d reason=SESSION_NOT_FOUND",
 				driverName, sid, attempt)
