@@ -202,11 +202,20 @@ void bb_ui_agent_chat_session_picker_move(int delta);
  * Confirm the currently highlighted session picker row.
  * Returns action code:
  *   0 = switched to selected session
- *   1 = Settings entry selected (caller should enter settings overlay)
- *  -1 = no action (picker not visible or invalid state)
+ *   2 = user chose "+ 新建 session" (triggers CWD picker)
+ *  -1 = no action (picker not visible, driver row selected, or invalid state)
  * Must be called inside the LVGL lock.
  */
 int bb_ui_agent_chat_session_picker_select(void);
+
+/**
+ * Cycle the driver selector while the session picker is open and the driver
+ * row (row 0) is highlighted.
+ * Returns 1 if the event was consumed (driver row was active), 0 if the
+ * caller should fall back to the normal close-picker + cycle-driver path.
+ * Must be called inside the LVGL lock.
+ */
+int bb_ui_agent_chat_session_picker_driver_cycle(int delta);
 
 /**
  * Returns 1 if the session picker is currently visible (loading or shown).

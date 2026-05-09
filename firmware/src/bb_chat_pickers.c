@@ -16,6 +16,7 @@ void bb_chat_picker_session_hide(void)        { bb_ui_agent_chat_session_picker_
 void bb_chat_picker_session_move(int delta)   { bb_ui_agent_chat_session_picker_move(delta); }
 int  bb_chat_picker_session_select(void)      { return bb_ui_agent_chat_session_picker_select(); }
 int  bb_chat_picker_session_is_visible(void)  { return bb_ui_agent_chat_session_picker_is_visible(); }
+int  bb_chat_picker_session_driver_cycle(int delta) { return bb_ui_agent_chat_session_picker_driver_cycle(delta); }
 
 void bb_chat_picker_cwd_hide(void)            { /* no-op: CWD picker is hide via confirm/cancel */ }
 void bb_chat_picker_cwd_show(void)            { /* triggered internally by session picker → "+ 新建" */ }

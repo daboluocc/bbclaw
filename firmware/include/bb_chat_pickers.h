@@ -13,9 +13,8 @@
  *
  * Return values for bb_chat_picker_session_select():
  *   0 = session switched
- *   1 = user chose "Settings" row
  *   2 = user chose "+ 新建 session" (triggers CWD picker)
- *  -1 = picker not visible or invalid selection
+ *  -1 = picker not visible or invalid selection (includes driver row OK)
  */
 
 void bb_chat_picker_session_show(void);
@@ -23,6 +22,13 @@ void bb_chat_picker_session_hide(void);
 void bb_chat_picker_session_move(int delta);
 int  bb_chat_picker_session_select(void);
 int  bb_chat_picker_session_is_visible(void);
+
+/**
+ * Cycle the driver selector while the session picker is open and the driver
+ * row is highlighted.  Returns 1 if consumed, 0 to fall back to the normal
+ * close-picker + cycle-driver path.
+ */
+int  bb_chat_picker_session_driver_cycle(int delta);
 
 void bb_chat_picker_cwd_show(void);
 void bb_chat_picker_cwd_hide(void);
