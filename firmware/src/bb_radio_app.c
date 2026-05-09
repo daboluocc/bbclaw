@@ -432,7 +432,10 @@ static int agent_chat_voice_capture_active(void) {
 static volatile int s_settings_active;
 static lv_obj_t* s_settings_root;
 
-static int settings_overlay_enter(void) {
+/* settings_overlay_enter: entry point for the SETTINGS overlay.
+ * The session picker no longer exposes a Settings row (issue #64); this
+ * function is kept for a future entry point (e.g. long-press OK in CHAT). */
+static int __attribute__((unused)) settings_overlay_enter(void) {
   if (s_settings_active) return 0;
   if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
     ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
@@ -1696,22 +1699,14 @@ static void stream_task(void* arg) {
                     lvgl_port_unlock();
                   }
                   break;
-                case BB_NAV_EVENT_OK: {
-                  int action = -1;
+                case BB_NAV_EVENT_OK:
                   if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
-                    action = bb_ui_agent_chat_session_picker_select();
+                    bb_ui_agent_chat_session_picker_select();
                     lvgl_port_unlock();
                   } else {
                     ESP_LOGW(TAG, "CHAT picker: OK select lock timeout");
                   }
-                  if (action == 1) { /* Settings */
-                    if (settings_overlay_enter() == 0) {
-                      set_radio_app_state(BBCLAW_STATE_SETTINGS);
-                      nav_handled_versions[event] = s_nav_event_versions[event];
-                    }
-                  }
                   break;
-                }
                 case BB_NAV_EVENT_BACK:
                   if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
                     bb_ui_agent_chat_session_picker_hide();
@@ -1719,16 +1714,27 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_LEFT:
-                case BB_NAV_EVENT_RIGHT:
-                  /* Close picker, then cycle driver. */
+                case BB_NAV_EVENT_RIGHT: {
+                  /* If the driver row is highlighted, cycle driver in-place
+                   * and re-fetch sessions; otherwise close picker and cycle. */
+                  int consumed = 0;
                   if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
-                    bb_ui_agent_chat_session_picker_hide();
+                    consumed = bb_ui_agent_chat_session_picker_driver_cycle(
+                        nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
                     lvgl_port_unlock();
                   }
-                  if (!busy) {
-                    agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
+                  if (!consumed) {
+                    /* Non-driver row: close picker, then cycle driver. */
+                    if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                      bb_ui_agent_chat_session_picker_hide();
+                      lvgl_port_unlock();
+                    }
+                    if (!busy) {
+                      agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
+                    }
                   }
                   break;
+                }
                 default: break;
               }
             } else {
