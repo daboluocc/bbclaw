@@ -49,7 +49,8 @@ typedef struct {
 typedef struct {
   char id[64];
   char title[24];
-  char cwd[32];       /* basename of the session's working directory; empty if unknown */
+  char cwd[32];       /* absolute cwd path (truncated); kept for compat */
+  char cwd_name[32];  /* CwdPool entry name (issue #70); empty if adapter didn't send it */
   int message_count;
   int64_t last_used_ms;
 } bb_agent_session_info_t;

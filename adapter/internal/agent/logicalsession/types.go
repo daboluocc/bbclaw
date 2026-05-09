@@ -24,4 +24,8 @@ type LogicalSession struct {
 	Title        string    `json:"title,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 	LastUsedAt   time.Time `json:"lastUsedAt"`
+	// CwdName is the human-readable CwdPool entry name for Cwd. It is
+	// populated on outbound responses only (reverse-lookup against the
+	// adapter's CwdPool config); it is never stored to disk.
+	CwdName string `json:"cwdName,omitempty"`
 }
