@@ -26,6 +26,7 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
+	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
@@ -345,5 +346,88 @@ func TestHandleAgentMessage_LogicalSessionCwdPassedAfterDriverSwitch(t *testing.
 	cwds := drv.cwdsCopy()
 	if len(cwds) != 1 || cwds[0] != "/tmp/switched" {
 		t.Errorf("driver Start Cwd=%v want [\"/tmp/switched\"]", cwds)
+	}
+}
+
+// TestHandleAgentSessionsLogical_CwdName verifies that the logical session list
+// response includes a cwdName field populated by reverse-lookup against CwdPool,
+// falling back to filepath.Base(cwd) for paths not in the pool (issue #70).
+func TestHandleAgentSessionsLogical_CwdName(t *testing.T) {
+	log := obs.NewLogger()
+	metrics := obs.NewMetrics()
+
+	dir := t.TempDir()
+	mgr, err := logicalsession.NewManager(filepath.Join(dir, "sessions.json"), "", log)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Create three sessions:
+	//   1. cwd matches a pool entry → cwdName = pool name
+	//   2. cwd matches another pool entry → cwdName = pool name
+	//   3. cwd not in pool → cwdName = filepath.Base(cwd)
+	_, err = mgr.Create("dev-1", "claude-code", "/Users/mikas/code/myproject", "proj session")
+	if err != nil {
+		t.Fatalf("Create 1: %v", err)
+	}
+	_, err = mgr.Create("dev-1", "claude-code", "/Users/mikas/code/side", "side session")
+	if err != nil {
+		t.Fatalf("Create 2: %v", err)
+	}
+	_, err = mgr.Create("dev-1", "claude-code", "/tmp/random/work", "stray session")
+	if err != nil {
+		t.Fatalf("Create 3: %v", err)
+	}
+
+	srv := NewServer(AppConfig{
+		CwdPool: []config.CwdEntry{
+			{Name: "myproject", Path: "/Users/mikas/code/myproject"},
+			{Name: "side", Path: "/Users/mikas/code/side"},
+		},
+	}, nil, nil, nil, nil, log, metrics)
+	srv.SetSessionManager(mgr)
+
+	req := httptest.NewRequest("GET", "/v1/agent/sessions?kind=logical&deviceId=dev-1&limit=10", nil)
+	w := httptest.NewRecorder()
+	srv.handleAgentSessionsLogical(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got error=%s", resp.Error)
+	}
+
+	data := resp.Data.(map[string]any)
+	sessionsRaw, _ := json.Marshal(data["sessions"])
+	var sessions []map[string]any
+	if err := json.Unmarshal(sessionsRaw, &sessions); err != nil {
+		t.Fatalf("unmarshal sessions: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("expected 3 sessions, got %d", len(sessions))
+	}
+
+	// Build a map from title → cwdName for easy assertion.
+	byTitle := map[string]string{}
+	for _, s := range sessions {
+		title, _ := s["title"].(string)
+		cwdName, _ := s["cwdName"].(string)
+		byTitle[title] = cwdName
+	}
+
+	if got := byTitle["proj session"]; got != "myproject" {
+		t.Errorf("proj session cwdName=%q, want myproject", got)
+	}
+	if got := byTitle["side session"]; got != "side" {
+		t.Errorf("side session cwdName=%q, want side", got)
+	}
+	if got := byTitle["stray session"]; got != "work" {
+		t.Errorf("stray session cwdName=%q, want work (filepath.Base fallback)", got)
 	}
 }

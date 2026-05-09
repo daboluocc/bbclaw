@@ -74,7 +74,7 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 #define BB_CHAT_DRIVER_CACHE_MAX 6
 
 /* Session picker (Phase S1) — full-screen overlay for multi-session switching. */
-#define BB_SESSION_PICKER_MAX      8
+#define BB_SESSION_PICKER_MAX      16
 #define BB_SESSION_PICKER_VISIBLE  6
 #define BB_SESSION_PICKER_ROW_H    20
 
@@ -159,6 +159,7 @@ typedef struct {
   int session_picker_active_idx;       /* index of current session in list (-1 if not found) */
   int session_picker_visible;          /* 0=hidden, 1=loading, 2=visible */
   lv_obj_t* session_picker_root;
+  lv_obj_t* session_picker_title;      /* title label — updated by apply_styles for position indicator */
   lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 2]; /* Driver + New + sessions */
   int session_picker_total_rows;       /* session_list_count + 2 (Driver + New) */
   volatile int session_fetch_pending;
@@ -1897,6 +1898,25 @@ static void session_picker_apply_styles(void) {
       lv_obj_set_style_text_color(row, lv_color_hex(BB_SPICKER_FG_DIM), 0);
     }
   }
+
+  /* Update title position indicator: "Sessions (drv) cur/total" when a
+   * session row is selected; "Sessions (drv) total" otherwise. */
+  if (s_chat.session_picker_title != NULL) {
+    const int n_sessions = s_chat.session_list_count;
+    const char* drv = s_chat.driver_name[0] != '\0'
+                        ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+    char title_buf[48];
+    if (n_sessions > 0 && s_chat.session_picker_sel >= 2) {
+      /* sel >= 2 means a session row is highlighted; show 1-based index */
+      int cur = s_chat.session_picker_sel - 1; /* 1-based among session rows */
+      snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d/%d", drv, cur, n_sessions);
+    } else if (n_sessions > 0) {
+      snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d", drv, n_sessions);
+    } else {
+      snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
+    }
+    lv_label_set_text(s_chat.session_picker_title, title_buf);
+  }
 }
 
 static void format_relative_time(int64_t last_used_ms, char* buf, int buf_len) {
@@ -1939,6 +1959,7 @@ static void session_picker_build_ui(void) {
   if (s_chat.session_picker_root != NULL) {
     lv_obj_del(s_chat.session_picker_root);
     s_chat.session_picker_root = NULL;
+    s_chat.session_picker_title = NULL;
     memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
   }
 
@@ -1967,6 +1988,7 @@ static void session_picker_build_ui(void) {
 
   /* Title row. */
   lv_obj_t* title = lv_label_create(s_chat.session_picker_root);
+  s_chat.session_picker_title = title;
   lv_obj_set_size(title, lv_pct(100), BB_SPICKER_TITLE_H);
   lv_obj_set_style_text_color(title, lv_color_hex(BB_SPICKER_FG), 0);
   lv_obj_set_style_text_font(title, font, 0);
@@ -1974,7 +1996,14 @@ static void session_picker_build_ui(void) {
   char title_buf[48];
   const char* drv = s_chat.driver_name[0] != '\0'
                       ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-  snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
+  if (n_sessions > 0) {
+    /* Show position indicator: current index is unknown at build time (sel
+     * may be on Driver or New row), so show total count for now. The
+     * apply_styles pass will update it once sel is known. */
+    snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d", drv, n_sessions);
+  } else {
+    snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
+  }
   lv_label_set_text(title, title_buf);
 
   /* Row 0: Driver selector — shows current driver; LEFT/RIGHT cycles drivers. */
@@ -2021,7 +2050,10 @@ static void session_picker_build_ui(void) {
 
     const bb_agent_session_info_t* si = &s_chat.session_list[i];
     const char* title = si->title;
-    if (title == NULL || title[0] == '\0') title = "(untitled)";
+    /* Fallback order: title → cwd_name → "(untitled)" */
+    if (title == NULL || title[0] == '\0') {
+      title = (si->cwd_name[0] != '\0') ? si->cwd_name : "(untitled)";
+    }
 
     char time_buf[8] = {0};
     format_relative_time(si->last_used_ms, time_buf, sizeof(time_buf));
@@ -2034,8 +2066,13 @@ static void session_picker_build_ui(void) {
     if (time_buf[0] != '\0') {
       off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", time_buf);
     }
-    if (si->cwd[0] != '\0') {
-      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", si->cwd);
+    /* Prefer the human-readable pool name; fall back to raw cwd only if
+     * neither cwd_name nor cwd is available (old adapter). */
+    const char* cwd_label = si->cwd_name[0] != '\0' ? si->cwd_name
+                          : si->cwd[0] != '\0'       ? si->cwd
+                          : NULL;
+    if (cwd_label != NULL) {
+      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", cwd_label);
     }
     if (i == s_chat.session_picker_active_idx) {
       snprintf(suffix + off, sizeof(suffix) - (size_t)off, " <");
@@ -2077,6 +2114,7 @@ void bb_ui_agent_chat_session_picker_hide(void) {
   if (s_chat.session_picker_root != NULL) {
     lv_obj_del(s_chat.session_picker_root);
     s_chat.session_picker_root = NULL;
+    s_chat.session_picker_title = NULL;
     memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
   }
   s_chat.session_picker_visible = 0;

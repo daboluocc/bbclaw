@@ -384,7 +384,7 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
 
   char url[320] = {0};
   char path[128] = {0};
-  snprintf(path, sizeof(path), "/v1/agent/sessions?kind=logical&driver=%s&limit=6", driver_name);
+  snprintf(path, sizeof(path), "/v1/agent/sessions?kind=logical&driver=%s&limit=16", driver_name);
   agent_build_url(url, sizeof(url), path);
 
   bb_http_dyn_accum_t accum = {0};
@@ -469,11 +469,19 @@ esp_err_t bb_agent_list_sessions(const char* driver_name, bb_agent_session_info_
         slot->last_used_ms = (int64_t)last_used->valuedouble * 1000;
       }
 
-      /* cwd: adapter sends the basename of the working directory */
+      /* cwd: adapter sends the absolute working directory path */
       const cJSON* cwd = cJSON_GetObjectItemCaseSensitive(item, "cwd");
       if (cJSON_IsString(cwd) && cwd->valuestring != NULL) {
         strncpy(slot->cwd, cwd->valuestring, sizeof(slot->cwd) - 1);
         slot->cwd[sizeof(slot->cwd) - 1] = '\0';
+      }
+
+      /* cwdName: human-readable CwdPool entry name (issue #70); absent on
+       * older adapters — slot->cwd_name stays '\0' in that case. */
+      const cJSON* cwd_name = cJSON_GetObjectItemCaseSensitive(item, "cwdName");
+      if (cJSON_IsString(cwd_name) && cwd_name->valuestring != NULL) {
+        strncpy(slot->cwd_name, cwd_name->valuestring, sizeof(slot->cwd_name) - 1);
+        slot->cwd_name[sizeof(slot->cwd_name) - 1] = '\0';
       }
     }
   }
