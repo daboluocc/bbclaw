@@ -257,6 +257,11 @@ static void tts_cancel_in_flight(void);
 static void spawn_driver_fetch_task(void);
 static void apply_driver_cache_idx(void);
 
+/* Forward decls for session picker UI (used by on_driver_fetch_done to rebuild
+ * the picker in-place when the driver list arrives after the picker is open). */
+static void session_picker_build_ui(void);
+static void session_picker_apply_styles(void);
+
 /* Forward decls for Phase S3 history replay (defined alongside session-fetch). */
 static void spawn_history_fetch_task(int before, int is_initial);
 static void history_state_reset(void);
@@ -1514,6 +1519,15 @@ static void on_driver_fetch_done(void* user_data) {
     s_chat.driver_cache_offline = 0;
   }
   apply_driver_cache_idx();
+  /* If the session picker is already visible, rebuild it so the driver row
+   * reflects the freshly-loaded driver list instead of staying at "drv: ...".
+   * Preserve the current selection so the cursor doesn't jump. */
+  if (s_chat.session_picker_visible == 2) {
+    int saved_sel = s_chat.session_picker_sel;
+    session_picker_build_ui();
+    s_chat.session_picker_sel = saved_sel;
+    session_picker_apply_styles();
+  }
   free(res);
 }
 
@@ -1933,9 +1947,11 @@ static void session_picker_build_ui(void) {
   const int total_rows = n_sessions + 2; /* Driver + New + sessions */
   s_chat.session_picker_total_rows = total_rows;
   /* Active idx is into session_list[]; the picker visual idx is shifted by 2
-   * because row 0 is the Driver row and row 1 is "+ 新建 session". */
+   * because row 0 is the Driver row and row 1 is "+ 新建 session".
+   * When no session is active, default focus to row 0 (driver row) so the
+   * user can immediately LEFT/RIGHT to pick a driver without pressing UP. */
   s_chat.session_picker_sel = (s_chat.session_picker_active_idx >= 0)
-                                ? s_chat.session_picker_active_idx + 2 : 1;
+                                ? s_chat.session_picker_active_idx + 2 : 0;
 
   /* Full-screen overlay. */
   s_chat.session_picker_root = lv_obj_create(s_chat.parent);
@@ -1970,13 +1986,13 @@ static void session_picker_build_ui(void) {
     lv_obj_set_style_text_font(row, font, 0);
     char drv_buf[32];
     if (s_chat.driver_cache_count <= 0 && s_chat.driver_fetch_pending) {
-      snprintf(drv_buf, sizeof(drv_buf), "drv: ...");
+      snprintf(drv_buf, sizeof(drv_buf), "< drv: ... >");
     } else if (s_chat.driver_cache_offline) {
-      snprintf(drv_buf, sizeof(drv_buf), "drv: OFFLINE");
+      snprintf(drv_buf, sizeof(drv_buf), "< drv: OFFLINE >");
     } else {
       const char* drv = s_chat.driver_name[0] != '\0'
                           ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-      snprintf(drv_buf, sizeof(drv_buf), "drv: %s", drv);
+      snprintf(drv_buf, sizeof(drv_buf), "< %s >", drv);
     }
     lv_label_set_text(row, drv_buf);
     s_chat.session_picker_items[0] = row;
@@ -2047,6 +2063,12 @@ void bb_ui_agent_chat_session_picker_show(void) {
   s_chat.session_picker_visible = 1; /* loading */
   ESP_LOGI(TAG, "session_picker: show (fetching sessions for '%s')",
            s_chat.driver_name[0] != '\0' ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK);
+  /* If the driver cache hasn't been populated yet (e.g. picker opened before
+   * the initial chat_open fetch completed), kick a fresh fetch so the driver
+   * row will update once the result arrives. */
+  if (s_chat.driver_cache_count <= 0 && !s_chat.driver_fetch_pending) {
+    spawn_driver_fetch_task();
+  }
   spawn_session_fetch_task();
 }
 
@@ -2455,7 +2477,9 @@ int bb_ui_agent_chat_session_picker_select(void) {
   const int n = s_chat.session_list_count;
 
   if (sel == 0) {
-    /* Driver row — cycling is handled by session_picker_driver_cycle(); OK is a no-op. */
+    /* Driver row — OK cycles to the next driver (same as RIGHT), consistent
+     * with the visual < name > affordance. */
+    bb_ui_agent_chat_session_picker_driver_cycle(+1);
     return BB_SESSION_PICKER_ACTION_NONE;
   }
 
@@ -2511,8 +2535,11 @@ int bb_ui_agent_chat_session_picker_is_visible(void) {
  */
 int bb_ui_agent_chat_session_picker_driver_cycle(int delta) {
   if (!s_chat.active || s_chat.session_picker_visible != 2) return 0;
-  /* Only consume the event when the driver row (row 0) is highlighted. */
-  if (s_chat.session_picker_sel != 0) return 0;
+  /* Consume LEFT/RIGHT unconditionally while the picker is open — driver
+   * cycling applies regardless of which row is highlighted.  This prevents
+   * the event from falling through to the "close picker + cycle driver"
+   * default path in bb_radio_app.c, which looked like the picker being
+   * closed unexpectedly. */
   if (delta == 0) return 1;
 
   /* If the driver cache is still loading, kick a fetch and report handled. */
