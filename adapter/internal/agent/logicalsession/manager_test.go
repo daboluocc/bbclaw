@@ -324,6 +324,81 @@ func TestDefaultCwdFallback(t *testing.T) {
 	}
 }
 
+func TestDefaultTitleFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+
+	m, err := NewManager(path, "", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	t.Run("cwd provided → filepath.Base(cwd)", func(t *testing.T) {
+		s, err := m.Create("dev-1", "claude-code", "/Users/mikas/github/bbclaw", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if s.Title != "bbclaw" {
+			t.Errorf("title=%q want %q", s.Title, "bbclaw")
+		}
+	})
+
+	t.Run("cwd and defaultCwd both empty → session-<short id>", func(t *testing.T) {
+		s, err := m.Create("dev-1", "claude-code", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if !strings.HasPrefix(s.Title, "session-") {
+			t.Errorf("title=%q want prefix %q", s.Title, "session-")
+		}
+		suffix := strings.TrimPrefix(s.Title, "session-")
+		if len(suffix) != 6 {
+			t.Errorf("title suffix %q should be 6 chars, got %d", suffix, len(suffix))
+		}
+		// Suffix must match the last 6 chars of the id.
+		idStr := string(s.ID)
+		wantSuffix := idStr[len(idStr)-6:]
+		if suffix != wantSuffix {
+			t.Errorf("title suffix %q does not match id tail %q", suffix, wantSuffix)
+		}
+	})
+
+	t.Run("explicit title is not overwritten", func(t *testing.T) {
+		s, err := m.Create("dev-1", "claude-code", "/Users/mikas/github/bbclaw", "my custom title")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if s.Title != "my custom title" {
+			t.Errorf("title=%q want %q", s.Title, "my custom title")
+		}
+	})
+
+	t.Run("defaultCwd fallback used for title when cwd arg is empty", func(t *testing.T) {
+		m2, err := NewManager(filepath.Join(dir, "s2.json"), "/home/user/my-project", testLogger())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		s, err := m2.Create("dev-1", "claude-code", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// cwd arg "" → falls back to defaultCwd "/home/user/my-project" → Base = "my-project"
+		if s.Title != "my-project" {
+			t.Errorf("title=%q want %q", s.Title, "my-project")
+		}
+	})
+
+	t.Run("degenerate cwd '/' falls back to session-<id>", func(t *testing.T) {
+		s, err := m.Create("dev-1", "claude-code", "/", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if !strings.HasPrefix(s.Title, "session-") {
+			t.Errorf("title=%q want prefix %q for degenerate cwd", s.Title, "session-")
+		}
+	})
+}
+
 func TestSetTitle(t *testing.T) {
 	m, _ := newTestManager(t)
 	s, err := m.Create("dev-1", "claude-code", "/p", "old")
