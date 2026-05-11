@@ -8,6 +8,7 @@
 #include "bb_agent_client.h"
 #include "bb_agent_theme.h"
 #include "bb_audio.h"
+#include "bb_chat_recording.h"
 #include "bb_config.h"
 #include "bb_display.h"
 #include "bb_notification.h"
@@ -2703,6 +2704,7 @@ void bb_ui_agent_chat_voice_listening(int begin) {
      * once agent_task starts after PTT release + ASR. */
     post_state(BB_AGENT_STATE_LISTENING);
     post_listening_topbar(1);
+    bb_chat_recording_show();
     /* Phase 4.9: 通知 bb_state PTT 已 ARMED（VAD 触发会再升级到 STREAMING） */
     bb_state_dispatch((bb_event_payload_t){
       .type = BB_EVT_FORCE_PTT_PHASE,
@@ -2710,6 +2712,7 @@ void bb_ui_agent_chat_voice_listening(int begin) {
     });
   } else {
     post_listening_topbar(0);
+    bb_chat_recording_hide();
     /* Don't force IDLE here — caller follows up with bb_ui_agent_chat_send
      * which will drive BUSY → text → TURN_END. If we reset to IDLE here we
      * get a brief flicker; better to leave the previous state in place. */

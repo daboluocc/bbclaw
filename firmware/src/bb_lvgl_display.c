@@ -8,6 +8,7 @@
 #include "bb_display.h"
 #include "bb_page_standby.h"
 #include "bb_page_locked.h"
+#include "bb_chat_recording.h"
 #include "bb_status.h"
 
 #if defined(BBCLAW_SIMULATOR)
@@ -1604,6 +1605,10 @@ void bb_display_set_record_level(uint8_t level_pct, int voiced) {
   s_record_voiced = voiced ? 1 : 0;
   s_record_level_updated_ms = bb_now_ms();
   portEXIT_CRITICAL(&s_state_lock);
+  /* Forward to chat recording overlay when chat is active */
+  if (s_chat_active) {
+    bb_chat_recording_set_level(level_pct, voiced);
+  }
 }
 
 void bb_display_set_battery(int supported, int available, int percent, int low, int charging) {
