@@ -128,6 +128,25 @@ func (m *Manager) Create(deviceID, driver, cwd, title string) (*LogicalSession, 
 		}
 	}
 
+	// Synthesize a default title when the caller doesn't supply one.
+	// filepath.Base("") == "." and filepath.Base("/") == "/" are both
+	// degenerate, so we treat them as "no useful cwd" and fall back to
+	// the id-based name instead.
+	if title == "" {
+		base := filepath.Base(cwd)
+		if base != "" && base != "." && base != "/" {
+			title = base
+		} else {
+			// id is "ls-<16 hex chars>"; take the last 6 chars as a short suffix.
+			idStr := string(id)
+			if len(idStr) >= 6 {
+				title = "session-" + idStr[len(idStr)-6:]
+			} else {
+				title = "session-" + idStr
+			}
+		}
+	}
+
 	s := &LogicalSession{
 		ID:         id,
 		DeviceID:   deviceID,
