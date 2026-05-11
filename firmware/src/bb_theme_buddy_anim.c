@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
+#include "bb_chat_recording.h"
 #include "bb_chat_transcript.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
@@ -450,6 +451,9 @@ static void theme_on_enter(lv_obj_t* parent) {
   const int transcript_h = 112;
   s_st.transcript = bb_chat_transcript_create(s_st.root, 320, transcript_h, transcript_y);
 
+  /* Recording overlay — sits on top of transcript, hidden until PTT pressed */
+  bb_chat_recording_create(s_st.root, 320, transcript_h);
+
   s_st.active_assistant = NULL;
   s_st.dots_timer = NULL;
   s_st.dots_phase = 0;
@@ -478,6 +482,7 @@ static void theme_on_exit(void) {
   s_st.active_assistant = NULL;
   s_st.built = 0;
   bb_chat_transcript_destroy();  /* reset internal pointers (root del cascaded) */
+  bb_chat_recording_destroy();   /* delete timer; reset internal pointers (root del cascaded) */
 }
 
 static void theme_set_state(bb_agent_state_t state) {

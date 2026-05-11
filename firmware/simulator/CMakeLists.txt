@@ -35,6 +35,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_topbar.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_bottombar.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_transcript.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_recording.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c"
 )
 
