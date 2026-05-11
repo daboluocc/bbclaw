@@ -124,6 +124,12 @@
 #define BBCLAW_ADAPTER_STREAM_CHUNK_DIAG 1
 #endif
 
+/** 为 1 时：打印 TTS 逐包调试日志（phase=tts_chunk_* / play_pcm stereo32）。
+ *  默认 0：只保留一次性里程碑与错误日志，避免 30~60 条/回答 的刷屏。 */
+#ifndef BBCLAW_DEBUG_TTS_LOG
+#define BBCLAW_DEBUG_TTS_LOG 0
+#endif
+
 #ifndef BBCLAW_ENABLE_DISPLAY_PULL
 #ifdef CONFIG_BBCLAW_ENABLE_DISPLAY_PULL
 #define BBCLAW_ENABLE_DISPLAY_PULL 1

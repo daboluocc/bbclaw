@@ -1083,8 +1083,13 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       sample_idx += n;
     }
     int64_t elapsed_us = esp_timer_get_time() - t0;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "play_pcm stereo32 samples=%u i2s_bytes=%u elapsed_ms=%lld timeouts=%d",
              (unsigned)sample_count, (unsigned)i2s_bytes_total, (long long)(elapsed_us / 1000), timeout_count);
+#else
+    (void)elapsed_us;
+    (void)timeout_count;
+#endif
     return ESP_OK;
   }
   if ((pcm_len % sizeof(int16_t)) != 0U) {
@@ -1137,8 +1142,13 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       sample_idx += n;
     }
     int64_t elapsed_us = esp_timer_get_time() - t0;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "play_pcm stereo16 samples=%u i2s_bytes=%u elapsed_ms=%lld timeouts=%d",
              (unsigned)sample_count, (unsigned)i2s_bytes_total, (long long)(elapsed_us / 1000), timeout_count);
+#else
+    (void)elapsed_us;
+    (void)timeout_count;
+#endif
     return ESP_OK;
   }
   if (s_tx_use_mono16) {
@@ -1186,8 +1196,13 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
       sample_idx += n;
     }
     int64_t elapsed_us = esp_timer_get_time() - t0;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "play_pcm mono16 samples=%u i2s_bytes=%u elapsed_ms=%lld timeouts=%d",
              (unsigned)sample_count, (unsigned)i2s_bytes_total, (long long)(elapsed_us / 1000), timeout_count);
+#else
+    (void)elapsed_us;
+    (void)timeout_count;
+#endif
     return ESP_OK;
   }
   if (s_volume_pct != 100) {

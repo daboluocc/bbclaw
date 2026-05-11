@@ -959,8 +959,10 @@ static void tts_stream_task(void* arg) {
     int expected_ms = playback_sample_rate > 0 ? (int)(chunk->pcm_len / 2 * 1000 / playback_sample_rate) : 0;
     int seq = chunk->seq > 0 ? chunk->seq : (ui->tts_chunk_played + 1);
     int64_t chunk_start_ms = bb_now_ms();
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "phase=tts_chunk_play seq=%d pcm_bytes=%u rate=%d ch=%d expected_ms=%d", seq,
              (unsigned)chunk->pcm_len, playback_sample_rate, chunk->channels, expected_ms);
+#endif
     if (chunk->tts_text[0] != '\0' && strcmp(chunk->tts_text, last_sentence) != 0) {
       strncpy(last_sentence, chunk->tts_text, sizeof(last_sentence) - 1);
       last_sentence[sizeof(last_sentence) - 1] = '\0';
@@ -980,9 +982,14 @@ static void tts_stream_task(void* arg) {
     }
     ui->tts_chunk_played++;
     ui->tts_total_pcm_bytes += chunk->pcm_len;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "phase=tts_chunk_done seq=%d actual_ms=%lld expected_ms=%d ratio_x100=%lld", seq,
              (long long)(bb_now_ms() - chunk_start_ms), expected_ms,
              expected_ms > 0 ? (long long)((bb_now_ms() - chunk_start_ms) * 100 / expected_ms) : 0LL);
+#else
+    (void)chunk_start_ms;
+    (void)expected_ms;
+#endif
     free_single_tts_chunk(chunk);
   }
 
@@ -1099,15 +1106,19 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
       seq = ui->tts_chunk_received + 1;
     }
     ui->tts_chunk_received++;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "phase=tts_chunk_recv seq=%d pcm_bytes=%u rate=%d ch=%d", seq, (unsigned)event->tts_chunk->pcm_len,
              event->tts_chunk->sample_rate, event->tts_chunk->channels);
+#endif
     if (ui->tts_queue != NULL) {
       bb_tts_queue_evt_t evt = {
           .type = BB_TTS_QUEUE_EVT_CHUNK,
           .chunk = event->tts_chunk,
       };
       if (xQueueSend(ui->tts_queue, &evt, 0) == pdTRUE) {
+#if BBCLAW_DEBUG_TTS_LOG
         ESP_LOGI(TAG, "phase=tts_chunk_enqueue seq=%d queue_depth=%u", seq, (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
+#endif
         return;
       }
       ESP_LOGW(TAG, "phase=tts_chunk_drop seq=%d queue_full=1", seq);
@@ -1171,16 +1182,20 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
       seq = ui->tts_chunk_received + 1;
     }
     ui->tts_chunk_received++;
+#if BBCLAW_DEBUG_TTS_LOG
     ESP_LOGI(TAG, "phase=tts_chunk_recv_agent seq=%d pcm_bytes=%u rate=%d ch=%d", seq,
              (unsigned)event->tts_chunk->pcm_len, event->tts_chunk->sample_rate, event->tts_chunk->channels);
+#endif
     if (ui->tts_queue != NULL) {
       bb_tts_queue_evt_t evt = {
           .type = BB_TTS_QUEUE_EVT_CHUNK,
           .chunk = event->tts_chunk,
       };
       if (xQueueSend(ui->tts_queue, &evt, 0) == pdTRUE) {
+#if BBCLAW_DEBUG_TTS_LOG
         ESP_LOGI(TAG, "phase=tts_chunk_enqueue_agent seq=%d queue_depth=%u", seq,
                  (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
+#endif
         return;
       }
       ESP_LOGW(TAG, "phase=tts_chunk_drop_agent seq=%d queue_full=1", seq);
@@ -2350,6 +2365,7 @@ static void stream_task(void* arg) {
                * agent a second time). Just clear the listening hint. */
               ESP_LOGI(TAG, "agent_chat: cloud already routed, skip duplicate send (reply_len=%u)",
                        (unsigned)strlen(ui_stream->reply_text));
+              log_phase_text_chunks("phase=assistant text=", ui_stream->reply_text);
               agent_chat_voice_post_error(NULL);
             } else {
               ESP_LOGI(TAG, "agent_chat: routing transcript len=%u", (unsigned)strlen(t));
@@ -2456,8 +2472,12 @@ static void stream_task(void* arg) {
                 (void)bb_audio_set_playback_sample_rate(c->sample_rate);
               }
               int64_t chunk_start = bb_now_ms();
+#if BBCLAW_DEBUG_TTS_LOG
               ESP_LOGI(TAG, "phase=tts_chunk_play seq=%d pcm_bytes=%u rate=%d ch=%d expected_ms=%d",
                        chunk_idx, (unsigned)c->pcm_len, effective_rate, c->channels, expected_ms);
+#else
+              (void)effective_rate;
+#endif
               if (bb_audio_play_pcm_blocking(c->pcm_data, c->pcm_len) != ESP_OK) {
                 if (tts_interrupt_requested()) {
                   tts_interrupted = 1;
@@ -2469,9 +2489,14 @@ static void stream_task(void* arg) {
                 break;
               }
               int64_t chunk_elapsed = bb_now_ms() - chunk_start;
+#if BBCLAW_DEBUG_TTS_LOG
               ESP_LOGI(TAG, "phase=tts_chunk_done seq=%d actual_ms=%lld expected_ms=%d ratio_x100=%lld",
                        chunk_idx, (long long)chunk_elapsed, expected_ms,
                        expected_ms > 0 ? (long long)(chunk_elapsed * 100 / expected_ms) : 0LL);
+#else
+              (void)chunk_elapsed;
+              (void)expected_ms;
+#endif
             }
             int64_t total_elapsed = bb_now_ms() - play_start_ms;
             int total_expected = (int)(total_pcm_bytes / 2 * 1000 / BBCLAW_AUDIO_SAMPLE_RATE);
