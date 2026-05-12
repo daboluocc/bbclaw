@@ -1984,7 +1984,10 @@ static void session_picker_build_ui(void) {
   /* Full-screen overlay. */
   s_chat.session_picker_root = lv_obj_create(s_chat.parent);
   lv_obj_remove_style_all(s_chat.session_picker_root);
-  lv_obj_set_size(s_chat.session_picker_root, lv_pct(100), lv_pct(100));
+  /* Fixed size — lv_pct(100) on the root combined with flex column children
+   * triggers the same LVGL 9.5 layout oscillation that hangs transcript.
+   * Screen is 320x172; the picker covers the full display. */
+  lv_obj_set_size(s_chat.session_picker_root, 320, 172);
   lv_obj_align(s_chat.session_picker_root, LV_ALIGN_TOP_LEFT, 0, 0);
   lv_obj_set_style_bg_color(s_chat.session_picker_root, lv_color_hex(BB_SPICKER_BG), 0);
   lv_obj_set_style_bg_opa(s_chat.session_picker_root, LV_OPA_COVER, 0);
@@ -1996,10 +1999,11 @@ static void session_picker_build_ui(void) {
   /* Title row. */
   lv_obj_t* title = lv_label_create(s_chat.session_picker_root);
   s_chat.session_picker_title = title;
-  lv_obj_set_size(title, lv_pct(100), BB_SPICKER_TITLE_H);
+  lv_obj_set_size(title, 316, BB_SPICKER_TITLE_H);
   lv_obj_set_style_text_color(title, lv_color_hex(BB_SPICKER_FG), 0);
   lv_obj_set_style_text_font(title, font, 0);
   lv_obj_set_style_pad_left(title, 2, 0);
+  lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
   char title_buf[48];
   const char* drv = s_chat.driver_name[0] != '\0'
                       ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
@@ -2016,10 +2020,12 @@ static void session_picker_build_ui(void) {
   /* Row 0: Driver selector — shows current driver; LEFT/RIGHT cycles drivers. */
   {
     lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_size(row, 316, BB_SESSION_PICKER_ROW_H);
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_font(row, font, 0);
+    /* DOTS: default WRAP triggers LVGL 9.5 layout oscillation on flex column. */
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
     char drv_buf[32];
     if (s_chat.driver_cache_count <= 0 && s_chat.driver_fetch_pending) {
       snprintf(drv_buf, sizeof(drv_buf), "< drv: ... >");
@@ -2037,10 +2043,11 @@ static void session_picker_build_ui(void) {
   /* Row 1: "+ 新建 session" fixed entry. */
   {
     lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_size(row, 316, BB_SESSION_PICKER_ROW_H);
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_font(row, font, 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(row, "+ 新建 session");
     s_chat.session_picker_items[1] = row;
   }
@@ -2048,7 +2055,7 @@ static void session_picker_build_ui(void) {
   /* Session rows: "preview [Nm] [Xt] [<]" */
   for (int i = 0; i < n_sessions; ++i) {
     lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, lv_pct(100), BB_SESSION_PICKER_ROW_H);
+    lv_obj_set_size(row, 316, BB_SESSION_PICKER_ROW_H);
     lv_obj_set_style_pad_left(row, 4, 0);
     lv_obj_set_style_pad_right(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);

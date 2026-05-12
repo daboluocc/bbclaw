@@ -45,11 +45,15 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
                                 lv_text_align_t align, int italic) {
   if (s_transcript == NULL) return NULL;
   lv_obj_t* lbl = lv_label_create(s_transcript);
-  lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_WRAP);
-  /* Fixed pixel width (320 - 2*MSG_HMARGIN). Using lv_pct(100) here combines
-   * with the parent flex column + WRAP label self-sizing to trigger a layout
-   * oscillation in LVGL 9.5 (lv_snapshot_take and scroll_to_view both
-   * force-re-layout and hang the LVGL task). See note in on_history_fetch_done. */
+  /* DOT mode = single-line, ellipsize overflow. WRAP mode (which makes the
+   * label's height a function of its width) combined with the parent's flex
+   * column + scrollable triggers a layout oscillation in LVGL 9.5: any
+   * forced layout pass (lv_snapshot_take, lv_obj_scroll_to_view,
+   * lv_obj_update_layout) hangs the LVGL task. DOT keeps the label height
+   * fixed at one line so flex resolves the column in a single pass.
+   * Trade-off: long messages are truncated with "..." in the transcript;
+   * full content is still in the session history backend. */
+  lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_width(lbl, 320 - 2 * MSG_HMARGIN);
   lv_obj_set_style_text_font(lbl, font(), 0);
   lv_obj_set_style_text_color(lbl, lv_color_hex(fg_color), 0);
