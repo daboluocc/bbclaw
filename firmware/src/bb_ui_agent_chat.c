@@ -39,7 +39,7 @@ static const char* TAG = "bb_agent_ui";
  * the LVGL task (already holds the lock) and from worker tasks (blocks
  * until the LVGL task releases between timer handler iterations). */
 static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) {
-  if (!lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (!lvgl_port_lock(200)) {
     ESP_LOGW(TAG, "safe_lv_async_call: lock timeout, dropping");
     return LV_RESULT_INVALID;
   }
@@ -727,7 +727,6 @@ static void load_nvs_task(void* arg) {
     esp_err_t err = bb_session_store_load(driver, s_chat.session_id, sizeof(s_chat.session_id));
     if (err == ESP_OK) {
       ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, driver);
-      bb_display_set_session_id(s_chat.session_id);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
       ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
     }
@@ -752,6 +751,13 @@ static void load_nvs_on_internal_stack(void) {
   /* 2 s is generous — NVS read is typically < 1 ms. */
   xSemaphoreTake(sem, pdMS_TO_TICKS(2000));
   vSemaphoreDelete(sem);
+  /* Notify display layer about the loaded session_id. Done here (caller
+   * context) instead of inside load_nvs_task because bb_display_set_session_id
+   * triggers refresh_ui() which allocates >1KB on the stack — too much for
+   * the 4KB internal-RAM task. */
+  if (s_chat.session_id[0] != '\0') {
+    bb_display_set_session_id(s_chat.session_id);
+  }
 }
 
 /* ── Phase 4.5.1 — TTS reply toggle persistence ── */
@@ -2723,6 +2729,7 @@ void bb_ui_agent_chat_voice_processing(void) {
   if (!s_chat.active) return;
   ESP_LOGI(TAG, "voice_processing → BUSY (ASR/cloud wait)");
   post_listening_topbar(0);
+  bb_chat_recording_hide();
   post_state(BB_AGENT_STATE_BUSY);
   /* Phase 4.9: PTT 进入 RELEASED_WAIT 等 ASR 返回 */
   bb_state_dispatch((bb_event_payload_t){

@@ -46,7 +46,11 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
   if (s_transcript == NULL) return NULL;
   lv_obj_t* lbl = lv_label_create(s_transcript);
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_WRAP);
-  lv_obj_set_width(lbl, lv_pct(100));
+  /* Fixed pixel width (320 - 2*MSG_HMARGIN). Using lv_pct(100) here combines
+   * with the parent flex column + WRAP label self-sizing to trigger a layout
+   * oscillation in LVGL 9.5 (lv_snapshot_take and scroll_to_view both
+   * force-re-layout and hang the LVGL task). See note in on_history_fetch_done. */
+  lv_obj_set_width(lbl, 320 - 2 * MSG_HMARGIN);
   lv_obj_set_style_text_font(lbl, font(), 0);
   lv_obj_set_style_text_color(lbl, lv_color_hex(fg_color), 0);
   lv_obj_set_style_text_align(lbl, align, 0);
@@ -59,9 +63,9 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
   if (italic) {
     lv_obj_set_style_text_opa(lbl, LV_OPA_70, 0);
   }
-  if (align == LV_TEXT_ALIGN_RIGHT) {
-    lv_obj_set_style_align(lbl, LV_ALIGN_RIGHT_MID, 0);
-  }
+  /* Removed: lv_obj_set_style_align(LV_ALIGN_RIGHT_MID) — it fights with the
+   * parent's flex layout and was part of the hang condition. text_align
+   * alone gives the right visual effect. */
   return lbl;
 }
 
