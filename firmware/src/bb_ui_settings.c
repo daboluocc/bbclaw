@@ -150,7 +150,7 @@ static void session_fetch_task(void* arg) {
     return;
   }
   r->err = bb_agent_list_sessions(r->driver_name, r->entries, BB_SETTINGS_SESSION_CACHE_MAX, &r->total);
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (lvgl_port_lock(200)) {
     lv_async_call(on_session_fetch_done, r);
     lvgl_port_unlock();
   } else {

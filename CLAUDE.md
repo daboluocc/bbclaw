@@ -105,27 +105,42 @@ make sim-export-feedback  # 导出预览图
 make set-board BOARD=bbclaw  # 切换到 bbclaw 板子
 ```
 
-### ⚠️ AI 职责边界
+### AI 烧录权限（2026-05-12 起开放）
 
-**AI 职责：仅负责构建成功**
-- 执行 `make build` 确保固件编译通过
-- 报告构建结果（成功/失败、固件大小、分区占用）
-- 修复构建错误和编译问题
+AI 可以执行 `make flash` 烧录固件。完整开发闭环（截图 → 改代码 → build → flash → 截图验证）由 AI 自主跑，不再需要用户中转。
 
-**用户职责：烧录与验证**
-- 用户自行执行 `make flash` 烧录固件
-- 用户自行执行 `make monitor` 查看串口输出
-- 用户负责设备功能验证
+**允许 AI 执行：**
+- `make build` / `idf.py build` — 编译
+- `make flash PORT=...` — 烧录（需要显式 PORT，避免误选 Flipper 等其他设备）
+- `make boot-recover` — 修复 boot loop
+- `make monitor-last` / `make monitor-log-filtered` / 读 `firmware/.cache/idf-monitor.latest.log` — 看日志
+- 通过 device-monitor skill 跑截图、按键注入、UI 迭代
 
-**严禁 AI 执行：**
-- `make flash` — 禁止烧录到设备
-- `make all` — 禁止自动烧录和监视
-- `make monitor` — 禁止直接打开串口监视
-- 任何直接操作物理设备的命令
+**仍然慎用 / 别用：**
+- `make monitor` 直接前台运行 — 会**永久阻塞终端**，AI session 会卡死；要看实时日志用 `make monitor-log` 后台跑 + 读 cache 文件
+- `make all` — 等价于 build+flash+monitor，会触发 monitor 阻塞
+- 任何**破坏性**操作（`make fullclean` 之外的强制初始化、修改 bootloader 等）仍需用户确认
 
-**日志查看（只读操作，允许）：**
-- `make monitor-last` — 查看上次监视日志
-- `tail -n 100 firmware/.cache/idf-monitor.latest.log` — 查看日志文件
+**TinyUSB 烧录流程**（参见 ADR-015 和 device-monitor skill）：
+
+**正常情况（推荐）**：AI 通过协议命令远程触发设备进 ROM bootloader，全自动，0 按键：
+```bash
+PORT=$(ls /dev/cu.usbmodem*3 | head -1)
+python3 firmware/scripts/devmon_reboot.py --port $PORT --wait-for-bootloader
+make flash PORT=/dev/cu.usbmodem2124401   # AI 跑
+# 设备自动重启进新固件，TinyUSB CDC 重新枚举
+```
+
+**异常恢复**（仅以下情况需要手动）：
+- 首次安装 `REQ_REBOOT_TO_BOOTLOADER` 之前的旧固件 → 一次性 BOOT+RESET 升级
+- 固件在 boot 早期就崩，TinyUSB 起不来 → BOOT+RESET 救回
+- 极少数 chip 状态卡死
+
+手动序列（仅恢复用）：
+1. 按住 BOOT 键，短按 RESET，松开 BOOT
+2. 等 `/dev/cu.usbmodem2124401` 出现
+3. `make flash PORT=/dev/cu.usbmodem2124401`
+4. 烧完单独按一下 RESET 启动新固件
 
 ### 日志查看
 ```bash

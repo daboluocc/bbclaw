@@ -61,6 +61,16 @@ typedef struct {
   volatile int      voiced;
   volatile int64_t  updated_ms;
 
+  /* Lock-free visibility request. Written by any task (no lock needed),
+   * applied by rec_timer_cb under the LVGL lock it already holds. This
+   * keeps show/hide off the LVGL lock path where 50–500 ms lock races
+   * were dropping visibility transitions.
+   *   -1 = no pending request
+   *    0 = caller wants overlay hidden
+   *    1 = caller wants overlay shown (resets anim state)
+   */
+  volatile int      want_visible;
+
   uint32_t anim_tick;
   uint8_t  bar_visual[REC_BAR_COUNT];
   int      built;
@@ -110,6 +120,25 @@ static void reset_meter_visuals(void) {
 static void rec_timer_cb(lv_timer_t* t) {
   (void)t;
   if (!s_rec.built || s_rec.root == NULL) return;
+
+  /* Apply any pending show/hide request before animating. This is the only
+   * place that mutates HIDDEN, so the caller-visible bb_chat_recording_show /
+   * bb_chat_recording_hide stay lock-free. */
+  int want = s_rec.want_visible;
+  if (want == 1) {
+    s_rec.want_visible = -1;
+    reset_meter_visuals();
+    s_rec.anim_tick = 0;
+    lv_obj_clear_flag(s_rec.root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_rec.root);
+  } else if (want == 0) {
+    s_rec.want_visible = -1;
+    lv_obj_add_flag(s_rec.root, LV_OBJ_FLAG_HIDDEN);
+    s_rec.level_pct  = 0;
+    s_rec.voiced     = 0;
+    s_rec.updated_ms = 0;
+  }
+
   if (lv_obj_has_flag(s_rec.root, LV_OBJ_FLAG_HIDDEN)) return;
 
   /* Bell-shaped amplitude profile across 7 bars */
@@ -172,7 +201,8 @@ static void rec_timer_cb(lv_timer_t* t) {
 
 /* ── public API ── */
 
-void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px) {
+void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px,
+                              int y_offset) {
   if (s_rec.built) return;
   if (parent == NULL) return;
 
@@ -184,7 +214,7 @@ void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px) {
   s_rec.root = lv_obj_create(parent);
   lv_obj_remove_style_all(s_rec.root);
   lv_obj_set_size(s_rec.root, w, h);
-  lv_obj_set_pos(s_rec.root, 0, 0);
+  lv_obj_set_pos(s_rec.root, 0, y_offset);
   lv_obj_set_style_bg_color(s_rec.root, lv_color_hex(UI_SCR_BG), 0);
   lv_obj_set_style_bg_opa(s_rec.root, LV_OPA_80, 0);
   lv_obj_clear_flag(s_rec.root, LV_OBJ_FLAG_SCROLLABLE);
@@ -254,24 +284,22 @@ void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px) {
   /* ── Update timer ── */
   s_rec.timer = lv_timer_create(rec_timer_cb, REC_UPDATE_MS, NULL);
 
+  s_rec.want_visible = -1;
   s_rec.built = 1;
 }
 
 void bb_chat_recording_show(void) {
   if (!s_rec.built || s_rec.root == NULL) return;
-  reset_meter_visuals();
-  s_rec.anim_tick = 0;
-  lv_obj_clear_flag(s_rec.root, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_foreground(s_rec.root);
+  /* Lock-free: rec_timer_cb picks this up on its next 48 ms tick under the
+   * LVGL lock it already holds. Previously callers had to acquire the LVGL
+   * lock themselves, and short (50–500 ms) lock timeouts during heavy
+   * rendering bursts left the mask in the wrong state. */
+  s_rec.want_visible = 1;
 }
 
 void bb_chat_recording_hide(void) {
   if (!s_rec.built || s_rec.root == NULL) return;
-  lv_obj_add_flag(s_rec.root, LV_OBJ_FLAG_HIDDEN);
-  /* Reset level so stale data doesn't flash on next show */
-  s_rec.level_pct  = 0;
-  s_rec.voiced     = 0;
-  s_rec.updated_ms = 0;
+  s_rec.want_visible = 0;
 }
 
 void bb_chat_recording_set_level(uint8_t level_pct, int voiced) {

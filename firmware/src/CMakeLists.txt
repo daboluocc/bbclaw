@@ -7,6 +7,7 @@ set(_bb_srcs
     "bb_button_test.c"
     "bb_cloud_client.c"
     "bb_device_config.c"
+    "bb_device_monitor.c"
     "bb_ogg_opus.cpp"
     "bb_lvgl_assets.c"
     "bb_lvgl_display.c"
@@ -97,6 +98,7 @@ idf_component_register(
         esp_lvgl_port
         esp_driver_rmt
         led_strip_encoder
+        esp_tinyusb
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")

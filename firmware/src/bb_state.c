@@ -601,7 +601,7 @@ void bb_state_dispatch(bb_event_payload_t evt) {
   /* LVGL 配 LV_OS_NONE，跨任务调 lv_async_call 必须先持 lvgl_port 锁，
    * 否则会和 lv_timer_handler 抢 TLSF 堆导致破坏（参考 bb_ui_agent_chat.c
    * 的 safe_lv_async_call 注释）。 */
-  if (!lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (!lvgl_port_lock(200)) {
     ESP_LOGW(TAG, "dispatch: lvgl_port_lock timeout (evt=%s) — DROPPED",
              bb_event_name(evt.type));
     free(heap_evt);

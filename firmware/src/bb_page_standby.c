@@ -43,6 +43,14 @@ static const lv_font_t* big_font(void) {
 #endif
 }
 
+static const lv_font_t* brand_font_fn(void) {
+#if defined(CONFIG_LV_FONT_MONTSERRAT_40) || defined(LV_FONT_MONTSERRAT_40)
+  return &lv_font_montserrat_40;
+#else
+  return big_font();
+#endif
+}
+
 void bb_page_standby_create(lv_obj_t* scr) {
   if (scr == NULL || s_view != NULL) return;
 
@@ -55,24 +63,26 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_obj_clear_flag(s_view, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scrollbar_mode(s_view, LV_SCROLLBAR_MODE_OFF);
 
-  const lv_font_t* font = big_font();
-  const int lh = (int)lv_font_get_line_height(font);
+  const lv_font_t* clock_font = big_font();
+  const lv_font_t* brand_font = brand_font_fn();
+  const int clock_lh = (int)lv_font_get_line_height(clock_font);
+  const int brand_lh = (int)lv_font_get_line_height(brand_font);
 
-  /* "BBClaw" brand — top third */
-  const int brand_y = (DISP_H / 3) - (lh / 2);
+  /* "BBClaw" brand — top third, smaller font so the clock dominates */
+  const int brand_y = (DISP_H / 3) - (brand_lh / 2);
   s_lbl_brand = lv_label_create(s_view);
   lv_obj_set_style_text_color(s_lbl_brand, lv_color_hex(UI_ME_ACCENT), 0);
-  lv_obj_set_style_text_font(s_lbl_brand, font, 0);
+  lv_obj_set_style_text_font(s_lbl_brand, brand_font, 0);
   lv_obj_set_style_text_align(s_lbl_brand, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_lbl_brand, DISP_W);
   lv_label_set_text(s_lbl_brand, "BBClaw");
   lv_obj_set_pos(s_lbl_brand, 0, brand_y);
 
-  /* Clock — bottom 2/3 */
-  const int clock_y = (DISP_H * 2 / 3) - (lh / 2) + 8;
+  /* Clock — bottom 2/3, primary focal point */
+  const int clock_y = (DISP_H * 2 / 3) - (clock_lh / 2) + 8;
   s_lbl_clock = lv_label_create(s_view);
   lv_obj_set_style_text_color(s_lbl_clock, lv_color_hex(UI_TEXT_MAIN), 0);
-  lv_obj_set_style_text_font(s_lbl_clock, font, 0);
+  lv_obj_set_style_text_font(s_lbl_clock, clock_font, 0);
   lv_obj_set_style_text_align(s_lbl_clock, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_width(s_lbl_clock, DISP_W);
   lv_label_set_text(s_lbl_clock, "--:--");

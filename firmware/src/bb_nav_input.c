@@ -123,6 +123,10 @@ static void emit_event(bb_nav_event_t event) {
   }
 }
 
+void bb_nav_input_inject(bb_nav_event_t event) {
+  emit_event(event);
+}
+
 #if BBCLAW_NAV_FLIPPER_6BUTTON || BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 /* Debounced edge detection: when raw input matches stable for at least
  * debounce_samples polls AND differs from the previously latched stable

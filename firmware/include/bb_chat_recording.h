@@ -15,7 +15,8 @@
  *   bb_chat_recording_destroy() — called from theme on_exit (LVGL task)
  */
 
-void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px);
+void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px,
+                              int y_offset);
 void bb_chat_recording_show(void);
 void bb_chat_recording_hide(void);
 void bb_chat_recording_set_level(uint8_t level_pct, int voiced);

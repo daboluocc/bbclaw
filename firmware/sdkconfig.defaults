@@ -34,3 +34,21 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=3
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
+
+# Device Monitor (ADR-015 v3 pivot): chip native USB exposed via CH334F hub
+# on the production PCB. TinyUSB exposes two CDC interfaces: CDC0 carries
+# log output (replaces USJ console), CDC1 carries the binary frame protocol
+# for screenshot / key injection.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=2
+# LVGL snapshot module — needed by the REQ_SCREENSHOT handler to capture
+# lv_screen_active() into an RGB565 buffer.
+CONFIG_LV_USE_SNAPSHOT=y
+# Switch LVGL from its builtin static-pool allocator to libc malloc, which
+# on ESP-IDF backs onto the heap caps allocator (including PSRAM). The
+# builtin pool's static array bloats the binary if grown to fit a 110 KB
+# snapshot; libc malloc keeps the binary lean and lets PSRAM absorb the
+# allocation dynamically.
+# CONFIG_LV_USE_BUILTIN_MALLOC is not set
+CONFIG_LV_USE_CLIB_MALLOC=y

@@ -71,6 +71,22 @@ config BBCLAW_ENABLE_DISPLAY_PULL
 
 endmenu
 
+menu "Device Monitor"
+
+config BBCLAW_DEVICE_MONITOR
+    bool "Enable Device Monitor (USB screenshot + key injection)"
+    default y
+    help
+        Expose a USB binary protocol channel for the bbclaw-adapter host tool
+        to capture screenshots and inject navigation key events. Intended for
+        development builds. Disable for release firmware to remove the entire
+        subsystem and its TinyUSB footprint.
+
+        See design/decisions/ADR-015-device-monitor-over-usb.md for the
+        protocol and architecture rationale.
+
+endmenu
+
 menu "Wi-Fi"
 
 config BBCLAW_WIFI_SSID

@@ -1418,7 +1418,7 @@ esp_err_t bb_display_init(void) {
   }
   lv_display_set_flush_cb(disp, lvgl_flush_cb);
 
-  if (!lvgl_port_lock(pdMS_TO_TICKS(2000))) return ESP_ERR_TIMEOUT;
+  if (!lvgl_port_lock(2000)) return ESP_ERR_TIMEOUT;
   create_ui();
   lvgl_port_unlock();
 
@@ -1535,7 +1535,7 @@ esp_err_t bb_display_chat_scroll_down(void) {
   else s_scroll_you++;
   portEXIT_CRITICAL(&s_state_lock);
 
-  if (s_ready && lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (s_ready && lvgl_port_lock(200)) {
     if (s_scroll_text != NULL) {
       lv_obj_update_layout(s_scroll_text);
       lv_obj_scroll_by_bounded(s_scroll_text, 0, step, LV_ANIM_OFF);
@@ -1556,7 +1556,7 @@ esp_err_t bb_display_chat_scroll_up(void) {
   else { if (s_scroll_you > 0) s_scroll_you--; }
   portEXIT_CRITICAL(&s_state_lock);
 
-  if (s_ready && lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (s_ready && lvgl_port_lock(200)) {
     if (s_scroll_text != NULL) {
       lv_obj_update_layout(s_scroll_text);
       lv_obj_scroll_by_bounded(s_scroll_text, 0, -step, LV_ANIM_OFF);

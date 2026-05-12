@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
+#include "bb_device_monitor.h"
 #include "bb_identity.h"
 #include "bb_ota.h"
 #include "bb_radio_app.h"
@@ -27,6 +28,10 @@ void app_main(void) {
 
   // Initialize OTA
   bb_ota_init();
+
+  // ADR-015: device monitor (USB screenshot + key injection for dev tools).
+  // No-op stub when CONFIG_BBCLAW_DEVICE_MONITOR=n.
+  bb_device_monitor_init();
 
   ESP_ERROR_CHECK(bb_radio_app_start());
 }

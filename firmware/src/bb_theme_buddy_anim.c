@@ -452,7 +452,7 @@ static void theme_on_enter(lv_obj_t* parent) {
   s_st.transcript = bb_chat_transcript_create(s_st.root, 320, transcript_h, transcript_y);
 
   /* Recording overlay — sits on top of transcript, hidden until PTT pressed */
-  bb_chat_recording_create(s_st.root, 320, transcript_h);
+  bb_chat_recording_create(s_st.root, 320, transcript_h, transcript_y);
 
   s_st.active_assistant = NULL;
   s_st.dots_timer = NULL;

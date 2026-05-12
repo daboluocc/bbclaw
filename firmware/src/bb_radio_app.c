@@ -9,6 +9,7 @@
 #include "bb_device_config.h"
 #include "bb_status.h"
 #include "bb_audio.h"
+#include "bb_chat_recording.h"
 #include "bb_config.h"
 #include "bb_display.h"
 #include "bb_gateway_node.h"
@@ -336,7 +337,7 @@ static int agent_chat_is_active(void) {
  *  Returns 0 on success, -1 on failure (caller is unchanged). */
 static int agent_chat_enter(void) {
   if (s_agent_chat_active) return 0;
-  if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
+  if (!lvgl_port_lock(500)) {
     ESP_LOGW(TAG, "agent_chat_enter: lvgl_port_lock timeout");
     return -1;
   }
@@ -377,7 +378,7 @@ static void agent_chat_exit(void) {
   if (!s_agent_chat_active) return;
   s_agent_chat_active = 0;
 
-  if (lvgl_port_lock(pdMS_TO_TICKS(500))) {
+  if (lvgl_port_lock(500)) {
     bb_ui_agent_chat_hide();  /* runs theme on_exit; deletes theme root inside our overlay */
     if (s_agent_chat_root != NULL) {
       lv_obj_del(s_agent_chat_root);
@@ -403,7 +404,7 @@ static void agent_chat_exit(void) {
 
 /* Phase 5: LEFT/RIGHT shortcut → cycle agent driver in-place (no Settings dive). */
 static void agent_chat_cycle_driver_locked(int delta) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (lvgl_port_lock(200)) {
     esp_err_t err = bb_ui_agent_chat_cycle_driver(delta);
     lvgl_port_unlock();
     if (err == ESP_ERR_NOT_FOUND) {
@@ -436,7 +437,7 @@ static lv_obj_t* s_settings_root;
  * Triggered by long-press OK in CHAT (issue #67). */
 static int settings_overlay_enter(void) {
   if (s_settings_active) return 0;
-  if (!lvgl_port_lock(pdMS_TO_TICKS(500))) {
+  if (!lvgl_port_lock(500)) {
     ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
     return -1;
   }
@@ -463,7 +464,7 @@ static int settings_overlay_enter(void) {
 static void settings_overlay_exit(void) {
   if (!s_settings_active) return;
   s_settings_active = 0;
-  if (lvgl_port_lock(pdMS_TO_TICKS(500))) {
+  if (lvgl_port_lock(500)) {
     bb_ui_settings_hide();
     if (s_settings_root != NULL) {
       lv_obj_del(s_settings_root);
@@ -484,19 +485,19 @@ static void settings_overlay_exit(void) {
 
 /* Wrapper helpers for nav events under lvgl lock. */
 static void settings_rotate_locked(int delta) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (lvgl_port_lock(200)) {
     bb_ui_settings_handle_rotate(delta);
     lvgl_port_unlock();
   }
 }
 static void settings_value_locked(int delta) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (lvgl_port_lock(200)) {
     bb_ui_settings_handle_value(delta);
     lvgl_port_unlock();
   }
 }
 static void settings_click_locked(void) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  if (lvgl_port_lock(200)) {
     UBaseType_t stack_hw_before = uxTaskGetStackHighWaterMark(NULL);
     bb_ui_settings_handle_click();
     int still_active = bb_ui_settings_is_active();
@@ -519,7 +520,7 @@ static void settings_click_locked(void) {
  * while a previous chat turn is still streaming. */
 static int agent_chat_is_busy_locked(void) {
   int busy = 0;
-  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+  if (lvgl_port_lock(50)) {
     busy = bb_ui_agent_chat_is_busy();
     lvgl_port_unlock();
   }
@@ -528,7 +529,7 @@ static int agent_chat_is_busy_locked(void) {
 
 static int agent_chat_is_adapter_offline_locked(void) {
   int offline = 0;
-  if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+  if (lvgl_port_lock(50)) {
     offline = bb_ui_agent_chat_is_adapter_offline();
     lvgl_port_unlock();
   }
@@ -536,7 +537,16 @@ static int agent_chat_is_adapter_offline_locked(void) {
 }
 
 static void agent_chat_voice_listening_locked(int begin) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+  /* bb_chat_recording_show/hide are lock-free (they just flip an atomic
+   * flag that rec_timer_cb applies on its next tick). Call them before the
+   * LVGL lock attempt so the mask always transitions even if the topbar /
+   * buddy-state update below can't grab the lock in time. */
+  if (begin) {
+    bb_chat_recording_show();
+  } else {
+    bb_chat_recording_hide();
+  }
+  if (lvgl_port_lock(100)) {
     bb_ui_agent_chat_voice_listening(begin);
     lvgl_port_unlock();
   }
@@ -548,7 +558,7 @@ static esp_err_t agent_chat_voice_send_locked(const char* text) {
    * payoff of the entire PTT round-trip; dropping the transcript because
    * LVGL was busy rendering a 50-item history + buddy animation is far
    * worse than a few hundred ms of extra wait. */
-  if (lvgl_port_lock(pdMS_TO_TICKS(5000))) {
+  if (lvgl_port_lock(5000)) {
     err = bb_ui_agent_chat_send(text);
     lvgl_port_unlock();
   } else {
@@ -562,7 +572,10 @@ static esp_err_t agent_chat_voice_send_locked(const char* text) {
  * branches in the streaming pipeline funnel through here when
  * voice_target_agent is set. */
 static void agent_chat_voice_post_error(const char* msg) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+  /* Lock-free: ensure the listening mask clears even if the error-path
+   * lock attempt below times out. */
+  bb_chat_recording_hide();
+  if (lvgl_port_lock(200)) {
     bb_ui_agent_chat_voice_listening(0);
     bb_ui_agent_chat_voice_error();
     if (msg != NULL && msg[0] != '\0') {
@@ -579,9 +592,15 @@ static void agent_chat_voice_post_error(const char* msg) {
  * released and we enter the blocking cloud-wait (ASR upload + response). This
  * eliminates the long "listening..." hang while the cloud processes audio. */
 static void agent_chat_voice_processing_locked(void) {
-  if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+  /* Mask hide is lock-free (atomic flag, applied by rec_timer_cb) — do it
+   * before the LVGL lock attempt so the listening mask always goes away on
+   * PTT release even when the lock race below loses. */
+  bb_chat_recording_hide();
+  if (lvgl_port_lock(500)) {
     bb_ui_agent_chat_voice_processing();
     lvgl_port_unlock();
+  } else {
+    ESP_LOGW(TAG, "agent_chat_voice_processing_locked: lvgl_port_lock timeout, topbar may lag");
   }
 }
 
@@ -1683,25 +1702,25 @@ static void stream_task(void* arg) {
               /* CWD picker is open — route nav to it. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_cwd_picker_move(-1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_cwd_picker_move(+1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_OK:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_cwd_picker_confirm();
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_cwd_picker_cancel();
                     lvgl_port_unlock();
                   }
@@ -1713,19 +1732,19 @@ static void stream_task(void* arg) {
                * timeout (600ms) tolerates LVGL congestion during TTS playback. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_session_picker_move(-1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_session_picker_move(+1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_OK:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_session_picker_select();
                     lvgl_port_unlock();
                   } else {
@@ -1733,7 +1752,7 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_session_picker_hide();
                     lvgl_port_unlock();
                   }
@@ -1743,14 +1762,14 @@ static void stream_task(void* arg) {
                   /* If the driver row is highlighted, cycle driver in-place
                    * and re-fetch sessions; otherwise close picker and cycle. */
                   int consumed = 0;
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     consumed = bb_ui_agent_chat_session_picker_driver_cycle(
                         nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
                     lvgl_port_unlock();
                   }
                   if (!consumed) {
                     /* Non-driver row: close picker, then cycle driver. */
-                    if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                    if (lvgl_port_lock(600)) {
                       bb_ui_agent_chat_session_picker_hide();
                       lvgl_port_unlock();
                     }
@@ -1766,13 +1785,13 @@ static void stream_task(void* arg) {
               /* Normal CHAT nav. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_scroll(-2);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(pdMS_TO_TICKS(200))) {
+                  if (lvgl_port_lock(200)) {
                     bb_ui_agent_chat_scroll(+2);
                     lvgl_port_unlock();
                   }
@@ -1790,7 +1809,7 @@ static void stream_task(void* arg) {
                    * picker is a passive list overlay and does not disturb the
                    * background stream. Longer lock timeout accommodates LVGL
                    * task congestion during TTS chunk playback. */
-                  if (lvgl_port_lock(pdMS_TO_TICKS(600))) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_session_picker_show();
                     lvgl_port_unlock();
                   } else {
@@ -1903,7 +1922,7 @@ static void stream_task(void* arg) {
           ESP_LOGW(TAG, "agent_chat: PTT press refused (adapter offline)");
           agent_chat_voice_post_error("ADAPTER OFFLINE");
           signal_error_haptic();
-          if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+          if (lvgl_port_lock(50)) {
             bb_ui_agent_chat_retry_adapter();
             lvgl_port_unlock();
           }
@@ -2866,7 +2885,7 @@ static void stream_task(void* arg) {
             if (prev_adapter_connected != s_transport_adapter_connected) {
               ESP_LOGW(TAG, "adapter_connected changed %d -> %d", prev_adapter_connected, s_transport_adapter_connected);
               if (s_transport_adapter_connected == 1 && agent_chat_is_active()) {
-                if (lvgl_port_lock(pdMS_TO_TICKS(50))) {
+                if (lvgl_port_lock(50)) {
                   bb_ui_agent_chat_retry_adapter();
                   lvgl_port_unlock();
                 }

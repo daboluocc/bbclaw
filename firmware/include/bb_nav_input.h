@@ -50,3 +50,12 @@ typedef enum {
 typedef void (*bb_nav_input_callback_t)(bb_nav_event_t event);
 
 esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback);
+
+/* Inject a navigation event as if a real button was pressed.
+ *
+ * Bypasses GPIO polling and debouncing; the registered callback is
+ * dispatched immediately on the caller's task. Intended for the device
+ * monitor (ADR-015) to drive UI from the host tool. Safe to call before
+ * bb_nav_input_init — becomes a silent no-op until a callback registers.
+ */
+void bb_nav_input_inject(bb_nav_event_t event);
