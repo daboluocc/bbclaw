@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-16
+
+### Fixed
+- **Adapter home_site_id 在 macOS 上每次重启变化**: 原来用 hostname + user + machine-id 派生 UUID v5，macOS 没有 `/etc/machine-id` 且 hostname 随网络切换变化，导致每次启动生成不同 ID，cloud 端认为是新设备并重新要求 claim。改为首次启动时生成随机 UUID v4 并持久化到 `~/.bbclaw-adapter/identity.json`，后续从文件读取，彻底消除漂移。
+
 ## [0.4.1] - 2026-04-27
 
 First release using the unified `release.yml` workflow — firmware OTA bin

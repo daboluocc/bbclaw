@@ -1,10 +1,12 @@
 package homeadapter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -25,49 +27,48 @@ type Config struct {
 	OpenClawIdentityPath string
 }
 
-// homeSiteFingerprint collects stable per-machine inputs so the derived ID is the same on every
-// process start without persisting state. Linux machine-id disambiguates hosts that share hostname.
-func homeSiteFingerprint() (string, error) {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "", fmt.Errorf("hostname: %w", err)
-	}
+type identityFile struct {
+	HomeSiteID string `json:"homeSiteId"`
+}
+
+// identityPath returns ~/.bbclaw-adapter/identity.json, using $HOME when set
+// (allows tests to redirect via t.Setenv("HOME", dir)).
+func identityPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("user home: %w", err)
 	}
-	user := strings.TrimSpace(os.Getenv("USER"))
-	if user == "" {
-		user = strings.TrimSpace(os.Getenv("USERNAME"))
-	}
-	var machineID string
-	for _, p := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		machineID = strings.TrimSpace(string(raw))
-		break
-	}
-	// NUL-separated single string for deterministic UUID v5 name bytes.
-	return fmt.Sprintf("bbclaw-home-site/v1\000%s\000%s\000%s\000%s", hostname, home, user, machineID), nil
+	return filepath.Join(home, ".bbclaw-adapter", "identity.json"), nil
 }
 
-// derivedHomeSiteID returns a UUID v5 from homeSiteFingerprint (same machine → same ID every run).
-func derivedHomeSiteID() (string, error) {
-	fp, err := homeSiteFingerprint()
-	if err != nil {
-		return "", err
-	}
-	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fp)).String(), nil
-}
-
-// EnsureHomeSiteID returns HOME_SITE_ID if set; otherwise a deterministic UUID derived from this host.
+// EnsureHomeSiteID returns HOME_SITE_ID env var if set; otherwise loads the
+// persisted ID from ~/.bbclaw-adapter/identity.json, creating it on first run.
+// This guarantees the same ID across restarts regardless of hostname changes.
 func EnsureHomeSiteID() (string, error) {
 	if id := strings.TrimSpace(os.Getenv("HOME_SITE_ID")); id != "" {
 		return id, nil
 	}
-	return derivedHomeSiteID()
+	path, err := identityPath()
+	if err != nil {
+		return "", err
+	}
+	// Try to read existing identity.
+	if raw, err := os.ReadFile(path); err == nil {
+		var f identityFile
+		if json.Unmarshal(raw, &f) == nil && strings.TrimSpace(f.HomeSiteID) != "" {
+			return strings.TrimSpace(f.HomeSiteID), nil
+		}
+	}
+	// First run: generate and persist a new random UUID.
+	id := uuid.New().String()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create identity dir: %w", err)
+	}
+	data, _ := json.Marshal(identityFile{HomeSiteID: id})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write identity file: %w", err)
+	}
+	return id, nil
 }
 
 func LoadFromEnv() (Config, error) {
