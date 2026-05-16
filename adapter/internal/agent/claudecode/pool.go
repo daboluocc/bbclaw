@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -298,11 +297,4 @@ func (p *WarmPool) injectEntry(e warmEntry) {
 // and construct a WarmPool. Extracted here so driver.go stays clean.
 func poolFromEnv(bin string, extra []string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
 	return NewWarmPool(bin, extra, size, idleTTL, log)
-}
-
-// stripCCPrefix removes the "cc-" prefix that the adapter mints on session IDs
-// before passing them to the claude CLI. Duplicated here (also in driver.go)
-// to keep pool.go self-contained.
-func stripCCPrefix(id string) string {
-	return strings.TrimPrefix(id, "cc-")
 }

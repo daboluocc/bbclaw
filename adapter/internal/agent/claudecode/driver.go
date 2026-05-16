@@ -114,19 +114,17 @@ func (d *Driver) Capabilities() agent.Capabilities {
 // Start allocates a new session. No subprocess is spawned here; the CLI is
 // invoked on demand in Send so each turn can carry the latest --resume id.
 //
-// When opts.ResumeID is set, we use it AS the device-visible session id —
-// not just as a `--resume` argument. This keeps the device's sessionId in
-// lockstep with the on-disk JSONL filename: a session picked from the picker
-// (sid=719a6a7e...) continues writing to that same JSONL after resume,
-// instead of being silently re-numbered to `cc-<new-uuid>`. Without this,
-// every resume looked like "isNew=1" to the firmware and the agent had no
-// memory of prior turns.
+// When opts.ResumeID is set, we use it AS the device-visible session id so
+// the device's sessionId stays in lockstep with the on-disk JSONL filename.
+// For new sessions we generate a plain UUID and pass it to the CLI via
+// --session-id on the first turn, so the adapter id, CLI session id, and
+// JSONL filename are all the same value from the start.
 func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.SessionID, error) {
 	var sid agent.SessionID
 	if strings.TrimSpace(opts.ResumeID) != "" {
 		sid = agent.SessionID(strings.TrimSpace(opts.ResumeID))
 	} else {
-		sid = agent.SessionID("cc-" + uuid.NewString())
+		sid = agent.SessionID(uuid.NewString())
 	}
 	s := &session{
 		id:        sid,
@@ -178,24 +176,23 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	args := []string{"-p", text, "--output-format", "stream-json", "--verbose"}
 
-	// Determine the --resume argument. Priority:
-	//   1. Session already has a resumeID from a prior turn → use it directly.
-	//   2. No resumeID yet → try the warm pool for a pre-warmed session ID.
-	//   3. Pool miss → fresh spawn (existing behaviour).
-	resumeArg := ""
+	// Determine session args. Priority:
+	//   1. Session already has a resumeID from a prior turn → --resume.
+	//   2. No resumeID yet → try the warm pool for a pre-warmed session ID → --resume.
+	//   3. Pool miss → first turn: use --session-id so the CLI writes to the
+	//      same UUID we already handed to the device. No TrimPrefix needed
+	//      because adapter IDs are now plain UUIDs.
 	if s.resumeID != "" {
-		// The adapter mints session ids with a "cc-" prefix, but the Claude
-		// CLI only accepts bare UUIDs for --resume. Strip the prefix.
-		resumeArg = strings.TrimPrefix(s.resumeID, "cc-")
+		args = append(args, "--resume", s.resumeID)
 	} else if warmID, ok := d.pool.Acquire(s.cwd); ok {
-		resumeArg = warmID
-		// Adopt the pre-warmed CLI session as this session's resume ID so
-		// subsequent turns continue the same conversation.
 		s.setResumeID(warmID)
 		d.log.Infof("claude-code: pool hit sid=%s cliSession=%s cwd=%q", sid, warmID, s.cwd)
-	}
-	if resumeArg != "" {
-		args = append(args, "--resume", resumeArg)
+		args = append(args, "--resume", warmID)
+	} else {
+		// First turn, new session: tell the CLI which UUID to use so adapter
+		// id == CLI session id == JSONL filename from the very first turn.
+		args = append(args, "--session-id", string(sid))
+		s.setResumeID(string(sid))
 	}
 	args = append(args, d.extra...)
 
@@ -224,7 +221,8 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.cancel = cancel
 	s.mu.Unlock()
 
-	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, resumeArg, cmd.Process.Pid)
+	d.log.Infof("claude-code: input sid=%s text=%q", sid, truncate(text, 200))
+	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, s.resumeID, cmd.Process.Pid)
 
 	// After a successful spawn, signal the pool to backfill so the next
 	// request can benefit from a pre-warmed session.
@@ -404,6 +402,7 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 				switch c.Type {
 				case "text":
 					if c.Text != "" {
+						log.Infof("claude-code: reply sid=%s text=%q", s.id, truncate(c.Text, 200))
 						s.emit(agent.Event{Type: agent.EvText, Text: c.Text})
 					}
 				case "tool_use":

@@ -226,19 +226,3 @@ func TestLenAndSize(t *testing.T) {
 		t.Errorf("Len after inject: want 1, got %d", p.Len())
 	}
 }
-
-// TestStripCCPrefix verifies the helper used by pool and driver.
-func TestStripCCPrefix(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"cc-abc-123", "abc-123"},
-		{"abc-123", "abc-123"},
-		{"", ""},
-		{"cc-", ""},
-	}
-	for _, c := range cases {
-		got := stripCCPrefix(c.in)
-		if got != c.want {
-			t.Errorf("stripCCPrefix(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}

@@ -216,6 +216,7 @@ var k_driver_registry = []driverReg{
 			return claudecode.New(claudecode.Options{
 				PoolSize:    cfg.ClaudePoolSize,
 				PoolIdleTTL: cfg.ClaudePoolIdleTTL,
+				ExtraArgs:   parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
 			}, logger), nil
 		},
 		autoEnable: func(cfg config.Config) bool { return true },
