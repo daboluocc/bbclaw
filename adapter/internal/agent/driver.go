@@ -73,6 +73,12 @@ type StartOpts struct {
 	ResumeID string            // non-empty => resume this CLI session
 	Cwd      string            // working directory for the spawned process
 	Env      map[string]string // extra env vars (merged onto os.Environ)
+	// Model is the model id the driver should use for this session, picked
+	// from one of the IDs the driver exposed via ModelLister.ListModels.
+	// Empty means "driver's own default" (no --model arg / driver fallback).
+	// Each driver decides how to honour it (claudecode/opencode/aider pass
+	// it as --model, ollama uses it as the chat model field).
+	Model string
 }
 
 // Driver is the contract every per-CLI implementation must satisfy.
@@ -143,4 +149,24 @@ type MessageLoader interface {
 // SESSION_NOT_FOUND.
 type CLISessionChecker interface {
 	CLISessionExists(cliSessionID string) bool
+}
+
+// ModelInfo describes one model selectable under a driver. Surfaced to the
+// device through GET /v1/agent/drivers so the settings UI can render a
+// human-readable label while persisting the stable ID.
+type ModelInfo struct {
+	ID    string `json:"id"`              // stable id passed to the driver via StartOpts.Model
+	Label string `json:"label,omitempty"` // short display label (defaults to ID when empty)
+}
+
+// ModelLister is an optional capability for drivers that can enumerate the
+// set of models they support. Drivers that don't implement this surface an
+// empty list (the device UI hides the Model row in that case).
+//
+// Implementations should be cheap and side-effect-free: the device may call
+// this every time the settings screen is opened. Drivers that fetch the list
+// from a remote source (e.g. ollama /api/tags) should impose their own short
+// internal cache or short timeout — never block the request indefinitely.
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]ModelInfo, error)
 }

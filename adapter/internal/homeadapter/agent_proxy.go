@@ -473,26 +473,139 @@ func (a *Adapter) handleAgentMessagesRequest(write func(CloudEnvelope) error, en
 // handleAgentDriversRequest replies with the same shape as the cloud
 // proxy expects (a flat `drivers` payload). The cloud HTTP layer reshapes
 // that into the response.data.drivers envelope the firmware reads.
+//
+// Each driver row carries `models` (when the driver implements
+// agent.ModelLister) and `active_model` (from driverState). The top-level
+// payload also includes `active_driver`. These fields match the LAN-direct
+// HTTP response in httpapi.handleAgentDrivers so the firmware code path is
+// identical across cloud_saas and local_home.
 func (a *Adapter) handleAgentDriversRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
-	var drivers []map[string]any
+	drivers := make([]map[string]any, 0)
+	activeDriver := ""
 	if a.router != nil {
+		if a.driverState != nil {
+			if name := a.driverState.ActiveDriver(); name != "" {
+				if _, ok := a.router.Get(name); ok {
+					activeDriver = name
+				}
+			}
+		}
+		if activeDriver == "" {
+			if d := a.router.Default(); d != nil {
+				activeDriver = d.Name()
+			}
+		}
 		for _, info := range a.router.List() {
-			drivers = append(drivers, map[string]any{
+			row := map[string]any{
 				"name":         info.Name,
 				"capabilities": info.Capabilities,
-			})
+			}
+			if drv, ok := a.router.Get(info.Name); ok {
+				if ml, isLister := drv.(agent.ModelLister); isLister {
+					if models, err := ml.ListModels(context.Background()); err == nil {
+						row["models"] = models
+					} else {
+						a.log.Warnf("agent_proxy: driver %s ListModels failed: %v", info.Name, err)
+					}
+				}
+			}
+			if m := a.resolveActiveModel(info.Name); m != "" {
+				row["active_model"] = m
+			}
+			drivers = append(drivers, row)
 		}
 	}
-	if drivers == nil {
-		drivers = []map[string]any{}
+	payload := map[string]any{"drivers": drivers}
+	if activeDriver != "" {
+		payload["active_driver"] = activeDriver
 	}
 	return write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
 		HomeSiteID: a.cfg.HomeSiteID,
 		Kind:       "agent.drivers.reply",
-		Payload:    map[string]any{"drivers": drivers},
+		Payload:    payload,
 	})
+}
+
+// handleAgentActiveDriverSetRequest persists a new active_driver selection
+// from the cloud. Mirrors PUT /v1/agent/active_driver.
+//
+//	{type:"request", kind:"agent.active_driver.set",
+//	 payload:{"name":"opencode"}}
+//
+// Reply kind "agent.active_driver.set.reply" with {ok:true,active_driver}
+// on success or {error,detail} on failure.
+func (a *Adapter) handleAgentActiveDriverSetRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(p map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.active_driver.set.reply",
+			Payload:    p,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	if a.driverState == nil {
+		return reply(map[string]any{"error": "DRIVERSTATE_NOT_CONFIGURED"})
+	}
+	name, _ := env.Payload["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return reply(map[string]any{"error": "EMPTY_NAME"})
+	}
+	if _, ok := a.router.Get(name); !ok {
+		return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": name})
+	}
+	if err := a.driverState.SetActiveDriver(name); err != nil {
+		return reply(map[string]any{"error": "PERSIST_FAILED", "detail": err.Error()})
+	}
+	a.router.SetDefault(name)
+	a.log.Infof("agent_proxy: active_driver set to %q", name)
+	return reply(map[string]any{"ok": true, "active_driver": name})
+}
+
+// handleAgentActiveModelSetRequest persists an active model for one driver.
+// Mirrors PUT /v1/agent/drivers/{name}/active_model.
+//
+//	{type:"request", kind:"agent.active_model.set",
+//	 payload:{"driver":"claude-code","model":"claude-opus-4-7"}}
+//
+// model="" clears the override. Reply kind "agent.active_model.set.reply".
+func (a *Adapter) handleAgentActiveModelSetRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(p map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.active_model.set.reply",
+			Payload:    p,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	if a.driverState == nil {
+		return reply(map[string]any{"error": "DRIVERSTATE_NOT_CONFIGURED"})
+	}
+	driver, _ := env.Payload["driver"].(string)
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		return reply(map[string]any{"error": "EMPTY_DRIVER"})
+	}
+	if _, ok := a.router.Get(driver); !ok {
+		return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": driver})
+	}
+	model, _ := env.Payload["model"].(string)
+	model = strings.TrimSpace(model)
+	if err := a.driverState.SetActiveModel(driver, model); err != nil {
+		return reply(map[string]any{"error": "PERSIST_FAILED", "detail": err.Error()})
+	}
+	a.log.Infof("agent_proxy: %s active_model set to %q", driver, model)
+	return reply(map[string]any{"ok": true, "driver": driver, "active_model": model})
 }
 
 // resolveCwdByName looks up a cwd path by name in the configured pool.
@@ -757,6 +870,9 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 			// retry (attempt > 0) we deliberately DON'T resume — the prior id
 			// just told us "no conversation found".
 			startOpts := agent.StartOpts{}
+			// Honour persisted active_model so cloud-proxied turns use the
+			// same model the device sees in its Settings menu.
+			startOpts.Model = a.resolveActiveModel(drv.Name())
 			isResumeAttempt := false
 			if attempt == 0 {
 				switch {

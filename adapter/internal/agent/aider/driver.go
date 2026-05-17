@@ -121,6 +121,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		resumeID:    opts.ResumeID,
 		cwd:         opts.Cwd,
 		env:         opts.Env,
+		model:       strings.TrimSpace(opts.Model),
 		rootCtx:     ctx,
 		historyPath: historyPath,
 	}
@@ -173,6 +174,9 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 		"--no-git",
 		"--no-show-model-warnings",
 		"--chat-history-file", s.historyPath,
+	}
+	if s.model != "" {
+		args = append(args, "--model", s.model)
 	}
 	args = append(args, d.extra...)
 
@@ -253,6 +257,7 @@ type session struct {
 	resumeID    string
 	cwd         string
 	env         map[string]string
+	model       string // empty = driver/operator default
 	rootCtx     context.Context
 	historyPath string
 

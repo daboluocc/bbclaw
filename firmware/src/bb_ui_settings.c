@@ -1,3 +1,37 @@
+/* Settings overlay — 2-level picker (ADR-016 revision).
+ *
+ * Hardware: rotary encoder UP/DOWN + OK + BACK only. No LEFT/RIGHT — the
+ * earlier preview-on-LR / commit-on-OK model is gone. Instead OK on a
+ * value row pushes a sub-picker; the picker uses UP/DOWN to highlight,
+ * OK to commit, BACK to abandon.
+ *
+ * Layout (LEVEL_MAIN):
+ *     Driver: <name>
+ *     Model:  <label>
+ *     TTS:    On/Off
+ *     Back
+ *
+ * Layout (LEVEL_DRIVER_PICKER):
+ *     <driver-1>   ✓        (✓ = adapter's persisted active_driver)
+ *     <driver-2>
+ *     ...
+ *
+ * Layout (LEVEL_MODEL_PICKER):
+ *     <model-1>    ✓
+ *     <model-2>
+ *     ...
+ *
+ *   (Special row for drivers that don't implement ModelLister:
+ *    "(no models)" — only thing visible; OK is a no-op, BACK returns.)
+ *
+ * Async pipeline: driver+models fetch runs on a background FreeRTOS task
+ * on entry; commits (PUT) run on a separate background task per click.
+ * All async results dispatch back to the UI via lv_async_call.
+ *
+ * Session selection is INTENTIONALLY not here — it lives in the Session
+ * Picker (bb_ui_agent_chat) reached by short-press OK from chat.
+ */
+
 #include "bb_ui_settings.h"
 
 #include <stdio.h>
@@ -18,7 +52,7 @@ static const char* TAG = "bb_ui_settings";
 
 #define BB_SETTINGS_NVS_NS         "bbclaw"
 #define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
-#define BB_SETTINGS_SESSION_CACHE_MAX 6
+#define BB_SETTINGS_DRIVER_CACHE_MAX 6
 
 #define BB_SETTINGS_FETCH_TASK_STACK 4096
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
@@ -29,42 +63,63 @@ static const char* TAG = "bb_ui_settings";
 #define UI_ROW_FG      0xa6c4ba
 #define UI_ROW_SEL_FG  0xffffff
 #define UI_ROW_SEL_BG  0x2ec4a0
-#define UI_HINT_FG     0x7a9a8c
+#define UI_ROW_CHECK_FG 0x2ec4a0
 
 #define HEADER_H 22
 #define ROW_H    26
-#define ROWS_BOX_H (ROW_H * ROW_COUNT + 6)
+
+/* ── Level / row enums ── */
 
 typedef enum {
-  ROW_SESSION = 0,
-  ROW_TTS,
-  ROW_BACK,
-  ROW_COUNT,
-} settings_row_t;
+  LEVEL_MAIN = 0,
+  LEVEL_DRIVER_PICKER,
+  LEVEL_MODEL_PICKER,
+} settings_level_t;
+
+typedef enum {
+  MAIN_ROW_DRIVER = 0,
+  MAIN_ROW_MODEL,
+  MAIN_ROW_TTS,
+  MAIN_ROW_BACK,
+  MAIN_ROW_COUNT,
+} main_row_t;
+
+/* ── State ── */
 
 typedef struct {
   int active;
+
+  /* LVGL objects (re-created each time the level changes). */
   lv_obj_t* root;
   lv_obj_t* header_lbl;
-  lv_obj_t* rows[ROW_COUNT];
-  int sel;
+  lv_obj_t* rows_box;
+  lv_obj_t* rows[16]; /* over-sized so it fits driver picker, model picker, main. */
+  int rows_used;
 
-  /* Session list (populated async, per-driver). */
-  bb_agent_session_info_t session_cache[BB_SETTINGS_SESSION_CACHE_MAX];
-  int session_cache_count;
-  int session_idx;
-  volatile int session_fetch_pending;
-  volatile uint32_t session_fetch_generation;
+  settings_level_t level;
+  int sel; /* cursor index at the current level */
 
-  char selected_session[64];
-  int  tts_enabled;
+  /* Driver catalog (populated async on entry). Shared by main + both pickers. */
+  bb_agent_driver_info_t driver_cache[BB_SETTINGS_DRIVER_CACHE_MAX];
+  int driver_cache_count;
+  volatile int driver_fetch_pending;
+  volatile uint32_t driver_fetch_generation;
+
+  /* Persisted active selections from the last successful fetch — what
+   * the main page shows as the current value, and what the picker marks
+   * with ✓. Updated optimistically on commit so the UI feels snappy
+   * without waiting for a re-fetch. */
+  char active_driver[24];
+  /* active_model is per-driver — we read it off
+   * driver_cache[i].active_model directly. */
+
+  int tts_enabled;
 } settings_state_t;
 
 static settings_state_t s_st = {0};
-
 static int s_tts_loaded = 0;
 
-/* ── NVS helpers ── */
+/* ── NVS helpers (TTS only — driver/model live on adapter) ── */
 
 static esp_err_t persist_tts_enabled(int v) {
   nvs_handle_t h;
@@ -94,144 +149,76 @@ void bb_ui_settings_preload_nvs(void) {
   load_tts_enabled_from_nvs();
 }
 
-/* ── Session fetch (async pipeline) ── */
-
-typedef struct {
-  uint32_t gen;
-  esp_err_t err;
-  int total;
-  char driver_name[24];
-  bb_agent_session_info_t entries[BB_SETTINGS_SESSION_CACHE_MAX];
-} session_fetch_result_t;
-
-static void apply_session_idx(void) {
-  int idx = 0;
-  if (s_st.selected_session[0] != '\0') {
-    for (int i = 0; i < s_st.session_cache_count; ++i) {
-      if (strcmp(s_st.session_cache[i].id, s_st.selected_session) == 0) {
-        idx = i;
-        break;
-      }
-    }
+int bb_ui_settings_tts_enabled(void) {
+  if (!s_tts_loaded) {
+    load_tts_enabled_from_nvs();
   }
-  s_st.session_idx = idx;
+  return s_st.tts_enabled ? 1 : 0;
 }
 
-static void apply_rows(void);  /* fwd */
+/* ── Cache lookup helpers ── */
 
-static void on_session_fetch_done(void* user_data) {
-  session_fetch_result_t* r = (session_fetch_result_t*)user_data;
-  if (r == NULL) return;
-  s_st.session_fetch_pending = 0;
-  if (!s_st.active || r->gen != s_st.session_fetch_generation) {
-    free(r);
-    return;
+static int find_driver_idx(const char* name) {
+  if (name == NULL || name[0] == '\0') return -1;
+  for (int i = 0; i < s_st.driver_cache_count; ++i) {
+    if (strcmp(s_st.driver_cache[i].name, name) == 0) return i;
   }
-  if (r->err != ESP_OK || r->total < 0) {
-    ESP_LOGW(TAG, "session fetch failed (%s)", esp_err_to_name(r->err));
-    s_st.session_cache_count = 0;
-  } else {
-    int total = r->total > BB_SETTINGS_SESSION_CACHE_MAX
-                  ? BB_SETTINGS_SESSION_CACHE_MAX : r->total;
-    memcpy(s_st.session_cache, r->entries, sizeof(r->entries[0]) * (size_t)total);
-    s_st.session_cache_count = total;
-    ESP_LOGI(TAG, "session fetch ok: %d for driver '%s'", total, r->driver_name);
-  }
-  apply_session_idx();
-  apply_rows();
-  free(r);
+  return -1;
 }
 
-static void session_fetch_task(void* arg) {
-  session_fetch_result_t* r = (session_fetch_result_t*)arg;
-  if (r == NULL) {
-    s_st.session_fetch_pending = 0;
-    vTaskDelete(NULL);
-    return;
-  }
-  r->err = bb_agent_list_sessions(r->driver_name, r->entries, BB_SETTINGS_SESSION_CACHE_MAX, &r->total);
-  if (lvgl_port_lock(200)) {
-    lv_async_call(on_session_fetch_done, r);
-    lvgl_port_unlock();
-  } else {
-    free(r);
-  }
-  vTaskDelete(NULL);
+static const bb_agent_driver_info_t* active_driver_entry(void) {
+  int idx = find_driver_idx(s_st.active_driver);
+  if (idx < 0) idx = 0;
+  if (idx >= s_st.driver_cache_count) return NULL;
+  return &s_st.driver_cache[idx];
 }
 
-static void spawn_session_fetch_task(void) {
-  if (s_st.session_fetch_pending) return;
-  const char* driver = bb_ui_agent_chat_get_current_driver();
-  if (driver == NULL || driver[0] == '\0') {
-    s_st.session_cache_count = 0;
-    return;
+/* ── LVGL rebuild helpers ── */
+
+static void destroy_rows(void) {
+  ESP_LOGI(TAG, "destroy_rows: rows_used=%d rows_box=%p", s_st.rows_used, s_st.rows_box);
+  for (int i = 0; i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
+    s_st.rows[i] = NULL;
   }
-
-  s_st.session_fetch_pending = 1;
-  uint32_t gen = ++s_st.session_fetch_generation;
-
-  session_fetch_result_t* r = (session_fetch_result_t*)calloc(1, sizeof(*r));
-  if (r == NULL) {
-    ESP_LOGE(TAG, "spawn_session_fetch_task: calloc failed");
-    s_st.session_fetch_pending = 0;
-    return;
+  s_st.rows_used = 0;
+  if (s_st.rows_box != NULL) {
+    lv_obj_del(s_st.rows_box);
+    s_st.rows_box = NULL;
   }
-
-  r->gen = gen;
-  strncpy(r->driver_name, driver, sizeof(r->driver_name) - 1);
-
-  TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(session_fetch_task, "session_fetch",
-                              BB_SETTINGS_FETCH_TASK_STACK, r,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreate failed");
-    s_st.session_fetch_pending = 0;
-    free(r);
-  }
+  ESP_LOGI(TAG, "destroy_rows: done");
 }
 
-/* ── Rendering ── */
-
-static const char* active_session_preview(void) {
-  if (s_st.session_idx == s_st.session_cache_count) {
-    return "(new session)";
+static void build_rows_box(int row_count) {
+  ESP_LOGI(TAG, "build_rows_box: row_count=%d", row_count);
+  destroy_rows();
+  s_st.rows_box = lv_obj_create(s_st.root);
+  ESP_LOGI(TAG, "build_rows_box: created rows_box=%p", s_st.rows_box);
+  lv_obj_remove_style_all(s_st.rows_box);
+  /* Height = row_count * ROW_H + small padding. Cap so it never overflows
+   * the (typically 240-tall) screen — caller picks reasonable row_count. */
+  int box_h = row_count * ROW_H + 6;
+  lv_obj_set_size(s_st.rows_box, lv_pct(100), box_h);
+  lv_obj_align(s_st.rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
+  lv_obj_set_flex_flow(s_st.rows_box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_all(s_st.rows_box, 4, 0);
+  lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
+  for (int i = 0; i < row_count && i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
+    lv_obj_t* row = lv_label_create(s_st.rows_box);
+    lv_obj_set_size(row, lv_pct(100), ROW_H);
+    lv_obj_set_style_pad_left(row, 6, 0);
+    lv_obj_set_style_pad_right(row, 6, 0);
+    lv_obj_set_style_pad_top(row, 4, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+    s_st.rows[i] = row;
   }
-  if (s_st.session_cache_count <= 0) return "(none)";
-  if (s_st.session_idx < 0 || s_st.session_idx >= s_st.session_cache_count) return "(none)";
-  const char* t = s_st.session_cache[s_st.session_idx].title;
-  return (t != NULL && t[0] != '\0') ? t : "(unnamed)";
+  s_st.rows_used = row_count;
 }
 
-static void apply_rows(void) {
-  if (s_st.root == NULL) return;
-  char buf[80];
-
-  /* Row 0: Session */
-  if (s_st.rows[ROW_SESSION] != NULL) {
-    if (s_st.session_fetch_pending) {
-      snprintf(buf, sizeof(buf), "Session: loading...");
-    } else {
-      int total = s_st.session_cache_count + 1;
-      snprintf(buf, sizeof(buf), "Session: %s (%d/%d)", active_session_preview(),
-               s_st.session_idx + 1, total);
-    }
-    lv_label_set_text(s_st.rows[ROW_SESSION], buf);
-  }
-
-  /* Row 1: TTS */
-  if (s_st.rows[ROW_TTS] != NULL) {
-    snprintf(buf, sizeof(buf), "TTS reply: %s", s_st.tts_enabled ? "On" : "Off");
-    lv_label_set_text(s_st.rows[ROW_TTS], buf);
-  }
-
-  /* Row 2: Back */
-  if (s_st.rows[ROW_BACK] != NULL) {
-    lv_label_set_text(s_st.rows[ROW_BACK], "Back");
-  }
-
-  /* Highlight selected row. */
-  for (int i = 0; i < ROW_COUNT; ++i) {
+static void highlight_selected(void) {
+  for (int i = 0; i < s_st.rows_used; ++i) {
     lv_obj_t* row = s_st.rows[i];
     if (row == NULL) continue;
     if (i == s_st.sel) {
@@ -245,7 +232,316 @@ static void apply_rows(void) {
   }
 }
 
-/* ── Public API ── */
+/* ── Render: main page ── */
+
+static const char* current_model_label(const bb_agent_driver_info_t* d) {
+  if (d == NULL) return "-";
+  if (d->model_count == 0) return "(n/a)";
+  /* Find the slot whose id matches the driver's active_model. */
+  if (d->active_model[0] != '\0') {
+    for (int j = 0; j < d->model_count; ++j) {
+      if (strcmp(d->models[j].id, d->active_model) == 0) {
+        return d->models[j].label[0] != '\0' ? d->models[j].label : d->models[j].id;
+      }
+    }
+  }
+  /* No match — show the first model as a hint (= driver-default fallback). */
+  return d->models[0].label[0] != '\0' ? d->models[0].label : d->models[0].id;
+}
+
+static void render_main(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "Settings");
+
+  build_rows_box(MAIN_ROW_COUNT);
+  char buf[80];
+
+  const bb_agent_driver_info_t* active = active_driver_entry();
+
+  /* Row: Driver */
+  const char* drv_name = (active != NULL) ? active->name :
+                          (s_st.driver_fetch_pending ? "loading..." : "(offline)");
+  snprintf(buf, sizeof(buf), "Driver: %s", drv_name);
+  lv_label_set_text(s_st.rows[MAIN_ROW_DRIVER], buf);
+
+  /* Row: Model */
+  snprintf(buf, sizeof(buf), "Model: %s", current_model_label(active));
+  lv_label_set_text(s_st.rows[MAIN_ROW_MODEL], buf);
+
+  /* Row: TTS */
+  snprintf(buf, sizeof(buf), "TTS: %s", s_st.tts_enabled ? "On" : "Off");
+  lv_label_set_text(s_st.rows[MAIN_ROW_TTS], buf);
+
+  /* Row: Back */
+  lv_label_set_text(s_st.rows[MAIN_ROW_BACK], "Back");
+
+  highlight_selected();
+}
+
+/* ── Render: Driver picker ── */
+
+static void render_driver_picker(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "Driver");
+
+  if (s_st.driver_cache_count == 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0],
+                      s_st.driver_fetch_pending ? "loading..." : "(offline)");
+    highlight_selected();
+    return;
+  }
+
+  build_rows_box(s_st.driver_cache_count);
+  for (int i = 0; i < s_st.driver_cache_count; ++i) {
+    char buf[64];
+    int is_active = (strcmp(s_st.driver_cache[i].name, s_st.active_driver) == 0);
+    snprintf(buf, sizeof(buf), "%s%s",
+             s_st.driver_cache[i].name,
+             is_active ? "  *" : "");
+    lv_label_set_text(s_st.rows[i], buf);
+  }
+  highlight_selected();
+}
+
+/* ── Render: Model picker (depends on currently active driver) ── */
+
+static void render_model_picker(void) {
+  ESP_LOGI(TAG, "render_model_picker: root=%p header=%p",
+           s_st.root, s_st.header_lbl);
+  if (s_st.root == NULL) return;
+
+  const bb_agent_driver_info_t* d = active_driver_entry();
+  if (d == NULL) {
+    lv_label_set_text(s_st.header_lbl, "Model");
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], "(no driver)");
+    highlight_selected();
+    return;
+  }
+
+  char header[40];
+  snprintf(header, sizeof(header), "Model (%s)", d->name);
+  lv_label_set_text(s_st.header_lbl, header);
+
+  if (d->model_count == 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], "(no models)");
+    highlight_selected();
+    return;
+  }
+
+  build_rows_box(d->model_count);
+  for (int j = 0; j < d->model_count; ++j) {
+    char buf[64];
+    const char* lbl = d->models[j].label[0] != '\0' ? d->models[j].label : d->models[j].id;
+    int is_active = (strcmp(d->models[j].id, d->active_model) == 0);
+    snprintf(buf, sizeof(buf), "%s%s", lbl, is_active ? "  *" : "");
+    lv_label_set_text(s_st.rows[j], buf);
+  }
+  highlight_selected();
+}
+
+static void rerender(void) {
+  switch (s_st.level) {
+    case LEVEL_MAIN:          render_main(); break;
+    case LEVEL_DRIVER_PICKER: render_driver_picker(); break;
+    case LEVEL_MODEL_PICKER:  render_model_picker(); break;
+  }
+}
+
+/* ── Driver+model fetch (async) ── */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int total;
+  char active_driver[24];
+  bb_agent_driver_info_t entries[BB_SETTINGS_DRIVER_CACHE_MAX];
+} driver_fetch_result_t;
+
+static void on_driver_fetch_done(void* user_data) {
+  driver_fetch_result_t* r = (driver_fetch_result_t*)user_data;
+  if (r == NULL) return;
+  s_st.driver_fetch_pending = 0;
+  if (!s_st.active || r->gen != s_st.driver_fetch_generation) {
+    free(r);
+    return;
+  }
+  if (r->err != ESP_OK || r->total <= 0) {
+    ESP_LOGW(TAG, "driver fetch failed (%s) total=%d",
+             esp_err_to_name(r->err), r->total);
+    s_st.driver_cache_count = 0;
+  } else {
+    int total = r->total > BB_SETTINGS_DRIVER_CACHE_MAX
+                  ? BB_SETTINGS_DRIVER_CACHE_MAX : r->total;
+    memcpy(s_st.driver_cache, r->entries, sizeof(r->entries[0]) * (size_t)total);
+    s_st.driver_cache_count = total;
+    /* Resolve active_driver: prefer adapter's reply; fall back to chat's
+     * current driver; fall back to driver_cache[0]. */
+    const char* fallback = bb_ui_agent_chat_get_current_driver();
+    const char* want = (r->active_driver[0] != '\0') ? r->active_driver
+                       : (fallback != NULL ? fallback : "");
+    int idx = find_driver_idx(want);
+    if (idx < 0) idx = 0;
+    strncpy(s_st.active_driver, s_st.driver_cache[idx].name,
+            sizeof(s_st.active_driver) - 1);
+    s_st.active_driver[sizeof(s_st.active_driver) - 1] = '\0';
+    ESP_LOGI(TAG, "driver fetch ok: %d drivers active='%s'",
+             total, s_st.active_driver);
+  }
+  rerender();
+  free(r);
+}
+
+static void driver_fetch_task(void* arg) {
+  driver_fetch_result_t* r = (driver_fetch_result_t*)arg;
+  if (r == NULL) {
+    s_st.driver_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  r->err = bb_agent_list_drivers(r->entries, BB_SETTINGS_DRIVER_CACHE_MAX, &r->total,
+                                 r->active_driver, sizeof(r->active_driver));
+  if (lvgl_port_lock(200)) {
+    lv_async_call(on_driver_fetch_done, r);
+    lvgl_port_unlock();
+  } else {
+    free(r);
+  }
+  vTaskDelete(NULL);
+}
+
+static void spawn_driver_fetch_task(void) {
+  if (s_st.driver_fetch_pending) return;
+  s_st.driver_fetch_pending = 1;
+  uint32_t gen = ++s_st.driver_fetch_generation;
+
+  driver_fetch_result_t* r = (driver_fetch_result_t*)calloc(1, sizeof(*r));
+  if (r == NULL) {
+    ESP_LOGE(TAG, "spawn_driver_fetch_task: calloc failed");
+    s_st.driver_fetch_pending = 0;
+    return;
+  }
+  r->gen = gen;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(driver_fetch_task, "drv_fetch",
+                              BB_SETTINGS_FETCH_TASK_STACK, r,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
+    s_st.driver_fetch_pending = 0;
+    free(r);
+  }
+}
+
+/* ── Commit task (async PUT) ── */
+
+typedef enum {
+  COMMIT_KIND_DRIVER = 0,
+  COMMIT_KIND_MODEL,
+} commit_kind_t;
+
+typedef struct {
+  commit_kind_t kind;
+  char driver_name[24];
+  char model_id[40];
+} commit_payload_t;
+
+static void commit_task(void* arg) {
+  commit_payload_t* p = (commit_payload_t*)arg;
+  if (p == NULL) {
+    vTaskDelete(NULL);
+    return;
+  }
+  esp_err_t err = ESP_OK;
+  if (p->kind == COMMIT_KIND_DRIVER) {
+    err = bb_agent_set_active_driver(p->driver_name);
+    if (err == ESP_OK) {
+      bb_session_store_save_active_driver(p->driver_name);
+    }
+    ESP_LOGI(TAG, "commit driver='%s' -> %s", p->driver_name, esp_err_to_name(err));
+  } else {
+    err = bb_agent_set_active_model(p->driver_name, p->model_id);
+    ESP_LOGI(TAG, "commit driver='%s' model='%s' -> %s",
+             p->driver_name, p->model_id, esp_err_to_name(err));
+  }
+  free(p);
+  vTaskDelete(NULL);
+}
+
+static void spawn_commit_task(commit_kind_t kind, const char* driver, const char* model_id) {
+  commit_payload_t* p = (commit_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) {
+    ESP_LOGE(TAG, "spawn_commit_task: calloc failed");
+    return;
+  }
+  p->kind = kind;
+  if (driver != NULL) {
+    strncpy(p->driver_name, driver, sizeof(p->driver_name) - 1);
+  }
+  if (model_id != NULL) {
+    strncpy(p->model_id, model_id, sizeof(p->model_id) - 1);
+  }
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(commit_task, "drv_commit",
+                              BB_SETTINGS_FETCH_TASK_STACK, p,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_commit_task: xTaskCreate failed");
+    free(p);
+  }
+}
+
+/* ── Level transitions ── */
+
+static void enter_driver_picker(void) {
+  s_st.level = LEVEL_DRIVER_PICKER;
+  /* Cursor lands on the currently-active driver. */
+  int idx = find_driver_idx(s_st.active_driver);
+  s_st.sel = (idx >= 0) ? idx : 0;
+  rerender();
+}
+
+static void enter_model_picker(void) {
+  ESP_LOGI(TAG, "enter_model_picker: active='%s' cache_count=%d",
+           s_st.active_driver, s_st.driver_cache_count);
+  s_st.level = LEVEL_MODEL_PICKER;
+  const bb_agent_driver_info_t* d = active_driver_entry();
+  ESP_LOGI(TAG, "enter_model_picker: d=%p%s",
+           d, d == NULL ? " (NULL!)" : "");
+  if (d != NULL) {
+    ESP_LOGI(TAG, "enter_model_picker: driver='%s' model_count=%d active_model='%s'",
+             d->name, d->model_count, d->active_model);
+  }
+  int sel = 0;
+  if (d != NULL && d->model_count > 0 && d->active_model[0] != '\0') {
+    for (int j = 0; j < d->model_count; ++j) {
+      ESP_LOGI(TAG, "enter_model_picker: probe j=%d id='%s' label='%s'",
+               j, d->models[j].id, d->models[j].label);
+      if (strcmp(d->models[j].id, d->active_model) == 0) {
+        sel = j;
+        break;
+      }
+    }
+  }
+  s_st.sel = sel;
+  ESP_LOGI(TAG, "enter_model_picker: sel=%d, calling rerender()", sel);
+  rerender();
+  ESP_LOGI(TAG, "enter_model_picker: done");
+}
+
+static void return_to_main(int new_sel_row) {
+  s_st.level = LEVEL_MAIN;
+  if (new_sel_row >= 0 && new_sel_row < MAIN_ROW_COUNT) {
+    s_st.sel = new_sel_row;
+  } else {
+    s_st.sel = MAIN_ROW_DRIVER;
+  }
+  rerender();
+}
+
+/* ── Public lifecycle ── */
 
 void bb_ui_settings_show(lv_obj_t* parent) {
   if (parent == NULL) {
@@ -257,16 +553,14 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     return;
   }
 
-  /* Snapshot persisted prefs into editable state. */
-
-  /* Load current session from NVS for current driver. */
-  const char* driver = bb_ui_agent_chat_get_current_driver();
-  s_st.selected_session[0] = '\0';
-  if (driver != NULL && driver[0] != '\0') {
-    bb_session_store_load(driver, s_st.selected_session, sizeof(s_st.selected_session));
+  /* Initialise level + cursor before any LVGL work. */
+  s_st.level = LEVEL_MAIN;
+  s_st.sel = MAIN_ROW_DRIVER;
+  /* Seed active_driver from NVS cache so the first paint of the main page
+   * shows something sensible even before the async fetch lands. */
+  if (s_st.active_driver[0] == '\0') {
+    bb_session_store_load_active_driver(s_st.active_driver, sizeof(s_st.active_driver));
   }
-  s_st.session_cache_count = 0;
-  s_st.session_idx = 0;
 
   s_st.root = lv_obj_create(parent);
   lv_obj_remove_style_all(s_st.root);
@@ -276,60 +570,33 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_move_foreground(s_st.root);
 
-  /* Header */
   s_st.header_lbl = lv_label_create(s_st.root);
   lv_obj_set_size(s_st.header_lbl, lv_pct(100), HEADER_H);
   lv_obj_align(s_st.header_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
   lv_obj_set_style_text_color(s_st.header_lbl, lv_color_hex(UI_HEADER_FG), 0);
   lv_obj_set_style_pad_left(s_st.header_lbl, 6, 0);
   lv_obj_set_style_pad_top(s_st.header_lbl, 4, 0);
-  lv_label_set_text(s_st.header_lbl, "Settings");
 
-  /* Rows container — absolute height so the 4 rows always fit. lv_pct minus
-   * an integer is NOT supported in LVGL 9 (lv_pct returns a special-encoded
-   * coord, not a regular pixel count), so use ROWS_BOX_H directly. */
-  lv_obj_t* rows_box = lv_obj_create(s_st.root);
-  lv_obj_remove_style_all(rows_box);
-  lv_obj_set_size(rows_box, lv_pct(100), ROWS_BOX_H);
-  lv_obj_align(rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
-  lv_obj_set_flex_flow(rows_box, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_all(rows_box, 4, 0);
-  lv_obj_clear_flag(rows_box, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_opa(rows_box, LV_OPA_TRANSP, 0);
-
-  for (int i = 0; i < ROW_COUNT; ++i) {
-    lv_obj_t* row = lv_label_create(rows_box);
-    lv_obj_set_size(row, lv_pct(100), ROW_H);
-    lv_obj_set_style_pad_left(row, 6, 0);
-    lv_obj_set_style_pad_right(row, 6, 0);
-    lv_obj_set_style_pad_top(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
-    s_st.rows[i] = row;
-  }
-
-  s_st.sel = ROW_SESSION;
   s_st.active = 1;
 
-  /* Kick off async session fetch — apply_rows will re-render when done. */
-  spawn_session_fetch_task();
-  apply_rows();
+  /* Kick off async driver/model fetch. apply renders a stale (or empty)
+   * snapshot in the meantime — on_driver_fetch_done re-renders when done. */
+  spawn_driver_fetch_task();
+  rerender();
 
-  ESP_LOGI(TAG, "show (driver='%s', tts=%d)",
-           bb_ui_agent_chat_get_current_driver(), s_st.tts_enabled);
+  ESP_LOGI(TAG, "show level=MAIN tts=%d", s_st.tts_enabled);
 }
 
 void bb_ui_settings_hide(void) {
   if (!s_st.active) return;
   s_st.active = 0;
-  s_st.session_fetch_generation++;
+  s_st.driver_fetch_generation++;
+  destroy_rows();
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
     s_st.root = NULL;
   }
   s_st.header_lbl = NULL;
-  for (int i = 0; i < ROW_COUNT; ++i) s_st.rows[i] = NULL;
   ESP_LOGI(TAG, "hide");
 }
 
@@ -337,107 +604,136 @@ int bb_ui_settings_is_active(void) {
   return s_st.active ? 1 : 0;
 }
 
+/* ── Input handlers ── */
+
 void bb_ui_settings_handle_rotate(int delta) {
   if (!s_st.active || delta == 0) return;
-  int next = s_st.sel + delta;
-  if (next < 0) next = 0;
-  if (next >= ROW_COUNT) next = ROW_COUNT - 1;
-  if (next == s_st.sel) return;
-  s_st.sel = next;
-  apply_rows();
-}
-
-/* LEFT/RIGHT — preview the current row's value (no NVS write).
- *
- * Phase 4.7.2: auto-save model (4.7.1) was reverted because rapid LEFT/RIGHT
- * cycling triggered NVS writes inside the LVGL lock, which appeared to
- * cause device restarts (likely flash IO + LVGL drawing contention). Back
- * to "preview on LEFT/RIGHT, commit on OK" — explicit and safer.
- */
-void bb_ui_settings_handle_value(int delta) {
-  if (!s_st.active || delta == 0) return;
-  switch ((settings_row_t)s_st.sel) {
-    case ROW_SESSION: {
-      int total = s_st.session_cache_count + 1;
-      if (total <= 1) return;
-      int next = ((s_st.session_idx + delta) % total + total) % total;
-      s_st.session_idx = next;
+  int row_count;
+  switch (s_st.level) {
+    case LEVEL_MAIN:
+      row_count = MAIN_ROW_COUNT;
+      break;
+    case LEVEL_DRIVER_PICKER:
+      row_count = (s_st.driver_cache_count > 0) ? s_st.driver_cache_count : 1;
+      break;
+    case LEVEL_MODEL_PICKER: {
+      const bb_agent_driver_info_t* d = active_driver_entry();
+      row_count = (d != NULL && d->model_count > 0) ? d->model_count : 1;
       break;
     }
-    case ROW_TTS: {
-      s_st.tts_enabled = !s_st.tts_enabled;
-      break;
-    }
-    case ROW_BACK:
-    case ROW_COUNT:
     default:
       return;
   }
-  apply_rows();
+  int next = s_st.sel + delta;
+  if (next < 0) next = 0;
+  if (next >= row_count) next = row_count - 1;
+  if (next == s_st.sel) return;
+  s_st.sel = next;
+  highlight_selected();
 }
 
-/* OK — commit the previewed value for the current row, then advance cursor.
- * On Back row, OK exits the overlay. */
-void bb_ui_settings_handle_click(void) {
-  if (!s_st.active) return;
-  switch ((settings_row_t)s_st.sel) {
-    case ROW_SESSION: {
-      /* Resolve session_idx to session ID */
-      if (s_st.session_idx == s_st.session_cache_count) {
-        /* "(new session)" selected — create a new logical session via adapter.
-         * ADR-014: POST /v1/agent/sessions with current driver, no cwd. */
-        const char* driver = bb_ui_agent_chat_get_current_driver();
-        char new_sid[64] = {0};
-        esp_err_t create_err = bb_agent_create_session(driver, NULL, NULL, new_sid, sizeof(new_sid));
-        if (create_err == ESP_OK && new_sid[0] != '\0') {
-          strncpy(s_st.selected_session, new_sid, sizeof(s_st.selected_session) - 1);
-          s_st.selected_session[sizeof(s_st.selected_session) - 1] = '\0';
-          bb_session_store_save(driver, new_sid);
-          ESP_LOGI(TAG, "new session created -> '%s' for driver '%s'", new_sid, driver);
-        } else {
-          ESP_LOGW(TAG, "new session create failed (%s), clearing session", esp_err_to_name(create_err));
-          s_st.selected_session[0] = '\0';
-          bb_session_store_save(driver, s_st.selected_session);
+int bb_ui_settings_handle_click(void) {
+  if (!s_st.active) return 0;
+  switch (s_st.level) {
+    case LEVEL_MAIN:
+      switch ((main_row_t)s_st.sel) {
+        case MAIN_ROW_DRIVER:
+          enter_driver_picker();
+          break;
+        case MAIN_ROW_MODEL: {
+          ESP_LOGI(TAG, "main click on Model row");
+          const bb_agent_driver_info_t* d = active_driver_entry();
+          ESP_LOGI(TAG, "  active_driver='%s' d=%p model_count=%d",
+                   s_st.active_driver, d, d ? d->model_count : -1);
+          if (d == NULL || d->model_count == 0) {
+            /* Nothing to pick — flash the row but don't push a picker. */
+            ESP_LOGI(TAG, "main click on Model: driver has no models");
+          } else {
+            enter_model_picker();
+          }
+          break;
         }
-      } else if (s_st.session_idx >= 0 && s_st.session_idx < s_st.session_cache_count) {
-        strncpy(s_st.selected_session, s_st.session_cache[s_st.session_idx].id,
-                sizeof(s_st.selected_session) - 1);
-        s_st.selected_session[sizeof(s_st.selected_session) - 1] = '\0';
-        const char* driver = bb_ui_agent_chat_get_current_driver();
-        bb_session_store_save(driver, s_st.selected_session);
-        ESP_LOGI(TAG, "session -> '%s' for driver '%s' (committed)",
-                 s_st.selected_session, driver);
+        case MAIN_ROW_TTS: {
+          /* In-place toggle (no sub-picker — binary value). */
+          s_st.tts_enabled = !s_st.tts_enabled;
+          esp_err_t err = persist_tts_enabled(s_st.tts_enabled);
+          if (err != ESP_OK) {
+            ESP_LOGW(TAG, "persist tts %d failed (%s)",
+                     s_st.tts_enabled, esp_err_to_name(err));
+          }
+          rerender();
+          break;
+        }
+        case MAIN_ROW_BACK:
+          return 1; /* caller tears down + returns to chat */
+        case MAIN_ROW_COUNT:
+        default:
+          break;
       }
-      s_st.sel = ROW_TTS;
-      apply_rows();
-      break;
-    }
-    case ROW_TTS: {
-      esp_err_t err = persist_tts_enabled(s_st.tts_enabled);
-      if (err != ESP_OK) {
-        ESP_LOGW(TAG, "persist tts '%s' failed (%s)",
-                 s_st.tts_enabled ? "on" : "off", esp_err_to_name(err));
+      return 0;
+
+    case LEVEL_DRIVER_PICKER:
+      if (s_st.driver_cache_count <= 0) {
+        return_to_main(MAIN_ROW_DRIVER);
+        return 0;
       }
-      ESP_LOGI(TAG, "tts -> %s (committed)", s_st.tts_enabled ? "on" : "off");
-      s_st.sel = ROW_BACK;
-      apply_rows();
-      break;
+      if (s_st.sel >= 0 && s_st.sel < s_st.driver_cache_count) {
+        const char* picked = s_st.driver_cache[s_st.sel].name;
+        if (picked != NULL && picked[0] != '\0' &&
+            strcmp(picked, s_st.active_driver) != 0) {
+          /* Optimistic local update so main page reflects the choice
+           * immediately. Adapter will confirm async. */
+          strncpy(s_st.active_driver, picked, sizeof(s_st.active_driver) - 1);
+          s_st.active_driver[sizeof(s_st.active_driver) - 1] = '\0';
+          spawn_commit_task(COMMIT_KIND_DRIVER, picked, NULL);
+          ESP_LOGI(TAG, "driver picker -> '%s' (committed)", picked);
+        }
+      }
+      return_to_main(MAIN_ROW_DRIVER);
+      return 0;
+
+    case LEVEL_MODEL_PICKER: {
+      const bb_agent_driver_info_t* d = active_driver_entry();
+      if (d == NULL || d->model_count <= 0) {
+        return_to_main(MAIN_ROW_MODEL);
+        return 0;
+      }
+      int idx = s_st.sel;
+      if (idx >= 0 && idx < d->model_count) {
+        const char* mid = d->models[idx].id;
+        if (mid != NULL && mid[0] != '\0') {
+          /* Optimistic local update — write into the cache row so the
+           * main page's "Model: <label>" reflects it before next fetch. */
+          int drv_idx = find_driver_idx(d->name);
+          if (drv_idx >= 0) {
+            strncpy(s_st.driver_cache[drv_idx].active_model, mid,
+                    sizeof(s_st.driver_cache[drv_idx].active_model) - 1);
+            s_st.driver_cache[drv_idx].active_model
+                [sizeof(s_st.driver_cache[drv_idx].active_model) - 1] = '\0';
+          }
+          spawn_commit_task(COMMIT_KIND_MODEL, d->name, mid);
+          ESP_LOGI(TAG, "model picker -> '%s' for driver '%s' (committed)",
+                   mid, d->name);
+        }
+      }
+      return_to_main(MAIN_ROW_MODEL);
+      return 0;
     }
-    case ROW_BACK:
-      bb_ui_settings_hide();
-      break;
-    case ROW_COUNT:
-    default: break;
   }
+  return 0;
 }
 
-int bb_ui_settings_tts_enabled(void) {
-  /* Lazy-load: if the user hasn't opened Settings yet this boot, s_st.tts_enabled
-   * was never explicitly loaded from NVS. Populate it now (load also sets the
-   * default ON if no NVS entry exists). After the first call this is a single
-   * read of the cached value. */
-  if (!s_tts_loaded) {
-    load_tts_enabled_from_nvs();
+int bb_ui_settings_handle_back(void) {
+  if (!s_st.active) return 0;
+  switch (s_st.level) {
+    case LEVEL_MAIN:
+      return 1; /* caller exits to chat */
+    case LEVEL_DRIVER_PICKER:
+      return_to_main(MAIN_ROW_DRIVER);
+      return 0;
+    case LEVEL_MODEL_PICKER:
+      return_to_main(MAIN_ROW_MODEL);
+      return 0;
   }
-  return s_st.tts_enabled ? 1 : 0;
+  return 0;
 }

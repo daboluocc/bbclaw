@@ -89,6 +89,11 @@ func New(opts Options, log *obs.Logger) *Driver {
 		idleTTL = 10 * time.Minute
 	}
 	extra := append([]string(nil), opts.ExtraArgs...)
+	// Default to claude-sonnet-4-5 to avoid the 1M-context model that requires
+	// extra usage entitlement. Overridable via AGENT_CLAUDE_CODE_EXTRA_ARGS.
+	if !hasFlag(extra, "--model") {
+		extra = append(extra, "--model", "claude-sonnet-4-5")
+	}
 	driverEnv := make(map[string]string, len(opts.Env))
 	for k, v := range opts.Env {
 		driverEnv[k] = v
@@ -148,6 +153,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		resumeID:  opts.ResumeID,
 		cwd:       opts.Cwd,
 		env:       opts.Env,
+		model:     strings.TrimSpace(opts.Model),
 		rootCtx:   ctx,
 	}
 	d.mu.Lock()
@@ -209,6 +215,13 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 		// id == CLI session id == JSONL filename from the very first turn.
 		args = append(args, "--session-id", string(sid))
 		s.setResumeID(string(sid))
+	}
+	// Per-session model override (StartOpts.Model). Appended before d.extra
+	// so an operator-set --model in AGENT_CLAUDE_CODE_EXTRA_ARGS still wins
+	// (last-flag semantics under most CLI parsers), but the user's UI choice
+	// is honoured when no override is configured.
+	if s.model != "" {
+		args = append(args, "--model", s.model)
 	}
 	args = append(args, d.extra...)
 
@@ -325,6 +338,7 @@ type session struct {
 	resumeID string
 	cwd      string
 	env      map[string]string
+	model    string // empty = use driver/operator default
 	rootCtx  context.Context
 
 	seq uint64
@@ -564,6 +578,16 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// hasFlag reports whether args contains the given flag (e.g. "--model").
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // summarizeToolInput renders a short, human-readable hint from a tool_use

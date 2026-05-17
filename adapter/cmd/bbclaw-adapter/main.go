@@ -17,6 +17,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/aider"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/openclawdriver"
@@ -94,7 +95,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -167,6 +168,9 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	server.SetAgentRouter(agentRouter)
 	if sessionMgr != nil {
 		server.SetSessionManager(sessionMgr)
+	}
+	if driverStateStore != nil {
+		server.SetDriverState(driverStateStore)
 	}
 	return &http.Server{
 		Addr:    cfg.Addr,
@@ -304,6 +308,53 @@ var k_driver_registry = []driverReg{
 // feedback_config_minimalism).
 func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 	return buildAgentRouterFromRegistry(cfg, logger, k_driver_registry, os.Getenv)
+}
+
+// buildDriverState constructs the persistent driver-preference store. The
+// state file lives under BBCLAW_DATA_DIR/driver_state.json (default
+// ~/.bbclaw-adapter/driver_state.json), alongside the logical-session table.
+//
+// Returns nil when the store cannot be created (which only happens when the
+// home directory is unresolvable — the adapter still runs without
+// persistence, falling back to the router's first-registered default).
+func buildDriverState(logger *obs.Logger) *driverstate.Store {
+	dataDir := strings.TrimSpace(os.Getenv("BBCLAW_DATA_DIR"))
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Warnf("driverstate: cannot resolve home dir, persistence disabled: %v", err)
+			return nil
+		}
+		dataDir = filepath.Join(home, ".bbclaw-adapter")
+	}
+	path := filepath.Join(dataDir, "driver_state.json")
+	store, err := driverstate.NewStore(path, logger)
+	if err != nil {
+		logger.Warnf("driverstate: load failed at %s, persistence disabled: %v", path, err)
+		return nil
+	}
+	return store
+}
+
+// applyDriverStateDefault reconciles the router's runtime default with the
+// persisted active_driver. Called once at startup after both have been
+// initialised. When the persisted name isn't a registered driver (e.g. the
+// operator removed it from AGENT_ENABLED_DRIVERS since last run), we leave
+// the router's auto-default in place and log a warning.
+func applyDriverStateDefault(router *agent.Router, store *driverstate.Store, logger *obs.Logger) {
+	if router == nil || store == nil {
+		return
+	}
+	want := store.ActiveDriver()
+	if want == "" {
+		return
+	}
+	if router.SetDefault(want) {
+		logger.Infof("driverstate: router default overridden to %q from persisted active_driver", want)
+		return
+	}
+	logger.Warnf("driverstate: persisted active_driver=%q is not registered, keeping router default=%q",
+		want, router.DefaultName())
 }
 
 // buildSessionManager constructs the logical-session table (ADR-014). The
@@ -460,6 +511,8 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sink := buildSink(cfg, logger, metrics)
 	agentRouter := buildAgentRouter(cfg, logger)
 	sessionMgr := buildSessionManager(logger)
+	driverStateStore := buildDriverState(logger)
+	applyDriverStateDefault(agentRouter, driverStateStore, logger)
 
 	if len(cfg.CwdPool) > 0 {
 		names := make([]string, len(cfg.CwdPool))
@@ -488,6 +541,9 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		cloudRelay.SetRouter(agentRouter)
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
+		}
+		if driverStateStore != nil {
+			cloudRelay.SetDriverState(driverStateStore)
 		}
 		// Wire CWD pool so cloud-proxied GET /v1/agent/cwd-pool works.
 		if len(cfg.CwdPool) > 0 {
@@ -521,7 +577,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)

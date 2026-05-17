@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/voicecmd"
 )
@@ -111,6 +112,43 @@ func (s *Server) SetAgentDriver(d agent.Driver) {
 // to the underlying CLI session id, and SESSION_NOT_FOUND retries write the
 // new CLI id back. nil disables the manager-aware path entirely.
 func (s *Server) SetSessionManager(m *logicalsession.Manager) { s.sessions = m }
+
+// SetDriverState attaches the persistent driver-preference store. When set,
+// the router's "default" driver is overridden by store.ActiveDriver() at
+// session-create time, and StartOpts.Model is populated from
+// store.ActiveModel(driver). nil disables the override path entirely (the
+// router's first-registered-wins default applies as before).
+func (s *Server) SetDriverState(store *driverstate.Store) { s.driverState = store }
+
+// resolveActiveDriver picks the driver name to use when the request didn't
+// specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
+// own default. Both fall back gracefully to "" when neither resolves.
+func (s *Server) resolveActiveDriver() string {
+	if s.driverState != nil {
+		if name := s.driverState.ActiveDriver(); name != "" {
+			if _, ok := s.router.Get(name); ok {
+				return name
+			}
+			// Persisted driver no longer registered (operator removed it from
+			// AGENT_ENABLED_DRIVERS). Fall back to router default.
+			s.log.Warnf("driverstate: active_driver=%q not registered, falling back to router default", name)
+		}
+	}
+	if d := s.router.Default(); d != nil {
+		return d.Name()
+	}
+	return ""
+}
+
+// resolveActiveModel returns the persisted active model for driver, or ""
+// when the store is unset / no override exists. The driver decides what ""
+// means (typically "use the driver's built-in default").
+func (s *Server) resolveActiveModel(driver string) string {
+	if s.driverState == nil || driver == "" {
+		return ""
+	}
+	return s.driverState.ActiveModel(driver)
+}
 
 // SetAgentRouter attaches a multi-driver router to the server. Pass nil to
 // disable the /v1/agent/* endpoints. Starts the long-lived session sweeper
@@ -353,22 +391,163 @@ func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAgentDrivers lists the drivers currently registered on the router.
+// driverInfoExtended is the device-facing shape of one driver row.
+// Extends agent.DriverInfo with the per-driver model list and the
+// currently-active model id (when the driverstate store is wired).
+type driverInfoExtended struct {
+	Name         string             `json:"name"`
+	Capabilities agent.Capabilities `json:"capabilities"`
+	Models       []agent.ModelInfo  `json:"models,omitempty"`
+	ActiveModel  string             `json:"active_model,omitempty"`
+}
+
+// handleAgentDrivers lists the drivers currently registered on the router,
+// each augmented with the model catalog from agent.ModelLister (when the
+// driver implements it) and the currently-active model id from driverState.
 //
 //	GET /v1/agent/drivers
-//	response: {"ok":true,"data":{"drivers":[{"name":"...","capabilities":{...}},...]}}
+//	response:
+//	  {"ok":true,"data":{
+//	    "active_driver":"claude-code",
+//	    "drivers":[
+//	      {"name":"claude-code","capabilities":{...},
+//	       "models":[{"id":"...","label":"..."},...],
+//	       "active_model":"claude-sonnet-4-6"},
+//	      ...
+//	    ]
+//	  }}
+//
+// `models` is omitted (not just empty) for drivers that don't implement
+// ModelLister so the device UI can hide the Model row entirely for them
+// (e.g. openclaw). `active_model` is omitted when no override is persisted.
 func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
 	if s.router == nil {
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
 		return
 	}
-	drivers := s.router.List()
+	base := s.router.List()
 	// Stable order makes the response testable and easier to eyeball.
-	sort.Slice(drivers, func(i, j int) bool { return drivers[i].Name < drivers[j].Name })
+	sort.Slice(base, func(i, j int) bool { return base[i].Name < base[j].Name })
+
+	out := make([]driverInfoExtended, 0, len(base))
+	for _, info := range base {
+		row := driverInfoExtended{
+			Name:         info.Name,
+			Capabilities: info.Capabilities,
+			ActiveModel:  s.resolveActiveModel(info.Name),
+		}
+		if drv, ok := s.router.Get(info.Name); ok {
+			if ml, isLister := drv.(agent.ModelLister); isLister {
+				if models, err := ml.ListModels(r.Context()); err == nil {
+					row.Models = models
+				} else {
+					s.log.Warnf("driver %s: ListModels failed: %v", info.Name, err)
+				}
+			}
+		}
+		out = append(out, row)
+	}
+
 	writeJSON(w, http.StatusOK, response{
-		OK:   true,
-		Data: map[string]any{"drivers": drivers},
+		OK: true,
+		Data: map[string]any{
+			"active_driver": s.resolveActiveDriver(),
+			"drivers":       out,
+		},
 	})
+}
+
+// handleAgentActiveDriverPut persists the active driver selection.
+//
+//	PUT /v1/agent/active_driver  {"name":"opencode"}
+//	→ {"ok":true,"data":{"active_driver":"opencode"}}
+//
+// 400 UNKNOWN_DRIVER if name is not a registered driver. 501
+// DRIVERSTATE_NOT_CONFIGURED when the store wasn't wired (operator
+// disabled persistence via env). The router's runtime default is updated
+// in lock-step so /v1/agent/message without an explicit driver also picks
+// the new selection immediately.
+func (s *Server) handleAgentActiveDriverPut(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	if s.driverState == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "DRIVERSTATE_NOT_CONFIGURED"})
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST", Detail: err.Error()})
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_NAME"})
+		return
+	}
+	if _, ok := s.router.Get(name); !ok {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "UNKNOWN_DRIVER", Detail: name})
+		return
+	}
+	if err := s.driverState.SetActiveDriver(name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "PERSIST_FAILED", Detail: err.Error()})
+		return
+	}
+	// Mirror into the router so /v1/agent/message without explicit driver
+	// resolves to the new selection without another round-trip.
+	s.router.SetDefault(name)
+	s.log.Infof("driverstate: active_driver set to %q", name)
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"active_driver": name}})
+}
+
+// handleAgentActiveModelPut persists the active model for one driver.
+//
+//	PUT /v1/agent/drivers/{name}/active_model  {"model":"claude-opus-4-7"}
+//	→ {"ok":true,"data":{"driver":"claude-code","active_model":"claude-opus-4-7"}}
+//
+// Passing model="" clears the persisted override (the driver falls back to
+// its built-in default). 400 UNKNOWN_DRIVER if {name} isn't registered.
+// We DO NOT validate the model id against ListModels — letting the operator
+// configure a model id that ListModels doesn't enumerate (e.g. a model only
+// reachable via OLLAMA_BASE_URL the device hasn't seen yet) is intentional.
+func (s *Server) handleAgentActiveModelPut(w http.ResponseWriter, r *http.Request) {
+	if s.router == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
+		return
+	}
+	if s.driverState == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "DRIVERSTATE_NOT_CONFIGURED"})
+		return
+	}
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_NAME"})
+		return
+	}
+	if _, ok := s.router.Get(name); !ok {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "UNKNOWN_DRIVER", Detail: name})
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST", Detail: err.Error()})
+		return
+	}
+	model := strings.TrimSpace(body.Model)
+	if err := s.driverState.SetActiveModel(name, model); err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "PERSIST_FAILED", Detail: err.Error()})
+		return
+	}
+	s.log.Infof("driverstate: %s active_model set to %q", name, model)
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{
+		"driver":       name,
+		"active_model": model,
+	}})
 }
 
 // handleAgentMessage streams one agent turn as NDJSON.
@@ -658,6 +837,9 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 			if logicalCwd != "" {
 				startOpts.Cwd = logicalCwd
 			}
+			// Honour the persisted active_model for this driver. Drivers that
+			// don't read StartOpts.Model just ignore it.
+			startOpts.Model = s.resolveActiveModel(drv.Name())
 			isResumeAttempt := false
 			if attempt == 0 {
 				switch {

@@ -4,42 +4,56 @@
 #include "lvgl.h"
 
 /**
- * Standalone Settings overlay (Phase 4.7).
+ * Standalone Settings overlay (ADR-016 revision: 2-level menu).
  *
- * From the main radio screen, pressing OK opens this overlay full-screen:
+ * Hardware has only encoder ↑/↓ + OK + BACK (no LEFT/RIGHT), so the
+ * Phase-4.7 "preview-on-LEFT/RIGHT, commit-on-OK" model is gone. Replaced
+ * with a classic 2-level picker:
  *
- *     Session:    <session preview>
- *     TTS reply:  On / Off
- *     Back
+ *   Main page:
+ *       Driver:   <name>     ─┐
+ *       Model:    <label>     │── OK on these rows pushes a sub-picker
+ *       TTS:      On / Off    │    (Driver / Model). TTS toggles in place.
+ *       Back                  ┘
  *
- * UX (preview/commit model):
- *   UP/DOWN    : move row cursor
- *   LEFT/RIGHT : on Session row, cycle through sessions for the current
- *                driver. On TTS row, toggle On/Off. No NVS write yet.
- *   OK         : commit the previewed value (NVS write), then advance
- *                cursor. On Back row, OK exits the overlay.
- *   BACK       : exit immediately. Pending un-committed previews are
- *                discarded (next entry shows the actual saved values).
+ *   Sub-pickers (Driver / Model) are flat lists:
+ *       > <option1>  ✓        ← current selection marked, cursor here
+ *         <option2>
+ *         <option3>
  *
- * Session fetch is async (background FreeRTOS task → lv_async_call).
- * While loading, the Session row shows "loading...". The session list
- * follows the current driver (from the adapter's SESSION frame).
+ *     OK   = commit + pop back to main (async PUT to adapter)
+ *     BACK = abandon + pop back to main
  *
- * Lifecycle:
- *   bb_ui_settings_show(parent)  ── builds the overlay, kicks off async
- *                                   session list fetch. Caller must hold
- *                                   the LVGL lock.
- *   bb_ui_settings_hide()        ── tears down; safe when not active.
- *   bb_ui_settings_is_active()   ── 1 while the overlay is visible.
+ *  Session selection lives in Session Picker (bb_ui_agent_chat) — entered
+ *  by short-press OK from chat. Settings is the long-press path and does
+ *  NOT duplicate session selection.
+ *
+ * Lifecycle / threading: same as before — caller holds LVGL lock; async
+ * adapter fetches run on background FreeRTOS tasks and dispatch back via
+ * lv_async_call.
  */
 
 void bb_ui_settings_show(lv_obj_t* parent);
 void bb_ui_settings_hide(void);
 int  bb_ui_settings_is_active(void);
 
+/* UP/DOWN rotation moves the cursor at the current level (main or picker). */
 void bb_ui_settings_handle_rotate(int delta);
-void bb_ui_settings_handle_value(int delta);
-void bb_ui_settings_handle_click(void);
+
+/* OK on the current cursor row.
+ *  - main page: TTS row toggles in place; Driver/Model row pushes a picker;
+ *    Back row exits the overlay (caller still must call bb_ui_settings_hide).
+ *  - picker: commits the highlighted choice via async PUT, then pops back to
+ *    the main page.
+ * Returns 1 if the overlay should be torn down (Back row clicked at main
+ * level), 0 otherwise. Caller (bb_radio_app) drives the state transition. */
+int  bb_ui_settings_handle_click(void);
+
+/* BACK navigation:
+ *  - on a sub-picker: pops back to main without committing. Returns 0.
+ *  - on the main page: returns 1 so the caller can tear down + switch state.
+ * Keeps "BACK is always one level up" consistent across the whole overlay. */
+int  bb_ui_settings_handle_back(void);
 
 /* Phase 4.8.x — read the persisted TTS-reply toggle. Source of truth lives
  * in bb_ui_settings (NVS-backed); chat module has a local copy that's

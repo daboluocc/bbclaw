@@ -14,6 +14,10 @@ static const char* TAG = "bb_session_store";
 #define BB_SESSION_PERSIST_TASK_PRIO 3
 #define BB_SESSION_MIGRATE_FLAG "ls_migrated"
 
+/* Active driver name (this ADR). Single string key under the bbclaw
+ * namespace; max 23 chars + NUL covers every current driver id. */
+#define BB_SESSION_NVS_KEY_ACTIVE_DRIVER "drv/active"
+
 /* Driver name → NVS key short prefix mapping (ADR-014: ls/ prefix) */
 typedef struct {
   const char* driver_name;
@@ -157,6 +161,81 @@ static void persist_task(void* arg) {
   nvs_close(h);
   free(p);
   vTaskDelete(NULL);
+}
+
+/* ── Active driver name (this ADR) ── */
+
+esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz) {
+  if (out_name == NULL || sz == 0) return ESP_ERR_INVALID_ARG;
+  out_name[0] = '\0';
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READONLY, &h);
+  if (err != ESP_OK) return err;
+  err = nvs_get_str(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER, out_name, &sz);
+  nvs_close(h);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "load_active_driver: '%s'", out_name);
+  }
+  return err;
+}
+
+/* Deferred persist payload for the active driver key. Distinct from
+ * persist_payload_t so the existing per-driver session writer stays
+ * unchanged and we can extend the active-driver writer independently. */
+typedef struct {
+  char driver_name[24];
+} active_driver_payload_t;
+
+static void active_driver_persist_task(void* arg) {
+  active_driver_payload_t* p = (active_driver_payload_t*)arg;
+  if (p == NULL) {
+    vTaskDelete(NULL);
+    return;
+  }
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READWRITE, &h);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "active_driver persist: nvs_open failed (%s)", esp_err_to_name(err));
+    free(p);
+    vTaskDelete(NULL);
+    return;
+  }
+  if (p->driver_name[0] == '\0') {
+    err = nvs_erase_key(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
+      err = nvs_commit(h);
+      ESP_LOGI(TAG, "active_driver persist: cleared");
+    }
+  } else {
+    err = nvs_set_str(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER, p->driver_name);
+    if (err == ESP_OK) {
+      err = nvs_commit(h);
+      ESP_LOGI(TAG, "active_driver persist: '%s'", p->driver_name);
+    }
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "active_driver persist: write failed (%s)", esp_err_to_name(err));
+  }
+  nvs_close(h);
+  free(p);
+  vTaskDelete(NULL);
+}
+
+esp_err_t bb_session_store_save_active_driver(const char* driver_name) {
+  if (driver_name == NULL) return ESP_ERR_INVALID_ARG;
+  active_driver_payload_t* p = (active_driver_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) return ESP_ERR_NO_MEM;
+  strncpy(p->driver_name, driver_name, sizeof(p->driver_name) - 1);
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(active_driver_persist_task, "drv_persist",
+                              BB_SESSION_PERSIST_TASK_STACK, p,
+                              BB_SESSION_PERSIST_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "save_active_driver: xTaskCreate failed");
+    free(p);
+    return ESP_FAIL;
+  }
+  return ESP_OK;
 }
 
 esp_err_t bb_session_store_save(const char* driver_name, const char* session_id) {

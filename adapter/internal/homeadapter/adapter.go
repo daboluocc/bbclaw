@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -55,6 +56,10 @@ type Adapter struct {
 	// cwdPool holds the configured CWD pool entries (issue #30). Set via
 	// SetCwdPool from main.go so cloud-proxied GET /v1/agent/cwd-pool works.
 	cwdPool []CwdPoolEntry
+
+	// driverState persists user-mutable driver preferences. Optional: when
+	// nil the agent proxy uses router defaults. Set via SetDriverState.
+	driverState *driverstate.Store
 }
 
 type Status struct {
@@ -118,6 +123,20 @@ type CwdPoolEntry struct {
 // SetCwdPool attaches the configured CWD pool so cloud-proxied
 // GET /v1/agent/cwd-pool requests can be served.
 func (a *Adapter) SetCwdPool(pool []CwdPoolEntry) { a.cwdPool = pool }
+
+// SetDriverState attaches the persistent driver-preference store, mirrored
+// from the local HTTP layer so cloud-proxied agent turns honour the same
+// active driver / active model selection as LAN-direct turns.
+func (a *Adapter) SetDriverState(store *driverstate.Store) { a.driverState = store }
+
+// resolveActiveModel mirrors httpapi.Server.resolveActiveModel for the cloud
+// proxy path. Returns "" when no driverState store is wired.
+func (a *Adapter) resolveActiveModel(driver string) string {
+	if a.driverState == nil || driver == "" {
+		return ""
+	}
+	return a.driverState.ActiveModel(driver)
+}
 
 func (a *Adapter) setStatus(connected bool, lastErr error) {
 	a.mu.Lock()
@@ -332,6 +351,15 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// Issue #30: cloud proxies firmware GET /v1/agent/cwd-pool through
 		// this kind so device-side CWD picker works in cloud_saas mode.
 		return a.handleAgentCwdPoolRequest(write, env)
+	case "agent.active_driver.set":
+		// Driver/model selection (this ADR): cloud proxies firmware
+		// PUT /v1/agent/active_driver so the device settings UI can change
+		// the active driver in cloud_saas mode.
+		return a.handleAgentActiveDriverSetRequest(write, env)
+	case "agent.active_model.set":
+		// Driver/model selection (this ADR): cloud proxies firmware
+		// PUT /v1/agent/drivers/{name}/active_model.
+		return a.handleAgentActiveModelSetRequest(write, env)
 	case "agent.messages":
 		// Phase S3 cloud proxy: cloud reverse-proxies firmware
 		// /v1/agent/sessions/{id}/messages history requests through this kind.

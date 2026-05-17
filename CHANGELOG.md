@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **设备端 Driver / Model 选择** (ADR-016)：Settings 屏改为二级菜单（主屏 Driver/Model/TTS/Back，OK 进同名 picker 子屏），用户可在 BBClaw 上直接切换 active driver（claude-code / opencode / aider / ollama / openclaw）和当前 driver 的 model（Sonnet / Opus / Haiku / GPT-5 / Ollama tags 等），无需 SSH 进 adapter 改 env。Adapter 持久化 `~/.bbclaw-adapter/driver_state.json`，多设备共享。
+  - Adapter HTTP：`GET /v1/agent/drivers` 扩展返回 `active_driver` + 每 driver 的 `models[]` 与 `active_model`；新增 `PUT /v1/agent/active_driver` 与 `PUT /v1/agent/drivers/{name}/active_model`
+  - Cloud envelope：扩展 `agent.drivers` payload；新增 `agent.active_driver.set` / `agent.active_model.set` kind（cloud_saas 模式下需 cloud 侧配套补 HTTP proxy 才能在远端生效；local_home 模式立即可用）
+  - Driver 接口：可选 `ModelLister` 接口；claude-code / opencode / aider 提供静态模型列表，ollama 调 `/api/tags` 60s 缓存；`agent.StartOpts.Model` 字段把选定 model 注入 session 启动参数
+  - Firmware：新增 NVS key `drv/active`、`bb_agent_set_active_driver` / `bb_agent_set_active_model`；chat 屏 driver fallback 改读 NVS
+  - **UI 修订（2026-05-17）**：Settings 从最初的"扁平 5 行 + LEFT/RIGHT 循环值"改为"二级菜单 + 旋钮 + OK + BACK"，因为硬件实际无 LEFT/RIGHT 物理键（首版方案误用了代码里的残留事件）；Session Picker 去除原 Driver 切换行，driver 选择统一收归 Settings，两个 UI 重复入口消除。
+
 ## [0.4.3] - 2026-05-16
 
 ### Fixed

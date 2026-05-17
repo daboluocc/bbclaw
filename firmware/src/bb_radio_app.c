@@ -483,36 +483,47 @@ static void settings_overlay_exit(void) {
   }
 }
 
-/* Wrapper helpers for nav events under lvgl lock. */
+/* Wrapper helpers for nav events under lvgl lock. ADR-016 revision:
+ *   - LEFT/RIGHT no longer used (hardware has only ↑/↓/OK/BACK).
+ *   - settings_click_locked / settings_back_locked return 1 when the
+ *     overlay wants to fully exit (so radio_app drives the state transition).
+ */
 static void settings_rotate_locked(int delta) {
   if (lvgl_port_lock(200)) {
     bb_ui_settings_handle_rotate(delta);
     lvgl_port_unlock();
   }
 }
-static void settings_value_locked(int delta) {
-  if (lvgl_port_lock(200)) {
-    bb_ui_settings_handle_value(delta);
-    lvgl_port_unlock();
-  }
-}
 static void settings_click_locked(void) {
+  int want_exit = 0;
   if (lvgl_port_lock(200)) {
     UBaseType_t stack_hw_before = uxTaskGetStackHighWaterMark(NULL);
-    bb_ui_settings_handle_click();
-    int still_active = bb_ui_settings_is_active();
+    want_exit = bb_ui_settings_handle_click();
     UBaseType_t stack_hw_after = uxTaskGetStackHighWaterMark(NULL);
     if (stack_hw_after < 2048) {
       ESP_LOGW(TAG, "settings_click low stack: before=%u after=%u",
                (unsigned)stack_hw_before, (unsigned)stack_hw_after);
     }
     lvgl_port_unlock();
-    /* Click on Back row asks bb_ui_settings to hide itself; mirror that here
-     * so the radio_app overlay state stays in sync. */
-    if (!still_active && s_settings_active) {
-      settings_overlay_exit();
-      set_radio_app_state(BBCLAW_STATE_CHAT);
-    }
+  }
+  /* Back row clicked at the main level → tear down + return to chat. */
+  if (want_exit && s_settings_active) {
+    settings_overlay_exit();
+    set_radio_app_state(BBCLAW_STATE_CHAT);
+  }
+}
+static void settings_back_locked(void) {
+  int want_exit = 0;
+  if (lvgl_port_lock(200)) {
+    want_exit = bb_ui_settings_handle_back();
+    lvgl_port_unlock();
+  }
+  /* BACK at the main level → exit; on a sub-picker we just popped one
+   * level and stay inside the overlay. */
+  if (want_exit && s_settings_active) {
+    settings_overlay_exit();
+    set_radio_app_state(BBCLAW_STATE_CHAT);
+    ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT");
   }
 }
 
@@ -1840,17 +1851,17 @@ static void stream_task(void* arg) {
           }
 
           case BBCLAW_STATE_SETTINGS:
+            /* ADR-016 revision: 2-level menu navigated with ↑/↓/OK/BACK only.
+             * LEFT/RIGHT events are ignored (device doesn't emit them, but
+             * code-side completeness). BACK pops one level inside the overlay
+             * until it reaches the main page, then exits to CHAT. */
             switch (nav) {
               case BB_NAV_EVENT_UP:    settings_rotate_locked(-1); break;
               case BB_NAV_EVENT_DOWN:  settings_rotate_locked(+1); break;
-              case BB_NAV_EVENT_LEFT:  settings_value_locked(-1);  break;
-              case BB_NAV_EVENT_RIGHT: settings_value_locked(+1);  break;
               case BB_NAV_EVENT_OK:    settings_click_locked();    break;
-              case BB_NAV_EVENT_BACK:
-                settings_overlay_exit();
-                set_radio_app_state(BBCLAW_STATE_CHAT);
-                ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT");
-                break;
+              case BB_NAV_EVENT_BACK:  settings_back_locked();     break;
+              case BB_NAV_EVENT_LEFT:
+              case BB_NAV_EVENT_RIGHT:
               case BB_NAV_EVENT_COUNT:
               default: break;
             }

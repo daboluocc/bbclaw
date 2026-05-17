@@ -119,6 +119,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		events:   make(chan agent.Event, eventBufSize),
 		rootCtx:  ctx,
 		messages: nil,
+		model:    strings.TrimSpace(opts.Model),
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -153,8 +154,13 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 
 	s.appendMessage(ollamaMessage{Role: "user", Content: text})
 
+	// Per-session model from StartOpts.Model wins; fall back to driver default.
+	model := s.model
+	if model == "" {
+		model = d.model
+	}
 	reqBody := ollamaChatRequest{
-		Model:    d.model,
+		Model:    model,
 		Messages: s.snapshotMessages(),
 		Stream:   true,
 	}
@@ -194,7 +200,7 @@ func (d *Driver) Send(sid agent.SessionID, text string) error {
 		return nil
 	}
 
-	d.log.Infof("ollama: chat sid=%s model=%s history_len=%d", sid, d.model, len(reqBody.Messages))
+	d.log.Infof("ollama: chat sid=%s model=%s history_len=%d", sid, model, len(reqBody.Messages))
 
 	fullReply, emittedEnd := parseStream(resp.Body, s, d.log)
 
@@ -245,6 +251,7 @@ type session struct {
 	id      agent.SessionID
 	events  chan agent.Event
 	rootCtx context.Context
+	model   string // empty = driver default
 
 	seq uint64
 

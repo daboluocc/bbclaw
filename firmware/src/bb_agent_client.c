@@ -289,9 +289,13 @@ static esp_err_t http_event_handler_agent_stream(esp_http_client_event_t* evt) {
 
 /* ── public: list drivers ── */
 
-esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* out_count) {
+esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* out_count,
+                                char* out_active_driver, size_t out_active_driver_len) {
   if (out_count != NULL) {
     *out_count = 0;
+  }
+  if (out_active_driver != NULL && out_active_driver_len > 0) {
+    out_active_driver[0] = '\0';
   }
 
   char url[256] = {0};
@@ -337,6 +341,16 @@ esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* 
     return ESP_FAIL;
   }
 
+  /* Top-level active_driver (this ADR). Absent on older adapters — we just
+   * leave the out buffer empty, the device falls back to the first driver. */
+  if (out_active_driver != NULL && out_active_driver_len > 0) {
+    const cJSON* ad = cJSON_GetObjectItemCaseSensitive(data, "active_driver");
+    if (cJSON_IsString(ad) && ad->valuestring != NULL) {
+      strncpy(out_active_driver, ad->valuestring, out_active_driver_len - 1);
+      out_active_driver[out_active_driver_len - 1] = '\0';
+    }
+  }
+
   int total = cJSON_GetArraySize(drivers);
   if (out_count != NULL) {
     *out_count = total;
@@ -364,12 +378,112 @@ esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* 
         slot->resume = cJSON_IsTrue(rs) ? 1 : 0;
         slot->streaming = cJSON_IsTrue(st) ? 1 : 0;
       }
+      /* models[] + active_model — both optional. Truncate to device cap. */
+      const cJSON* models = cJSON_GetObjectItemCaseSensitive(item, "models");
+      if (cJSON_IsArray(models)) {
+        int mtotal = cJSON_GetArraySize(models);
+        int mn = mtotal < BB_AGENT_MAX_MODELS_PER_DRIVER ? mtotal : BB_AGENT_MAX_MODELS_PER_DRIVER;
+        slot->model_count = mn;
+        for (int j = 0; j < mn; j++) {
+          const cJSON* m = cJSON_GetArrayItem(models, j);
+          if (m == NULL) continue;
+          const cJSON* mid = cJSON_GetObjectItemCaseSensitive(m, "id");
+          const cJSON* mlb = cJSON_GetObjectItemCaseSensitive(m, "label");
+          if (cJSON_IsString(mid) && mid->valuestring != NULL) {
+            strncpy(slot->models[j].id, mid->valuestring, sizeof(slot->models[j].id) - 1);
+          }
+          if (cJSON_IsString(mlb) && mlb->valuestring != NULL) {
+            strncpy(slot->models[j].label, mlb->valuestring, sizeof(slot->models[j].label) - 1);
+          } else if (cJSON_IsString(mid) && mid->valuestring != NULL) {
+            /* Fall back to id when adapter omits label. */
+            strncpy(slot->models[j].label, mid->valuestring, sizeof(slot->models[j].label) - 1);
+          }
+        }
+      }
+      const cJSON* am = cJSON_GetObjectItemCaseSensitive(item, "active_model");
+      if (cJSON_IsString(am) && am->valuestring != NULL) {
+        strncpy(slot->active_model, am->valuestring, sizeof(slot->active_model) - 1);
+      }
     }
   }
 
-  ESP_LOGI(TAG, "list_drivers ok total=%d", total);
+  ESP_LOGI(TAG, "list_drivers ok total=%d active=%s", total,
+           (out_active_driver != NULL && out_active_driver[0] != '\0') ? out_active_driver : "(none)");
   cJSON_Delete(root);
   return ESP_OK;
+}
+
+/* ── public: PUT active driver / active model ── */
+
+static esp_err_t put_json_endpoint(const char* path, const char* body, const char* tag_op) {
+  if (path == NULL || body == NULL) return ESP_ERR_INVALID_ARG;
+  char url[320] = {0};
+  agent_build_url(url, sizeof(url), path);
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_PUT, http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_post_field(client, body, (int)strlen(body));
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "%s transport err=%s", tag_op, esp_err_to_name(err));
+    free(accum.buf);
+    return err;
+  }
+  if (status < 200 || status >= 300) {
+    ESP_LOGE(TAG, "%s http status=%d body=%.120s", tag_op, status, accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+  ESP_LOGI(TAG, "%s ok status=%d", tag_op, status);
+  free(accum.buf);
+  return ESP_OK;
+}
+
+esp_err_t bb_agent_set_active_driver(const char* driver_name) {
+  if (driver_name == NULL || driver_name[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  /* Body is small ({"name":"<24 chars>"}); 64 is comfortable. */
+  char body[64];
+  int n = snprintf(body, sizeof(body), "{\"name\":\"%s\"}", driver_name);
+  if (n < 0 || n >= (int)sizeof(body)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return put_json_endpoint("/v1/agent/active_driver", body, "set_active_driver");
+}
+
+esp_err_t bb_agent_set_active_model(const char* driver_name, const char* model_id) {
+  if (driver_name == NULL || driver_name[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (model_id == NULL) model_id = "";
+
+  char path[96];
+  /* Path-encoded driver name. Driver names are tame ASCII (claude-code,
+   * opencode, ...), so we don't need full URL encoding. */
+  int p = snprintf(path, sizeof(path), "/v1/agent/drivers/%s/active_model", driver_name);
+  if (p < 0 || p >= (int)sizeof(path)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  /* Body up to {"model":"<40-byte id>"} + json overhead. 96 fits even with
+   * provider-prefixed ids like "anthropic/claude-sonnet-4-6". */
+  char body[96];
+  int b = snprintf(body, sizeof(body), "{\"model\":\"%s\"}", model_id);
+  if (b < 0 || b >= (int)sizeof(body)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return put_json_endpoint(path, body, "set_active_model");
 }
 
 /* ── public: list sessions ── */

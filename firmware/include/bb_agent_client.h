@@ -39,11 +39,35 @@ typedef struct {
 
 typedef void (*bb_agent_stream_cb_t)(const bb_agent_stream_event_t* event, void* user_ctx);
 
+/**
+ * One selectable model under a driver, surfaced by adapter
+ * GET /v1/agent/drivers (each item carries a `models[]` array). The device
+ * uses `id` when calling PUT /v1/agent/drivers/{name}/active_model, and
+ * shows `label` in the settings UI.
+ */
+typedef struct {
+  char id[40];    /* stable model id passed to driver via StartOpts.Model */
+  char label[28]; /* short display label; falls back to id when empty */
+} bb_agent_model_info_t;
+
+/**
+ * Per-driver model catalog cap. Tuned for ESP32 RAM — 6 is generous enough
+ * for the curated Anthropic/OpenAI/DeepSeek lists in claudecode/opencode/
+ * aider, and the device truncates ollama's dynamic list to this cap.
+ */
+#define BB_AGENT_MAX_MODELS_PER_DRIVER 6
+
 typedef struct {
   char name[24];
   int tool_approval;
   int resume;
   int streaming;
+  /* Model catalog + active selection (this ADR). Both default to empty for
+   * drivers that don't implement agent.ModelLister adapter-side; the
+   * settings UI hides the Model row in that case. */
+  int model_count;
+  bb_agent_model_info_t models[BB_AGENT_MAX_MODELS_PER_DRIVER];
+  char active_model[40]; /* "" = adapter is using driver-default */
 } bb_agent_driver_info_t;
 
 typedef struct {
@@ -56,14 +80,41 @@ typedef struct {
 } bb_agent_session_info_t;
 
 /**
- * 列出 adapter 上可用 driver。
+ * 列出 adapter 上可用 driver（含模型 catalog 与当前 active_model）。
  *
- * @param out_list   调用方提供的数组；可为 NULL（仅查总数）。
- * @param cap        out_list 容量；out_list 为 NULL 时忽略。
- * @param out_count  实际可用 driver 总数（不受 cap 限制），即使 cap < 总数也按总数填。
+ * @param out_list                调用方提供的数组；可为 NULL（仅查总数）。
+ * @param cap                     out_list 容量；out_list 为 NULL 时忽略。
+ * @param out_count               实际可用 driver 总数（不受 cap 限制）。
+ * @param out_active_driver       可为 NULL；非 NULL 时写入 adapter 持久化的
+ *                                active_driver 名字（NUL 结尾）。adapter 未
+ *                                配置 driverstate 时写入空串。
+ * @param out_active_driver_len   out_active_driver 缓冲容量。
  * @return ESP_OK / 错误码。
  */
-esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* out_count);
+esp_err_t bb_agent_list_drivers(bb_agent_driver_info_t* out_list, int cap, int* out_count,
+                                char* out_active_driver, size_t out_active_driver_len);
+
+/**
+ * PUT /v1/agent/active_driver — persist the active driver selection on the
+ * adapter and update the router's runtime default in one round-trip.
+ *
+ * @param driver_name Non-empty driver name (e.g. "opencode").
+ * @return ESP_OK on 2xx; ESP_ERR_INVALID_ARG on empty name; ESP_FAIL on
+ *         non-2xx (adapter logs include the precise reason: UNKNOWN_DRIVER /
+ *         DRIVERSTATE_NOT_CONFIGURED / etc.).
+ */
+esp_err_t bb_agent_set_active_driver(const char* driver_name);
+
+/**
+ * PUT /v1/agent/drivers/{driver}/active_model — persist the active model id
+ * for one driver. Pass model_id="" (or NULL) to clear the override so the
+ * driver falls back to its own default.
+ *
+ * @param driver_name Required, non-empty.
+ * @param model_id    Stable id from bb_agent_model_info_t.id; "" clears it.
+ * @return ESP_OK on 2xx; ESP_ERR_INVALID_ARG on bad input; ESP_FAIL otherwise.
+ */
+esp_err_t bb_agent_set_active_model(const char* driver_name, const char* model_id);
 
 /**
  * 列出指定 driver 的 session 列表（Phase S2）。

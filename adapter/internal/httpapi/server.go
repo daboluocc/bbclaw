@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
@@ -85,6 +86,12 @@ type Server struct {
 	// SetSessionManager from main.go.
 	sessions *logicalsession.Manager
 
+	// driverState persists user-mutable driver preferences (active driver
+	// name + per-driver active model). Optional: when nil the active driver
+	// is the router's default and active_model falls back to driver-default.
+	// Set via SetDriverState from main.go.
+	driverState *driverstate.Store
+
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
 	notifQueue *NotificationQueue
@@ -115,6 +122,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
+	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))
+	mux.HandleFunc("PUT /v1/agent/drivers/{name}/active_model", s.withAuth(s.handleAgentActiveModelPut))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
 	mux.HandleFunc("GET /v1/agent/cwd-pool", s.withAuth(s.handleAgentCwdPool))
 	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
@@ -153,7 +162,7 @@ func withCORS(next http.Handler) http.Handler {
 		} else {
 			h.Set("Access-Control-Allow-Origin", "*")
 		}
-		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 		h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		h.Set("Access-Control-Max-Age", "600")
 

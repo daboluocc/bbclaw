@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 #include "esp_err.h"
 
 /**
@@ -53,3 +55,24 @@ esp_err_t bb_session_store_load(const char* driver_name, char* out_sid, size_t s
  * @return ESP_OK if task spawned, error code otherwise
  */
 esp_err_t bb_session_store_save(const char* driver_name, const char* session_id);
+
+/**
+ * Load the device-side cached active driver name. Mirrors the adapter's
+ * persisted active_driver so the chat screen can pick the right driver
+ * before the first /v1/agent/drivers fetch returns. NVS key: "drv/active".
+ *
+ * @param out_name  Output buffer; empty string on NVS-miss / error.
+ * @param sz       Buffer size; recommend 24.
+ * @return ESP_OK on hit, ESP_ERR_NVS_NOT_FOUND on miss, other on NVS error.
+ */
+esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz);
+
+/**
+ * Persist the active driver name to device NVS so the next boot can seed
+ * the chat screen even before the adapter is reachable. Deferred write
+ * pattern, same as bb_session_store_save.
+ *
+ * @param driver_name  Non-empty driver name; "" erases the entry.
+ * @return ESP_OK if task spawned (NVS write happens asynchronously).
+ */
+esp_err_t bb_session_store_save_active_driver(const char* driver_name);
