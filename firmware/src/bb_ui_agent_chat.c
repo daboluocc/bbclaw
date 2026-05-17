@@ -1647,6 +1647,10 @@ static void on_session_fetch_done(void* user_data) {
     if (s_chat.session_id[0] != '\0' &&
         strcmp(s_chat.session_list[i].id, s_chat.session_id) == 0) {
       s_chat.session_picker_active_idx = i;
+      /* ADR-016: surface the adapter-side title to the bottom bar so the
+       * left cell switches from the sid hex tail to the friendly alias
+       * (e.g. "daboluocc-bbclaw") as soon as the session-list fetch lands. */
+      bb_display_set_session_alias(s_chat.session_list[i].title);
       break;
     }
   }
@@ -2146,7 +2150,11 @@ void bb_ui_agent_chat_session_picker_move(int delta) {
 /* Common transcript-reset + topbar-refresh used after both session-switch and
  * new-session-creation. Caller already updated s_chat.session_id and persisted
  * to NVS. Must run on the LVGL task. */
-static void apply_session_switch_ui(const char* sid) {
+/* alias may be NULL/"" when the caller doesn't know the logical session's
+ * title (e.g. resuming a sid from NVS at chat-enter, driver cycle pulling
+ * an old sid back). In that case the bottom bar falls back to displaying
+ * the sid tail. */
+static void apply_session_switch_ui(const char* sid, const char* alias) {
   char shortbuf[16] = {0};
   session_id_short(sid, shortbuf, sizeof(shortbuf));
   post_session(shortbuf);
@@ -2157,6 +2165,10 @@ static void apply_session_switch_ui(const char* sid) {
    * than waiting for the next session_init frame (which only arrives if
    * the user actually sends a turn). */
   bb_display_set_session_id(sid);
+  /* ADR-016 polish: when the caller has the adapter's title field (session
+   * picker selecting a known row), surface it as the friendly alias on the
+   * bottom bar. NULL/"" clears the alias so we fall back to the sid tail. */
+  bb_display_set_session_alias(alias);
 
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL) {
@@ -2209,7 +2221,9 @@ static void on_new_session_done(void* user_data) {
   }
   bb_notification_ack(res->session_id);
 
-  apply_session_switch_ui(res->session_id);
+  /* New session: adapter hasn't returned a title yet from this POST path,
+   * so pass NULL and let the next GET /v1/agent/sessions populate it. */
+  apply_session_switch_ui(res->session_id, NULL);
 
   /* Brand-new session has no history; just reset bookkeeping. */
   history_state_reset();
@@ -2554,7 +2568,7 @@ int bb_ui_agent_chat_session_picker_select(void) {
     bb_session_store_save(s_chat.driver_name, session->id);
     bb_notification_ack(session->id);
 
-    apply_session_switch_ui(session->id);
+    apply_session_switch_ui(session->id, session->title);
 
     /* Phase S3 — fetch history for the just-selected session. The fetch is
      * async (worker task); the empty transcript is what the user sees in the
@@ -2833,8 +2847,11 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   /* 1. Load the new driver's last-used session_id from NVS (per-driver store). */
   load_nvs_on_internal_stack();
 
-  /* 2. Rebuild transcript UI: clear stale content, re-init theme for new session. */
-  apply_session_switch_ui(s_chat.session_id);
+  /* 2. Rebuild transcript UI: clear stale content, re-init theme for new session.
+   *    NVS only stores the sid, not the title — pass NULL and let the bottom
+   *    bar fall back to the sid tail. A subsequent session-list fetch
+   *    (when the user opens the picker) will repopulate the alias. */
+  apply_session_switch_ui(s_chat.session_id, NULL);
 
   /* 3. Fetch history for the restored session (or just reset state if none). */
   if (s_chat.session_id[0] != '\0') {
@@ -2919,9 +2936,10 @@ esp_err_t bb_ui_agent_chat_set_active_driver(const char* name) {
     .delta = 0,
   });
 
-  /* Restore the new driver's last session + history. */
+  /* Restore the new driver's last session + history. NVS lacks the alias
+   * so pass NULL — session picker on next open will refresh it. */
   load_nvs_on_internal_stack();
-  apply_session_switch_ui(s_chat.session_id);
+  apply_session_switch_ui(s_chat.session_id, NULL);
   if (s_chat.session_id[0] != '\0') {
     history_state_reset();
     spawn_history_fetch_task(-1, /*is_initial=*/1);

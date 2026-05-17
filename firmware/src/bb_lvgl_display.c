@@ -210,6 +210,9 @@ static char s_bottom_cwd[48];
  * lives in s_bottom_cwd but is no longer painted — it's reachable via the
  * Settings overlay (and from server logs). */
 static char s_bottom_model[40];
+/* ADR-016 polish: friendly alias (logical session title from adapter) shown
+ * on the bottom-bar left instead of the raw sid when non-empty. */
+static char s_bottom_alias[24];
 
 /* LVGL objects — locked moved to bb_page_locked.c */
 
@@ -398,30 +401,43 @@ static void apply_battery_widget(void) {
 static void apply_bottom_bar(void) {
   if (s_lbl_bottom_session == NULL || s_lbl_bottom_cwd == NULL) return;
 
+  char alias_text[24];
   char session_text[32];
   char model_text[40];
   portENTER_CRITICAL(&s_state_lock);
+  strncpy(alias_text, s_bottom_alias, sizeof(alias_text) - 1);
+  alias_text[sizeof(alias_text) - 1] = '\0';
   const char* sid = s_bottom_session;
   if (sid[0] == '\0') {
     session_text[0] = '\0';
   } else {
-    int n = 0;
-    while (n < 12 && sid[n] != '\0') {
-      session_text[n] = sid[n];
-      n++;
-    }
-    session_text[n] = '\0';
+    /* Tail of the sid is the most distinguishing part; show the last 10
+     * hex chars after stripping the "ls-"/"cs-" prefix the same way the
+     * theme topbar does. Mirrors bb_ui_agent_chat::session_id_short. */
+    const char* hex = sid;
+    if (hex[0] != '\0' && hex[1] != '\0' && hex[2] == '-') hex += 3;
+    size_t hlen = strlen(hex);
+    const int show = 10;
+    const char* tail = hlen > (size_t)show ? hex + hlen - show : hex;
+    strncpy(session_text, tail, sizeof(session_text) - 1);
+    session_text[sizeof(session_text) - 1] = '\0';
   }
   strncpy(model_text, s_bottom_model, sizeof(model_text) - 1);
   model_text[sizeof(model_text) - 1] = '\0';
   portEXIT_CRITICAL(&s_state_lock);
 
-  if (session_text[0] == '\0') {
-    lv_label_set_text(s_lbl_bottom_session, "no session");
-  } else {
+  /* ADR-016: prefer logical session alias (adapter title field, e.g.
+   * "daboluocc-bbclaw") over the raw sid. Falls back to sid tail when
+   * the adapter hasn't reported a title (e.g. fresh new session, or
+   * driver_cycle restoring a sid from NVS without metadata). */
+  if (alias_text[0] != '\0') {
+    lv_label_set_text(s_lbl_bottom_session, alias_text);
+  } else if (session_text[0] != '\0') {
     char buf[40];
     snprintf(buf, sizeof(buf), "sid %s", session_text);
     lv_label_set_text(s_lbl_bottom_session, buf);
+  } else {
+    lv_label_set_text(s_lbl_bottom_session, "no session");
   }
 
   /* ADR-016: right cell shows active model (was cwd_name). When unknown
@@ -1653,6 +1669,21 @@ void bb_display_set_cwd_name(const char* cwd_name) {
   /* ADR-016: cwd no longer painted on the bottom bar (model took its slot).
    * Skip refresh_ui — the value is still kept for diagnostic purposes (e.g.
    * future "where is claude running" hint). */
+}
+
+/* ADR-016 polish: bottom-bar left-cell alias (logical session title).
+ * Non-empty takes priority over the raw sid; empty clears the override so
+ * the next refresh falls back to the sid tail. */
+void bb_display_set_session_alias(const char* alias) {
+  portENTER_CRITICAL(&s_state_lock);
+  if (alias == NULL) {
+    s_bottom_alias[0] = '\0';
+  } else {
+    strncpy(s_bottom_alias, alias, sizeof(s_bottom_alias) - 1);
+    s_bottom_alias[sizeof(s_bottom_alias) - 1] = '\0';
+  }
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
 }
 
 /* ADR-016: persisted active model id/label for display. The display only

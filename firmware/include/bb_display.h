@@ -30,8 +30,12 @@ void bb_display_set_record_level(uint8_t level_pct, int voiced);
 /** 状态栏电池信息；supported=0 时整个组件隐藏，available=0 时显示占位。
  *  charging=1 时顶栏图标显示绿色满格+闪电（数据层当前恒 0，等 VBUS GPIO 接好后启用）。 */
 void bb_display_set_battery(int supported, int available, int percent, int low, int charging);
-/** 底栏 session id；NULL/"" 清空。长 id 会自动截短为前 8 位展示 */
+/** 底栏 session id；NULL/"" 清空。仅在 session alias 为空时被渲染（短截后）。 */
 void bb_display_set_session_id(const char* session_id);
+/** ADR-016: 底栏 session 别名（logical session title，如 "daboluocc-bbclaw"）。
+ *  非空时优先显示，比 hex sid 更直观；NULL/"" 时回退到 sid 短截。
+ *  Session picker 选择已知 session 时调用；其余路径(新建/cycle/启动恢复)传空字符串。 */
+void bb_display_set_session_alias(const char* alias);
 /** 底栏 CWD pool 名；NULL/"" 清空。ADR-016: 不再绘制（位置让给 model），
  *  仍保留 setter 供诊断 / 未来重新启用。 */
 void bb_display_set_cwd_name(const char* cwd_name);
