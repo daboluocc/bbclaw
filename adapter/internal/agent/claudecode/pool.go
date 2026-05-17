@@ -1,11 +1,13 @@
 package claudecode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,7 @@ type warmEntry struct {
 type WarmPool struct {
 	bin     string
 	extra   []string
+	env     map[string]string // driver-level env overrides injected into warm spawns
 	size    int
 	idleTTL time.Duration
 	log     *obs.Logger
@@ -50,10 +53,11 @@ type WarmPool struct {
 
 // NewWarmPool creates a WarmPool and starts its background replenish goroutine.
 // size=0 disables the pool entirely (Acquire always returns "", false).
-func NewWarmPool(bin string, extra []string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
+func NewWarmPool(bin string, extra []string, env map[string]string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
 	p := &WarmPool{
 		bin:         bin,
 		extra:       extra,
+		env:         env,
 		size:        size,
 		idleTTL:     idleTTL,
 		log:         log,
@@ -219,8 +223,14 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, p.bin, args...)
-	// Inherit the process environment so API keys are available.
-	cmd.Env = os.Environ()
+	// Inject driver-level env overrides (e.g. ANTHROPIC_BASE_URL) on top of
+	// the inherited process environment so warm sessions use the same endpoint
+	// as regular Send() spawns.
+	if len(p.env) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), p.env)
+	} else {
+		cmd.Env = os.Environ()
+	}
 	// No specific cwd for the warm entry — Acquire() matches empty cwd to any
 	// request cwd, so the entry is universally reusable.
 	cmd.Dir = ""
@@ -229,8 +239,8 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 	if err != nil {
 		return warmEntry{}, fmt.Errorf("stdout pipe: %w", err)
 	}
-	// Discard stderr to avoid log noise from the no-op prompt.
-	cmd.Stderr = nil
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
 		return warmEntry{}, fmt.Errorf("start: %w", err)
@@ -263,6 +273,10 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 	}
 
 	if err := cmd.Wait(); err != nil {
+		stderr := strings.TrimSpace(stderrBuf.String())
+		if stderr != "" {
+			return warmEntry{}, fmt.Errorf("wait: %w; stderr: %s", err, stderr)
+		}
 		return warmEntry{}, fmt.Errorf("wait: %w", err)
 	}
 	if cliSessionID == "" {
@@ -295,6 +309,6 @@ func (p *WarmPool) injectEntry(e warmEntry) {
 
 // poolFromEnv is a helper used by the driver to read pool config from env vars
 // and construct a WarmPool. Extracted here so driver.go stays clean.
-func poolFromEnv(bin string, extra []string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
-	return NewWarmPool(bin, extra, size, idleTTL, log)
+func poolFromEnv(bin string, extra []string, env map[string]string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
+	return NewWarmPool(bin, extra, env, size, idleTTL, log)
 }

@@ -213,11 +213,21 @@ var k_driver_registry = []driverReg{
 	{
 		name: "claude-code",
 		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
-			return claudecode.New(claudecode.Options{
+			opts := claudecode.Options{
 				PoolSize:    cfg.ClaudePoolSize,
 				PoolIdleTTL: cfg.ClaudePoolIdleTTL,
 				ExtraArgs:   parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
-			}, logger), nil
+			}
+			if cfg.ClaudeBaseURL != "" || cfg.ClaudeAuthToken != "" {
+				opts.Env = make(map[string]string)
+				if cfg.ClaudeBaseURL != "" {
+					opts.Env["ANTHROPIC_BASE_URL"] = cfg.ClaudeBaseURL
+				}
+				if cfg.ClaudeAuthToken != "" {
+					opts.Env["ANTHROPIC_AUTH_TOKEN"] = cfg.ClaudeAuthToken
+				}
+			}
+			return claudecode.New(opts, logger), nil
 		},
 		autoEnable: func(cfg config.Config) bool { return true },
 	},

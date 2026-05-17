@@ -38,10 +38,11 @@ const (
 
 // Driver is the claude-code AgentDriver implementation.
 type Driver struct {
-	bin    string
-	log    *obs.Logger
-	extra  []string
-	pool   *WarmPool
+	bin   string
+	log   *obs.Logger
+	extra []string
+	env   map[string]string // driver-level env overrides (e.g. ANTHROPIC_BASE_URL)
+	pool  *WarmPool
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
@@ -63,6 +64,10 @@ type Options struct {
 	// PoolIdleTTL is how long a pre-warmed entry is kept before being
 	// discarded. Corresponds to BBCLAW_CLAUDE_POOL_IDLE_TTL.
 	PoolIdleTTL time.Duration
+	// Env holds extra environment variables injected into every claude
+	// subprocess. Keys here override the inherited process environment.
+	// Intended for ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN overrides.
+	Env map[string]string
 }
 
 // New constructs a Driver. The logger is required; pass obs.NewLogger() if
@@ -84,14 +89,25 @@ func New(opts Options, log *obs.Logger) *Driver {
 		idleTTL = 10 * time.Minute
 	}
 	extra := append([]string(nil), opts.ExtraArgs...)
-	pool := NewWarmPool(bin, extra, opts.PoolSize, idleTTL, log)
+	driverEnv := make(map[string]string, len(opts.Env))
+	for k, v := range opts.Env {
+		driverEnv[k] = v
+	}
+	pool := NewWarmPool(bin, extra, driverEnv, opts.PoolSize, idleTTL, log)
 	if opts.PoolSize > 0 {
 		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s", opts.PoolSize, idleTTL)
+	}
+	if baseURL, ok := driverEnv["ANTHROPIC_BASE_URL"]; ok {
+		log.Infof("claude-code: ANTHROPIC_BASE_URL=%s", baseURL)
+	}
+	if _, ok := driverEnv["ANTHROPIC_AUTH_TOKEN"]; ok {
+		log.Infof("claude-code: ANTHROPIC_AUTH_TOKEN=<set>")
 	}
 	return &Driver{
 		bin:      bin,
 		log:      log,
 		extra:    extra,
+		env:      driverEnv,
 		pool:     pool,
 		sessions: make(map[agent.SessionID]*session),
 	}
@@ -199,8 +215,9 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	ctx, cancel := context.WithCancel(s.rootCtx)
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	cmd.Dir = s.cwd
-	if len(s.env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), s.env)
+	if len(d.env) > 0 || len(s.env) > 0 {
+		base := mergeEnv(os.Environ(), d.env)
+		cmd.Env = mergeEnv(base, s.env)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

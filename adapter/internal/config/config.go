@@ -71,6 +71,14 @@ type Config struct {
 	ClaudePoolSize    int
 	ClaudePoolIdleTTL time.Duration
 
+	// Third-party Claude API endpoint overrides.
+	// ANTHROPIC_BASE_URL — custom API base URL (e.g. a proxy or compatible endpoint).
+	// ANTHROPIC_AUTH_TOKEN — auth token for the custom endpoint.
+	// When set, these are injected into every claude subprocess environment,
+	// overriding any values already present in the process environment.
+	ClaudeBaseURL   string
+	ClaudeAuthToken string
+
 	// CWD pool (issue #30 / T3).
 	// BBCLAW_CWD_POOL="name:path,name:path,..." — multi-project working directory selection.
 	// BBCLAW_DEFAULT_CWD is kept as a single-entry fallback when the pool is empty.
@@ -184,6 +192,8 @@ func LoadFromEnv() (Config, error) {
 		CwdPool:              parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
 		ClaudePoolSize:       getEnvInt("BBCLAW_CLAUDE_POOL_SIZE", 1),
 		ClaudePoolIdleTTL:    getEnvDuration("BBCLAW_CLAUDE_POOL_IDLE_TTL", 10*time.Minute),
+		ClaudeBaseURL:        strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+		ClaudeAuthToken:      strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
 	}
 
 	if err := cfg.Validate(); err != nil {
