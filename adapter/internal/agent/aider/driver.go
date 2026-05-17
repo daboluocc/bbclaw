@@ -204,8 +204,9 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.cancel = perTurnCancel
 	s.mu.Unlock()
 
-	d.log.Infof("aider: spawned sid=%s pid=%d timeout=%v history=%s",
-		sid, cmd.Process.Pid, d.timeout, s.historyPath)
+	d.log.Infof("aider: input sid=%s text=%q", sid, truncate(text, 200))
+	d.log.Infof("aider: spawned sid=%s pid=%d timeout=%v cwd=%q history=%s",
+		sid, cmd.Process.Pid, d.timeout, s.cwd, s.historyPath)
 
 	go drainStderr(stderr, d.log, sid)
 
@@ -292,6 +293,7 @@ func parseStdout(r io.Reader, s *session, log *obs.Logger) {
 		if shouldFilterLine(line) {
 			continue
 		}
+		log.Infof("aider: reply sid=%s text=%q", s.id, truncate(line, 200))
 		s.emit(agent.Event{Type: agent.EvText, Text: line + "\n"})
 	}
 	if err := sc.Err(); err != nil {
@@ -353,4 +355,13 @@ func mergeEnv(base []string, extra map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// truncate caps a string to n chars, appending "..." when shortened. Used to
+// keep input/reply log lines bounded so a long turn doesn't flood the log.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

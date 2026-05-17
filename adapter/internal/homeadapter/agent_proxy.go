@@ -726,6 +726,7 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 	var (
 		logicalID         logicalsession.ID
 		resumeFromLogical string
+		logicalCwd        string // logical session's configured cwd; passed to drv.Start
 		usingLogical      bool
 	)
 	if a.sessions != nil {
@@ -758,6 +759,7 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 			}
 			logicalID = ls.ID
 			resumeFromLogical = ls.CLISessionID
+			logicalCwd = ls.Cwd
 			usingLogical = true
 			// If the logical's CLISessionID matches a live in-process entry,
 			// honour the existing pinning behaviour.
@@ -783,6 +785,7 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 				return fmt.Errorf("CREATE_SESSION_FAILED:%w", err)
 			}
 			logicalID = ls.ID
+			logicalCwd = ls.Cwd
 			usingLogical = true
 		}
 	}
@@ -870,6 +873,13 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 			// retry (attempt > 0) we deliberately DON'T resume — the prior id
 			// just told us "no conversation found".
 			startOpts := agent.StartOpts{}
+			// Honour the logical session's configured cwd so the CLI is
+			// spawned in the right project directory instead of inheriting
+			// the adapter process's own cwd (fix 2026-05-17 — previously
+			// dropped on cloud-proxied turns; LAN-direct path was fine).
+			if logicalCwd != "" {
+				startOpts.Cwd = logicalCwd
+			}
 			// Honour persisted active_model so cloud-proxied turns use the
 			// same model the device sees in its Settings menu.
 			startOpts.Model = a.resolveActiveModel(drv.Name())
@@ -929,8 +939,8 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		a.agentSessions.touch(string(sid))
 
 		if attempt == 0 {
-			a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s text_chars=%d",
-				driverName, sid, isNew, env.DeviceID, len(text))
+			a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s cwd=%q text_chars=%d",
+				driverName, sid, isNew, env.DeviceID, logicalCwd, len(text))
 		} else {
 			a.log.Warnf("phase=agent_proxy_retry driver=%s sid=%s device=%s attempt=%d reason=SESSION_NOT_FOUND",
 				driverName, sid, env.DeviceID, attempt)

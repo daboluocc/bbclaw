@@ -195,7 +195,8 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.cancel = perTurnCancel
 	s.mu.Unlock()
 
-	d.log.Infof("opencode: spawned sid=%s resume=%q pid=%d timeout=%v", sid, s.resumeID, cmd.Process.Pid, d.timeout)
+	d.log.Infof("opencode: input sid=%s text=%q", sid, truncate(text, 200))
+	d.log.Infof("opencode: spawned sid=%s resume=%q pid=%d timeout=%v cwd=%q", sid, s.resumeID, cmd.Process.Pid, d.timeout, s.cwd)
 
 	go drainStderr(stderr, d.log, sid)
 
@@ -333,6 +334,7 @@ func parseStream(r io.Reader, s *session, log *obs.Logger) {
 
 		case "text":
 			if ev.Part != nil && ev.Part.Text != "" {
+				log.Infof("opencode: reply sid=%s text=%q", s.id, truncate(ev.Part.Text, 200))
 				s.emit(agent.Event{Type: agent.EvText, Text: ev.Part.Text})
 			}
 
