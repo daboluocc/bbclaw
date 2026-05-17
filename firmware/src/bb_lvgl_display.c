@@ -959,7 +959,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(s_lbl_status_clock, lv_color_hex(UI_TEXT_DIM), 0);
     lv_obj_set_style_text_font(s_lbl_status_clock, font, 0);
     lv_obj_set_style_text_align(s_lbl_status_clock, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_long_mode(s_lbl_status_clock, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_long_mode(s_lbl_status_clock, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_height(s_lbl_status_clock, lh + 2);
     lv_label_set_text(s_lbl_status_clock, "--:--");
     lv_obj_set_pos(s_lbl_status_clock, UI_SAFE_LEFT + body_w - clock_w, UI_SAFE_TOP + (status_h - lh - 2) / 2);
@@ -999,7 +999,10 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(s_lbl_bottom_session, lv_color_hex(UI_STATUS_FG), 0);
     lv_obj_set_style_text_font(s_lbl_bottom_session, font, 0);
     lv_obj_set_style_text_align(s_lbl_bottom_session, LV_TEXT_ALIGN_LEFT, 0);
-    lv_label_set_long_mode(s_lbl_bottom_session, LV_LABEL_LONG_MODE_CLIP);
+    /* ADR-016 polish: scroll circular instead of clip — long aliases (e.g.
+     * project paths or full sid hex) should scroll across the cell rather
+     * than get truncated. Same for the model cell below. */
+    lv_label_set_long_mode(s_lbl_bottom_session, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_label_set_text(s_lbl_bottom_session, "");
     lv_obj_set_pos(s_lbl_bottom_session, 0, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
 
@@ -1009,7 +1012,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_color(s_lbl_bottom_cwd, lv_color_hex(UI_TEXT_MAIN), 0);
     lv_obj_set_style_text_font(s_lbl_bottom_cwd, font, 0);
     lv_obj_set_style_text_align(s_lbl_bottom_cwd, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_long_mode(s_lbl_bottom_cwd, LV_LABEL_LONG_MODE_CLIP);
+    lv_label_set_long_mode(s_lbl_bottom_cwd, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_label_set_text(s_lbl_bottom_cwd, "");
     lv_obj_set_pos(s_lbl_bottom_cwd, bottom_half + 4, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
   }
