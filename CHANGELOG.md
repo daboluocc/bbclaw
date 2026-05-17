@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TTS 文本清洗 `tts.Sanitize`**：`/v1/tts/synthesize` 在送入 provider 之前先剥掉 markdown 加粗/斜体/反引号、代码块围栏、ATX 标题、列表/引用前缀、`[文本](链接)`、HTML 标签、零宽与控制字符，并把多行/多空白塌缩成单空格。`say` 之前会把 `**Sonnet 4.5**` 念成"星号星号 Sonnet 4.5"、反引号包路径段也会让发音断裂，清洗后这些都按正常文本播报，保证一段完整内容能跑完。日志里同时带 `text_chars`（清洗后）与 `raw_chars`（原始）便于排查。
 - **设备端 Driver / Model 选择** (ADR-016)：Settings 屏改为二级菜单（主屏 Driver/Model/TTS/Back，OK 进同名 picker 子屏），用户可在 BBClaw 上直接切换 active driver（claude-code / opencode / aider / ollama / openclaw）和当前 driver 的 model（Sonnet / Opus / Haiku / GPT-5 / Ollama tags 等），无需 SSH 进 adapter 改 env。Adapter 持久化 `~/.bbclaw-adapter/driver_state.json`，多设备共享。
   - Adapter HTTP：`GET /v1/agent/drivers` 扩展返回 `active_driver` + 每 driver 的 `models[]` 与 `active_model`；新增 `PUT /v1/agent/active_driver` 与 `PUT /v1/agent/drivers/{name}/active_model`
   - Cloud envelope：扩展 `agent.drivers` payload；新增 `agent.active_driver.set` / `agent.active_model.set` kind（cloud_saas 模式下需 cloud 侧配套补 HTTP proxy 才能在远端生效；local_home 模式立即可用）

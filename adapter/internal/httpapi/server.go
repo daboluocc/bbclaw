@@ -23,6 +23,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 )
 
 type AppConfig struct {
@@ -638,10 +639,16 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_TEXT"})
 		return
 	}
+	rawChars := utf8.RuneCountInString(req.Text)
+	cleanText := tts.Sanitize(req.Text)
+	if cleanText == "" {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_TEXT"})
+		return
+	}
 	tTTS := time.Now()
-	textChars := utf8.RuneCountInString(req.Text)
-	s.log.Infof("phase=tts_start elapsed_s=0 text_chars=%d", textChars)
-	audioBytes, err := s.tts.Synthesize(r.Context(), req.Text)
+	textChars := utf8.RuneCountInString(cleanText)
+	s.log.Infof("phase=tts_start elapsed_s=0 text_chars=%d raw_chars=%d", textChars, rawChars)
+	audioBytes, err := s.tts.Synthesize(r.Context(), cleanText)
 	if err != nil {
 		s.metrics.Inc("tts_failed")
 		s.log.Errorf("phase=tts_failed elapsed_s=%.3f err=%v", time.Since(tTTS).Seconds(), err)

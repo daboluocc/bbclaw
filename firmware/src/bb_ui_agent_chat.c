@@ -885,12 +885,25 @@ static void reply_buf_append(const char* delta) {
 
   /* Phase 4.5.2 — if the new bytes crossed a sentence boundary, kick TTS so
    * it starts speaking the first sentence right away instead of waiting for
-   * EvTurnEnd. ASCII boundary chars are sufficient — Chinese 。！？ are
-   * multi-byte but a typical assistant reply has plenty of ASCII boundaries. */
+   * EvTurnEnd. Detect both ASCII (.!?\n) and Chinese 。！？； — Chinese
+   * replies often have no ASCII boundary at all (paths between full-width
+   * commas, then a 。 at the end), which used to flush as one huge chunk. */
   if (s_chat.tts_enabled) {
     for (size_t i = before; i < s_chat.reply_len; ++i) {
-      char c = s_chat.reply_buf[i];
+      unsigned char c = (unsigned char)s_chat.reply_buf[i];
+      int kick = 0;
       if (c == '.' || c == '!' || c == '?' || c == '\n') {
+        kick = 1;
+      } else if (c == 0xE3 && i + 2 < s_chat.reply_len &&
+                 (unsigned char)s_chat.reply_buf[i + 1] == 0x80 &&
+                 (unsigned char)s_chat.reply_buf[i + 2] == 0x82) {
+        kick = 1; /* 。 */
+      } else if (c == 0xEF && i + 2 < s_chat.reply_len &&
+                 (unsigned char)s_chat.reply_buf[i + 1] == 0xBC) {
+        unsigned char d = (unsigned char)s_chat.reply_buf[i + 2];
+        if (d == 0x81 || d == 0x9F || d == 0x9B) kick = 1; /* ！？； */
+      }
+      if (kick) {
         tts_kick_or_spawn();
         break;
       }
@@ -930,10 +943,28 @@ static char* extract_pending_chunk(int flush_tail) {
     end = s_chat.reply_len;
   } else {
     for (size_t i = start; i < s_chat.reply_len; ++i) {
-      char c = s_chat.reply_buf[i];
+      unsigned char c = (unsigned char)s_chat.reply_buf[i];
       if (c == '.' || c == '!' || c == '?' || c == '\n') {
         end = i + 1;
         break;
+      }
+      /* Chinese full-stop / exclamation / question / semicolon. Without
+       * these, replies that end in 。 never split mid-stream and the whole
+       * sentence flushes as one large chunk at turn_end — which mixed-
+       * language TTS engines tend to truncate. */
+      if (c == 0xE3 && i + 2 < s_chat.reply_len &&
+          (unsigned char)s_chat.reply_buf[i + 1] == 0x80 &&
+          (unsigned char)s_chat.reply_buf[i + 2] == 0x82) {
+        end = i + 3;
+        break;
+      }
+      if (c == 0xEF && i + 2 < s_chat.reply_len &&
+          (unsigned char)s_chat.reply_buf[i + 1] == 0xBC) {
+        unsigned char d = (unsigned char)s_chat.reply_buf[i + 2];
+        if (d == 0x81 /* ！ */ || d == 0x9F /* ？ */ || d == 0x9B /* ； */) {
+          end = i + 3;
+          break;
+        }
       }
     }
     if (end == start) return NULL;  /* no boundary found */

@@ -1881,13 +1881,199 @@ esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_v
   return ESP_OK;
 }
 
+/* Strip markdown formatting and other characters that the TTS engine would
+ * either pronounce literally ("asterisk asterisk Sonnet 4.5 asterisk asterisk")
+ * or skip while truncating the rest of the chunk. Output buffer is heap-
+ * allocated; caller frees. NUL-terminated. UTF-8 safe.
+ *
+ * Removed: *, `, ~, _ runs (markdown emphasis / code marks); leading # and >
+ * at line start; HTML-ish <tag>; BOM and zero-width joiners; ASCII control
+ * chars. \r\n\t collapse to a single space; runs of spaces collapse to one.
+ * Markdown link [text](url) keeps only "text"; image ![alt](url) keeps "alt".
+ *
+ * Returns NULL only on allocation failure or when input becomes entirely empty
+ * after sanitization (caller should treat as "skip"). */
+static char* tts_sanitize_alloc(const char* in) {
+  if (in == NULL) return NULL;
+  size_t in_len = strlen(in);
+  char* out = (char*)malloc(in_len + 1);
+  if (out == NULL) return NULL;
+  size_t i = 0, j = 0;
+  int prev_space = 1;       /* leading-trim: suppress leading spaces */
+  int at_line_start = 1;
+  while (in[i] != '\0') {
+    unsigned char c = (unsigned char)in[i];
+
+    /* Multi-byte UTF-8 lead bytes: pass through, but drop known zero-width
+     * codepoints first. */
+    if (c >= 0x80) {
+      if (c == 0xEF && (unsigned char)in[i + 1] == 0xBB && (unsigned char)in[i + 2] == 0xBF) {
+        i += 3;
+        continue; /* BOM */
+      }
+      if (c == 0xE2 && (unsigned char)in[i + 1] == 0x80) {
+        unsigned char third = (unsigned char)in[i + 2];
+        if (third == 0x8B || third == 0x8C || third == 0x8D) {
+          i += 3;
+          continue; /* ZWSP / ZWNJ / ZWJ */
+        }
+      }
+      if (c == 0xE2 && (unsigned char)in[i + 1] == 0x81 && (unsigned char)in[i + 2] == 0xA0) {
+        i += 3;
+        continue; /* WORD JOINER */
+      }
+      int seq_len = 1;
+      if ((c & 0xE0) == 0xC0)
+        seq_len = 2;
+      else if ((c & 0xF0) == 0xE0)
+        seq_len = 3;
+      else if ((c & 0xF8) == 0xF0)
+        seq_len = 4;
+      for (int k = 0; k < seq_len && in[i + k] != '\0'; k++) {
+        out[j++] = in[i + k];
+      }
+      i += (size_t)seq_len;
+      prev_space = 0;
+      at_line_start = 0;
+      continue;
+    }
+
+    /* Whitespace and line breaks. */
+    if (c == '\r' || c == '\n') {
+      if (!prev_space) {
+        out[j++] = ' ';
+        prev_space = 1;
+      }
+      at_line_start = 1;
+      i++;
+      continue;
+    }
+    if (c == '\t' || c == ' ') {
+      if (!prev_space) {
+        out[j++] = ' ';
+        prev_space = 1;
+      }
+      i++;
+      continue;
+    }
+    if (c < 0x20) {
+      i++;
+      continue; /* other control chars */
+    }
+
+    /* Markdown emphasis / code / strike marks. */
+    if (c == '*' || c == '`' || c == '~' || c == '_') {
+      i++;
+      continue;
+    }
+
+    /* Path separators in long ASCII paths (e.g. /Volumes/1TB/github/foo) are
+     * one un-tokenizable run for Chinese TTS engines and tend to be skipped.
+     * Replacing with a space exposes each segment as its own readable token. */
+    if (c == '/' || c == '\\') {
+      if (!prev_space) {
+        out[j++] = ' ';
+        prev_space = 1;
+      }
+      i++;
+      at_line_start = 0;
+      continue;
+    }
+
+    /* Line-leading ATX header '#' run. */
+    if (at_line_start && c == '#') {
+      while (in[i] == '#') i++;
+      if (in[i] == ' ' || in[i] == '\t') i++;
+      continue;
+    }
+
+    /* Line-leading blockquote '>'. */
+    if (at_line_start && c == '>') {
+      while (in[i] == '>') i++;
+      if (in[i] == ' ' || in[i] == '\t') i++;
+      continue;
+    }
+
+    /* Markdown image: ![alt](url) — keep "alt". */
+    if (c == '!' && in[i + 1] == '[') {
+      i += 2;
+      while (in[i] != '\0' && in[i] != ']' && in[i] != '\n') {
+        out[j++] = in[i++];
+        prev_space = 0;
+      }
+      if (in[i] == ']') i++;
+      if (in[i] == '(') {
+        while (in[i] != '\0' && in[i] != ')') i++;
+        if (in[i] == ')') i++;
+      }
+      at_line_start = 0;
+      continue;
+    }
+
+    /* Markdown link: [text](url) — keep "text". Only when ] is followed by (. */
+    if (c == '[') {
+      size_t k = i + 1;
+      while (in[k] != '\0' && in[k] != ']' && in[k] != '\n') k++;
+      if (in[k] == ']' && in[k + 1] == '(') {
+        i++; /* skip '[' */
+        while (in[i] != '\0' && in[i] != ']') {
+          out[j++] = in[i++];
+          prev_space = 0;
+        }
+        if (in[i] == ']') i++;
+        if (in[i] == '(') {
+          while (in[i] != '\0' && in[i] != ')') i++;
+          if (in[i] == ')') i++;
+        }
+        at_line_start = 0;
+        continue;
+      }
+      /* not a link — fall through and keep '[' literally */
+    }
+
+    /* HTML-ish tag: <letter…> or </…>. Drop. */
+    if (c == '<') {
+      char next = in[i + 1];
+      if ((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '/') {
+        i++;
+        while (in[i] != '\0' && in[i] != '>') i++;
+        if (in[i] == '>') i++;
+        continue;
+      }
+    }
+
+    out[j++] = (char)c;
+    prev_space = 0;
+    at_line_start = 0;
+    i++;
+  }
+  /* Trim trailing space. */
+  while (j > 0 && out[j - 1] == ' ') j--;
+  out[j] = '\0';
+  if (j == 0) {
+    free(out);
+    return NULL;
+  }
+  return out;
+}
+
 esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio) {
   if (text == NULL || out_audio == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
   memset(out_audio, 0, sizeof(*out_audio));
 
-  char* escaped = json_escape_alloc(text);
+  char* cleaned = tts_sanitize_alloc(text);
+  if (cleaned == NULL) {
+    /* Empty after sanitize (pure formatting / whitespace) or OOM. Treat as
+     * a clean skip so the caller's loop moves on to the next chunk. */
+    ESP_LOGI(TAG, "tts: skip empty-after-sanitize chunk (orig_len=%u)", (unsigned)strlen(text));
+    return ESP_OK;
+  }
+  ESP_LOGI(TAG, "tts: sanitize raw=%u clean=%u", (unsigned)strlen(text), (unsigned)strlen(cleaned));
+
+  char* escaped = json_escape_alloc(cleaned);
+  free(cleaned);
   if (escaped == NULL) {
     return ESP_ERR_NO_MEM;
   }
