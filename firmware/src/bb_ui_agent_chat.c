@@ -1537,6 +1537,13 @@ static void on_driver_fetch_done(void* user_data) {
     s_chat.driver_cache_offline = 0;
   }
   apply_driver_cache_idx();
+  /* ADR-016: surface the active driver's model on the bottom bar as soon
+   * as we have the data. Driver_cache_idx now points at the matched row. */
+  if (s_chat.driver_cache_idx >= 0 &&
+      s_chat.driver_cache_idx < s_chat.driver_cache_count) {
+    const char* m = s_chat.driver_cache[s_chat.driver_cache_idx].active_model;
+    bb_display_set_active_model(m[0] != '\0' ? m : NULL);
+  }
   /* If the session picker is already visible, rebuild it so the driver row
    * reflects the freshly-loaded driver list instead of staying at "drv: ...".
    * Preserve the current selection so the cursor doesn't jump. */
@@ -2847,4 +2854,108 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   ESP_LOGI(TAG, "cycle_driver: '%s' (delta=%+d, idx=%d/%d) session restored",
            name, delta, next, n);
   return ESP_OK;
+}
+
+/* ── ADR-016 — switch driver by name (Settings entry) ────────────────
+ *
+ * Shares the "swap in-memory driver_name + load NVS session + clear UI +
+ * fetch history + notify state" body with cycle_driver, but skips the
+ * picker-mode gate (Settings runs under the regular chat overlay) and
+ * picks the cache row by name lookup instead of +1/-1 stepping. The two
+ * stay textually duplicated for now to avoid destabilising the existing
+ * picker code-path; happy to refactor into a shared helper later. */
+esp_err_t bb_ui_agent_chat_set_active_driver(const char* name) {
+  if (!s_chat.active) return ESP_ERR_INVALID_STATE;
+  if (name == NULL || name[0] == '\0') return ESP_ERR_INVALID_ARG;
+  /* Block driver switching while an agent turn is in flight — same rule
+   * as cycle_driver. The Settings UI sat over the chat and a turn might
+   * still be running underneath. */
+  if (s_chat.sending) {
+    ESP_LOGI(TAG, "set_active_driver: blocked (agent turn in flight)");
+    return ESP_ERR_INVALID_STATE;
+  }
+  /* No-op if already on this driver. Saves a redundant transcript wipe. */
+  if (strcmp(s_chat.driver_name, name) == 0) {
+    ESP_LOGD(TAG, "set_active_driver: already on '%s', no-op", name);
+    return ESP_OK;
+  }
+  /* Driver cache not loaded yet — Settings always populates it before the
+   * user can click a row, but be defensive. */
+  if (s_chat.driver_cache_count <= 0) {
+    spawn_driver_fetch_task();
+    return ESP_ERR_INVALID_STATE;
+  }
+  int idx = -1;
+  for (int i = 0; i < s_chat.driver_cache_count; ++i) {
+    if (strcmp(s_chat.driver_cache[i].name, name) == 0) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) {
+    ESP_LOGW(TAG, "set_active_driver: '%s' not in driver cache (%d entries)",
+             name, s_chat.driver_cache_count);
+    return ESP_ERR_NOT_FOUND;
+  }
+  s_chat.driver_cache_idx = idx;
+  strncpy(s_chat.driver_name, name, sizeof(s_chat.driver_name) - 1);
+  s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
+  s_chat.session_id[0] = '\0';
+
+  /* Tell bb_state to invalidate the previous request so a late reply on
+   * the old driver doesn't paint into the new chat. We use delta=0 because
+   * this isn't a +1/-1 from the picker — it's an absolute jump. The state
+   * machine only cares that DRIVER_CYCLE fires; the delta value is logged
+   * but not acted on for anything stateful. */
+  bb_state_dispatch((bb_event_payload_t){
+    .type = BB_EVT_DRIVER_CYCLE,
+    .delta = 0,
+  });
+
+  /* Restore the new driver's last session + history. */
+  load_nvs_on_internal_stack();
+  apply_session_switch_ui(s_chat.session_id);
+  if (s_chat.session_id[0] != '\0') {
+    history_state_reset();
+    spawn_history_fetch_task(-1, /*is_initial=*/1);
+  } else {
+    history_state_reset();
+  }
+
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL && theme->set_driver != NULL) {
+    theme->set_driver(name);
+  }
+  {
+    bb_event_payload_t drv_evt = (bb_event_payload_t){ .type = BB_EVT_DRIVER_NAME_UPDATE };
+    strncpy(drv_evt.text, name, sizeof(drv_evt.text) - 1);
+    bb_state_dispatch(drv_evt);
+  }
+  post_state(BB_AGENT_STATE_IDLE);
+
+  /* Also push the new driver's active_model into the bottom bar so the user
+   * sees the right value immediately. ADR-016 driver_cache row carries
+   * active_model populated by the most recent /v1/agent/drivers fetch. */
+  const char* m = s_chat.driver_cache[idx].active_model;
+  bb_display_set_active_model(m[0] != '\0' ? m : NULL);
+
+  ESP_LOGI(TAG, "set_active_driver: '%s' (idx=%d/%d) session restored",
+           name, idx, s_chat.driver_cache_count);
+  return ESP_OK;
+}
+
+void bb_ui_agent_chat_set_active_model(const char* model_label) {
+  /* This is purely a display hint — no state machine involvement, no
+   * adapter call. Settings already issued the PUT before calling here. */
+  bb_display_set_active_model(model_label);
+  /* Also patch the driver_cache active_model field so a subsequent driver
+   * switch (which re-reads the cache row) sees the latest selection. */
+  if (model_label != NULL && s_chat.driver_cache_idx >= 0 &&
+      s_chat.driver_cache_idx < s_chat.driver_cache_count) {
+    strncpy(s_chat.driver_cache[s_chat.driver_cache_idx].active_model, model_label,
+            sizeof(s_chat.driver_cache[s_chat.driver_cache_idx].active_model) - 1);
+    s_chat.driver_cache[s_chat.driver_cache_idx]
+        .active_model[sizeof(s_chat.driver_cache[s_chat.driver_cache_idx].active_model) - 1] = '\0';
+  }
+  ESP_LOGI(TAG, "set_active_model: '%s'", model_label != NULL ? model_label : "(cleared)");
 }

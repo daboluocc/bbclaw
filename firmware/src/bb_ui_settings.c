@@ -453,10 +453,36 @@ static void commit_task(void* arg) {
     err = bb_agent_set_active_driver(p->driver_name);
     if (err == ESP_OK) {
       bb_session_store_save_active_driver(p->driver_name);
+      /* ADR-016: also flip the active chat overlay over to the new driver so
+       * the next user prompt routes there + the right session is loaded.
+       * The chat overlay is still up underneath Settings; set_active_driver
+       * touches LVGL state so we must hold the port lock. Failure is logged
+       * but not propagated — the next chat re-entry will rebuild correctly
+       * from NVS-cached drv/active. */
+      if (lvgl_port_lock(200)) {
+        esp_err_t cerr = bb_ui_agent_chat_set_active_driver(p->driver_name);
+        lvgl_port_unlock();
+        if (cerr != ESP_OK) {
+          ESP_LOGW(TAG, "commit driver: chat sync failed (%s) — adapter is consistent",
+                   esp_err_to_name(cerr));
+        }
+      } else {
+        ESP_LOGW(TAG, "commit driver: lvgl_port_lock timeout, chat will sync on next entry");
+      }
     }
     ESP_LOGI(TAG, "commit driver='%s' -> %s", p->driver_name, esp_err_to_name(err));
   } else {
     err = bb_agent_set_active_model(p->driver_name, p->model_id);
+    if (err == ESP_OK) {
+      /* ADR-016: push the new model into the bottom-bar slot. We pass model_id
+       * directly because Settings has the human label cached but commit_task
+       * doesn't — close enough: id and label are mostly the same string for
+       * static catalogues (ollama tags don't have separate labels). */
+      if (lvgl_port_lock(200)) {
+        bb_ui_agent_chat_set_active_model(p->model_id);
+        lvgl_port_unlock();
+      }
+    }
     ESP_LOGI(TAG, "commit driver='%s' model='%s' -> %s",
              p->driver_name, p->model_id, esp_err_to_name(err));
   }

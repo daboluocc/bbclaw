@@ -177,6 +177,57 @@ Firmware 在两种模式下都调相同 HTTP 路径（`agent_build_url`），只
 - `firmware/src/bb_ui_agent_chat.c`：driver fallback 改读 NVS `drv/active`
 - `firmware/src/bb_ui_settings.c`：完全重写。加 ROW_DRIVER + ROW_MODEL，driver 缓存 + 模型联动 + async commit 任务
 
+## Driver ↔ Session ↔ Model 关系（修订 2026-05-17）
+
+```
+adapter ─┬─ driver_state.json          # 单一真相源
+         │   active_driver
+         │   active_models[driver]
+         │
+         └─ sessions.json
+             ls-... → {driver, cwd, cli_session_id, ...}
+
+firmware NVS（device-local cache，重启不丢；adapter 不可达时兜底）
+  drv/active                            # 上次选的 active driver
+  ls/cc, ls/oc, ls/op, ls/ol, ls/ai     # 各 driver 上次用的 logical session id
+```
+
+**强不变量**：
+- 一个 logical session 永远绑一个 driver（adapter sessions.json 字段，不可改）
+- 一个 driver 可有多个 logical session，但同时只激活一个（NVS `ls/<driver>` 记录）
+- 切 driver = 切到那个 driver 上次的 session（NVS 读 `ls/<new driver>`，可能为空 → 自动 mint）
+
+**切操作的级联**：
+
+| 触发 | 顺序 |
+|---|---|
+| Settings 选 Driver, OK | PUT `/v1/agent/active_driver` → NVS `drv/active` → `bb_ui_agent_chat_set_active_driver(new)` → 读 `ls/<new>` → swap chat UI + 拉历史 |
+| Settings 选 Model, OK | PUT `/v1/agent/drivers/{name}/active_model` → `bb_ui_agent_chat_set_active_model(label)` → bottom bar 显示更新 |
+| Session Picker 选 sess | 写 `ls/<current driver>` → swap chat UI + 拉历史 |
+| Session Picker 选 `+ New` | POST `/v1/agent/sessions` → 拿新 logical id → 写 `ls/<current driver>` |
+| chat 长按 OK | 进 Settings 屏（chat 状态不变） |
+
+## UI 元素（修订 2026-05-17）
+
+```
+┌─────────────────────────────────────────┐
+│ status driver_label [buddy face/mood] 🔋│  ← topbar (bb_lvgl_display)
+├─────────────────────────────────────────┤
+│                                         │
+│  ...transcript...                       │  ← 中间区域 (theme buddy-anim)
+│                                         │
+├─────────────────────────────────────────┤
+│ sid abc12345           Sonnet 4.6       │  ← bottom bar (bb_lvgl_display)
+└─────────────────────────────────────────┘
+```
+
+底栏右半从 `cwd_name` 改为 **active model**（ADR-016 第二轮修订）。理由：
+- cwd 是 adapter 一次性配置，用户不会频繁切；运行时不显眼无所谓
+- model 是日常会切的操作，必须一眼可见
+- cwd 信息仍在 driver_cache 里保留，未来可加在 Settings 子屏作为附加信息
+
+cwd_name 显示功能保留了 setter (`bb_display_set_cwd_name`),只是不再绘制；现有调用点不变,需要时可一行 patch 重新启用。
+
 ## 未做 / 已知遗留
 
 - **Warm pool × model 切换**：claudecode warm pool 预热的 session 是用启动期 `--model` 参数 spawn 的；用户切到 Opus 之后，已经预热的池条目仍是 Sonnet。当前接受这个轻微不一致（被 acquire 后再 Send 时会再 pass 新 `--model`，但 CLI 是否真的覆盖未深入测试）。需要时可通过"切 model 时 Drain pool"补救。

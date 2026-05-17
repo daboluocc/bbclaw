@@ -80,6 +80,39 @@ esp_err_t bb_ui_agent_chat_picker_send_selected(void);
 esp_err_t bb_ui_agent_chat_cycle_driver(int delta);
 
 /**
+ * ADR-016 — switch chat to a specific driver by name (Settings entry).
+ *
+ * Same effect as bb_ui_agent_chat_cycle_driver but caller picks the target
+ * directly instead of +1/-1 stepping. Behaviour:
+ *   1. Update s_chat.driver_name + ack via bb_state DRIVER_CYCLE event so
+ *      stale replies from the previous driver are rejected.
+ *   2. Load the new driver's last-used session id from NVS, push it onto
+ *      the chat UI, kick a history fetch (or clear transcript when empty).
+ *   3. Refresh theme topbar driver label + state.
+ *
+ * Spawns no driver-list fetch (uses the cached driver_cache); when the
+ * cache is empty the function spawns one and returns ESP_ERR_INVALID_STATE
+ * so the caller can retry once it lands.
+ *
+ * Caller must hold the LVGL lock. Returns ESP_OK on success,
+ * ESP_ERR_NOT_FOUND when `name` isn't in the driver cache, or
+ * ESP_ERR_INVALID_STATE when the cache hasn't been populated yet.
+ */
+esp_err_t bb_ui_agent_chat_set_active_driver(const char* name);
+
+/**
+ * ADR-016 — update the model label shown on the bottom bar.
+ *
+ * Pure UI hint. Does NOT change adapter state — Settings already issued
+ * the PUT before calling this; we just push the new value through so the
+ * user sees feedback without waiting for the next /v1/agent/drivers poll.
+ *
+ * Caller must hold the LVGL lock. `model_label` may be the model id (when
+ * label is unknown) or the human-friendly label; NULL clears it.
+ */
+void bb_ui_agent_chat_set_active_model(const char* model_label);
+
+/**
  * Phase 4.5 — voice bridge helpers.
  *
  * Used by bb_radio_app.c to drive the PTT-as-text-input flow when the chat

@@ -205,6 +205,11 @@ static int s_focus_ai;
 static char s_status[32];
 static char s_bottom_session[64];
 static char s_bottom_cwd[48];
+/* ADR-016: bottom-bar right side now shows the active model id/label so
+ * users can see "what brain am I talking to" at a glance. cwd info still
+ * lives in s_bottom_cwd but is no longer painted — it's reachable via the
+ * Settings overlay (and from server logs). */
+static char s_bottom_model[40];
 
 /* LVGL objects — locked moved to bb_page_locked.c */
 
@@ -394,7 +399,7 @@ static void apply_bottom_bar(void) {
   if (s_lbl_bottom_session == NULL || s_lbl_bottom_cwd == NULL) return;
 
   char session_text[32];
-  char cwd_text[48];
+  char model_text[40];
   portENTER_CRITICAL(&s_state_lock);
   const char* sid = s_bottom_session;
   if (sid[0] == '\0') {
@@ -407,8 +412,8 @@ static void apply_bottom_bar(void) {
     }
     session_text[n] = '\0';
   }
-  strncpy(cwd_text, s_bottom_cwd, sizeof(cwd_text) - 1);
-  cwd_text[sizeof(cwd_text) - 1] = '\0';
+  strncpy(model_text, s_bottom_model, sizeof(model_text) - 1);
+  model_text[sizeof(model_text) - 1] = '\0';
   portEXIT_CRITICAL(&s_state_lock);
 
   if (session_text[0] == '\0') {
@@ -419,10 +424,12 @@ static void apply_bottom_bar(void) {
     lv_label_set_text(s_lbl_bottom_session, buf);
   }
 
-  if (cwd_text[0] == '\0') {
-    lv_label_set_text(s_lbl_bottom_cwd, "default");
+  /* ADR-016: right cell shows active model (was cwd_name). When unknown
+   * (adapter not yet polled) fall back to "—" so the bar isn't blank. */
+  if (model_text[0] == '\0') {
+    lv_label_set_text(s_lbl_bottom_cwd, "—");
   } else {
-    lv_label_set_text(s_lbl_bottom_cwd, cwd_text);
+    lv_label_set_text(s_lbl_bottom_cwd, model_text);
   }
 }
 
@@ -1641,6 +1648,23 @@ void bb_display_set_cwd_name(const char* cwd_name) {
   } else {
     strncpy(s_bottom_cwd, cwd_name, sizeof(s_bottom_cwd) - 1);
     s_bottom_cwd[sizeof(s_bottom_cwd) - 1] = '\0';
+  }
+  portEXIT_CRITICAL(&s_state_lock);
+  /* ADR-016: cwd no longer painted on the bottom bar (model took its slot).
+   * Skip refresh_ui — the value is still kept for diagnostic purposes (e.g.
+   * future "where is claude running" hint). */
+}
+
+/* ADR-016: persisted active model id/label for display. The display only
+ * keeps a string copy; Settings UI is the source of truth and pushes it
+ * here via bb_ui_settings_ → bb_ui_agent_chat → bb_display chain. */
+void bb_display_set_active_model(const char* model_label) {
+  portENTER_CRITICAL(&s_state_lock);
+  if (model_label == NULL) {
+    s_bottom_model[0] = '\0';
+  } else {
+    strncpy(s_bottom_model, model_label, sizeof(s_bottom_model) - 1);
+    s_bottom_model[sizeof(s_bottom_model) - 1] = '\0';
   }
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();

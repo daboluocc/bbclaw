@@ -30,6 +30,9 @@ static const driver_key_map_t s_driver_map[] = {
   {"opencode",    "ls/oc", "s/oc"},
   {"openclaw",    "ls/op", "s/op"},
   {"ollama",      "ls/ol", "s/ol"},
+  /* ADR-016: aider added — was previously not selectable on device since
+   * Settings is the only entry point and Settings only landed with ADR-016. */
+  {"aider",       "ls/ai", "s/ai"},
 };
 
 static const char* driver_to_nvs_key(const char* driver_name) {
