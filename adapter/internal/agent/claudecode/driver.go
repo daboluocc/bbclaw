@@ -252,7 +252,8 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.mu.Unlock()
 
 	d.log.Infof("claude-code: input sid=%s text=%q", sid, truncate(text, 200))
-	d.log.Infof("claude-code: spawned sid=%s resume=%q pid=%d", sid, s.resumeID, cmd.Process.Pid)
+	d.log.Infof("claude-code: spawned sid=%s resume=%q model=%q pid=%d",
+		sid, s.resumeID, s.model, cmd.Process.Pid)
 
 	// After a successful spawn, signal the pool to backfill so the next
 	// request can benefit from a pre-warmed session.
@@ -304,6 +305,21 @@ func (d *Driver) CLISessionExists(cliSessionID string) bool {
 	}
 	path, err := d.findHistoryPath(cliSessionID)
 	return err == nil && path != ""
+}
+
+// UpdateModel implements agent.ModelUpdater — lets the HTTP layer push a
+// fresh model id into an existing session between turns so a mid-session
+// device-side model switch takes effect on the next turn instead of waiting
+// for the session to be evicted from the router's in-process cache.
+func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	s.setModel(strings.TrimSpace(model))
+	return nil
 }
 
 // Stop terminates any in-flight subprocess and closes the session.
@@ -358,6 +374,12 @@ func (s *session) emit(e agent.Event) {
 func (s *session) setResumeID(id string) {
 	s.mu.Lock()
 	s.resumeID = id
+	s.mu.Unlock()
+}
+
+func (s *session) setModel(m string) {
+	s.mu.Lock()
+	s.model = m
 	s.mu.Unlock()
 }
 

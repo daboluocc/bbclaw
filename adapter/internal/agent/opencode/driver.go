@@ -196,7 +196,8 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.mu.Unlock()
 
 	d.log.Infof("opencode: input sid=%s text=%q", sid, truncate(text, 200))
-	d.log.Infof("opencode: spawned sid=%s resume=%q pid=%d timeout=%v cwd=%q", sid, s.resumeID, cmd.Process.Pid, d.timeout, s.cwd)
+	d.log.Infof("opencode: spawned sid=%s resume=%q model=%q pid=%d timeout=%v cwd=%q",
+		sid, s.resumeID, s.model, cmd.Process.Pid, d.timeout, s.cwd)
 
 	go drainStderr(stderr, d.log, sid)
 
@@ -216,6 +217,22 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 // Approve is not yet supported; returns ErrUnsupported per Capabilities.
 func (d *Driver) Approve(sid agent.SessionID, tid agent.ToolID, decision agent.Decision) error {
 	return agent.ErrUnsupported
+}
+
+// UpdateModel implements agent.ModelUpdater — see claudecode/driver.go for
+// the rationale. opencode's CLI accepts a different --model each invocation
+// so mid-session switches just apply on the next turn.
+func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	s.mu.Lock()
+	s.model = strings.TrimSpace(model)
+	s.mu.Unlock()
+	return nil
 }
 
 // Stop terminates any in-flight subprocess and closes the session.

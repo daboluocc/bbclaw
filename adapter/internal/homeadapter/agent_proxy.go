@@ -949,6 +949,12 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		events := drv.Events(sid)
 		sendErrCh := make(chan error, 1)
 		curSid := sid
+		// ADR-016: see httpapi/agent.go — push latest active_model before
+		// Send so mid-session model toggles via Settings take effect on
+		// this turn, not after session eviction.
+		if mu, ok := drv.(agent.ModelUpdater); ok {
+			_ = mu.UpdateModel(curSid, a.resolveActiveModel(drv.Name()))
+		}
 		go func() { sendErrCh <- drv.Send(curSid, text) }()
 
 	loop:

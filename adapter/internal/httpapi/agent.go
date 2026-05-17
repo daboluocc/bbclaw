@@ -916,6 +916,17 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		events := drv.Events(sid)
 		sendErrCh := make(chan error, 1)
 		curSid := sid
+		// ADR-016: push the latest persisted active_model into the session
+		// right before sending so a user who toggled the model mid-session
+		// in Settings sees the new model on THIS turn rather than waiting
+		// for the session cache to be evicted. Drivers that don't implement
+		// ModelUpdater silently fall back to StartOpts.Model captured at
+		// session creation. resolveActiveModel returns "" when the store
+		// isn't wired or the driver has no persisted override — passing ""
+		// is fine, it just clears the override and lets the CLI default.
+		if mu, ok := drv.(agent.ModelUpdater); ok {
+			_ = mu.UpdateModel(curSid, s.resolveActiveModel(drv.Name()))
+		}
 		go func() { sendErrCh <- drv.Send(curSid, text) }()
 
 		channelClosed := false

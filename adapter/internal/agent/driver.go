@@ -170,3 +170,19 @@ type ModelInfo struct {
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
+
+// ModelUpdater is an optional capability for drivers that allow the active
+// model to be changed mid-session (between turns) — i.e. without recycling
+// the underlying conversation. The HTTP / cloud layers call UpdateModel right
+// before each Send so a user who toggles the model in the device Settings
+// while inside a running session sees the new model on the *next* turn,
+// instead of having to wait for the session to be evicted from the router's
+// in-process cache.
+//
+// Implementations should be idempotent and cheap (just patch the session's
+// model field under whatever lock the driver uses internally). Drivers that
+// genuinely cannot switch models mid-conversation just don't implement this
+// interface — StartOpts.Model still applies at session start.
+type ModelUpdater interface {
+	UpdateModel(sid SessionID, model string) error
+}

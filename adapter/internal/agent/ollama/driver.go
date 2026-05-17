@@ -223,6 +223,22 @@ func (d *Driver) Approve(sid agent.SessionID, tid agent.ToolID, decision agent.D
 	return agent.ErrUnsupported
 }
 
+// UpdateModel implements agent.ModelUpdater — Ollama already builds the
+// /api/chat request body from s.model on every Send, so a mid-session
+// switch takes effect immediately on the next turn.
+func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	s.mu.Lock()
+	s.model = strings.TrimSpace(model)
+	s.mu.Unlock()
+	return nil
+}
+
 // Stop terminates any in-flight request and closes the session.
 func (d *Driver) Stop(sid agent.SessionID) error {
 	d.mu.Lock()

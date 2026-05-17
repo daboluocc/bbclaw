@@ -205,8 +205,8 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.mu.Unlock()
 
 	d.log.Infof("aider: input sid=%s text=%q", sid, truncate(text, 200))
-	d.log.Infof("aider: spawned sid=%s pid=%d timeout=%v cwd=%q history=%s",
-		sid, cmd.Process.Pid, d.timeout, s.cwd, s.historyPath)
+	d.log.Infof("aider: spawned sid=%s model=%q pid=%d timeout=%v cwd=%q history=%s",
+		sid, s.model, cmd.Process.Pid, d.timeout, s.cwd, s.historyPath)
 
 	go drainStderr(stderr, d.log, sid)
 
@@ -226,6 +226,22 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 // Approve is not supported; returns ErrUnsupported per Capabilities.
 func (d *Driver) Approve(sid agent.SessionID, tid agent.ToolID, decision agent.Decision) error {
 	return agent.ErrUnsupported
+}
+
+// UpdateModel implements agent.ModelUpdater — see claudecode/driver.go for
+// the rationale. aider's CLI re-reads --model on every invocation so
+// mid-session switches take effect on the next turn.
+func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	s.mu.Lock()
+	s.model = strings.TrimSpace(model)
+	s.mu.Unlock()
+	return nil
 }
 
 // Stop terminates any in-flight subprocess, removes the chat history file,
