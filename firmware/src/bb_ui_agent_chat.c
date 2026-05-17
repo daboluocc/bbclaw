@@ -2151,6 +2151,13 @@ static void apply_session_switch_ui(const char* sid) {
   session_id_short(sid, shortbuf, sizeof(shortbuf));
   post_session(shortbuf);
 
+  /* ADR-016: bottom bar's session label lives in bb_lvgl_display (not the
+   * theme), so the post_session async path doesn't reach it. Push the full
+   * id directly so the bottom bar reflects the switch immediately rather
+   * than waiting for the next session_init frame (which only arrives if
+   * the user actually sends a turn). */
+  bb_display_set_session_id(sid);
+
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL) {
     if (theme->on_exit != NULL) theme->on_exit();
