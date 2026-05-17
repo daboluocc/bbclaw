@@ -25,6 +25,7 @@
 #include "bb_transport.h"
 #include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_session_store.h"
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
@@ -3004,6 +3005,10 @@ esp_err_t bb_radio_app_start(void) {
    * and trip esp_task_stack_is_sane_cache_disabled, panic-rebooting the
    * device the moment the user tries to open Settings from chat. */
   bb_ui_settings_preload_nvs();
+  /* Same rule for "drv/active" — ADR-016 reads it in agent_chat_show via
+   * bb_session_store_load_active_driver. Without this preload that load
+   * would issue nvs_get_str from stream_task (PSRAM stack) and panic. */
+  bb_session_store_preload_nvs();
   bb_device_config_load();
 
   bb_gateway_node_config_t node_cfg = {

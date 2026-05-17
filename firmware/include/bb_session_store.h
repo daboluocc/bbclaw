@@ -57,13 +57,24 @@ esp_err_t bb_session_store_load(const char* driver_name, char* out_sid, size_t s
 esp_err_t bb_session_store_save(const char* driver_name, const char* session_id);
 
 /**
- * Load the device-side cached active driver name. Mirrors the adapter's
- * persisted active_driver so the chat screen can pick the right driver
- * before the first /v1/agent/drivers fetch returns. NVS key: "drv/active".
+ * Eagerly load NVS-backed driver state ("drv/active") into an in-memory
+ * cache. MUST be called once from a task with an internal-RAM stack
+ * (e.g. app_main / bb_radio_app_start) — NVS reads disable SPI flash cache
+ * which makes PSRAM stacks unreachable and traps
+ * esp_task_stack_is_sane_cache_disabled.
  *
- * @param out_name  Output buffer; empty string on NVS-miss / error.
- * @param sz       Buffer size; recommend 24.
- * @return ESP_OK on hit, ESP_ERR_NVS_NOT_FOUND on miss, other on NVS error.
+ * After this returns, bb_session_store_load_active_driver is a pure memory
+ * read safe from any task. Idempotent. */
+void bb_session_store_preload_nvs(void);
+
+/**
+ * Read the cached active driver name (populated by preload_nvs at boot,
+ * and refreshed by save_active_driver). Pure memory read — safe to call
+ * from any task including PSRAM-stack stream_task.
+ *
+ * @param out_name  Output buffer; empty string when no cache entry.
+ * @param sz        Buffer size; recommend 24.
+ * @return ESP_OK on cache hit, ESP_ERR_NOT_FOUND when cache is empty.
  */
 esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz);
 

@@ -176,7 +176,6 @@ static const bb_agent_driver_info_t* active_driver_entry(void) {
 /* ── LVGL rebuild helpers ── */
 
 static void destroy_rows(void) {
-  ESP_LOGI(TAG, "destroy_rows: rows_used=%d rows_box=%p", s_st.rows_used, s_st.rows_box);
   for (int i = 0; i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
     s_st.rows[i] = NULL;
   }
@@ -185,14 +184,11 @@ static void destroy_rows(void) {
     lv_obj_del(s_st.rows_box);
     s_st.rows_box = NULL;
   }
-  ESP_LOGI(TAG, "destroy_rows: done");
 }
 
 static void build_rows_box(int row_count) {
-  ESP_LOGI(TAG, "build_rows_box: row_count=%d", row_count);
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
-  ESP_LOGI(TAG, "build_rows_box: created rows_box=%p", s_st.rows_box);
   lv_obj_remove_style_all(s_st.rows_box);
   /* Height = row_count * ROW_H + small padding. Cap so it never overflows
    * the (typically 240-tall) screen — caller picks reasonable row_count. */
@@ -307,8 +303,6 @@ static void render_driver_picker(void) {
 /* ── Render: Model picker (depends on currently active driver) ── */
 
 static void render_model_picker(void) {
-  ESP_LOGI(TAG, "render_model_picker: root=%p header=%p",
-           s_st.root, s_st.header_lbl);
   if (s_st.root == NULL) return;
 
   const bb_agent_driver_info_t* d = active_driver_entry();
@@ -504,21 +498,11 @@ static void enter_driver_picker(void) {
 }
 
 static void enter_model_picker(void) {
-  ESP_LOGI(TAG, "enter_model_picker: active='%s' cache_count=%d",
-           s_st.active_driver, s_st.driver_cache_count);
   s_st.level = LEVEL_MODEL_PICKER;
   const bb_agent_driver_info_t* d = active_driver_entry();
-  ESP_LOGI(TAG, "enter_model_picker: d=%p%s",
-           d, d == NULL ? " (NULL!)" : "");
-  if (d != NULL) {
-    ESP_LOGI(TAG, "enter_model_picker: driver='%s' model_count=%d active_model='%s'",
-             d->name, d->model_count, d->active_model);
-  }
   int sel = 0;
   if (d != NULL && d->model_count > 0 && d->active_model[0] != '\0') {
     for (int j = 0; j < d->model_count; ++j) {
-      ESP_LOGI(TAG, "enter_model_picker: probe j=%d id='%s' label='%s'",
-               j, d->models[j].id, d->models[j].label);
       if (strcmp(d->models[j].id, d->active_model) == 0) {
         sel = j;
         break;
@@ -526,9 +510,10 @@ static void enter_model_picker(void) {
     }
   }
   s_st.sel = sel;
-  ESP_LOGI(TAG, "enter_model_picker: sel=%d, calling rerender()", sel);
+  ESP_LOGI(TAG, "enter_model_picker: driver='%s' model_count=%d sel=%d",
+           d != NULL ? d->name : "(null)",
+           d != NULL ? d->model_count : 0, sel);
   rerender();
-  ESP_LOGI(TAG, "enter_model_picker: done");
 }
 
 static void return_to_main(int new_sel_row) {
@@ -641,10 +626,7 @@ int bb_ui_settings_handle_click(void) {
           enter_driver_picker();
           break;
         case MAIN_ROW_MODEL: {
-          ESP_LOGI(TAG, "main click on Model row");
           const bb_agent_driver_info_t* d = active_driver_entry();
-          ESP_LOGI(TAG, "  active_driver='%s' d=%p model_count=%d",
-                   s_st.active_driver, d, d ? d->model_count : -1);
           if (d == NULL || d->model_count == 0) {
             /* Nothing to pick — flash the row but don't push a picker. */
             ESP_LOGI(TAG, "main click on Model: driver has no models");

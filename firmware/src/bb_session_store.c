@@ -163,20 +163,58 @@ static void persist_task(void* arg) {
   vTaskDelete(NULL);
 }
 
-/* ── Active driver name (this ADR) ── */
+/* ── Active driver name (this ADR) ──
+ *
+ * NVS read of "drv/active" is done ONCE from app_main via
+ * bb_session_store_preload_nvs() and cached in s_active_driver_cache so
+ * later reads from PSRAM-stack tasks (stream_task etc.) can hit memory
+ * directly. Issuing nvs_get_str from a PSRAM-stack task panics with
+ * esp_task_stack_is_sane_cache_disabled() because NVS temporarily disables
+ * SPI flash cache, and PSRAM stacks become unreachable without it. */
+
+#define BB_ACTIVE_DRIVER_CACHE_SZ 24
+
+static char s_active_driver_cache[BB_ACTIVE_DRIVER_CACHE_SZ] = {0};
+static int  s_active_driver_loaded = 0;
+
+void bb_session_store_preload_nvs(void) {
+  if (s_active_driver_loaded) return;
+  s_active_driver_loaded = 1;
+  s_active_driver_cache[0] = '\0';
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READONLY, &h);
+  if (err != ESP_OK) {
+    ESP_LOGD(TAG, "preload_nvs: nvs_open failed (%s) — cache stays empty",
+             esp_err_to_name(err));
+    return;
+  }
+  size_t sz = sizeof(s_active_driver_cache);
+  err = nvs_get_str(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER, s_active_driver_cache, &sz);
+  nvs_close(h);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "preload_nvs: active_driver='%s'", s_active_driver_cache);
+  } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+    ESP_LOGD(TAG, "preload_nvs: active_driver not set yet");
+  } else {
+    ESP_LOGW(TAG, "preload_nvs: active_driver read failed (%s)", esp_err_to_name(err));
+    s_active_driver_cache[0] = '\0';
+  }
+}
 
 esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz) {
   if (out_name == NULL || sz == 0) return ESP_ERR_INVALID_ARG;
   out_name[0] = '\0';
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READONLY, &h);
-  if (err != ESP_OK) return err;
-  err = nvs_get_str(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER, out_name, &sz);
-  nvs_close(h);
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "load_active_driver: '%s'", out_name);
+  /* Lazy-load: tolerate callers that didn't go through preload (e.g. tests).
+   * Real device should always have preloaded by the time anyone calls in. */
+  if (!s_active_driver_loaded) {
+    bb_session_store_preload_nvs();
   }
-  return err;
+  if (s_active_driver_cache[0] == '\0') {
+    return ESP_ERR_NVS_NOT_FOUND;
+  }
+  strncpy(out_name, s_active_driver_cache, sz - 1);
+  out_name[sz - 1] = '\0';
+  return ESP_OK;
 }
 
 /* Deferred persist payload for the active driver key. Distinct from
@@ -223,6 +261,14 @@ static void active_driver_persist_task(void* arg) {
 
 esp_err_t bb_session_store_save_active_driver(const char* driver_name) {
   if (driver_name == NULL) return ESP_ERR_INVALID_ARG;
+  /* Refresh the in-memory cache synchronously so subsequent
+   * load_active_driver calls see the new value immediately; the actual
+   * NVS write still happens on the background task so we don't issue
+   * flash IO from the caller's (likely PSRAM) stack. */
+  s_active_driver_loaded = 1;
+  strncpy(s_active_driver_cache, driver_name, sizeof(s_active_driver_cache) - 1);
+  s_active_driver_cache[sizeof(s_active_driver_cache) - 1] = '\0';
+
   active_driver_payload_t* p = (active_driver_payload_t*)calloc(1, sizeof(*p));
   if (p == NULL) return ESP_ERR_NO_MEM;
   strncpy(p->driver_name, driver_name, sizeof(p->driver_name) - 1);
