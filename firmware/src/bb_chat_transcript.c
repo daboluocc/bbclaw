@@ -42,7 +42,13 @@ static lv_obj_t* s_active_assistant;  /* current streaming bubble, NULL after fi
  * When 0, the user manually scrolled away (UP) and we leave their viewport
  * alone — including during TTS playback, which previously yanked the view
  * back on every assistant chunk. Auto-resume kicks in when the user scrolls
- * all the way back to the bottom. */
+ * all the way back to the bottom.
+ *
+ * The visible bottom-bar hint that v1 of this ADR added turned out to be
+ * noisy in practice — users intuitively understand "I scrolled up, now I'm
+ * looking at older messages" without a label. The latch still exists
+ * internally (it's what makes scrolling actually work during TTS), but
+ * the UI marker is gone. */
 static int s_follow_tail = 1;
 
 static int transcript_at_bottom(void) {
@@ -54,7 +60,6 @@ static void set_follow_tail(int follow) {
   follow = follow ? 1 : 0;
   if (s_follow_tail == follow) return;
   s_follow_tail = follow;
-  bb_display_set_reading_hint(!follow);
 }
 
 static const lv_font_t* font(void) {
@@ -135,11 +140,8 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   lv_obj_set_scrollbar_mode(s_transcript, LV_SCROLLBAR_MODE_AUTO);
 
   s_active_assistant = NULL;
-  /* Fresh transcript starts in follow mode. Reading-mode hint is implicitly
-   * off — call the setter so the bottom-bar repaint clears any leftover hint
-   * from a previous session. */
+  /* Fresh transcript starts in follow mode. */
   s_follow_tail = 1;
-  bb_display_set_reading_hint(0);
   return s_transcript;
 }
 
@@ -148,9 +150,7 @@ void bb_chat_transcript_destroy(void) {
    * so do NOT lv_obj_del(s_transcript) here — it would double-free. */
   s_transcript = NULL;
   s_active_assistant = NULL;
-  /* Drop reading-mode latch so the next chat enter starts clean. */
   s_follow_tail = 1;
-  bb_display_set_reading_hint(0);
 }
 
 lv_obj_t* bb_chat_transcript_get_container(void) {
@@ -159,6 +159,12 @@ lv_obj_t* bb_chat_transcript_get_container(void) {
 
 void bb_chat_transcript_append_user(const char* text) {
   if (s_transcript == NULL || text == NULL) return;
+  /* A new user message marks the end of the previous assistant turn.
+   * Flush any pending streamed chunks into the cache as one finalized
+   * message BEFORE we record the new user line — otherwise the cloud
+   * path (which emits a single REPLY_DELTA with the whole reply, and no
+   * TURN_END) would lose the assistant text on sleep/wake. */
+  bb_chat_cache_finalize_assistant();
   lv_obj_t* lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
   if (lbl == NULL) return;
   lv_label_set_text(lbl, text);
@@ -183,6 +189,7 @@ void bb_chat_transcript_append_assistant_chunk(const char* delta) {
 
 void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
   if (s_transcript == NULL) return;
+  bb_chat_cache_finalize_assistant();
   lv_obj_t* lbl = make_msg_label(UI_TEXT_DIM, UI_TOOL_FG, LV_TEXT_ALIGN_LEFT, 1);
   if (lbl == NULL) return;
   lv_obj_set_style_bg_opa(lbl, LV_OPA_10, 0);
@@ -200,6 +207,7 @@ void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
 
 void bb_chat_transcript_append_error(const char* msg) {
   if (s_transcript == NULL) return;
+  bb_chat_cache_finalize_assistant();
   lv_obj_t* lbl = make_msg_label(UI_ERROR_FG, UI_ERROR_FG, LV_TEXT_ALIGN_LEFT, 0);
   if (lbl == NULL) return;
   lv_obj_set_style_bg_opa(lbl, LV_OPA_20, 0);

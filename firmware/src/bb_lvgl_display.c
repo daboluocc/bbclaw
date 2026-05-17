@@ -435,12 +435,11 @@ static void apply_bottom_bar(void) {
   /* ADR-016: prefer logical session alias (adapter title field, e.g.
    * "daboluocc-bbclaw") over the raw sid. Falls back to sid tail when
    * the adapter hasn't reported a title (e.g. fresh new session, or
-   * driver_cycle restoring a sid from NVS without metadata).
-   * ADR-017: reading-mode hint pre-empts both — user explicitly scrolled
-   * away from the live tail and needs to know how to rejoin it. */
-  if (reading_hint) {
-    lv_label_set_text(s_lbl_bottom_session, "● 阅读中 (DOWN 到底回到实时)");
-  } else if (alias_text[0] != '\0') {
+   * driver_cycle restoring a sid from NVS without metadata). */
+  (void)reading_hint;  /* ADR-017 hint removed — kept setter for ABI but
+                         no longer drawn (scrolling now intuitively works
+                         during TTS, marker turned out to be noise). */
+  if (alias_text[0] != '\0') {
     lv_label_set_text(s_lbl_bottom_session, alias_text);
   } else if (session_text[0] != '\0') {
     char buf[40];

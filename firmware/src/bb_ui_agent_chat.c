@@ -635,6 +635,10 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
        * the streaming task posts SPEAKING on entry and IDLE/HEART on exit,
        * so posting IDLE here would just cause a brief flicker. */
       s_chat.reply_turn_complete = 1;
+      /* ADR-017 — HTTP agent path's natural turn boundary. Flush the
+       * cache's assistant accumulator now so the freshly-completed reply
+       * is persisted even if the user immediately sleeps the device. */
+      bb_chat_cache_finalize_assistant();
       /* Phase 4.9: 通知 bb_state agent_in_flight 结束 */
       bb_state_dispatch_simple(BB_EVT_AGENT_TURN_END);
       const int will_speak = s_chat.tts_enabled && reply_buf_has_content();
@@ -1327,6 +1331,12 @@ void bb_ui_agent_chat_hide(void) {
   if (!s_chat.active) {
     return;
   }
+  /* ADR-017 — flush any in-progress assistant accumulator into the cache
+   * before tearing down. The cloud_saas voice path doesn't emit a
+   * TURN_END event, so without this final flush the assistant reply
+   * would never make it into the NVS blob and the next chat enter
+   * would replay only the user's message. */
+  bb_chat_cache_finalize_assistant();
   /* 把 active 先清，让任何 in-flight 的 async dispatch 直接丢弃。
    * 在跑的 agent task 不强 kill；它结束后 self-delete。 */
   s_chat.active = 0;
