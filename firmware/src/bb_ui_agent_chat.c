@@ -8,7 +8,9 @@
 #include "bb_agent_client.h"
 #include "bb_agent_theme.h"
 #include "bb_audio.h"
+#include "bb_chat_cache.h"
 #include "bb_chat_recording.h"
+#include "bb_chat_transcript.h"
 #include "bb_config.h"
 #include "bb_display.h"
 #include "bb_notification.h"
@@ -536,10 +538,19 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
         bb_display_set_session_id(evt->session_id);
 
         /* Phase S2 — save session ID to NVS for current driver */
+        const char* eff_driver = NULL;
         if (evt->driver != NULL && evt->driver[0] != '\0') {
           bb_session_store_save(evt->driver, evt->session_id);
+          eff_driver = evt->driver;
         } else if (s_chat.driver_name[0] != '\0') {
           bb_session_store_save(s_chat.driver_name, evt->session_id);
+          eff_driver = s_chat.driver_name;
+        }
+        /* ADR-017 — rebind the chat cache to the new (driver, sid). The
+         * bind clears the in-memory buffer so messages from a prior
+         * session don't bleed into the new one's tail cache. */
+        if (eff_driver != NULL) {
+          bb_chat_cache_bind(eff_driver, evt->session_id);
         }
       }
       if (evt->driver != NULL) {
@@ -731,6 +742,14 @@ static void load_nvs_task(void* arg) {
       ESP_LOGI(TAG, "loaded session '%s' for driver '%s'", s_chat.session_id, driver);
     } else if (err != ESP_ERR_NVS_NOT_FOUND) {
       ESP_LOGW(TAG, "session load failed: %s", esp_err_to_name(err));
+    }
+    /* ADR-017 — hydrate the chat tail cache from NVS while we still own an
+     * internal-RAM stack. bind() captures (driver, sid); hydrate() reads
+     * the blob if its sid matches. Replay happens later on the LVGL task
+     * once the transcript widget exists. */
+    if (s_chat.session_id[0] != '\0') {
+      bb_chat_cache_bind(driver, s_chat.session_id);
+      bb_chat_cache_hydrate_from_nvs();
     }
   }
   SemaphoreHandle_t sem = (SemaphoreHandle_t)arg;
@@ -1192,6 +1211,32 @@ static void buddy_state_listener(const bb_state_t* prev,
 
 static int s_buddy_listener_registered = 0;
 
+/* ADR-017 — replay the local tail cache into the active theme's transcript.
+ * Roles in the cache use single-byte encoding ('u'/'a'/'t'/'e'); the theme
+ * append_history_message API takes role strings, so we translate here. */
+static void cache_replay_cb(char role, const char* content, void* user) {
+  const bb_agent_theme_t* theme = (const bb_agent_theme_t*)user;
+  if (theme == NULL || theme->append_history_message == NULL) return;
+  const char* role_str = "assistant";
+  switch (role) {
+    case BB_CHAT_CACHE_ROLE_USER:      role_str = "user"; break;
+    case BB_CHAT_CACHE_ROLE_ASSISTANT: role_str = "assistant"; break;
+    case BB_CHAT_CACHE_ROLE_TOOL:      role_str = "tool"; break;
+    case BB_CHAT_CACHE_ROLE_ERROR:     role_str = "error"; break;
+    default: break;
+  }
+  theme->append_history_message(role_str, content);
+}
+
+static void replay_chat_cache_into_theme(const bb_agent_theme_t* theme) {
+  if (theme == NULL || theme->append_history_message == NULL) return;
+  bb_chat_cache_replay(cache_replay_cb, (void*)theme);
+  if (theme->scroll_transcript_to_bottom != NULL) {
+    theme->scroll_transcript_to_bottom();
+  }
+  ESP_LOGI(TAG, "transcript hydrated from cache");
+}
+
 void bb_ui_agent_chat_show(lv_obj_t* parent) {
   if (parent == NULL) {
     ESP_LOGE(TAG, "show: parent is NULL");
@@ -1262,9 +1307,18 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   }
   /* Phase S3 — if we resumed a session from NVS, fetch its history so the
    * transcript isn't an unsettling blank. Skipped when session_id is empty
-   * (fresh boot with no prior session) since there's nothing to load. */
+   * (fresh boot with no prior session) since there's nothing to load.
+   *
+   * ADR-017 — before the fetch round-trip, replay the local tail cache so
+   * the user sees their last conversation immediately. If the adapter is
+   * offline (or slow), this is all they get; when the fetch lands,
+   * on_history_fetch_done clears the cache and rewrites it from the
+   * authoritative remote history. */
   if (s_chat.session_id[0] != '\0') {
     history_state_reset();
+    if (bb_chat_cache_has_data() && theme->append_history_message != NULL) {
+      replay_chat_cache_into_theme(theme);
+    }
     spawn_history_fetch_task(-1, /*is_initial=*/1);
   }
 }
@@ -1872,10 +1926,34 @@ static void on_history_fetch_done(void* user_data) {
   }
 
   if (res->is_initial) {
+    /* ADR-017 — the cache hydrate path may have already rendered the
+     * recent tail. Remote history is authoritative, so wipe the transcript
+     * and replay from the server payload. The cache is rewritten below
+     * with the same set of messages so the next sleep/wake hydrate is
+     * consistent with what the user just saw. */
+    bb_chat_transcript_clear();
+    bb_chat_cache_clear();
     /* Chronological order — append from oldest to newest. */
     if (theme->append_history_message != NULL) {
       for (int i = 0; i < res->count; i++) {
         theme->append_history_message(res->msgs[i].role, res->msgs[i].content);
+        /* Mirror into cache — translate role to single-byte encoding so
+         * the cache buffer stays compact. */
+        const char* role = res->msgs[i].role;
+        const char* content = res->msgs[i].content;
+        if (role == NULL || content == NULL) continue;
+        if (strcmp(role, "user") == 0) {
+          bb_chat_cache_append_user(content);
+        } else if (strcmp(role, "tool") == 0) {
+          bb_chat_cache_append_tool(content, NULL);
+        } else if (strcmp(role, "error") == 0) {
+          bb_chat_cache_append_error(content);
+        } else {
+          /* Treat anything else (assistant, system) as assistant — that's
+           * how the transcript renders them anyway. */
+          bb_chat_cache_append_assistant_chunk(content);
+          bb_chat_cache_finalize_assistant();
+        }
       }
     }
     /* min_seq is the oldest seq we just rendered. */
@@ -2186,6 +2264,12 @@ void bb_ui_agent_chat_session_picker_move(int delta) {
  * an old sid back). In that case the bottom bar falls back to displaying
  * the sid tail. */
 static void apply_session_switch_ui(const char* sid, const char* alias) {
+  /* ADR-017 — rebind the chat cache to the new (driver, sid). Cache
+   * starts empty for the new session; subsequent assistant/user appends
+   * will populate it. */
+  if (sid != NULL && s_chat.driver_name[0] != '\0') {
+    bb_chat_cache_bind(s_chat.driver_name, sid);
+  }
   char shortbuf[16] = {0};
   session_id_short(sid, shortbuf, sizeof(shortbuf));
   post_session(shortbuf);

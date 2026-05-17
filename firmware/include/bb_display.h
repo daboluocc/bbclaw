@@ -45,3 +45,7 @@ void bb_display_set_active_model(const char* model_label);
 /** Chat 激活状态：为 1 时强制显示 ACTIVE 视图（顶栏+底栏），
  *  并隐藏底层的简单对话文本区，让 chat overlay 的 transcript 占据中间区域。 */
 void bb_display_set_chat_active(int active);
+/** ADR-017: 阅读模式提示。on=1 时底栏 session 槽位被一行提示文字覆盖，
+ *  告诉用户"按 DOWN 到底回到实时流"；on=0 恢复正常 alias/sid 显示。
+ *  由 bb_chat_transcript 在 follow-tail 锁存变化时调用，不需要外部驱动。 */
+void bb_display_set_reading_hint(int on);

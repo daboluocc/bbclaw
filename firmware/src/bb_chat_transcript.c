@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bb_chat_cache.h"
+#include "bb_display.h"
 #include "lvgl.h"
 
 #ifdef BBCLAW_HAVE_CJK_FONT
@@ -32,6 +34,28 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 
 static lv_obj_t* s_transcript;
 static lv_obj_t* s_active_assistant;  /* current streaming bubble, NULL after finalize */
+
+/* ADR-017 — reading mode.
+ *
+ * `s_follow_tail` is the auto-scroll latch. When 1 (default), new messages
+ * scroll the transcript to the bottom so the user sees the live stream.
+ * When 0, the user manually scrolled away (UP) and we leave their viewport
+ * alone — including during TTS playback, which previously yanked the view
+ * back on every assistant chunk. Auto-resume kicks in when the user scrolls
+ * all the way back to the bottom. */
+static int s_follow_tail = 1;
+
+static int transcript_at_bottom(void) {
+  if (s_transcript == NULL) return 1;
+  return lv_obj_get_scroll_bottom(s_transcript) <= 4;
+}
+
+static void set_follow_tail(int follow) {
+  follow = follow ? 1 : 0;
+  if (s_follow_tail == follow) return;
+  s_follow_tail = follow;
+  bb_display_set_reading_hint(!follow);
+}
 
 static const lv_font_t* font(void) {
 #ifdef BBCLAW_HAVE_CJK_FONT
@@ -73,7 +97,7 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
   return lbl;
 }
 
-static void scroll_to_bottom(void) {
+static void scroll_to_bottom_unconditional(void) {
   if (s_transcript == NULL) return;
   uint32_t cnt = lv_obj_get_child_count(s_transcript);
   if (cnt == 0) return;
@@ -81,6 +105,13 @@ static void scroll_to_bottom(void) {
   if (last != NULL) {
     lv_obj_scroll_to_view(last, LV_ANIM_OFF);
   }
+}
+
+/* Auto-scroll hook called from append_* paths. Honors reading mode: if the
+ * user scrolled away, leave the viewport alone. */
+static void follow_tail_if_active(void) {
+  if (!s_follow_tail) return;
+  scroll_to_bottom_unconditional();
 }
 
 lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
@@ -104,6 +135,11 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   lv_obj_set_scrollbar_mode(s_transcript, LV_SCROLLBAR_MODE_AUTO);
 
   s_active_assistant = NULL;
+  /* Fresh transcript starts in follow mode. Reading-mode hint is implicitly
+   * off — call the setter so the bottom-bar repaint clears any leftover hint
+   * from a previous session. */
+  s_follow_tail = 1;
+  bb_display_set_reading_hint(0);
   return s_transcript;
 }
 
@@ -112,6 +148,9 @@ void bb_chat_transcript_destroy(void) {
    * so do NOT lv_obj_del(s_transcript) here — it would double-free. */
   s_transcript = NULL;
   s_active_assistant = NULL;
+  /* Drop reading-mode latch so the next chat enter starts clean. */
+  s_follow_tail = 1;
+  bb_display_set_reading_hint(0);
 }
 
 lv_obj_t* bb_chat_transcript_get_container(void) {
@@ -124,7 +163,8 @@ void bb_chat_transcript_append_user(const char* text) {
   if (lbl == NULL) return;
   lv_label_set_text(lbl, text);
   s_active_assistant = NULL;
-  scroll_to_bottom();
+  bb_chat_cache_append_user(text);
+  follow_tail_if_active();
 }
 
 void bb_chat_transcript_append_assistant_chunk(const char* delta) {
@@ -137,7 +177,8 @@ void bb_chat_transcript_append_assistant_chunk(const char* delta) {
   } else {
     lv_label_ins_text(s_active_assistant, LV_LABEL_POS_LAST, delta);
   }
-  scroll_to_bottom();
+  bb_chat_cache_append_assistant_chunk(delta);
+  follow_tail_if_active();
 }
 
 void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
@@ -153,7 +194,8 @@ void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
   }
   lv_label_set_text(lbl, buf);
   s_active_assistant = NULL;
-  scroll_to_bottom();
+  bb_chat_cache_append_tool(tool, hint);
+  follow_tail_if_active();
 }
 
 void bb_chat_transcript_append_error(const char* msg) {
@@ -166,7 +208,8 @@ void bb_chat_transcript_append_error(const char* msg) {
   snprintf(buf, sizeof(buf), "! %s", msg != NULL ? msg : "error");
   lv_label_set_text(lbl, buf);
   s_active_assistant = NULL;
-  scroll_to_bottom();
+  bb_chat_cache_append_error(msg);
+  follow_tail_if_active();
 }
 
 void bb_chat_transcript_append_history(const char* role, const char* content) {
@@ -201,10 +244,30 @@ void bb_chat_transcript_scroll(int lines) {
   if (s_transcript == NULL || lines == 0) return;
   int32_t step = lv_font_get_line_height(font()) * lines;
   lv_obj_scroll_by_bounded(s_transcript, 0, step, LV_ANIM_OFF);
+  /* ADR-017 — track follow-tail latch.
+   * UP gesture (lines < 0) always drops us into reading mode. DOWN that
+   * lands at the very bottom restores auto-scroll so the user can rejoin
+   * the live stream by holding DOWN. */
+  if (lines < 0) {
+    set_follow_tail(0);
+  } else if (transcript_at_bottom()) {
+    set_follow_tail(1);
+  }
 }
 
 void bb_chat_transcript_scroll_to_bottom(void) {
-  scroll_to_bottom();
+  scroll_to_bottom_unconditional();
+  set_follow_tail(1);
+}
+
+int bb_chat_transcript_is_following(void) {
+  return s_follow_tail ? 1 : 0;
+}
+
+void bb_chat_transcript_resume_follow(void) {
+  if (s_transcript == NULL) return;
+  scroll_to_bottom_unconditional();
+  set_follow_tail(1);
 }
 
 int bb_chat_transcript_is_at_top(void) {
@@ -212,6 +275,13 @@ int bb_chat_transcript_is_at_top(void) {
   return lv_obj_get_scroll_top(s_transcript) <= 4 ? 1 : 0;
 }
 
+void bb_chat_transcript_clear(void) {
+  if (s_transcript == NULL) return;
+  lv_obj_clean(s_transcript);
+  s_active_assistant = NULL;
+}
+
 void bb_chat_transcript_finalize_assistant(void) {
   s_active_assistant = NULL;
+  bb_chat_cache_finalize_assistant();
 }

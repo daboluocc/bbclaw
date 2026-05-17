@@ -17,6 +17,7 @@ set(_bb_srcs
     "bb_chat_topbar.c"
     "bb_chat_bottombar.c"
     "bb_chat_transcript.c"
+    "bb_chat_cache.c"
     "bb_chat_recording.c"
     "bb_chat_pickers.c"
     "bb_led.c"

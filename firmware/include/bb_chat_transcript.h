@@ -39,11 +39,21 @@ void bb_chat_transcript_append_error(const char* msg);
 void bb_chat_transcript_append_history(const char* role, const char* content);
 void bb_chat_transcript_prepend_history(const char* role, const char* content);
 
-/* Scroll helpers. `lines > 0` = scroll down; `< 0` = up. */
+/* Scroll helpers. `lines > 0` = scroll down; `< 0` = up.
+ * ADR-017: UP latches the transcript into reading mode (auto-scroll on new
+ * messages is suspended). Scrolling all the way back to the bottom releases
+ * the latch. `is_following` reports the current latch state. */
 void bb_chat_transcript_scroll(int lines);
 void bb_chat_transcript_scroll_to_bottom(void);
 int  bb_chat_transcript_is_at_top(void);
+int  bb_chat_transcript_is_following(void);
+void bb_chat_transcript_resume_follow(void);
 
 /* Finalize the streaming assistant bubble (so next append_assistant_chunk
  * starts a new bubble). Called after turn_end. */
 void bb_chat_transcript_finalize_assistant(void);
+
+/* ADR-017 — wipe all rendered messages without destroying the container.
+ * Used by the cache-reconcile path when authoritative remote history
+ * arrives and the cached preview needs to be replaced wholesale. */
+void bb_chat_transcript_clear(void);

@@ -213,6 +213,10 @@ static char s_bottom_model[40];
 /* ADR-016 polish: friendly alias (logical session title from adapter) shown
  * on the bottom-bar left instead of the raw sid when non-empty. */
 static char s_bottom_alias[24];
+/* ADR-017: when set, bottom-bar left cell shows a reading-mode hint instead
+ * of the session alias/sid. Toggled by bb_chat_transcript via
+ * bb_display_set_reading_hint. */
+static int s_reading_hint_on;
 
 /* LVGL objects — locked moved to bb_page_locked.c */
 
@@ -404,9 +408,11 @@ static void apply_bottom_bar(void) {
   char alias_text[24];
   char session_text[32];
   char model_text[40];
+  int reading_hint;
   portENTER_CRITICAL(&s_state_lock);
   strncpy(alias_text, s_bottom_alias, sizeof(alias_text) - 1);
   alias_text[sizeof(alias_text) - 1] = '\0';
+  reading_hint = s_reading_hint_on;
   const char* sid = s_bottom_session;
   if (sid[0] == '\0') {
     session_text[0] = '\0';
@@ -429,8 +435,12 @@ static void apply_bottom_bar(void) {
   /* ADR-016: prefer logical session alias (adapter title field, e.g.
    * "daboluocc-bbclaw") over the raw sid. Falls back to sid tail when
    * the adapter hasn't reported a title (e.g. fresh new session, or
-   * driver_cycle restoring a sid from NVS without metadata). */
-  if (alias_text[0] != '\0') {
+   * driver_cycle restoring a sid from NVS without metadata).
+   * ADR-017: reading-mode hint pre-empts both — user explicitly scrolled
+   * away from the live tail and needs to know how to rejoin it. */
+  if (reading_hint) {
+    lv_label_set_text(s_lbl_bottom_session, "● 阅读中 (DOWN 到底回到实时)");
+  } else if (alias_text[0] != '\0') {
     lv_label_set_text(s_lbl_bottom_session, alias_text);
   } else if (session_text[0] != '\0') {
     char buf[40];
@@ -1713,6 +1723,15 @@ void bb_display_set_chat_active(int active) {
 
 void bb_display_set_tts_playing(int playing) {
   s_tts_playing = playing ? 1 : 0;
+}
+
+void bb_display_set_reading_hint(int on) {
+  int next = on ? 1 : 0;
+  portENTER_CRITICAL(&s_state_lock);
+  int changed = (s_reading_hint_on != next);
+  s_reading_hint_on = next;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (changed && s_ready) refresh_ui();
 }
 
 void bb_display_set_tts_sentence(const char* sentence_text) {

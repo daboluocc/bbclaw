@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
+#include "bb_chat_cache.h"
 #include "bb_device_monitor.h"
 #include "bb_identity.h"
 #include "bb_ota.h"
@@ -25,6 +26,10 @@ void app_main(void) {
    * after OTA from v0.4.x. Must run on internal-RAM stack before any
    * session_store_load calls. */
   bb_session_store_migrate();
+
+  /* ADR-017: chat tail cache (in-RAM ring + NVS blob per driver). Init
+   * before the chat overlay's first show, which hydrates from NVS. */
+  bb_chat_cache_init();
 
   // Initialize OTA
   bb_ota_init();
