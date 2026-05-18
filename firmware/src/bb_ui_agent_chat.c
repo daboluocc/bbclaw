@@ -2806,6 +2806,13 @@ void bb_ui_agent_chat_scroll(int lines) {
   const bb_agent_theme_t* theme = bb_agent_theme_get_active();
   if (theme != NULL && theme->scroll_transcript != NULL) {
     theme->scroll_transcript(lines);
+    /* ADR-017 — surface the scroll attempt + follow-tail latch so we can
+     * tell from a log alone whether a "scrolling does nothing" complaint
+     * is "we never got the event" vs. "we scrolled but content fits on
+     * screen so nothing visibly moved". */
+    ESP_LOGI(TAG, "scroll: lines=%d following=%d at_top=%d",
+             lines, bb_chat_transcript_is_following(),
+             theme->is_transcript_at_top ? theme->is_transcript_at_top() : -1);
   }
   /* Phase S3 — auto-fetch earlier history when the user scrolls to the very
    * top. We require:

@@ -1797,15 +1797,24 @@ static void stream_task(void* arg) {
               /* Normal CHAT nav. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(200)) {
+                  /* ADR-017 — 200ms was too tight: during TTS streaming the
+                   * LVGL task is loaded with chunk dispatch and label layout,
+                   * so the recursive mutex stays held past 200 ms and the
+                   * scroll call silently dropped. Match the picker path's
+                   * 600 ms budget and log the rare give-up. */
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_scroll(-2);
                     lvgl_port_unlock();
+                  } else {
+                    ESP_LOGW(TAG, "CHAT: UP scroll lock timeout");
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(200)) {
+                  if (lvgl_port_lock(600)) {
                     bb_ui_agent_chat_scroll(+2);
                     lvgl_port_unlock();
+                  } else {
+                    ESP_LOGW(TAG, "CHAT: DOWN scroll lock timeout");
                   }
                   break;
                 case BB_NAV_EVENT_LEFT:
