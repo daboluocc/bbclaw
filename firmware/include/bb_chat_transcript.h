@@ -57,3 +57,12 @@ void bb_chat_transcript_finalize_assistant(void);
  * Used by the cache-reconcile path when authoritative remote history
  * arrives and the cached preview needs to be replaced wholesale. */
 void bb_chat_transcript_clear(void);
+
+/* ADR-017 v2 — nav fast-path. Stream task can't poll UP/DOWN during TTS
+ * playback (i2s write keeps it busy), so on_nav_event posts scroll
+ * requests directly into this queue. A dedicated worker reads the queue
+ * and bounces the call through lv_async_call, which the LVGL task
+ * services between chunk-dispatch iterations even under TTS load.
+ * `lines` follows bb_chat_transcript_scroll: <0 = up, >0 = down. */
+void bb_chat_scroll_worker_init(void);
+void bb_chat_scroll_request(int lines);

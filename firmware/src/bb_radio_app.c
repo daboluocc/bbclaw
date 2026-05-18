@@ -10,6 +10,7 @@
 #include "bb_status.h"
 #include "bb_audio.h"
 #include "bb_chat_recording.h"
+#include "bb_chat_transcript.h"
 #include "bb_config.h"
 #include "bb_display.h"
 #include "bb_gateway_node.h"
@@ -765,7 +766,29 @@ static void on_ptt_changed(int pressed) {
 }
 
 static void on_nav_event(bb_nav_event_t event) {
-  if ((int)event >= 0 && event < BB_NAV_EVENT_COUNT) {
+  if ((int)event < 0 || event >= BB_NAV_EVENT_COUNT) return;
+
+  /* ADR-017 v2 — fast-path for chat-overlay UP/DOWN. The stream task's
+   * version-counter polling is starved during TTS playback (i2s_write
+   * blocks for several seconds), so even nav events received here would
+   * sit unhandled until TTS drained. Route them directly into the chat
+   * scroll worker which lives on a dedicated FreeRTOS task and is never
+   * blocked by audio I/O. The version counter is deliberately NOT bumped
+   * in this branch — letting stream_task also dispatch later would
+   * double-scroll once it catches up. Pickers (session/cwd) still need
+   * the stream_task path, so skip fast-path when one is open. */
+  int fast_path = 0;
+  if ((event == BB_NAV_EVENT_UP || event == BB_NAV_EVENT_DOWN) &&
+      s_app_state == BBCLAW_STATE_CHAT &&
+      s_agent_chat_active &&
+      !bb_ui_agent_chat_session_picker_is_visible() &&
+      !bb_ui_agent_chat_cwd_picker_is_visible()) {
+    bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? -2 : 2);
+    s_last_activity_ms = bb_now_ms();  /* keep idle-timeout fresh */
+    fast_path = 1;
+  }
+
+  if (!fast_path) {
     s_nav_event_versions[event]++;
   }
   /* Phase 4.9: 同步分发到 bb_state 用于状态日志和未来的转换决策。
@@ -3001,6 +3024,11 @@ esp_err_t bb_radio_app_start(void) {
    * symbols are force-linked. text-only and buddy-ascii were retired —
    * buddy-anim is the single shipping theme. */
   bb_theme_buddy_anim_init();
+  /* ADR-017 v2 — spawn the chat scroll worker so UP/DOWN can dispatch
+   * during TTS playback (stream_task is blocked on i2s during that
+   * window). Must come before any nav event can land. */
+  bb_chat_scroll_worker_init();
+
   /* Phase 4.7.2: eagerly resolve the active theme at boot so the log
    * immediately reveals which theme will render — saves users from "what
    * theme am I on?" guesswork after a restart. */

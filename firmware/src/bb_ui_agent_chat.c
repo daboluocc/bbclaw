@@ -31,6 +31,66 @@
 
 static const char* TAG = "bb_agent_ui";
 
+/* ── ADR-017 v2 — scroll worker. Bypasses stream_task polling so UP/DOWN
+ * lands during TTS playback (when stream_task is stuck pushing i2s
+ * frames). on_nav_event posts to s_scroll_queue from the input task;
+ * scroll_worker_task drains it and runs bb_ui_agent_chat_scroll on the
+ * LVGL task via lv_async_call.
+ *
+ * Q: why not just lv_async_call directly from on_nav_event?
+ * A: lv_async_call needs lvgl_port_lock around it (LV_OS_NONE means the
+ *    internal lv_malloc/lv_timer_create race with lv_timer_handler).
+ *    Taking the lock from the input task during TTS still risks the
+ *    same 200-600ms timeouts. The worker isolates that retry/backoff
+ *    behaviour from the realtime nav callback. */
+static QueueHandle_t s_scroll_queue;
+
+static void scroll_dispatch_cb(void* user_data) {
+  int lines = (int)(intptr_t)user_data;
+  bb_ui_agent_chat_scroll(lines);
+}
+
+static void scroll_worker_task(void* arg) {
+  (void)arg;
+  for (;;) {
+    int lines = 0;
+    if (xQueueReceive(s_scroll_queue, &lines, portMAX_DELAY) != pdTRUE) continue;
+    /* Try a few times — under sustained TTS chunk dispatch the LVGL lock
+     * can stay hot. Each retry is cheap; total worst case ~3 s, then we
+     * drop the event rather than block forever. */
+    for (int i = 0; i < 6; ++i) {
+      if (lvgl_port_lock(500)) {
+        lv_async_call(scroll_dispatch_cb, (void*)(intptr_t)lines);
+        lvgl_port_unlock();
+        break;
+      }
+      if (i == 5) ESP_LOGW(TAG, "scroll worker: dropping lines=%d (lvgl lock timeout)", lines);
+    }
+  }
+}
+
+void bb_chat_scroll_worker_init(void) {
+  if (s_scroll_queue != NULL) return;
+  s_scroll_queue = xQueueCreate(16, sizeof(int));
+  if (s_scroll_queue == NULL) {
+    ESP_LOGE(TAG, "scroll worker: queue alloc failed");
+    return;
+  }
+  BaseType_t ok = xTaskCreate(scroll_worker_task, "chat_scroll", 3072, NULL, 6, NULL);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "scroll worker: task create failed");
+    vQueueDelete(s_scroll_queue);
+    s_scroll_queue = NULL;
+  }
+}
+
+void bb_chat_scroll_request(int lines) {
+  if (s_scroll_queue == NULL || lines == 0) return;
+  /* Drop if queue is full — buffer is 16 deep, user can't physically
+   * press faster than the worker drains under normal load. */
+  (void)xQueueSend(s_scroll_queue, &lines, 0);
+}
+
 /* Thread-safe wrapper around lv_async_call(). LVGL is configured with
  * LV_OS_NONE so lv_malloc/lv_timer_create inside lv_async_call have no
  * internal mutex. Without this wrapper, calling lv_async_call from worker
