@@ -46,25 +46,32 @@
 #define BBCLAW_PTT_ACTIVE_LEVEL 0
 #define BBCLAW_PTT_PULL_UP      1
 
-/* ── Navigation: WS-003 thumb-wheel + 2 dedicated keys ──
- * WS-003 PUSH contact is not wired out on this PCB, so we use the two
- * dedicated side buttons (KEY1/KEY2) for OK/BACK. Flipper 6-button mode
- * treats every direction as its own edge-detected button:
- *   wheel UP side (GPIO8) → BB_NAV_EVENT_UP   (with auto-repeat while held)
+/* ── Navigation: WS-003 thumb-wheel + encoder push (latest PCB rev) ──
+ * Latest BBClaw rev wires the WS-003 PUSH contact to GPIO1, so the encoder
+ * push button is the only confirm/back key — KEY1/KEY2 (GPIO42/41) are
+ * unused. Flipper 6-button mode treats every direction as its own
+ * edge-detected button:
+ *   wheel UP side (GPIO8)   → BB_NAV_EVENT_UP   (with auto-repeat while held)
  *   wheel DOWN side (GPIO6) → BB_NAV_EVENT_DOWN (with auto-repeat while held)
- *   KEY1 (GPIO42)          → BB_NAV_EVENT_OK
- *   KEY2 (GPIO41)          → BB_NAV_EVENT_BACK (short press)
- * LEFT/RIGHT are intentionally unmapped on this board. */
+ *   WS-003 PUSH (GPIO1)     → BB_NAV_EVENT_OK on tap, BB_NAV_EVENT_BACK on long-press
+ * LEFT/RIGHT and BACK are intentionally unmapped on this board. */
 #define BBCLAW_NAV_ENABLE            1
 #define BBCLAW_NAV_FLIPPER_6BUTTON   1
 #define BBCLAW_NAV_BTN_UP_GPIO       8
 #define BBCLAW_NAV_BTN_DOWN_GPIO     6
 #define BBCLAW_NAV_BTN_LEFT_GPIO    -1
 #define BBCLAW_NAV_BTN_RIGHT_GPIO   -1
-#define BBCLAW_NAV_BTN_OK_GPIO      42
-#define BBCLAW_NAV_BTN_BACK_GPIO    41
+#define BBCLAW_NAV_BTN_OK_GPIO       1
+#define BBCLAW_NAV_BTN_BACK_GPIO    -1
 #define BBCLAW_NAV_PULL_UP           1
 #define BBCLAW_NAV_KEY_ACTIVE_LEVEL  0
+
+/* ── Debug: monitor raw IO1 transitions to verify encoder push wiring ──
+ * bb_button_test polls IO1 independently of the nav input layer and logs
+ * every edge/stable level. Useful while bringing up the new PCB rev. Both
+ * this and bb_nav_input configure IO1 as INPUT + pull-up so they coexist. */
+#define BBCLAW_BUTTON_TEST_GPIO      1
+#define BBCLAW_BUTTON_TEST_PULL_UP   1
 
 /* ── Motor ── */
 #define BBCLAW_MOTOR_GPIO      21

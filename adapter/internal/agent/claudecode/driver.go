@@ -68,6 +68,13 @@ type Options struct {
 	// subprocess. Keys here override the inherited process environment.
 	// Intended for ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN overrides.
 	Env map[string]string
+	// WarmCwd is the working directory used for pre-warming pool entries.
+	// Each warm entry is stamped with this cwd and Acquire strict-matches
+	// against it. Pass the canonical project path (typically
+	// BBCLAW_DEFAULT_CWD or CwdPool[0].Path); empty means "inherit adapter
+	// cwd", which is the legacy behaviour and only safe when CWD_POOL is
+	// unset.
+	WarmCwd string
 }
 
 // New constructs a Driver. The logger is required; pass obs.NewLogger() if
@@ -98,9 +105,9 @@ func New(opts Options, log *obs.Logger) *Driver {
 	for k, v := range opts.Env {
 		driverEnv[k] = v
 	}
-	pool := NewWarmPool(bin, extra, driverEnv, opts.PoolSize, idleTTL, log)
+	pool := NewWarmPool(bin, extra, driverEnv, opts.WarmCwd, opts.PoolSize, idleTTL, log)
 	if opts.PoolSize > 0 {
-		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s", opts.PoolSize, idleTTL)
+		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s warm_cwd=%q", opts.PoolSize, idleTTL, opts.WarmCwd)
 	}
 	if baseURL, ok := driverEnv["ANTHROPIC_BASE_URL"]; ok {
 		log.Infof("claude-code: ANTHROPIC_BASE_URL=%s", baseURL)

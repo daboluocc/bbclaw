@@ -552,7 +552,8 @@ void bb_audio_poll_speaker_sw(void) {
   int enabled = (level == BBCLAW_SPEAKER_SW_ACTIVE_LEVEL) ? 1 : 0;
   if (enabled != s_speaker_sw_enabled) {
     s_speaker_sw_enabled = enabled;
-    ESP_LOGI(TAG, "speaker sw changed level=%d enabled=%d", level, enabled);
+    ESP_LOGI(TAG, "speaker SD gpio=%d changed level=%d enabled=%d (active=%d)",
+             BBCLAW_SPEAKER_SW_GPIO, level, enabled, BBCLAW_SPEAKER_SW_ACTIVE_LEVEL);
   }
 #endif
 }

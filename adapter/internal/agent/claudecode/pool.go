@@ -29,12 +29,20 @@ type warmEntry struct {
 // Send() calls Acquire() to pull a matching entry and resumes it with
 // `--resume <id>`, cutting first-response latency from 4-7s to ~0.5s.
 //
+// Entries are bound to a specific working directory (warmCwd) so the
+// pre-warmed claude-code subprocess records its session JSONL under the
+// same project directory that the real Send() spawn will inherit. Acquire
+// strict-matches the entry cwd against the request cwd; mismatched
+// requests fall through to cold spawn.
+//
 // The pool is safe for concurrent use. Pool size and TTL are controlled by
-// BBCLAW_CLAUDE_POOL_SIZE and BBCLAW_CLAUDE_POOL_IDLE_TTL.
+// BBCLAW_CLAUDE_POOL_SIZE and BBCLAW_CLAUDE_POOL_IDLE_TTL. The cwd is
+// passed in at construction (see NewWarmPool).
 type WarmPool struct {
 	bin     string
 	extra   []string
 	env     map[string]string // driver-level env overrides injected into warm spawns
+	warmCwd string            // working directory for spawnWarm; also the cwd stamped on each entry
 	size    int
 	idleTTL time.Duration
 	log     *obs.Logger
@@ -53,11 +61,18 @@ type WarmPool struct {
 
 // NewWarmPool creates a WarmPool and starts its background replenish goroutine.
 // size=0 disables the pool entirely (Acquire always returns "", false).
-func NewWarmPool(bin string, extra []string, env map[string]string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
+//
+// warmCwd is the working directory that spawnWarm uses and that each entry's
+// cwd is stamped with. Acquire strict-matches against this. Pass the canonical
+// project path (e.g. BBCLAW_DEFAULT_CWD or CwdPool[0].Path) — passing an
+// empty string makes the warm process inherit the adapter's own cwd, which
+// is rarely what callers want when CWD_POOL is configured.
+func NewWarmPool(bin string, extra []string, env map[string]string, warmCwd string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
 	p := &WarmPool{
 		bin:         bin,
 		extra:       extra,
 		env:         env,
+		warmCwd:     warmCwd,
 		size:        size,
 		idleTTL:     idleTTL,
 		log:         log,
@@ -88,9 +103,12 @@ func (p *WarmPool) Acquire(cwd string) (string, bool) {
 		if p.idleTTL > 0 && now.Sub(e.createdAt) > p.idleTTL {
 			continue
 		}
-		// cwd must match exactly; an empty cwd in the entry matches any request
-		// cwd (useful when the pool was seeded without a specific directory).
-		if e.cwd != "" && e.cwd != cwd {
+		// Strict cwd match. The previous "empty matches any" rule allowed a
+		// warm entry spawned in the adapter's launch directory to be reused
+		// for sessions targeting a CWD_POOL path, which leaked the adapter's
+		// path into claude-code's session JSONL and confused the model about
+		// which project it was working in.
+		if e.cwd != cwd {
 			continue
 		}
 		// Remove from pool (order doesn't matter — swap with last).
@@ -231,9 +249,11 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 	} else {
 		cmd.Env = os.Environ()
 	}
-	// No specific cwd for the warm entry — Acquire() matches empty cwd to any
-	// request cwd, so the entry is universally reusable.
-	cmd.Dir = ""
+	// Pin the warm spawn to the configured cwd so its session JSONL lands in
+	// the same project directory that real Send() spawns will inherit. Empty
+	// warmCwd falls back to Go's "inherit parent cwd" behaviour, which is
+	// fine for deployments that haven't configured CWD_POOL.
+	cmd.Dir = p.warmCwd
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -285,7 +305,7 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 
 	return warmEntry{
 		cliSessionID: cliSessionID,
-		cwd:          "", // universally reusable
+		cwd:          p.warmCwd,
 		createdAt:    time.Now(),
 	}, nil
 }
@@ -309,6 +329,6 @@ func (p *WarmPool) injectEntry(e warmEntry) {
 
 // poolFromEnv is a helper used by the driver to read pool config from env vars
 // and construct a WarmPool. Extracted here so driver.go stays clean.
-func poolFromEnv(bin string, extra []string, env map[string]string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
-	return NewWarmPool(bin, extra, env, size, idleTTL, log)
+func poolFromEnv(bin string, extra []string, env map[string]string, warmCwd string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
+	return NewWarmPool(bin, extra, env, warmCwd, size, idleTTL, log)
 }

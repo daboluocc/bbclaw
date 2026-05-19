@@ -30,22 +30,44 @@ func TestAcquireDisabled(t *testing.T) {
 	}
 }
 
-// TestAcquireHit verifies that an injected entry is returned and removed.
+// TestAcquireHit verifies that an injected entry is returned and removed
+// when the cwd matches exactly.
 func TestAcquireHit(t *testing.T) {
 	p := newTestPool(1, 10*time.Minute)
 	p.injectEntry(warmEntry{
 		cliSessionID: "abc-123",
-		cwd:          "",
+		cwd:          "/project/a",
 		createdAt:    time.Now(),
 	})
 
-	id, ok := p.Acquire("/any/cwd")
+	id, ok := p.Acquire("/project/a")
 	if !ok || id != "abc-123" {
 		t.Errorf("want hit id=abc-123, got id=%q ok=%v", id, ok)
 	}
 	// Pool should now be empty.
 	if p.Len() != 0 {
 		t.Errorf("pool should be empty after acquire, got len=%d", p.Len())
+	}
+}
+
+// TestAcquireMissOnEmptyCwdEntry verifies that a warm entry with cwd=""
+// (legacy "universal" entry) no longer matches a non-empty request cwd.
+// Strict matching is the whole point of the fix; the test guards against
+// regression.
+func TestAcquireMissOnEmptyCwdEntry(t *testing.T) {
+	p := newTestPool(1, 10*time.Minute)
+	p.injectEntry(warmEntry{
+		cliSessionID: "legacy-empty",
+		cwd:          "",
+		createdAt:    time.Now(),
+	})
+
+	id, ok := p.Acquire("/project/a")
+	if ok || id != "" {
+		t.Errorf("strict match: empty entry must not match /project/a, got id=%q ok=%v", id, ok)
+	}
+	if p.Len() != 1 {
+		t.Errorf("entry should remain after a mismatched Acquire, got len=%d", p.Len())
 	}
 }
 
@@ -90,11 +112,11 @@ func TestAcquireTTLExpired(t *testing.T) {
 	p := newTestPool(1, 5*time.Minute)
 	p.injectEntry(warmEntry{
 		cliSessionID: "stale-session",
-		cwd:          "",
+		cwd:          "/cwd",
 		createdAt:    time.Now().Add(-10 * time.Minute), // older than TTL
 	})
 
-	id, ok := p.Acquire("/any/cwd")
+	id, ok := p.Acquire("/cwd")
 	if ok || id != "" {
 		t.Errorf("expired entry: want miss, got id=%q ok=%v", id, ok)
 	}
@@ -110,11 +132,11 @@ func TestAcquireTTLZeroNeverExpires(t *testing.T) {
 	p := newTestPool(1, 0) // TTL=0 → no expiry
 	p.injectEntry(warmEntry{
 		cliSessionID: "old-but-valid",
-		cwd:          "",
+		cwd:          "/cwd",
 		createdAt:    time.Now().Add(-24 * time.Hour),
 	})
 
-	id, ok := p.Acquire("/any/cwd")
+	id, ok := p.Acquire("/cwd")
 	if !ok || id != "old-but-valid" {
 		t.Errorf("TTL=0: want hit, got id=%q ok=%v", id, ok)
 	}
@@ -127,7 +149,7 @@ func TestAcquireConcurrent(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		p.injectEntry(warmEntry{
 			cliSessionID: "sess-" + string(rune('A'+i)),
-			cwd:          "",
+			cwd:          "/cwd",
 			createdAt:    time.Now(),
 		})
 	}
@@ -193,9 +215,9 @@ func TestDrainIdempotent(t *testing.T) {
 // TestEvictExpired verifies that evictExpired removes stale entries.
 func TestEvictExpired(t *testing.T) {
 	p := newTestPool(3, 5*time.Minute)
-	p.injectEntry(warmEntry{cliSessionID: "fresh", cwd: "", createdAt: time.Now()})
-	p.injectEntry(warmEntry{cliSessionID: "stale", cwd: "", createdAt: time.Now().Add(-10 * time.Minute)})
-	p.injectEntry(warmEntry{cliSessionID: "also-fresh", cwd: "", createdAt: time.Now().Add(-1 * time.Minute)})
+	p.injectEntry(warmEntry{cliSessionID: "fresh", cwd: "/cwd", createdAt: time.Now()})
+	p.injectEntry(warmEntry{cliSessionID: "stale", cwd: "/cwd", createdAt: time.Now().Add(-10 * time.Minute)})
+	p.injectEntry(warmEntry{cliSessionID: "also-fresh", cwd: "/cwd", createdAt: time.Now().Add(-1 * time.Minute)})
 
 	p.evictExpired()
 

@@ -217,10 +217,19 @@ var k_driver_registry = []driverReg{
 	{
 		name: "claude-code",
 		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			// WarmCwd: prefer BBCLAW_DEFAULT_CWD, fall back to CwdPool[0].Path.
+			// Empty when neither is configured — warm spawns then inherit the
+			// adapter's cwd, which is the legacy behaviour for unconfigured
+			// deployments.
+			warmCwd := cfg.DefaultCwd
+			if warmCwd == "" && len(cfg.CwdPool) > 0 {
+				warmCwd = cfg.CwdPool[0].Path
+			}
 			opts := claudecode.Options{
 				PoolSize:    cfg.ClaudePoolSize,
 				PoolIdleTTL: cfg.ClaudePoolIdleTTL,
 				ExtraArgs:   parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
+				WarmCwd:     warmCwd,
 			}
 			if cfg.ClaudeBaseURL != "" || cfg.ClaudeAuthToken != "" {
 				opts.Env = make(map[string]string)

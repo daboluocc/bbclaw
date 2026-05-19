@@ -237,16 +237,17 @@ static void nav_poll_cb(void* arg) {
   if (poll_btn(&s_btn_right, eff_debounce) > 0) {
     emit_event(BB_NAV_EVENT_RIGHT);
   }
-  /* OK: release edge → click (short-press), OR long-press → BB_NAV_EVENT_OK_LONG.
+  /* OK: release edge → click (short-press), OR long-press → BB_NAV_EVENT_BACK.
    *
    * On press edge: record the press timestamp and clear the long-press flag.
-   * While held: once BBCLAW_NAV_LONG_PRESS_MS elapses, emit OK_LONG and set
+   * While held: once BBCLAW_NAV_LONG_PRESS_MS elapses, emit BACK and set
    *   s_ok_long_press_sent so the release edge is swallowed.
    * On release edge: emit OK only if no long-press was already sent.
    *
    * This makes short-press and long-press mutually exclusive — the user gets
-   * exactly one event per OK gesture regardless of hold duration.
-   */
+   * exactly one event per OK gesture regardless of hold duration. On the
+   * latest BBClaw PCB rev the encoder push (IO1) is the only confirm key,
+   * so long-press takes over the BACK gesture that used to live on KEY2. */
   {
     int ok_edge = poll_btn(&s_btn_ok, eff_debounce);
     if (ok_edge > 0) {
@@ -265,7 +266,7 @@ static void nav_poll_cb(void* arg) {
       int64_t held_ms = now_ms - s_btn_ok.press_started_ms;
       if (held_ms >= BBCLAW_NAV_LONG_PRESS_MS) {
         s_ok_long_press_sent = 1;
-        emit_event(BB_NAV_EVENT_OK_LONG);
+        emit_event(BB_NAV_EVENT_BACK);
       }
     }
   }
