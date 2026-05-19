@@ -1860,20 +1860,19 @@ static void stream_task(void* arg) {
                     ESP_LOGW(TAG, "CHAT: OK session picker lock timeout");
                   }
                   break;
-                case BB_NAV_EVENT_OK_LONG:
-                  /* Long-press OK in CHAT → enter SETTINGS (issue #67).
-                   * Always allowed regardless of busy state — SETTINGS is safe
-                   * to enter mid-reply; the streaming turn continues in the
-                   * background and is visible when the user returns to CHAT. */
-                  if (settings_overlay_enter() == 0) {
-                    set_radio_app_state(BBCLAW_STATE_SETTINGS);
-                    ESP_LOGI(TAG, "CHAT: OK_LONG -> SETTINGS");
-                  }
-                  break;
                 case BB_NAV_EVENT_BACK:
+                  /* On the latest PCB rev BACK is the encoder long-press
+                   * (see bb_nav_input.c). It does double duty in CHAT:
+                   *   busy   → cancel the in-flight turn
+                   *   idle   → enter SETTINGS overlay (issue #67)
+                   * SETTINGS is safe to enter mid-reply too, but cancelling
+                   * a runaway turn is the more useful gesture when busy. */
                   if (busy) {
                     bb_ui_agent_chat_cancel();
                     ESP_LOGI(TAG, "CHAT: BACK cancelled in-flight turn");
+                  } else if (settings_overlay_enter() == 0) {
+                    set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                    ESP_LOGI(TAG, "CHAT: BACK -> SETTINGS");
                   }
                   break;
                 case BB_NAV_EVENT_COUNT:
