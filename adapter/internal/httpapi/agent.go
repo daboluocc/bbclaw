@@ -666,6 +666,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		Metrics:            &localMetrics{m: s.metrics},
 		Log:                s.log,
 		ResolveActiveModel: s.resolveActiveModel,
+		SystemPrompt:       butler.DeviceSystemPrompt,
 		StartCtx:           s.agentCtx,
 	})
 

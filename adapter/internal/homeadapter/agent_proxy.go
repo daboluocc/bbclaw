@@ -758,6 +758,7 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		Metrics:            &cloudMetrics{m: a.metrics},
 		Log:                a.log,
 		ResolveActiveModel: a.resolveActiveModel,
+		SystemPrompt:       butler.DeviceSystemPrompt,
 		StartCtx:           ctx,
 	})
 

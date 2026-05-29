@@ -79,6 +79,14 @@ type StartOpts struct {
 	// Each driver decides how to honour it (claudecode/opencode/aider pass
 	// it as --model, ollama uses it as the chat model field).
 	Model string
+
+	// SystemPrompt, when non-empty, is appended to the backend's system prompt
+	// for this session. It carries the BBClaw "butler" device persona +
+	// form-factor constraints (tiny screen / voice / PTT) assembled by the
+	// butler layer (ADR-018); later it also carries user/project memory.
+	// claudecode passes it as --append-system-prompt. Drivers that can't inject
+	// a system prompt just ignore it (same contract as Model).
+	SystemPrompt string
 }
 
 // Driver is the contract every per-CLI implementation must satisfy.
@@ -103,7 +111,7 @@ var ErrUnknownSession = errors.New("agent: unknown session")
 type SessionInfo struct {
 	ID           string `json:"id"`
 	Preview      string `json:"preview"`
-	LastUsed     int64  `json:"lastUsed"`     // Unix seconds
+	LastUsed     int64  `json:"lastUsed"` // Unix seconds
 	MessageCount int    `json:"messageCount"`
 	Cwd          string `json:"cwd,omitempty"` // basename of the working directory; empty for drivers that don't track cwd
 }

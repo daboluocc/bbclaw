@@ -230,3 +230,34 @@ func TestCLISessionExists(t *testing.T) {
 		t.Error("CLISessionExists: want false for id with no matching file")
 	}
 }
+
+// TestSessionFlags verifies the per-session CLI flag assembly: model override,
+// system prompt (--append-system-prompt, ADR-018 §3), then driver extra args.
+func TestSessionFlags(t *testing.T) {
+	join := func(ss []string) string { return strings.Join(ss, "\x00") }
+	cases := []struct {
+		name         string
+		model        string
+		systemPrompt string
+		extra        []string
+		want         []string
+	}{
+		{"empty", "", "", nil, nil},
+		{"model only", "claude-opus-4-8", "", nil,
+			[]string{"--model", "claude-opus-4-8"}},
+		{"system prompt only", "", "be brief", nil,
+			[]string{"--append-system-prompt", "be brief"}},
+		{"model+prompt+extra", "m", "p", []string{"--foo", "bar"},
+			[]string{"--model", "m", "--append-system-prompt", "p", "--foo", "bar"}},
+		{"extra only", "", "", []string{"--model", "x"}, []string{"--model", "x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := session{model: tc.model, systemPrompt: tc.systemPrompt}
+			got := s.sessionFlags(tc.extra)
+			if join(got) != join(tc.want) {
+				t.Errorf("sessionFlags = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

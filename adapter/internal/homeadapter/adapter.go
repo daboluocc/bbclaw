@@ -14,6 +14,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/gorilla/websocket"
@@ -601,6 +602,10 @@ func (a *Adapter) handleChatTextViaAgent(
 	// process's own cwd (which leaks /Volumes/.../adapter into the model's
 	// system prompt and confuses it about which project it's working in).
 	startOpts := agent.StartOpts{Cwd: a.defaultStartCwd()}
+	// Voice turns get the same butler device persona as session turns (ADR-018
+	// §3) so the backend keeps replies short/speakable instead of leaking the
+	// cwd or dumping walls of code to a 1.47" screen.
+	startOpts.SystemPrompt = butler.DeviceSystemPrompt(startOpts.Cwd)
 	sid, err := drv.Start(ctx, startOpts)
 	if err != nil {
 		return fmt.Errorf("agent start: %w", err)

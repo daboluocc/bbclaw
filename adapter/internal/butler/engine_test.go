@@ -85,13 +85,14 @@ func (r *fakeRegistry) SetState(id, state string) {
 // scriptedDriver replays a fixed sequence of events per Send and returns a new
 // sid per Start. It can optionally emit SESSION_NOT_FOUND on the first attempt.
 type scriptedDriver struct {
-	name      string
-	events    chan agent.Event
-	startN    int
-	resumeIDs []string
-	sendTexts []string
-	scripts   [][]agent.Event // per-Send event scripts
-	sendCalls int
+	name          string
+	events        chan agent.Event
+	startN        int
+	resumeIDs     []string
+	systemPrompts []string
+	sendTexts     []string
+	scripts       [][]agent.Event // per-Send event scripts
+	sendCalls     int
 }
 
 func newScriptedDriver(name string, scripts ...[]agent.Event) *scriptedDriver {
@@ -105,6 +106,7 @@ func (d *scriptedDriver) Capabilities() agent.Capabilities {
 func (d *scriptedDriver) Start(_ context.Context, opts agent.StartOpts) (agent.SessionID, error) {
 	d.startN++
 	d.resumeIDs = append(d.resumeIDs, opts.ResumeID)
+	d.systemPrompts = append(d.systemPrompts, opts.SystemPrompt)
 	return agent.SessionID(d.name + "-sid"), nil
 }
 func (d *scriptedDriver) Send(_ agent.SessionID, text string) error {
@@ -301,6 +303,37 @@ func TestRunTurn_BareCLIIDRejectedWhenDisallowed(t *testing.T) {
 	}
 	if drv.startN != 0 {
 		t.Fatalf("driver started %d times, want 0", drv.startN)
+	}
+}
+
+func TestRunTurn_InjectsSystemPrompt(t *testing.T) {
+	drv := newScriptedDriver("mock", []agent.Event{
+		{Type: agent.EvText, Text: "hi"},
+		{Type: agent.EvTurnEnd},
+	})
+	sink := newFakeSink()
+	deps := baseDeps(routerWith(t, drv), sink, newFakeRegistry(), Policy{EmitTurnEndFrame: true})
+	deps.SystemPrompt = func(cwd string) string { return "PERSONA:" + cwd }
+	eng := NewEngine(deps)
+
+	if _, err := eng.RunTurn(context.Background(), Request{Text: "hello"}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(drv.systemPrompts) != 1 || drv.systemPrompts[0] != "PERSONA:" {
+		t.Fatalf("systemPrompts=%v want [PERSONA:] (empty cwd → no suffix)", drv.systemPrompts)
+	}
+}
+
+// nil SystemPrompt dep must inject nothing (no panic, empty StartOpts.SystemPrompt).
+func TestRunTurn_NoSystemPromptWhenNil(t *testing.T) {
+	drv := newScriptedDriver("mock", []agent.Event{{Type: agent.EvTurnEnd}})
+	deps := baseDeps(routerWith(t, drv), newFakeSink(), newFakeRegistry(), Policy{})
+	deps.SystemPrompt = nil
+	if _, err := NewEngine(deps).RunTurn(context.Background(), Request{Text: "hi"}); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(drv.systemPrompts) != 1 || drv.systemPrompts[0] != "" {
+		t.Fatalf("systemPrompts=%v want [\"\"]", drv.systemPrompts)
 	}
 }
 

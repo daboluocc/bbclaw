@@ -155,13 +155,14 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		sid = agent.SessionID(uuid.NewString())
 	}
 	s := &session{
-		id:        sid,
-		events:    make(chan agent.Event, eventBufSize),
-		resumeID:  opts.ResumeID,
-		cwd:       opts.Cwd,
-		env:       opts.Env,
-		model:     strings.TrimSpace(opts.Model),
-		rootCtx:   ctx,
+		id:           sid,
+		events:       make(chan agent.Event, eventBufSize),
+		resumeID:     opts.ResumeID,
+		cwd:          opts.Cwd,
+		env:          opts.Env,
+		model:        strings.TrimSpace(opts.Model),
+		systemPrompt: strings.TrimSpace(opts.SystemPrompt),
+		rootCtx:      ctx,
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -223,14 +224,10 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 		args = append(args, "--session-id", string(sid))
 		s.setResumeID(string(sid))
 	}
-	// Per-session model override (StartOpts.Model). Appended before d.extra
-	// so an operator-set --model in AGENT_CLAUDE_CODE_EXTRA_ARGS still wins
-	// (last-flag semantics under most CLI parsers), but the user's UI choice
-	// is honoured when no override is configured.
-	if s.model != "" {
-		args = append(args, "--model", s.model)
-	}
-	args = append(args, d.extra...)
+	// Per-session flags (model override + system prompt) followed by the
+	// driver/operator extra args. Extracted into a pure helper so it can be
+	// unit-tested without spawning the CLI.
+	args = append(args, s.sessionFlags(d.extra)...)
 
 	ctx, cancel := context.WithCancel(s.rootCtx)
 	cmd := exec.CommandContext(ctx, d.bin, args...)
@@ -356,18 +353,39 @@ func (d *Driver) Shutdown() {
 // ─── session ────────────────────────────────────────────────────────────
 
 type session struct {
-	id       agent.SessionID
-	events   chan agent.Event
-	resumeID string
-	cwd      string
-	env      map[string]string
-	model    string // empty = use driver/operator default
-	rootCtx  context.Context
+	id           agent.SessionID
+	events       chan agent.Event
+	resumeID     string
+	cwd          string
+	env          map[string]string
+	model        string // empty = use driver/operator default
+	systemPrompt string // empty = no --append-system-prompt
+	rootCtx      context.Context
 
 	seq uint64
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
+}
+
+// sessionFlags returns the per-session CLI flags appended after the
+// resume/session-id args: the model override (StartOpts.Model), the system
+// prompt (StartOpts.SystemPrompt → --append-system-prompt), then the
+// driver/operator extra args. Pure (no side effects) so it is unit-testable.
+//
+// Model is placed before driverExtra so an operator-set --model in
+// AGENT_CLAUDE_CODE_EXTRA_ARGS still wins (last-flag semantics), while the
+// user's UI choice is honoured when no operator override is configured.
+// --append-system-prompt is additive, so ordering is immaterial.
+func (s *session) sessionFlags(driverExtra []string) []string {
+	var out []string
+	if s.model != "" {
+		out = append(out, "--model", s.model)
+	}
+	if s.systemPrompt != "" {
+		out = append(out, "--append-system-prompt", s.systemPrompt)
+	}
+	return append(out, driverExtra...)
 }
 
 func (s *session) emit(e agent.Event) {
