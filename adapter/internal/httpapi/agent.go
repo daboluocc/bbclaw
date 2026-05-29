@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -917,10 +916,9 @@ func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Reque
 		}
 		sessions = filtered
 	}
-	// Populate CwdName for each session: reverse-lookup path→name in CwdPool;
-	// fall back to filepath.Base(cwd) when no pool entry matches.
-	// We copy each session into a local struct so we don't mutate the stored
-	// LogicalSession (CwdName is an outbound-only field, never persisted).
+	// Populate CwdName for each session (cwdDisplayName: path→pool name, basename
+	// fallback). We copy each session into a local struct so we don't mutate the
+	// stored LogicalSession (CwdName is an outbound-only field, never persisted).
 	type sessionWithName struct {
 		logicalsession.LogicalSession
 		CwdName string `json:"cwdName,omitempty"`
@@ -928,16 +926,7 @@ func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Reque
 	out := make([]sessionWithName, len(sessions))
 	for i, sess := range sessions {
 		out[i].LogicalSession = *sess
-		if sess.Cwd != "" {
-			name := filepath.Base(sess.Cwd) // default: basename
-			for _, entry := range s.cfg.CwdPool {
-				if entry.Path == sess.Cwd {
-					name = entry.Name
-					break
-				}
-			}
-			out[i].CwdName = name
-		}
+		out[i].CwdName = s.cwdDisplayName(sess.Cwd) // path→pool name, fallback basename
 	}
 	writeJSON(w, http.StatusOK, response{
 		OK:   true,
