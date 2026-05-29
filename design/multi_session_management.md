@@ -1,17 +1,24 @@
 # Multi-Session Management & Notification System
 
 - **日期**: 2026-05-03
-- **状态**: Draft（session id 语义被 ADR-014 取代，UI / 通知机制不变）
+- **状态**: Draft（session id 语义被 ADR-014 取代；picker 渲染被 ADR-019 改为 server-driven；通知机制不变）
 - **关联**:
   - [ADR-003](decisions/ADR-003-router-and-multi-driver.md) — 多 driver 路由 + session 绑定
   - [ADR-012](decisions/ADR-012-fixed-page-menu.md) — 三态页面状态机
   - [AGENT_STATE_MACHINE](AGENT_STATE_MACHINE.md) — 9 态 buddy 模型
   - [ADR-014](decisions/ADR-014-logical-session-abstraction.md) — **本文 session id 语义被替换为 logical session id**
+  - [ADR-019](decisions/ADR-019-server-driven-menu-protocol.md) — **本文的设备端 picker 状态机被替换为 server-driven 菜单渲染**
 
-> **注：** 本文写作时，session id 直接是 CLI 自家 conversation UUID（claude-code 的
-> `~/.claude/projects/{cwdHash}/{sid}.jsonl` 文件名）。ADR-014 把这一层抽象上移到
-> adapter / cloud 控制台，设备端持有的是稳定的 logical session id，底层 CLI
-> conversation 可被透明替换。**本文描述的 UI / picker / 通知机制不变**，只是 id 语义变了。
+> **注（id 语义，ADR-014）：** 本文写作时，session id 直接是 CLI 自家 conversation UUID
+> （claude-code 的 `~/.claude/projects/{cwdHash}/{sid}.jsonl` 文件名）。ADR-014 把这一层
+> 抽象上移到 adapter / cloud 控制台，设备端持有的是稳定的 logical session id，底层 CLI
+> conversation 可被透明替换。
+>
+> **注（picker 渲染，ADR-019）：** 本文描述的 session / driver / cwd / model picker 由
+> **设备端各自的 fetch + build_ui + select 状态机**实现。ADR-019 把这些下沉为 adapter 计算好
+> 的统一 Menu JSON（含相对时间、active 标记等），设备改用**单个通用菜单渲染器**，不再持有
+> picker 业务状态。下面描述的按键/弹窗交互（OK 开 picker、滚动选择、BACK 关闭）作为**目标
+> 交互语义仍然成立**，只是渲染数据来源从设备本地改为 adapter 下发。**通知机制不变。**
 
 ## 概述
 

@@ -150,7 +150,7 @@ cloud_saas 模式由 Cloud portal/relay 透传同两端点(见 §7)。
 - [x] cloud: device-facing `GET/POST /v1/agent/menu/*` + portal `GET/POST /v1/portal/agent/menu/*` 代理到 hub kind(共享 proxyAgentMenu/Action)
 - [ ] firmware: `bb_menu_view` 通用渲染器 + 菜单栈
 - [ ] firmware: 逐 picker 迁移(drivers/models → cwd → sessions),删 `bb_ui_agent_chat.c` 对应逻辑 + 简化 `bb_radio_app.c` nav
-- [ ] design: 更新 `multi_session_management.md`
+- [x] design: 更新 `multi_session_management.md`(标注 picker 渲染被 ADR-019 替换为 server-driven)
 
 ## 跨层一致性验证(2026-05-30,对抗式)
 
