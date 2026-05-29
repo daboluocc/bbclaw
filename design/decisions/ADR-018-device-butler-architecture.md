@@ -94,7 +94,7 @@ butler 层引入一个"用 LLM 把设备意图翻译成 CLI session 操作"的�
 - [ ] **P0 之三**: 固件删死骨架（`bb_page_chat.c`/`bb_chat_pickers.c`/`bb_chat_topbar.c`/`bb_chat_bottombar.c`）+ 四个 picker 改 server-driven 渲染器
 - [ ] **P1**: 记忆写入/提炼管线（turn 结束挂 LLM 提炼 hook）+ 项目 CLAUDE.md 维护 + adapter SQLite 记忆存储
 - [ ] **P1**: butler LLM 编排器（规则兜底 + 意图模糊时调 LLM）
-- [ ] **P1**: 统一默认模型双重事实来源（`models.go` `sonnet-4-6` vs `driver.go` `sonnet-4-5`）；修 `logicalsession.Manager.Sweep` 失败无回滚
+- [x] **P1**: 统一默认模型双重事实来源（driver 默认改取 `claudeCodeModels[0]`，运行默认 sonnet-4-5→sonnet-4-6 对齐目录）；修 `logicalsession.Manager.Sweep` 失败无回滚
 - [ ] **spike**: 常驻 stream-json 会话 + 工具审批回路可行性（§6 四问）；CLAUDE.md headless 加载方式
 - [ ] **P2**: 工具审批回路（依赖 spike 结论：纯 Go+CLI vs SDK sidecar）
 - [ ] **P2**: MCP memory server 挂载 + 上下文压缩 / 成本追踪
