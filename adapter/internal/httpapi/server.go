@@ -125,6 +125,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))
 	mux.HandleFunc("PUT /v1/agent/drivers/{name}/active_model", s.withAuth(s.handleAgentActiveModelPut))
+	mux.HandleFunc("GET /v1/agent/menu/{id}", s.withAuth(s.handleAgentMenu))
+	mux.HandleFunc("POST /v1/agent/menu/action", s.withAuth(s.handleAgentMenuAction))
 	mux.HandleFunc("GET /v1/agent/sessions", s.withAuth(s.handleAgentSessions))
 	mux.HandleFunc("GET /v1/agent/cwd-pool", s.withAuth(s.handleAgentCwdPool))
 	mux.HandleFunc("POST /v1/agent/sessions", s.withAuth(s.handleAgentSessionCreate))
