@@ -14,8 +14,7 @@
  * Also supports history replay (append at tail, prepend at head for
  * scroll-to-top lazy loading).
  *
- * Single instance — shared between buddy-anim overlay (Phase 4-6) and
- * the future bb_page_chat (Phase 7+).
+ * Single instance — owned by the active CHAT view in bb_lvgl_display.c.
  */
 
 /* Construct transcript container as a child of `parent`.
