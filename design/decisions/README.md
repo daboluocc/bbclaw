@@ -35,3 +35,4 @@
 | [ADR-016](ADR-016-device-driver-model-selection.md) | 设备端 Driver / Model 选择（Settings 双行 + Adapter 持久化） | 2026-05-17 | 已接受（已实现） |
 | [ADR-017](ADR-017-tts-reading-mode-and-chat-cache.md) | TTS 阅读模式 + Chat tail 缓存 | 2026-05-18 | 已实现 |
 | [ADR-018](ADR-018-device-butler-architecture.md) | 设备管家(Butler)——Adapter 作为会话编排 + 记忆 + Claude 完整适配中枢 | 2026-05-30 | 已接受（实施中） |
+| [ADR-019](ADR-019-server-driven-menu-protocol.md) | Server-Driven 菜单协议——把设备 picker 渲染下沉到 adapter | 2026-05-30 | 已接受（待实现） |
