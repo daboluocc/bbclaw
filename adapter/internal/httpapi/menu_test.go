@@ -222,6 +222,26 @@ func TestHandleAgentMenuAction_Unsupported(t *testing.T) {
 	}
 }
 
+func TestHandleAgentMenuAction_EmptyAction(t *testing.T) {
+	router := agent.NewRouter()
+	router.Register(&mockBasicDriver{name: "claude-code"}, obs.NewLogger())
+	srv := newMenuTestServer(t, router, true)
+
+	// Missing/empty action → EMPTY_ACTION (must match the cloud proxy's code,
+	// not the old UNSUPPORTED_ACTION divergence).
+	w := postMenuAction(t, srv, map[string]any{})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", w.Code)
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Error != "EMPTY_ACTION" {
+		t.Errorf("error=%q want EMPTY_ACTION", resp.Error)
+	}
+}
+
 func TestHandleAgentMenu_Sessions(t *testing.T) {
 	router := agent.NewRouter()
 	router.Register(&mockBasicDriver{name: "claude-code"}, obs.NewLogger())

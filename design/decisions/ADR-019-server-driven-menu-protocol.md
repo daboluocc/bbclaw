@@ -151,3 +151,17 @@ cloud_saas 模式由 Cloud portal/relay 透传同两端点(见 §7)。
 - [ ] firmware: `bb_menu_view` 通用渲染器 + 菜单栈
 - [ ] firmware: 逐 picker 迁移(drivers/models → cwd → sessions),删 `bb_ui_agent_chat.c` 对应逻辑 + 简化 `bb_radio_app.c` nav
 - [ ] design: 更新 `multi_session_management.md`
+
+## 跨层一致性验证(2026-05-30,对抗式)
+
+对 4 条路径(LAN httpapi / homeadapter cloud-relay / cloud device-facing / cloud portal)做了对抗式核对,结论 **minor_issues**:
+
+- ✅ 错误码→HTTP 状态:14 个 code 在 LAN 直写状态与 cloud `menuErrorStatus` 映射**逐一一致**。
+- ✅ 菜单/结果 JSON:`menuToPayload` 的 round-trip 不丢/不增字段(仅对象键序不同,解析器无关);早先担心的 omitempty 单边丢字段**经核对不成立**。
+- ✅ action 语义:6 个 action 在 LAN 与 home 的校验顺序/副作用/Result **逐一一致**。
+- ✅ 路由/kind:cloud 发的 `agent.menu`/`agent.menu.action` 与 home `handleRequest` case 字符串完全匹配;device-facing 与 portal 均覆盖。
+- ✅ **已修**:空 action 错误码分叉(LAN 曾返回 `UNSUPPORTED_ACTION`,cloud 返回 `EMPTY_ACTION`)→ 两侧统一为 `EMPTY_ACTION`。
+
+**已知预存差异(非本协议引入,文档存档,后续单独处理):**
+1. **错误信封形态**:LAN `response.error` 是 string + 平级 `detail`;cloud `response.error` 是 `{code,detail}` 对象。这是**全项目** device↔cloud 约定差异(drivers/sessions 等所有端点皆如此),菜单端点只是各自 follow 本侧约定;统一需改两仓的 `response` 类型,超出 ADR-019 范围。
+2. **sessions 过期过滤**:LAN 菜单按 `SessionMaxAge` 过滤过期会话,cloud-relay 不过滤(`homeadapter.Config` 无该字段)——继承自既有 `sessions` list 端点的同款差异;`logicalsession.Sweep` 终会清除,影响小。修法:给 `homeadapter.Config` 加 `SessionMaxAge`。

@@ -130,6 +130,12 @@ func (s *Server) handleAgentMenuAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	act := body.Action
+	if strings.TrimSpace(act.Type) == "" {
+		// Match the cloud proxy: a missing/empty action is EMPTY_ACTION, not
+		// UNSUPPORTED_ACTION (keeps the error code identical across paths).
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_ACTION"})
+		return
+	}
 
 	switch act.Type {
 	case "set_driver":
