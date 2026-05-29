@@ -143,9 +143,9 @@ cloud_saas 模式由 Cloud portal/relay 透传同两端点(见 §7)。
 
 ## 实现 checklist
 
-- [ ] adapter: `httpapi` 菜单组装 + `GET /v1/agent/menu/{id}` + `POST /v1/agent/menu/action`
+- [x] adapter: `httpapi` 菜单组装 + `GET /v1/agent/menu/{id}` + `POST /v1/agent/menu/action`(drivers/models/sessions/cwd 全部)
 - [ ] adapter: `homeadapter` cloud relay 两端点
-- [ ] adapter: 单测(每种菜单的行/marker/action 组装;action 执行)
+- [x] adapter: 单测(每种菜单的行/marker/action 组装;action 执行)
 - [ ] cloud: portal `/v1/portal/agent/menu/*` 代理 + hub kind
 - [ ] firmware: `bb_menu_view` 通用渲染器 + 菜单栈
 - [ ] firmware: 逐 picker 迁移(drivers/models → cwd → sessions),删 `bb_ui_agent_chat.c` 对应逻辑 + 简化 `bb_radio_app.c` nav
