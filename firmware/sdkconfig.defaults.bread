@@ -2690,7 +2690,9 @@ CONFIG_LV_FS_DEFAULT_DRIVER_LETTER=0
 #
 # Others
 #
-# CONFIG_LV_USE_SNAPSHOT is not set
+# device_monitor (ADR-015) calls lv_snapshot_take() unconditionally, so the
+# breadboard board needs LV_USE_SNAPSHOT on too (base sdkconfig.defaults has it).
+CONFIG_LV_USE_SNAPSHOT=y
 # CONFIG_LV_USE_SYSMON is not set
 # CONFIG_LV_USE_PROFILER is not set
 # CONFIG_LV_USE_MONKEY is not set
