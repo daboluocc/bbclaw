@@ -147,7 +147,7 @@ cloud_saas 模式由 Cloud portal/relay 透传同两端点(见 §7)。
 - [x] adapter: 共享 `internal/agent/menu` 包(类型+纯 builder),httpapi 与 homeadapter 复用,菜单形态两端一致
 - [x] adapter: `homeadapter` cloud relay —— `agent.menu` / `agent.menu.action` 两个 kind
 - [x] adapter: 单测(每种菜单的行/marker/action 组装;httpapi handler;homeadapter envelope 分发)
-- [x] cloud: device-facing `GET/POST /v1/agent/menu/*` 代理到 hub kind(portal `/v1/portal/agent/menu/*` 待办)
+- [x] cloud: device-facing `GET/POST /v1/agent/menu/*` + portal `GET/POST /v1/portal/agent/menu/*` 代理到 hub kind(共享 proxyAgentMenu/Action)
 - [ ] firmware: `bb_menu_view` 通用渲染器 + 菜单栈
 - [ ] firmware: 逐 picker 迁移(drivers/models → cwd → sessions),删 `bb_ui_agent_chat.c` 对应逻辑 + 简化 `bb_radio_app.c` nav
 - [ ] design: 更新 `multi_session_management.md`

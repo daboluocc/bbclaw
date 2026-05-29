@@ -63,6 +63,13 @@ butler 层引入一个"用 LLM 把设备意图翻译成 CLI session 操作"的�
 3. headless / `-p` 模式下 **CLAUDE.md 是否自动加载**，还是需 `--add-dir` 或显式注入？
 4. 常驻会话模式下能否中途切换 `--model` / 改 system prompt？slash 命令（`/compact`）在 `-p` 模式不可用，上下文压缩须改用 `--exclude-dynamic-system-prompt-sections` 等 flag。
 
+**已静态核实(`claude --help`, 2.1.156, 2026-05-30):**
+- ✅ `--input-format` 取值 `text`(默认) / `stream-json`("realtime streaming input"，仅配 `--print`)——常驻双向【输入】确为受支持形态;但 stdin 的【帧 schema】仍未文档化,Q1 的帧级解析仍需实测。
+- ⚠️ **无 `--permission-prompt-tool`、无 canUseTool/control 字样** → 当前 CLI **不提供动态逐次审批的 flag**;`--permission-mode` 取值仅 `acceptEdits/auto/bypassPermissions/default/plan`(静态预授权)。**结论:动态审批要么走 Agent SDK 的 canUseTool,要么维持静态预授权——验证了 §5"暂不做动态审批"的决定。** Q2 基本落定。
+- ✅ `--add-dir`(help 标注 "CLAUDE.md dirs") → headless 下加载项目 CLAUDE.md 的可靠方式是 `--add-dir <cwd>`(而非依赖隐式自动加载)。Q3 倾向"显式 `--add-dir`",仍建议小实验确认 cwd 是否也隐式加载。
+- ✅ `--include-partial-messages`(token 级流式)、`--exclude-dynamic-system-prompt-sections`、`--append-system-prompt[-file]`、`--mcp-config`、`--fork-session`、`--no-session-persistence`、`--effort`、`--fallback-model`、`-n/--name` 均存在。
+- 仍需【实测】(需真跑 claude,涉及 API 调用):stdin stream-json 帧的精确 schema;常驻会话中途改 model/system-prompt;cwd 是否在无 `--add-dir` 时也加载 CLAUDE.md。
+
 ## 影响
 
 ### 正面
@@ -95,7 +102,7 @@ butler 层引入一个"用 LLM 把设备意图翻译成 CLI session 操作"的�
 - [ ] **P1**: 记忆写入/提炼管线（turn 结束挂 LLM 提炼 hook）+ 项目 CLAUDE.md 维护 + adapter SQLite 记忆存储
 - [ ] **P1**: butler LLM 编排器（规则兜底 + 意图模糊时调 LLM）
 - [x] **P1**: 统一默认模型双重事实来源（driver 默认改取 `claudeCodeModels[0]`，运行默认 sonnet-4-5→sonnet-4-6 对齐目录）；修 `logicalsession.Manager.Sweep` 失败无回滚
-- [ ] **spike**: 常驻 stream-json 会话 + 工具审批回路可行性（§6 四问）；CLAUDE.md headless 加载方式
+- [~] **spike**: §6 已静态核实(CLI 2.1.156)——`--input-format stream-json` 存在、无 `--permission-prompt-tool`(动态审批需 SDK/静态预授权)、CLAUDE.md headless 走 `--add-dir`;仍待【实测】stdin 帧 schema + 常驻会话中途改 model/prompt
 - [ ] **P2**: 工具审批回路（依赖 spike 结论：纯 Go+CLI vs SDK sidecar）
 - [ ] **P2**: MCP memory server 挂载 + 上下文压缩 / 成本追踪
 - [ ] **P2**: WS 双向终端通道 + token 级流式（`--include-partial-messages`）
