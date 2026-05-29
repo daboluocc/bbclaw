@@ -1,7 +1,9 @@
-package httpapi
+package butler
 
 import "testing"
 
+// truncateRunes 现在归属 butler(policy.go),由 AutoTitle 取首条消息前 20 runes。
+// 这份测试从 httpapi 随死代码 truncateRunes 一并迁来,覆盖活副本。
 func TestTruncateRunes(t *testing.T) {
 	tests := []struct {
 		input string

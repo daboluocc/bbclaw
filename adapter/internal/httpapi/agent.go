@@ -1168,13 +1168,3 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 	}
 	return true
 }
-
-// truncateRunes returns the first n runes of s. If s has fewer than n runes
-// it is returned unchanged.
-func truncateRunes(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n])
-}
