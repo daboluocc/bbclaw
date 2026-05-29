@@ -34,6 +34,8 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
+	"github.com/daboluocc/bbclaw/adapter/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
 // agentSessionTTL must mirror httpapi.sessionTTL so the user sees the same
@@ -680,436 +682,239 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 	requestedSession, _ := env.Payload["sessionId"].(string)
 	requestedSession = strings.TrimSpace(requestedSession)
 
-	// Pick a candidate driver. Mirrors httpapi.Server.handleAgentMessage so
-	// behaviour matches between LAN-direct and proxied requests.
-	var (
-		drv        agent.Driver
-		driverName string
-	)
-	if requestedDriver != "" {
-		var ok bool
-		drv, ok = a.router.Get(requestedDriver)
-		if !ok {
-			return fmt.Errorf("UNKNOWN_DRIVER:%s", requestedDriver)
-		}
-		driverName = requestedDriver
-	} else {
-		drv = a.router.Default()
-		if drv == nil {
-			return errors.New("AGENT_NOT_CONFIGURED")
-		}
-		driverName = drv.Name()
-	}
+	routeStart := time.Now()
 
-	// Resolve or start the session. A reused session is pinned to whichever
-	// driver started it; a contradicting driver request fails fast so the
-	// caller learns about it rather than silently switching mid-conversation.
-	var (
-		sid   agent.SessionID
-		isNew bool
-	)
+	sink := &cloudEventSink{a: a, write: write, env: env}
 
-	writeEventEnv := func(payload map[string]any) error {
-		return write(CloudEnvelope{
-			Type:       "event",
-			MessageID:  env.MessageID,
-			DeviceID:   env.DeviceID,
-			HomeSiteID: a.cfg.HomeSiteID,
-			Kind:       "agent.event",
-			Payload:    payload,
-		})
-	}
-
-	// ADR-014 Phase B: when a logical-session manager is configured, resolve
-	// "ls-"-prefixed sessions and auto-mint on empty. Legacy raw cli ids fall
-	// through to the existing path unchanged for backward compatibility.
-	var (
-		logicalID         logicalsession.ID
-		resumeFromLogical string
-		logicalCwd        string // logical session's configured cwd; passed to drv.Start
-		usingLogical      bool
-	)
-	if a.sessions != nil {
-		switch {
-		case strings.HasPrefix(requestedSession, "ls-"):
-			ls, ok := a.sessions.Get(logicalsession.ID(requestedSession))
-			if !ok {
-				// Don't silently mint a new logical id — emit an error event
-				// so the cloud forwards it to the firmware as a normal turn
-				// failure.
-				if err := writeEventEnv(map[string]any{
-					"type":  "error",
-					"error": "UNKNOWN_LOGICAL_SESSION",
-					"text":  "logical session not found: " + requestedSession,
-				}); err != nil {
-					a.log.Warnf("agent_proxy: write UNKNOWN_LOGICAL_SESSION failed device=%s err=%v",
-						env.DeviceID, err)
+	eng := butler.NewEngine(butler.Deps{
+		Router:   a.router,
+		Sessions: a.sessions,
+		Registry: &cloudSessionRegistry{r: a.agentSessions},
+		Sink:     sink,
+		Hooks: butler.Hooks{
+			OnStateChange: nil,
+			OnTurnComplete: func(n butler.Notification) {
+				preview := n.Preview
+				if len(preview) > 48 {
+					preview = preview[:48]
 				}
-				return write(CloudEnvelope{
+				_ = write(CloudEnvelope{
+					Type:       "event",
+					DeviceID:   env.DeviceID,
+					HomeSiteID: a.cfg.HomeSiteID,
+					Kind:       "session.notification",
+					Payload: map[string]any{
+						"sessionId": n.SessionID,
+						"driver":    n.Driver,
+						"type":      n.Type,
+						"preview":   preview,
+						"timestamp": time.Now().UnixMilli(),
+					},
+				})
+			},
+			OnFinalReply: func(res *butler.Result) {
+				// Turn is healthy only when it ended cleanly AND either produced
+				// text or had no errors. A turn with only errors and zero text is
+				// a silent failure — report it so the cloud emits an error frame.
+				turnOK := res.TurnEnded && (res.ErrorCount == 0 || res.TextCount > 0)
+				a.log.Infof("phase=agent_proxy_done driver=%s sid=%s elapsed_s=%.3f turn_end=%v ok=%v text=%d errors=%d",
+					res.DriverName, res.FinalSID, time.Since(routeStart).Seconds(), res.TurnEnded, turnOK, res.TextCount, res.ErrorCount)
+				// 收尾计数(agent_proxy_message_ok/error)统一由 butler 经
+				// cloudMetrics.TurnDone 发出,此处不再重复 Inc,避免双计数。
+				replyPayload := map[string]any{
+					"ok":        turnOK,
+					"sessionId": res.VisibleID,
+					"driver":    res.DriverName,
+					"turnEnd":   res.TurnEnded,
+				}
+				if !turnOK {
+					errMsg := "AGENT_TURN_FAILED"
+					if res.SendErr != nil {
+						errMsg = res.SendErr.Error()
+					}
+					replyPayload["error"] = errMsg
+					if res.LastError != "" {
+						replyPayload["detail"] = res.LastError
+					}
+				}
+				_ = write(CloudEnvelope{
 					Type:       "reply",
 					MessageID:  env.MessageID,
 					DeviceID:   env.DeviceID,
 					HomeSiteID: a.cfg.HomeSiteID,
 					Kind:       "agent.reply",
-					Payload: map[string]any{
-						"ok":    false,
-						"error": "UNKNOWN_LOGICAL_SESSION",
-					},
+					Payload:    replyPayload,
 				})
-			}
-			logicalID = ls.ID
-			resumeFromLogical = ls.CLISessionID
-			logicalCwd = ls.Cwd
-			usingLogical = true
-			// If the logical's CLISessionID matches a live in-process entry,
-			// honour the existing pinning behaviour.
-			if resumeFromLogical != "" {
-				if entry, found := a.agentSessions.get(resumeFromLogical); found {
-					if requestedDriver != "" && requestedDriver != entry.driverName {
-						return fmt.Errorf("SESSION_DRIVER_MISMATCH:want=%s,have=%s", requestedDriver, entry.driverName)
-					}
-					pinned, ok := a.router.Get(entry.driverName)
-					if !ok {
-						return fmt.Errorf("SESSION_UNREGISTERED_DRIVER:%s", entry.driverName)
-					}
-					drv = pinned
-					driverName = entry.driverName
-					sid = entry.sid
-				}
-			}
-		case requestedSession == "":
-			// Auto-mint a logical session so future turns can come back with
-			// its stable id. Cwd defaults to the manager's configured value.
-			ls, err := a.sessions.Create(env.DeviceID, driverName, "", "")
-			if err != nil {
-				return fmt.Errorf("CREATE_SESSION_FAILED:%w", err)
-			}
-			logicalID = ls.ID
-			logicalCwd = ls.Cwd
-			usingLogical = true
-		}
-	}
-
-	if !usingLogical && requestedSession != "" {
-		// Legacy raw CLI id path (Phase A backward compat).
-		if entry, found := a.agentSessions.get(requestedSession); found {
-			if requestedDriver != "" && requestedDriver != entry.driverName {
-				return fmt.Errorf("SESSION_DRIVER_MISMATCH:want=%s,have=%s", requestedDriver, entry.driverName)
-			}
-			pinned, ok := a.router.Get(entry.driverName)
-			if !ok {
-				return fmt.Errorf("SESSION_UNREGISTERED_DRIVER:%s", entry.driverName)
-			}
-			drv = pinned
-			driverName = entry.driverName
-			sid = entry.sid
-		}
-	}
-
-	writeEvent := func(payload map[string]any) {
-		// Best-effort; if the WS write fails the cloud will time out the
-		// pending reply, so swallow the error after a log.
-		if err := write(CloudEnvelope{
-			Type:       "event",
-			MessageID:  env.MessageID,
-			DeviceID:   env.DeviceID,
-			HomeSiteID: a.cfg.HomeSiteID,
-			Kind:       "agent.event",
-			Payload:    payload,
-		}); err != nil {
-			a.log.Warnf("agent_proxy: write event failed device=%s err=%v", env.DeviceID, err)
-		}
-	}
-
-	a.metrics.Inc("agent_proxy_message_start")
-	routeStart := time.Now()
-
-	// Proactive resume validation: if the driver can check whether a CLI
-	// conversation still exists on disk, do so before the attempt loop.
-	// A missing transcript means --resume would immediately fail with
-	// SESSION_NOT_FOUND, wasting 4-7s on a doomed cold-start. Clearing
-	// resumeFromLogical here lets the first attempt go straight to a fresh
-	// session instead of triggering the retry cascade.
-	if resumeFromLogical != "" {
-		if checker, ok := drv.(agent.CLISessionChecker); ok {
-			if !checker.CLISessionExists(resumeFromLogical) {
-				a.log.Infof("agent_proxy: resume target missing on disk, skipping resume cli=%s logical=%s",
-					resumeFromLogical, logicalID)
-				a.metrics.Inc("agent_proxy_resume_skipped_missing")
-				resumeFromLogical = ""
-			}
-		}
-	}
-
-	// Outer loop wraps one or two attempts. Attempt 0 is the normal path
-	// (start with ResumeID if the device asked to resume); attempt 1 fires
-	// only when the driver emitted SESSION_NOT_FOUND on attempt 0 — see
-	// ADR-014. We mint a fresh session and re-send the user text so the
-	// device sees a clean turn instead of a generic AGENT_TURN_FAILED.
-	const maxAttempts = 2
-	var (
-		turnEnded  bool
-		textCount  int
-		errorCount int
-		lastError  string
-		lastText   string
-		sendErr    error
-	)
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Reset per-attempt state — only the FINAL attempt's tallies count
-		// when we build the reply payload below.
-		turnEnded = false
-		textCount = 0
-		errorCount = 0
-		lastError = ""
-		lastText = ""
-		sendErr = nil
-		sessionNotFound := false
-
-		if sid == "" {
-			// Resume path: if the device sent a sessionId we don't have in our
-			// process registry (adapter restart / sweep / picker-loaded session),
-			// pass it as ResumeID so claude-code continues the same JSONL. On
-			// retry (attempt > 0) we deliberately DON'T resume — the prior id
-			// just told us "no conversation found".
-			startOpts := agent.StartOpts{}
-			// Honour the logical session's configured cwd so the CLI is
-			// spawned in the right project directory instead of inheriting
-			// the adapter process's own cwd (fix 2026-05-17 — previously
-			// dropped on cloud-proxied turns; LAN-direct path was fine).
-			if logicalCwd != "" {
-				startOpts.Cwd = logicalCwd
-			}
-			// Honour persisted active_model so cloud-proxied turns use the
-			// same model the device sees in its Settings menu.
-			startOpts.Model = a.resolveActiveModel(drv.Name())
-			isResumeAttempt := false
-			if attempt == 0 {
-				switch {
-				case usingLogical:
-					if resumeFromLogical != "" {
-						startOpts.ResumeID = resumeFromLogical
-						isResumeAttempt = true
-					}
-				case requestedSession != "":
-					startOpts.ResumeID = requestedSession
-					isResumeAttempt = true
-				}
-			}
-			newSid, err := drv.Start(ctx, startOpts)
-			if err != nil {
-				return fmt.Errorf("AGENT_START_FAILED:%w", err)
-			}
-			sid = newSid
-			isNew = !isResumeAttempt
-			a.agentSessions.put(string(sid), &agentProxySession{
-				sid:        sid,
-				driverName: driverName,
-				lastUsed:   time.Now(),
-			})
-			// Write back the freshly-minted CLI session id to the logical
-			// table on every Start (including retry) so the logical's
-			// CLISessionID always tracks the live conversation.
-			if usingLogical && logicalID != "" {
-				if err := a.sessions.UpdateCLISessionID(logicalID, string(sid)); err != nil {
-					a.log.Warnf("agent_proxy: UpdateCLISessionID logical=%s cli=%s err=%v",
-						logicalID, sid, err)
-				}
-			}
-		}
-
-		// Session frame first so the device learns its session id before any
-		// text arrives. seq=0 mirrors the LAN direct shape. On retry the
-		// device sees a second session frame with the new sid+isNew=true,
-		// which is exactly what its NVS needs to update.
-		//
-		// When the logical-session manager is in play, the device-visible id
-		// in the frame is the *logical* id (stable across cli rotation).
-		visibleSessionID := string(sid)
-		if usingLogical && logicalID != "" {
-			visibleSessionID = string(logicalID)
-		}
-		writeEvent(map[string]any{
-			"type":      "session",
-			"sessionId": visibleSessionID,
-			"isNew":     isNew,
-			"driver":    driverName,
-			"seq":       0,
-		})
-		a.agentSessions.touch(string(sid))
-
-		if attempt == 0 {
-			a.log.Infof("phase=agent_proxy_start driver=%s sid=%s is_new=%v device=%s cwd=%q text_chars=%d",
-				driverName, sid, isNew, env.DeviceID, logicalCwd, len(text))
-		} else {
-			a.log.Warnf("phase=agent_proxy_retry driver=%s sid=%s device=%s attempt=%d reason=SESSION_NOT_FOUND",
-				driverName, sid, env.DeviceID, attempt)
-		}
-
-		events := drv.Events(sid)
-		sendErrCh := make(chan error, 1)
-		curSid := sid
-		// ADR-016: see httpapi/agent.go — push latest active_model before
-		// Send so mid-session model toggles via Settings take effect on
-		// this turn, not after session eviction.
-		if mu, ok := drv.(agent.ModelUpdater); ok {
-			_ = mu.UpdateModel(curSid, a.resolveActiveModel(drv.Name()))
-		}
-		go func() { sendErrCh <- drv.Send(curSid, text) }()
-
-	loop:
-		for {
-			select {
-			case <-ctx.Done():
-				a.log.Warnf("agent_proxy: ctx done driver=%s sid=%s", driverName, sid)
-				return ctx.Err()
-			case ev, ok := <-events:
-				if !ok {
-					// Driver closed channel — session ended on its side. Drop
-					// the registry entry so the next turn doesn't try to resume
-					// a dead session.
-					a.agentSessions.drop(string(sid))
-					break loop
-				}
-				switch ev.Type {
-				case agent.EvSessionInit:
-					// CLI reported its real session id. Update the logical
-					// session store so LoadMessages can find the JSONL file.
-					if usingLogical && logicalID != "" && ev.Text != "" {
-						if err := a.sessions.UpdateCLISessionID(logicalID, ev.Text); err != nil {
-							a.log.Warnf("agent_proxy: UpdateCLISessionID (init) logical=%s cli=%s err=%v",
-								logicalID, ev.Text, err)
-						}
-					}
-				case agent.EvText:
-					textCount++
-					lastText = ev.Text
-				case agent.EvError:
-					errorCount++
-					lastError = ev.Text
-					if strings.HasPrefix(ev.Text, "SESSION_NOT_FOUND") {
-						sessionNotFound = true
-					}
-				case agent.EvTurnEnd:
-					turnEnded = true
-					break loop
-				}
-				if ev.Type == agent.EvTurnEnd {
-					continue
-				}
-				// Suppress the SESSION_NOT_FOUND error frame on the attempt
-				// we plan to retry — the device should not see a transient
-				// error message that we're about to recover from.
-				if ev.Type == agent.EvError && sessionNotFound && attempt+1 < maxAttempts {
-					continue
-				}
-				frame := agentEventToFrame(ev)
-				if frame != nil {
-					writeEvent(frame)
-				}
-			}
-		}
-
-		sendErr = <-sendErrCh
-		if sendErr != nil {
-			a.log.Warnf("phase=agent_proxy_send_failed driver=%s sid=%s err=%v attempt=%d",
-				driverName, sid, sendErr, attempt)
-		}
-
-		if sessionNotFound && attempt+1 < maxAttempts {
-			// Drop the dead session and force a fresh start on next iteration.
-			a.agentSessions.drop(string(sid))
-			sid = ""
-			isNew = false // will be flipped to true by the no-resume branch
-			a.metrics.Inc("agent_proxy_session_not_found_retry")
-			continue
-		}
-		break
-	}
-
-	a.agentSessions.touch(string(sid))
-
-	// Bump LastUsedAt on the logical session so the picker can sort by recency.
-	if usingLogical && logicalID != "" && turnEnded {
-		if err := a.sessions.Touch(logicalID); err != nil {
-			a.log.Warnf("agent_proxy: Touch logical=%s err=%v", logicalID, err)
-		}
-	}
-
-	// Phase S3: push session.notification via cloud WS — emitted once per
-	// turn after retry has settled, so the device gets a single notification
-	// reflecting the actual outcome rather than an intermediate failure.
-	if turnEnded {
-		notifType := "turn_end"
-		if errorCount > 0 && textCount == 0 {
-			notifType = "error"
-		}
-		preview := lastText
-		if len(preview) > 48 {
-			preview = preview[:48]
-		}
-		notifSID := string(sid)
-		if usingLogical && logicalID != "" {
-			notifSID = string(logicalID)
-		}
-		_ = write(CloudEnvelope{
-			Type:       "event",
-			DeviceID:   env.DeviceID,
-			HomeSiteID: a.cfg.HomeSiteID,
-			Kind:       "session.notification",
-			Payload: map[string]any{
-				"sessionId": notifSID,
-				"driver":    driverName,
-				"type":      notifType,
-				"preview":   preview,
-				"timestamp": time.Now().UnixMilli(),
 			},
-		})
-	}
-
-	// Turn is healthy only when it ended cleanly AND either produced text or
-	// had no errors. A turn with only errors and zero text is a silent failure
-	// from the user's perspective — report it so the cloud emits an error
-	// frame the firmware can display.
-	turnOK := turnEnded && (errorCount == 0 || textCount > 0)
-
-	a.log.Infof("phase=agent_proxy_done driver=%s sid=%s elapsed_s=%.3f turn_end=%v ok=%v text=%d errors=%d",
-		driverName, sid, time.Since(routeStart).Seconds(), turnEnded, turnOK, textCount, errorCount)
-	if turnOK {
-		a.metrics.Inc("agent_proxy_message_ok")
-	} else {
-		a.metrics.Inc("agent_proxy_message_error")
-	}
-
-	replySID := string(sid)
-	if usingLogical && logicalID != "" {
-		replySID = string(logicalID)
-	}
-	replyPayload := map[string]any{
-		"ok":        turnOK,
-		"sessionId": replySID,
-		"driver":    driverName,
-		"turnEnd":   turnEnded,
-	}
-	if !turnOK {
-		errMsg := "AGENT_TURN_FAILED"
-		if sendErr != nil {
-			errMsg = sendErr.Error()
-		}
-		replyPayload["error"] = errMsg
-		if lastError != "" {
-			replyPayload["detail"] = lastError
-		}
-	}
-
-	return write(CloudEnvelope{
-		Type:       "reply",
-		MessageID:  env.MessageID,
-		DeviceID:   env.DeviceID,
-		HomeSiteID: a.cfg.HomeSiteID,
-		Kind:       "agent.reply",
-		Payload:    replyPayload,
+		},
+		Policy: butler.Policy{
+			ReuseWindow:          0,
+			AllowBareCLIID:       true,
+			AutoTitle:            false,
+			EmitTurnEndFrame:     false,
+			EmitStartFailedFrame: false,
+			MaxAttempts:          2,
+		},
+		Metrics:            &cloudMetrics{m: a.metrics},
+		Log:                a.log,
+		ResolveActiveModel: a.resolveActiveModel,
+		StartCtx:           ctx,
 	})
+
+	_, runErr := eng.RunTurn(ctx, butler.Request{
+		Text:             text,
+		RequestedDriver:  requestedDriver,
+		RequestedSession: requestedSession,
+		DeviceID:         env.DeviceID,
+	})
+	if runErr == nil {
+		return nil
+	}
+
+	// UNKNOWN_LOGICAL_SESSION already emitted its error event via the Sink;
+	// surface the final agent.reply{ok:false} the cloud expects, then swallow
+	// the CodedError (it's not a transport-level failure).
+	var ce *butler.CodedError
+	if errors.As(runErr, &ce) {
+		if ce.Code == "UNKNOWN_LOGICAL_SESSION" {
+			return write(CloudEnvelope{
+				Type:       "reply",
+				MessageID:  env.MessageID,
+				DeviceID:   env.DeviceID,
+				HomeSiteID: a.cfg.HomeSiteID,
+				Kind:       "agent.reply",
+				Payload: map[string]any{
+					"ok":    false,
+					"error": "UNKNOWN_LOGICAL_SESSION",
+				},
+			})
+		}
+		// Other CodedErrors translate back to the historical Go-error strings
+		// the cloud HTTP layer maps to firmware responses.
+		return cloudErrorFromCoded(ce)
+	}
+	// ctx cancellation or other non-coded error (e.g. ctx.Err()).
+	return runErr
+}
+
+// cloudErrorFromCoded translates a butler CodedError back into the exact
+// Go-error string the cloud proxy historically returned, so the cloud HTTP
+// layer's mapping to firmware responses is unchanged.
+func cloudErrorFromCoded(ce *butler.CodedError) error {
+	switch ce.Code {
+	case "UNKNOWN_DRIVER":
+		// Detail = "driver not registered: <name>"; historical form is the bare
+		// driver name after the colon.
+		name := strings.TrimPrefix(ce.Detail, "driver not registered: ")
+		return fmt.Errorf("UNKNOWN_DRIVER:%s", name)
+	case "SESSION_DRIVER_MISMATCH":
+		// Detail already carries "want=..,have=..".
+		return fmt.Errorf("SESSION_DRIVER_MISMATCH:%s", ce.Detail)
+	case "SESSION_UNREGISTERED_DRIVER":
+		return fmt.Errorf("SESSION_UNREGISTERED_DRIVER:%s", ce.Detail)
+	case "CREATE_SESSION_FAILED":
+		if ce.Err != nil {
+			return fmt.Errorf("CREATE_SESSION_FAILED:%w", ce.Err)
+		}
+		return fmt.Errorf("CREATE_SESSION_FAILED:%s", ce.Detail)
+	case "AGENT_START_FAILED":
+		if ce.Err != nil {
+			return fmt.Errorf("AGENT_START_FAILED:%w", ce.Err)
+		}
+		return fmt.Errorf("AGENT_START_FAILED:%s", ce.Detail)
+	default:
+		return errors.New(ce.Code)
+	}
+}
+
+// cloudEventSink adapts the CloudEnvelope writer to butler.EventSink. All
+// methods are best-effort (CLOUD streaming never aborts on write failure), so
+// they return true unconditionally — matching the original writeEvent
+// behaviour where a dropped WS write is logged but never short-circuits the
+// turn.
+type cloudEventSink struct {
+	a     *Adapter
+	write func(CloudEnvelope) error
+	env   CloudEnvelope
+}
+
+func (c *cloudEventSink) emit(payload map[string]any) {
+	if err := c.write(CloudEnvelope{
+		Type:       "event",
+		MessageID:  c.env.MessageID,
+		DeviceID:   c.env.DeviceID,
+		HomeSiteID: c.a.cfg.HomeSiteID,
+		Kind:       "agent.event",
+		Payload:    payload,
+	}); err != nil {
+		c.a.log.Warnf("agent_proxy: write event failed device=%s err=%v", c.env.DeviceID, err)
+	}
+}
+
+func (c *cloudEventSink) EmitSession(visibleID string, isNew bool, driver string) bool {
+	c.emit(map[string]any{
+		"type":      "session",
+		"sessionId": visibleID,
+		"isNew":     isNew,
+		"driver":    driver,
+		"seq":       0,
+	})
+	return true
+}
+
+func (c *cloudEventSink) EmitEvent(ev agent.Event) bool {
+	if frame := agentEventToFrame(ev); frame != nil {
+		c.emit(frame)
+	}
+	return true
+}
+
+func (c *cloudEventSink) EmitError(code, text string, detailField bool) bool {
+	frame := map[string]any{"type": "error", "error": code}
+	if detailField {
+		frame["detail"] = text
+	} else {
+		frame["text"] = text
+	}
+	c.emit(frame)
+	return true
+}
+
+// cloudSessionRegistry adapts *agentProxyRegistry to butler.SessionRegistry.
+// SetState is a no-op because agentProxySession has no state field (差异 #11).
+type cloudSessionRegistry struct{ r *agentProxyRegistry }
+
+func (a *cloudSessionRegistry) Get(id string) (string, agent.SessionID, bool) {
+	e, ok := a.r.get(id)
+	if !ok {
+		return "", "", false
+	}
+	return e.driverName, e.sid, true
+}
+
+func (a *cloudSessionRegistry) Put(id string, driverName string, sid agent.SessionID) {
+	a.r.put(id, &agentProxySession{sid: sid, driverName: driverName, lastUsed: time.Now()})
+}
+
+func (a *cloudSessionRegistry) Touch(id string)           { a.r.touch(id) }
+func (a *cloudSessionRegistry) Drop(id string)            { a.r.drop(id) }
+func (a *cloudSessionRegistry) SetState(id, state string) {}
+
+// cloudMetrics maps butler 的语义化指标事件到 cloud-proxy 的历史计数器名,逐字复刻
+// 原 handleAgentMessage(cloud)的指标:start/ok/error 带 _message_ 中缀,
+// retry/resume_skipped 不带;收尾 ok/error 的判定为 turnEnded&&(errorCount==0||textCount>0)。
+type cloudMetrics struct{ m *obs.Metrics }
+
+func (c *cloudMetrics) TurnStart()            { c.m.Inc("agent_proxy_message_start") }
+func (c *cloudMetrics) ResumeSkippedMissing() { c.m.Inc("agent_proxy_resume_skipped_missing") }
+func (c *cloudMetrics) SessionNotFoundRetry() { c.m.Inc("agent_proxy_session_not_found_retry") }
+func (c *cloudMetrics) TurnDone(turnEnded bool, textCount, errorCount int) {
+	turnOK := turnEnded && (errorCount == 0 || textCount > 0)
+	if turnOK {
+		c.m.Inc("agent_proxy_message_ok")
+	} else {
+		c.m.Inc("agent_proxy_message_error")
+	}
 }
 
 // agentEventToFrame mirrors httpapi.Server.writeAgentEvent. Returns the
