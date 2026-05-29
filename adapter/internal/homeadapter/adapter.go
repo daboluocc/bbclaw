@@ -392,6 +392,13 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// Phase 4.8 cloud agent proxy: cloud reverse-proxies firmware
 		// /v1/agent/message NDJSON streams through this kind.
 		return a.handleAgentMessageRequest(ctx, write, env)
+	case "agent.menu":
+		// ADR-019: cloud proxies firmware GET /v1/agent/menu/{id} so the
+		// server-driven menu renderer works in cloud_saas mode.
+		return a.handleAgentMenuRequest(write, env)
+	case "agent.menu.action":
+		// ADR-019: cloud proxies firmware POST /v1/agent/menu/action.
+		return a.handleAgentMenuActionRequest(write, env)
 	default:
 		return nil
 	}

@@ -26,14 +26,17 @@ package homeadapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/menu"
 	"github.com/daboluocc/bbclaw/adapter/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
@@ -642,6 +645,238 @@ func (a *Adapter) handleAgentCwdPoolRequest(write func(CloudEnvelope) error, env
 		Kind:       "agent.cwd_pool.reply",
 		Payload:    map[string]any{"pool": items},
 	})
+}
+
+// resolveActiveDriver mirrors httpapi.Server.resolveActiveDriver: persisted
+// active driver if registered, else the router default.
+func (a *Adapter) resolveActiveDriver() string {
+	if a.driverState != nil {
+		if name := a.driverState.ActiveDriver(); name != "" {
+			if _, ok := a.router.Get(name); ok {
+				return name
+			}
+		}
+	}
+	if d := a.router.Default(); d != nil {
+		return d.Name()
+	}
+	return ""
+}
+
+// cwdDisplayName mirrors httpapi.Server.cwdDisplayName (path→pool name, basename
+// fallback, empty for empty cwd).
+func (a *Adapter) cwdDisplayName(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	for _, e := range a.cwdPool {
+		if e.Path == cwd {
+			return e.Name
+		}
+	}
+	return filepath.Base(cwd)
+}
+
+// menuToPayload serialises a menu.Menu / menu.Result into the map[string]any a
+// CloudEnvelope carries, so the cloud HTTP layer passes it straight through as
+// the device's response `data` (byte-identical to the LAN-direct path).
+func menuToPayload(v any) map[string]any {
+	raw, _ := json.Marshal(v)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	return m
+}
+
+// handleAgentMenuRequest mirrors httpapi.handleAgentMenu for cloud_saas (ADR-019).
+// Menu shaping is shared via internal/agent/menu; only data resolution + the
+// envelope reply differ from the LAN-direct handler.
+//
+//	{type:"request", kind:"agent.menu", payload:{"id":..,"deviceId":..,"driver":..,"current":..}}
+func (a *Adapter) handleAgentMenuRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(p map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.menu.reply",
+			Payload:    p,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	var p struct {
+		ID       string `json:"id"`
+		DeviceID string `json:"deviceId"`
+		Driver   string `json:"driver"`
+		Current  string `json:"current"`
+	}
+	raw, _ := json.Marshal(env.Payload)
+	_ = json.Unmarshal(raw, &p)
+
+	switch strings.TrimSpace(p.ID) {
+	case "drivers":
+		return reply(menuToPayload(menu.Drivers(a.router.List(), a.resolveActiveDriver())))
+	case "models":
+		driver := strings.TrimSpace(p.Driver)
+		if driver == "" {
+			driver = a.resolveActiveDriver()
+		}
+		drv, ok := a.router.Get(driver)
+		if !ok {
+			return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": driver})
+		}
+		var models []agent.ModelInfo
+		if ml, isLister := drv.(agent.ModelLister); isLister {
+			if mm, err := ml.ListModels(context.Background()); err == nil {
+				models = mm
+			} else {
+				a.log.Warnf("agent_proxy menu/models: driver %s ListModels failed: %v", driver, err)
+			}
+		}
+		return reply(menuToPayload(menu.Models(driver, models, a.resolveActiveModel(driver))))
+	case "sessions":
+		if a.sessions == nil {
+			return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+		}
+		driver := strings.TrimSpace(p.Driver)
+		if driver == "" {
+			driver = a.resolveActiveDriver()
+		}
+		now := time.Now()
+		items := make([]menu.SessionItem, 0)
+		// NB: cloud path doesn't filter by SessionMaxAge (homeadapter Config has
+		// none; mirrors handleAgentSessionsListLogicalRequest which lists all).
+		for _, sess := range a.sessions.List(strings.TrimSpace(p.DeviceID), driver, 50) {
+			items = append(items, menu.SessionItem{
+				ID:         string(sess.ID),
+				Title:      sess.Title,
+				Driver:     sess.Driver,
+				CwdName:    a.cwdDisplayName(sess.Cwd),
+				LastUsedAt: sess.LastUsedAt,
+			})
+		}
+		return reply(menuToPayload(menu.Sessions(items, strings.TrimSpace(p.Current), now)))
+	case "cwd":
+		names := make([]string, 0, len(a.cwdPool))
+		for _, e := range a.cwdPool {
+			names = append(names, e.Name)
+		}
+		return reply(menuToPayload(menu.Cwd(names)))
+	default:
+		return reply(map[string]any{"error": "UNKNOWN_MENU", "detail": strings.TrimSpace(p.ID)})
+	}
+}
+
+// handleAgentMenuActionRequest mirrors httpapi.handleAgentMenuAction (ADR-019).
+//
+//	{type:"request", kind:"agent.menu.action", payload:{"deviceId":..,"action":{...}}}
+func (a *Adapter) handleAgentMenuActionRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(p map[string]any) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "agent.menu.action.reply",
+			Payload:    p,
+		})
+	}
+	if a.router == nil {
+		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
+	}
+	var body struct {
+		DeviceID string      `json:"deviceId"`
+		Action   menu.Action `json:"action"`
+	}
+	raw, _ := json.Marshal(env.Payload)
+	_ = json.Unmarshal(raw, &body)
+	act := body.Action
+
+	switch act.Type {
+	case "set_driver":
+		if a.driverState == nil {
+			return reply(map[string]any{"error": "DRIVERSTATE_NOT_CONFIGURED"})
+		}
+		name := strings.TrimSpace(act.Driver)
+		if name == "" {
+			return reply(map[string]any{"error": "EMPTY_NAME"})
+		}
+		if _, ok := a.router.Get(name); !ok {
+			return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": name})
+		}
+		if err := a.driverState.SetActiveDriver(name); err != nil {
+			return reply(map[string]any{"error": "PERSIST_FAILED", "detail": err.Error()})
+		}
+		a.router.SetDefault(name)
+		a.log.Infof("agent_proxy menu/action: set_driver=%q", name)
+		return reply(menuToPayload(menu.Result{Result: "closed"}))
+	case "set_model":
+		if a.driverState == nil {
+			return reply(map[string]any{"error": "DRIVERSTATE_NOT_CONFIGURED"})
+		}
+		name := strings.TrimSpace(act.Driver)
+		if name == "" {
+			return reply(map[string]any{"error": "EMPTY_NAME"})
+		}
+		if _, ok := a.router.Get(name); !ok {
+			return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": name})
+		}
+		if err := a.driverState.SetActiveModel(name, strings.TrimSpace(act.Model)); err != nil {
+			return reply(map[string]any{"error": "PERSIST_FAILED", "detail": err.Error()})
+		}
+		a.log.Infof("agent_proxy menu/action: set_model driver=%q model=%q", name, strings.TrimSpace(act.Model))
+		return reply(menuToPayload(menu.Result{Result: "closed"}))
+	case "select_session":
+		if a.sessions == nil {
+			return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+		}
+		id := strings.TrimSpace(act.SessionID)
+		if id == "" {
+			return reply(map[string]any{"error": "EMPTY_SESSION_ID"})
+		}
+		if _, ok := a.sessions.Get(logicalsession.ID(id)); !ok {
+			return reply(map[string]any{"error": "UNKNOWN_LOGICAL_SESSION", "detail": id})
+		}
+		return reply(menuToPayload(menu.Result{Result: "closed", SessionID: id, LoadHistory: true}))
+	case "create_session":
+		if a.sessions == nil {
+			return reply(map[string]any{"error": "LOGICAL_SESSIONS_DISABLED"})
+		}
+		driver := a.resolveActiveDriver()
+		if driver == "" {
+			return reply(map[string]any{"error": "DRIVER_REQUIRED"})
+		}
+		cwd := ""
+		if cwdName := strings.TrimSpace(act.Cwd); cwdName != "" {
+			resolved, ok := a.resolveCwdByName(cwdName)
+			if !ok {
+				return reply(map[string]any{"error": "UNKNOWN_CWD_NAME", "detail": cwdName})
+			}
+			cwd = resolved
+		}
+		sess, err := a.sessions.Create(strings.TrimSpace(body.DeviceID), driver, cwd, "")
+		if err != nil {
+			return reply(map[string]any{"error": "CREATE_SESSION_FAILED", "detail": err.Error()})
+		}
+		a.log.Infof("agent_proxy menu/action: create_session logical=%s driver=%s cwd=%q", sess.ID, driver, cwd)
+		return reply(menuToPayload(menu.Result{Result: "closed", SessionID: string(sess.ID), LoadHistory: true}))
+	case "open_menu":
+		switch strings.TrimSpace(act.MenuID) {
+		case "cwd":
+			names := make([]string, 0, len(a.cwdPool))
+			for _, e := range a.cwdPool {
+				names = append(names, e.Name)
+			}
+			m := menu.Cwd(names)
+			return reply(menuToPayload(menu.Result{Result: "navigate", NextMenu: &m}))
+		default:
+			return reply(map[string]any{"error": "UNSUPPORTED_MENU", "detail": strings.TrimSpace(act.MenuID)})
+		}
+	case "close":
+		return reply(menuToPayload(menu.Result{Result: "closed"}))
+	default:
+		return reply(map[string]any{"error": "UNSUPPORTED_ACTION", "detail": act.Type})
+	}
 }
 
 // handleAgentMessageRequest runs one agent turn end-to-end and emits one
