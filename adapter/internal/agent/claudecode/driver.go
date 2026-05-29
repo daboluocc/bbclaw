@@ -96,10 +96,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 		idleTTL = 10 * time.Minute
 	}
 	extra := append([]string(nil), opts.ExtraArgs...)
-	// Default to claude-sonnet-4-5 to avoid the 1M-context model that requires
-	// extra usage entitlement. Overridable via AGENT_CLAUDE_CODE_EXTRA_ARGS.
+	// Fall back to the catalog's factory-default model (claudeCodeModels[0])
+	// when the operator hasn't pinned a --model via AGENT_CLAUDE_CODE_EXTRA_ARGS,
+	// so the runtime default and the device's model list stay in lockstep.
 	if !hasFlag(extra, "--model") {
-		extra = append(extra, "--model", "claude-sonnet-4-5")
+		if dm := defaultModelID(); dm != "" {
+			extra = append(extra, "--model", dm)
+		}
 	}
 	driverEnv := make(map[string]string, len(opts.Env))
 	for k, v := range opts.Env {

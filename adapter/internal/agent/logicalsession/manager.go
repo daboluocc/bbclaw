@@ -319,15 +319,19 @@ func (m *Manager) Sweep(maxAge time.Duration) int {
 		return 0
 	}
 
+	// Snapshot the entries we're removing so we can roll back if persistence
+	// fails — keeps the in-memory map consistent with what's actually on disk
+	// (mirrors the rollback in mutate/Delete).
+	removed := make(map[ID]*LogicalSession, len(toDelete))
 	for _, id := range toDelete {
+		removed[id] = m.sessions[id]
 		delete(m.sessions, id)
 	}
 	if err := m.persistLocked(); err != nil {
-		// Restore on failure — re-read from disk would be more robust but
-		// this matches the pattern used by mutate/Delete.
-		m.log.Warnf("logicalsession: sweep persist failed, restoring %d sessions: %v", len(toDelete), err)
-		// We can't easily restore here since we already deleted from the map.
-		// Log the error; the data is still on disk from the last successful persist.
+		for id, s := range removed {
+			m.sessions[id] = s
+		}
+		m.log.Warnf("logicalsession: sweep persist failed, rolled back %d sessions: %v", len(toDelete), err)
 		return 0
 	}
 	m.log.Infof("logicalsession: swept %d expired sessions (maxAge=%s)", len(toDelete), maxAge)

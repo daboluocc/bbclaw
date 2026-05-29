@@ -571,3 +571,37 @@ func TestSweep(t *testing.T) {
 		t.Errorf("Sweep on clean state returned %d, want 0", n)
 	}
 }
+
+// TestSweepRollbackOnPersistFailure verifies that when the post-delete persist
+// fails, Sweep restores the removed sessions to the in-memory map so memory
+// stays consistent with what's on disk (regression for the old "can't restore"
+// path that silently dropped sessions).
+func TestSweepRollbackOnPersistFailure(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(filepath.Join(dir, "sessions.json"), "/tmp", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	s, err := m.Create("dev-1", "claude-code", "/p", "old")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m.mu.Lock()
+	m.sessions[s.ID].LastUsedAt = time.Now().UTC().Add(-30 * 24 * time.Hour)
+	m.mu.Unlock()
+
+	// Break persistence: point the store dir at a regular file so the MkdirAll
+	// in persistLocked fails (ENOTDIR).
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	m.path = filepath.Join(blocker, "sessions.json")
+
+	if n := m.Sweep(7 * 24 * time.Hour); n != 0 {
+		t.Errorf("Sweep returned %d, want 0 on persist failure", n)
+	}
+	if _, ok := m.Get(s.ID); !ok {
+		t.Error("session dropped from map after failed sweep persist (no rollback)")
+	}
+}

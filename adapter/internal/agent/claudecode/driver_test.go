@@ -261,3 +261,27 @@ func TestSessionFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultModelMatchesCatalog locks the single-source-of-truth: the runtime
+// --model fallback (defaultModelID) must equal the catalog's factory default
+// (claudeCodeModels[0]) and be a model the catalog actually offers (regression
+// for the old stale claude-sonnet-4-5 that wasn't in the list).
+func TestDefaultModelMatchesCatalog(t *testing.T) {
+	def := defaultModelID()
+	if def == "" {
+		t.Fatal("defaultModelID() empty")
+	}
+	if def != claudeCodeModels[0].ID {
+		t.Errorf("defaultModelID()=%q want catalog[0]=%q", def, claudeCodeModels[0].ID)
+	}
+	found := false
+	for _, m := range claudeCodeModels {
+		if m.ID == def {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("default model %q is not in the catalog", def)
+	}
+}

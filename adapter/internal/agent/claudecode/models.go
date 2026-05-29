@@ -26,6 +26,18 @@ var claudeCodeModels = []agent.ModelInfo{
 	{ID: "claude-haiku-4-5", Label: "Haiku 4.5"},
 }
 
+// defaultModelID is the implicit factory default: the first catalog entry.
+// The driver uses it as the --model fallback when no operator/user override is
+// configured, so the runtime default and the device's "factory default" model
+// list never drift (they used to: a stale hardcoded claude-sonnet-4-5 that
+// wasn't even in this catalog). Empty only when the catalog itself is empty.
+func defaultModelID() string {
+	if len(claudeCodeModels) == 0 {
+		return ""
+	}
+	return claudeCodeModels[0].ID
+}
+
 // ListModels implements agent.ModelLister.
 func (d *Driver) ListModels(_ context.Context) ([]agent.ModelInfo, error) {
 	out := make([]agent.ModelInfo, len(claudeCodeModels))
