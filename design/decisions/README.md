@@ -29,3 +29,9 @@
 | [ADR-010](ADR-010-per-device-agentdriver-cloud-config.md) | Per-device AgentDriver 作为云配置（v0.4.0 多 driver） | 2026-04-27 | 已接受 |
 | [ADR-011](ADR-011-adapter-open-source.md) | Adapter 开源（搬到主仓） | 2026-04-27 | 已接受 |
 | [ADR-012](ADR-012-fixed-page-menu.md) | 固定三页菜单（Standby / Chat / Settings）取代 overlay 召唤 | 2026-04-30 | 已接受 |
+| [ADR-013](ADR-013-session-history-replay.md) | 设备端会话历史回放与上下翻页 | 2026-05-04 | 已接受 |
+| [ADR-014](ADR-014-logical-session-abstraction.md) | Logical Session 抽象——把 CLI session 细节移出设备 | 2026-05-04 | 已接受 |
+| [ADR-015](ADR-015-device-monitor-over-usb.md) | Device Monitor over USB（截图 + 按键注入） | 2026-05-12 | 已实现 |
+| [ADR-016](ADR-016-device-driver-model-selection.md) | 设备端 Driver / Model 选择（Settings 双行 + Adapter 持久化） | 2026-05-17 | 已接受（已实现） |
+| [ADR-017](ADR-017-tts-reading-mode-and-chat-cache.md) | TTS 阅读模式 + Chat tail 缓存 | 2026-05-18 | 已实现 |
+| [ADR-018](ADR-018-device-butler-architecture.md) | 设备管家(Butler)——Adapter 作为会话编排 + 记忆 + Claude 完整适配中枢 | 2026-05-30 | 已接受（实施中） |
