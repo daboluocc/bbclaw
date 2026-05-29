@@ -1194,6 +1194,17 @@ static void refresh_ui(void) {
 
   if (mode == UI_VIEW_STANDBY) {
     bb_page_standby_refresh_clock(hm);
+    {
+      int bat_supported, bat_available, bat_percent, bat_low, bat_charging;
+      portENTER_CRITICAL(&s_state_lock);
+      bat_supported = s_battery_supported;
+      bat_available = s_battery_available;
+      bat_percent   = s_battery_percent;
+      bat_low       = s_battery_low;
+      bat_charging  = s_battery_charging;
+      portEXIT_CRITICAL(&s_state_lock);
+      bb_page_standby_update_battery(bat_supported, bat_available, bat_percent, bat_low, bat_charging);
+    }
     s_record_view_visible = 0;
   } else if (mode == UI_VIEW_LOCKED) {
     bb_page_locked_update_status(status);

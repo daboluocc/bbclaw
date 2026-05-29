@@ -157,27 +157,30 @@ tail -n 100 firmware/.cache/idf-monitor.latest.log
 
 ### 分区表
 - **默认**: `partitions_bbclaw.csv` (factory 3MB, 无 OTA)
-- **OTA 版本**: `boards/bbclaw/partitions_ota.csv` (factory 1MB + ota_0/ota_1 各 2.5MB)
+- **OTA 版本**: `boards/bbclaw/partitions_ota.csv` (factory / ota_0 / ota_1 各 2.5MB)
 
-OTA 分区表已默认启用在 `boards/bbclaw/sdkconfig.board`。
+OTA 分区表已默认启用在 `boards/bbclaw/sdkconfig.board`。`boards/bbclaw/partitions_ota.csv` 是真相来源，`make build` 会用 `cmp` 检测后自动同步到项目根目录（ESP-IDF 实际读的那份）。
 
 **OTA 分区布局 (8MB Flash)**:
 | 分区 | 大小 | 起始地址 |
 |------|------|----------|
-| factory | 1MB | 0x10000 |
-| ota_0 | 2.5MB | 0x110000 |
-| ota_1 | 2.5MB | 0x390000 |
-| resources | 1MB | 0x610000 |
+| factory | 2.5MB | 0x020000 |
+| ota_0 | 2.5MB | 0x2A0000 |
+| ota_1 | 2.5MB | 0x520000 |
+| resources | 384KB | 0x7A0000 |
+
+三个 app 槽尺寸一致，`make flash` 走 IDF 标准路径烧 factory，OTA 升级落到 ota_0 / ota_1。
 
 ### 烧录到指定分区
 ```bash
-# 烧录 bootloader + 分区表 + 固件到 ota_0 (用于 OTA 测试)
+# 默认 `make flash` 已经走 factory（足够装 2.5MB 固件）。
+# 仅当想手动测试 OTA 流程时才需要指定 ota_0：
 python3 -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
   write_flash \
   --flash_mode dio --flash_size 8MB --flash_freq 80m \
   0x0 build/bootloader/bootloader.bin \
   0x8000 build/partition_table/partition-table.bin \
-  0x110000 build/bbclaw_firmware.bin
+  0x2A0000 build/bbclaw_firmware.bin
 ```
 
 ### 常见构建问题

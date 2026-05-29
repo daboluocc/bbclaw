@@ -1,6 +1,7 @@
 #include "bb_power.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include "bb_config.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -26,6 +27,11 @@ static adc_oneshot_unit_handle_t s_adc_handle;
 static adc_channel_t s_adc_channel;
 static adc_cali_handle_t s_adc_cali_handle;
 static int s_adc_cali_ready;
+/* 跨周期 EMA 电压滤波状态（mV）。s_vbat_ema_init=0 表示首次采样，直接置入。 */
+static int s_vbat_ema_mv;
+static int s_vbat_ema_init;
+/* 上次对外展示的电量百分比，用于迟滞（-1 = 尚未输出过）。 */
+static int s_last_shown_pct = -1;
 #endif
 
 static int clamp_percent(int pct) {
@@ -34,13 +40,41 @@ static int clamp_percent(int pct) {
   return pct;
 }
 
+/* 单节锂电池 OCV–SoC 放电曲线（轻载/静置近似），电压降序排列。
+ * 替代第一版线性映射：锂电压在 3.7V 附近停留很久，低电量区才快速跌落，
+ * 线性映射会导致掉电飞快/中段卡住/末端突跳，查表+插值更贴合真实电量。
+ * 详见 docs/feat/power-management-foundation.md。 */
+typedef struct {
+  int mv;
+  int pct;
+} bb_ocv_point_t;
+
+static const bb_ocv_point_t k_ocv_curve[] = {
+    {4200, 100}, {4150, 95}, {4110, 90}, {4080, 85}, {4020, 80},
+    {3980, 75},  {3950, 70}, {3910, 65}, {3870, 60}, {3850, 55},
+    {3840, 50},  {3820, 45}, {3800, 40}, {3790, 35}, {3770, 30},
+    {3750, 25},  {3730, 20}, {3710, 15}, {3690, 10}, {3610, 5},
+    {3400, 0},
+};
+
 static int battery_percent_from_mv(int mv) {
-  const int empty_mv = BBCLAW_POWER_BATTERY_EMPTY_MV;
-  const int full_mv = BBCLAW_POWER_BATTERY_FULL_MV;
-  if (mv <= empty_mv) return 0;
-  if (mv >= full_mv) return 100;
-  if (full_mv <= empty_mv) return 0;
-  return clamp_percent((mv - empty_mv) * 100 / (full_mv - empty_mv));
+  const int n = (int)(sizeof(k_ocv_curve) / sizeof(k_ocv_curve[0]));
+  /* 端点 clamp（也尊重板级 FULL/EMPTY 边界）。 */
+  if (mv >= k_ocv_curve[0].mv) return 100;
+  if (mv <= k_ocv_curve[n - 1].mv) return 0;
+  /* 在相邻两点间线性插值。曲线按电压降序，找到 mv 所在区间。 */
+  for (int i = 0; i < n - 1; ++i) {
+    const int hi_mv = k_ocv_curve[i].mv;
+    const int lo_mv = k_ocv_curve[i + 1].mv;
+    if (mv <= hi_mv && mv >= lo_mv) {
+      const int hi_pct = k_ocv_curve[i].pct;
+      const int lo_pct = k_ocv_curve[i + 1].pct;
+      const int span_mv = hi_mv - lo_mv;
+      if (span_mv <= 0) return clamp_percent(lo_pct);
+      return clamp_percent(lo_pct + (mv - lo_mv) * (hi_pct - lo_pct) / span_mv);
+    }
+  }
+  return 0;
 }
 
 void bb_power_get_state(bb_power_state_t* out_state) {
@@ -121,6 +155,12 @@ esp_err_t bb_power_refresh(void) {
     return ESP_ERR_INVALID_STATE;
   }
 
+  /* Dummy read：丢弃首次转换，规避采样保持电容在高阻分压下充电不足导致的偏低。 */
+  {
+    int dummy = 0;
+    (void)adc_oneshot_read(s_adc_handle, s_adc_channel, &dummy);
+  }
+
   int raw_sum = 0;
   for (int i = 0; i < 8; ++i) {
     int raw = 0;
@@ -146,14 +186,34 @@ esp_err_t bb_power_refresh(void) {
                     BBCLAW_POWER_ADC_RBOT_OHM);
   }
 
+  /* 跨周期 EMA 低通滤波：吸收负载瞬态（PTT/功放/WiFi）与采样噪声。
+   * 首次采样直接置入，避免冷启动从 0 缓慢爬升。 */
+  if (!s_vbat_ema_init) {
+    s_vbat_ema_mv = vbat_mv;
+    s_vbat_ema_init = 1;
+  } else {
+    const int a = BBCLAW_POWER_EMA_ALPHA_PCT; /* 新值权重（%） */
+    s_vbat_ema_mv = (vbat_mv * a + s_vbat_ema_mv * (100 - a)) / 100;
+  }
+  const int filtered_mv = s_vbat_ema_mv;
+
+  int pct = battery_percent_from_mv(filtered_mv);
+  /* 百分比迟滞：变化未达阈值则维持上次展示值，消除 ±1% 抖动。
+   * 首次（s_last_shown_pct<0）或达到阈值时才更新。 */
+  if (s_last_shown_pct < 0 ||
+      abs(pct - s_last_shown_pct) >= BBCLAW_POWER_HYSTERESIS_PCT) {
+    s_last_shown_pct = pct;
+  }
+  pct = s_last_shown_pct;
+
   s_state.supported = 1;
   s_state.available = 1;
-  s_state.millivolts = vbat_mv;
-  s_state.percent = battery_percent_from_mv(vbat_mv);
+  s_state.millivolts = filtered_mv;
+  s_state.percent = pct;
   s_state.low = s_state.percent <= BBCLAW_POWER_LOW_PERCENT ? 1 : 0;
   s_state.charging = 0; /* TODO: set from VBUS GPIO detection when hardware supports it */
-  ESP_LOGD(TAG, "battery raw=%d adc_mv=%d vbat_mv=%d percent=%d low=%d cali=%d",
-           raw_avg, adc_mv, vbat_mv, s_state.percent, s_state.low, s_adc_cali_ready);
+  ESP_LOGD(TAG, "battery raw=%d adc_mv=%d vbat_raw=%d vbat_ema=%d percent=%d low=%d cali=%d",
+           raw_avg, adc_mv, vbat_mv, filtered_mv, s_state.percent, s_state.low, s_adc_cali_ready);
   return ESP_OK;
 #else
   s_state.supported = 0;

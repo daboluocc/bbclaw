@@ -96,6 +96,24 @@ func NewManager(path, defaultCwd string, log *obs.Logger) (*Manager, error) {
 	}
 	log.Infof("logicalsession: loaded %d sessions from %s (version=%d)",
 		len(m.sessions), path, shape.Version)
+	// Dump per-session cwd at startup so operators can spot rows that point
+	// at the wrong project (or empty cwd, which silently inherits the adapter
+	// process's own working directory). Sorted by LastUsedAt desc so the
+	// most recent ones come first.
+	if len(m.sessions) > 0 {
+		ordered := make([]*LogicalSession, 0, len(m.sessions))
+		for _, s := range m.sessions {
+			ordered = append(ordered, s)
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].LastUsedAt.After(ordered[j].LastUsedAt)
+		})
+		for _, s := range ordered {
+			log.Infof("logicalsession:   id=%s device=%s driver=%s cwd=%q title=%q last_used=%s",
+				s.ID, s.DeviceID, s.Driver, s.Cwd, s.Title,
+				s.LastUsedAt.UTC().Format(time.RFC3339))
+		}
+	}
 	return m, nil
 }
 
@@ -172,6 +190,11 @@ func (m *Manager) Create(deviceID, driver, cwd, title string) (*LogicalSession, 
 }
 
 // Get returns the session by id, or (nil, false) if not found.
+// DefaultCwd returns the cwd used as the fallback when sessions are minted
+// without an explicit cwd (configured from BBCLAW_DEFAULT_CWD at startup).
+// Empty when unset.
+func (m *Manager) DefaultCwd() string { return m.defaultCwd }
+
 func (m *Manager) Get(id ID) (*LogicalSession, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

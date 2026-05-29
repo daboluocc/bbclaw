@@ -124,6 +124,29 @@ type CwdPoolEntry struct {
 // GET /v1/agent/cwd-pool requests can be served.
 func (a *Adapter) SetCwdPool(pool []CwdPoolEntry) { a.cwdPool = pool }
 
+// defaultStartCwd returns the best-fit fallback working directory for spawn
+// paths that don't carry an explicit logical session (e.g. the voice
+// transcript fan-out in handleChatTextViaAgent). Priority:
+//  1. logical session manager's BBCLAW_DEFAULT_CWD
+//  2. first CwdPool entry's path
+//  3. "" — caller would then inherit the adapter process cwd, which is the
+//     bug source (the /Volumes/.../adapter leak).
+//
+// Voice turns are one-shot (Start/Send/Stop per utterance) so there's no
+// persisted logical session to consult — the pool order is the only signal
+// about which project the operator considers "primary".
+func (a *Adapter) defaultStartCwd() string {
+	if a.sessions != nil {
+		if cwd := a.sessions.DefaultCwd(); cwd != "" {
+			return cwd
+		}
+	}
+	if len(a.cwdPool) > 0 {
+		return a.cwdPool[0].Path
+	}
+	return ""
+}
+
 // SetDriverState attaches the persistent driver-preference store, mirrored
 // from the local HTTP layer so cloud-proxied agent turns honour the same
 // active driver / active model selection as LAN-direct turns.
@@ -573,10 +596,17 @@ func (a *Adapter) handleChatTextViaAgent(
 		return fmt.Errorf("agent driver %q not registered", driverName)
 	}
 
-	sid, err := drv.Start(ctx, agent.StartOpts{})
+	// Voice turns don't carry a logical session id — fall back to the
+	// configured default cwd so the spawned CLI doesn't inherit the adapter
+	// process's own cwd (which leaks /Volumes/.../adapter into the model's
+	// system prompt and confuses it about which project it's working in).
+	startOpts := agent.StartOpts{Cwd: a.defaultStartCwd()}
+	sid, err := drv.Start(ctx, startOpts)
 	if err != nil {
 		return fmt.Errorf("agent start: %w", err)
 	}
+	a.log.Infof("phase=voice_agent_start driver=%s sid=%s cwd=%q device=%s",
+		driverName, sid, startOpts.Cwd, env.DeviceID)
 	defer func() { _ = drv.Stop(sid) }()
 
 	events := drv.Events(sid)

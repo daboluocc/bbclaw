@@ -401,6 +401,18 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_POWER_POLL_INTERVAL_MS 5000
 #endif
 
+/** 电池电压 EMA 滤波系数（百分比，新采样值权重）。
+ *  越小越平滑、跟随越慢。25 = 新值占 0.25，旧值占 0.75。 */
+#ifndef BBCLAW_POWER_EMA_ALPHA_PCT
+#define BBCLAW_POWER_EMA_ALPHA_PCT 25
+#endif
+
+/** 电量百分比迟滞：滤波后百分比相对上次显示值变化 >= 此值才更新，
+ *  消除 ±1% 抖动。 */
+#ifndef BBCLAW_POWER_HYSTERESIS_PCT
+#define BBCLAW_POWER_HYSTERESIS_PCT 2
+#endif
+
 /** PTT 按下：偏心马达需 ~50ms+ 才易感知，过短会像“没震” */
 #ifndef BBCLAW_MOTOR_PULSE_SHORT_MS
 #define BBCLAW_MOTOR_PULSE_SHORT_MS 500

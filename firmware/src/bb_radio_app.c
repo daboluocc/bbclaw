@@ -2973,7 +2973,8 @@ static void stream_task(void* arg) {
     }
 
     /* ── Dual-level idle timeout: CHAT → STANDBY → LOCKED ── */
-    if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy) {
+    if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy &&
+        !s_tts_playback_active) {
       int64_t now_ms = bb_now_ms();
       if (agent_chat_is_active()) {
         /* Don't idle-exit while pickers are open or agent is still busy
@@ -3002,6 +3003,10 @@ static void stream_task(void* arg) {
           s_last_activity_ms = now_ms;
         }
       }
+    } else if (s_tts_playback_active) {
+      /* TTS playback in progress — treat as activity so the chat-idle and
+       * standby→locked timers don't fire mid-reply and cut the audio. */
+      s_last_activity_ms = bb_now_ms();
     }
 
     if (!streaming) {
