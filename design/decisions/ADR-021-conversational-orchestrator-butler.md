@@ -80,10 +80,10 @@ adapter 起一个 MCP server(stdio 子进程或本地 SSE),管家会话 spawn �
 - **记忆 = 每 turn 总结要点 append 进 workspace 记忆**(轻量版 openclaw):挂 butler turn 末 `Hooks.OnTurnComplete`,把"用户长期偏好 / 最近在做的项目 / 关键决策"追加进 workspace CLAUDE.md 的 managed 段(marker+上限+hash 去重),管家 --resume(cwd=workspace)时原生加载。这就是用户说的"总结对话记录到记忆"——也回答了之前"蒸馏是干嘛":在管家模式下它是"把对话沉淀成可持久记忆",供管家重启/换机后仍记得。
 - **与 ADR-020 关系**:workspace CLAUDE.md = 管家长期记忆(本 ADR);各项目 cwd 的 CLAUDE.md = 项目画像(ADR-020 §3 仍独立);ADR-020 的"用户需求 → --append-system-prompt 摘要存储"在管家模式下**降级**——管家自己的对话上下文 + workspace 记忆已承担,不再需要单独的 memory.json 注入层(简化)。
 
-## 前置实测闸门（动手前必须过)
+## 前置实测闸门（✅ 已通过,实测 CLI 2.1.158,2026-05-30）
 
-1. **`claude -p --mcp-config X` 能否真的调用 MCP 工具?**(headless agent 模式下 MCP 工具可用性)——整个 §2 建立在此。未验证不写派发 server。
-2. **`--add-dir workspace`(或 cwd=workspace)在 `-p` 下是否加载 workspace CLAUDE.md?**(承接 ADR-020 同款 spike)——人设/记忆加载的前提。
+1. **`claude -p --mcp-config X` 能否真的调用 MCP 工具?** → ✅ **可以**。用一个零依赖 python stdio MCP server 暴露 `get_secret_code` 工具,`claude -p "调用该工具并返回它给的码" --mcp-config <file> --dangerously-skip-permissions` 正确返回了工具给的 `MANGO-9912`(claude 本来不可能知道)。**派发 server 架构在 v1 的 `-p` 模式就能跑,不必等常驻会话 spike。** MCP 工具名形如 `mcp__<server>__<tool>`;权限上 `-p` 无交互审批,需用 `--allowedTools`/`--permission-mode`/`--dangerously-skip-permissions` 放行。
+2. **`-p` 下 CLAUDE.md 怎么加载?** → ✅ **走 cwd 隐式加载,不是 `--add-dir`**。实测:cwd=含 CLAUDE.md 的目录、不带 `--add-dir` → 答出暗号;cwd=别处 + `--add-dir <含CLAUDE.md的目录>` → **读不到**(`--add-dir` 只给工具访问权,不注入该目录的 CLAUDE.md 作记忆)。**纠正全文:别用 `--add-dir` 加载 CLAUDE.md,直接靠 cwd**——而 claudecode driver 早把 `cmd.Dir=s.cwd` 设好(driver.go:230),所以管家(cwd=workspace)与 worker(cwd=项目)的 CLAUDE.md **自动加载,零改动**。
 
 ## 影响
 
@@ -122,14 +122,14 @@ adapter 起一个 MCP server(stdio 子进程或本地 SSE),管家会话 spawn �
 
 ## 实现 checklist
 
-**前置 spike**
-- [ ] `claude -p --mcp-config` 能否调用 MCP 工具(headless)
-- [ ] `--add-dir`/cwd 加载 workspace CLAUDE.md(同 ADR-020 闸门)
+**前置 spike（✅ 已通过 2026-05-30,CLI 2.1.158）**
+- [x] `claude -p --mcp-config` 调用 MCP 工具(headless）—— 实测可用（返回工具值)
+- [x] CLAUDE.md 加载 —— 走 **cwd 隐式加载**(非 --add-dir);driver 已设 `cmd.Dir=cwd`,零改动
 
 **v1（最小闭环:管家 + 同步/降级派发 + workspace 人设记忆)**
 - [ ] workspace 脚手架:`~/.bbclaw-adapter/workspace/` + 默认 CLAUDE.md(openclaw 风格人设 + marker 记忆段)
 - [ ] adapter MCP 派发 server(Go):`list_projects` / `dispatch`(超时降级)/ `task_status` / `task_result`;cwd 限 CwdPool
-- [ ] 管家会话路由:设备 turn 永远路由到 per-device 管家 logical session(cwd=workspace);claudecode spawn 加 `--mcp-config` + `--add-dir workspace`;WarmPool 预热管家
+- [ ] 管家会话路由:设备 turn 永远路由到 per-device 管家 logical session(cwd=workspace);claudecode spawn 加 `--mcp-config`(CLAUDE.md 靠 cwd 自动加载);WarmPool 预热管家
 - [ ] worker:复用 claudecode driver/`butler.Engine` 在目标 cwd 跑;同步阻塞拿 `EvTurnEnd`;输出裁剪回管家
 - [ ] logicalsession 加 `Role`(butler|worker);worker 不进设备菜单
 - [ ] 记忆:butler turn 末把对话要点 append 进 workspace CLAUDE.md managed 段(marker+上限+hash)

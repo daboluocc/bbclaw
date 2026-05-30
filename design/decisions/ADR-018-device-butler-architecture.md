@@ -66,7 +66,8 @@ butler 层引入一个"用 LLM 把设备意图翻译成 CLI session 操作"的�
 **已静态核实(`claude --help`, 2.1.156, 2026-05-30):**
 - ✅ `--input-format` 取值 `text`(默认) / `stream-json`("realtime streaming input"，仅配 `--print`)——常驻双向【输入】确为受支持形态;但 stdin 的【帧 schema】仍未文档化,Q1 的帧级解析仍需实测。
 - ⚠️ **无 `--permission-prompt-tool`、无 canUseTool/control 字样** → 当前 CLI **不提供动态逐次审批的 flag**;`--permission-mode` 取值仅 `acceptEdits/auto/bypassPermissions/default/plan`(静态预授权)。**结论:动态审批要么走 Agent SDK 的 canUseTool,要么维持静态预授权——验证了 §5"暂不做动态审批"的决定。** Q2 基本落定。
-- ✅ `--add-dir`(help 标注 "CLAUDE.md dirs") → headless 下加载项目 CLAUDE.md 的可靠方式是 `--add-dir <cwd>`(而非依赖隐式自动加载)。Q3 倾向"显式 `--add-dir`",仍建议小实验确认 cwd 是否也隐式加载。
+- ✅ **CLAUDE.md 加载已实测(CLI 2.1.158,2026-05-30)**:`-p` 下 CLAUDE.md **走 cwd 隐式加载**;`--add-dir <dir>` **不**注入该目录的 CLAUDE.md(只给工具访问权,实测 cwd=别处+--add-dir 读不到)。Q3 落定:用 **cwd**(driver 已设 `cmd.Dir=cwd`),不用 `--add-dir`。
+- ✅ **MCP + `-p` 已实测**:`claude -p --mcp-config <file> --dangerously-skip-permissions` 能正确调用 adapter 托管的 MCP 工具并返回其值 → headless 下 MCP 工具可用(支撑 ADR-021 派发 server)。
 - ✅ `--include-partial-messages`(token 级流式)、`--exclude-dynamic-system-prompt-sections`、`--append-system-prompt[-file]`、`--mcp-config`、`--fork-session`、`--no-session-persistence`、`--effort`、`--fallback-model`、`-n/--name` 均存在。
 - 仍需【实测】(需真跑 claude,涉及 API 调用):stdin stream-json 帧的精确 schema;常驻会话中途改 model/system-prompt;cwd 是否在无 `--add-dir` 时也加载 CLAUDE.md。
 
@@ -102,7 +103,7 @@ butler 层引入一个"用 LLM 把设备意图翻译成 CLI session 操作"的�
 - [ ] **P1**: 记忆写入/提炼管线（turn 结束挂 LLM 提炼 hook）+ 项目 CLAUDE.md 维护 + adapter SQLite 记忆存储
 - [ ] **P1**: butler LLM 编排器（规则兜底 + 意图模糊时调 LLM）
 - [x] **P1**: 统一默认模型双重事实来源（driver 默认改取 `claudeCodeModels[0]`，运行默认 sonnet-4-5→sonnet-4-6 对齐目录）；修 `logicalsession.Manager.Sweep` 失败无回滚
-- [~] **spike**: §6 已静态核实(CLI 2.1.156)——`--input-format stream-json` 存在、无 `--permission-prompt-tool`(动态审批需 SDK/静态预授权)、CLAUDE.md headless 走 `--add-dir`;仍待【实测】stdin 帧 schema + 常驻会话中途改 model/prompt
+- [~] **spike**: §6 已核实——`--input-format stream-json` 存在、无 `--permission-prompt-tool`(动态审批需 SDK/静态预授权);**已实测(2.1.158)**:CLAUDE.md 走 **cwd 隐式加载**(非 --add-dir)、MCP 工具在 `-p` 下可调用;**仍待实测**:stdin stream-json 帧 schema + 常驻会话中途改 model/prompt(v2 常驻会话用)
 - [ ] **P2**: 工具审批回路（依赖 spike 结论：纯 Go+CLI vs SDK sidecar）
 - [ ] **P2**: MCP memory server 挂载 + 上下文压缩 / 成本追踪
 - [ ] **P2**: WS 双向终端通道 + token 级流式（`--include-partial-messages`）

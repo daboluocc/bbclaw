@@ -43,7 +43,7 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 
 - adapter 在 `{cwd}/CLAUDE.md` 维护一段 **HTML 注释 marker 包裹的"BBClaw 托管段"**(`<!-- BEGIN BBClaw-managed -->` … `<!-- END -->`),与用户手写内容隔离;`managedHash` 幂等防重写。
 - 内容**纯机器可探测的项目结构事实**(零 LLM):项目类型(扫 `go.mod`/`package.json`/`Cargo.toml`/`pyproject.toml`)+ 常用命令(扫 `Makefile`/`package.json` scripts)。软性偏好/决策归"用户需求记忆"(§2),本段不碰。
-- **加载**:`claudecode` 的 `Send`(`sessionFlags`)与 `pool.spawnWarm` **同步**补 `--add-dir <cwd>`(cwd 非空时)——warm 与真实路径的加载集必须一致(见 §风险 WarmPool)。
+- **加载**:**靠 cwd 隐式加载**(实测 2026-05-30:`-p` 从 cwd 自动读 CLAUDE.md,**非** `--add-dir`)。claudecode driver 已设 `cmd.Dir=s.cwd`(driver.go:230),worker/管家在各自 cwd 跑 → CLAUDE.md **零改动自动加载**;无需 `--add-dir`,也无 WarmPool 加载集不一致问题。
 - 写入挂 `engine.go` turn 末 `turnEnded` 块、**goroutine 异步**,`hash` 去重 + `minGap`(默认 24h)去抖,绝不进主路径。托管段 ≤4KB 硬上限;**不写绝对路径**(隐私,只写类型/命令)。
 
 ### 4. LLM 蒸馏管线(⏳ P1.5,默认关,灰度)
@@ -54,13 +54,13 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 
 `--mcp-config` 挂 memory server,Claude 主动 store/recall,避免把全部记忆塞进每轮 prompt 线性涨成本。v1/P1.5 不碰。
 
-## 前置实测闸门(动手画像/`--add-dir` 代码前必须先过)
+## 前置实测闸门（✅ 已实测通过,CLI 2.1.158,2026-05-30）
 
-批判列为最高优先级——整个 §3 建立在"`--add-dir` 加载 CLAUDE.md"的**假设**上(ADR-018 §6 line 69/71 自标待实测)。先做 ~15 分钟实测:
-1. 含 CLAUDE.md(藏个暗号)的临时目录,`claude -p '复述 CLAUDE.md 里的暗号' --add-dir <dir>` vs 不带 `--add-dir`,对比是否读到。
-2. cwd 是否**隐式**加载(若是,`--add-dir` 多余)。
-3. **warm-resume 路径**:warm-spawn(无 `--add-dir`)→ `--resume`(带 `--add-dir`)能否读到 CLAUDE.md。
-未验证不写一行 marker/detect/`--add-dir` 代码。
+原假设"靠 `--add-dir` 加载 CLAUDE.md"**实测作废**:
+1. cwd=含 CLAUDE.md 的目录、**不带** `--add-dir` → claude 答出暗号 ⇒ **cwd 隐式加载** CLAUDE.md。
+2. cwd=别处 + `--add-dir <含 CLAUDE.md 目录>` → **读不到** ⇒ `--add-dir` 不注入该目录 CLAUDE.md(只给工具访问权)。
+
+⇒ §3 **无需任何 `--add-dir` 改动**:driver 已设 `cmd.Dir=cwd`(driver.go:230),CLAUDE.md 随 cwd 自动加载;WarmPool 也无加载集不一致问题(无 `--add-dir` 可言)。
 
 ## 影响
 
@@ -82,8 +82,7 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 
 | 严重度 | 风险 | 缓解 |
 |---|---|---|
-| high | `--add-dir` 加载 CLAUDE.md 未实测,§3 全建立在假设上 | **前置实测闸门**(见上),未过不写画像代码 |
-| high | WarmPool:warm-spawn 无 `--add-dir`,resume 时补 `--add-dir` 未必重新加载 | 实测覆盖 resume 路径;必要时 `spawnWarm` 也注入 `--add-dir`,或 v1 先 `PoolSize=0` 验证画像链路 |
+| ~~high~~ **已消解** | (原)`--add-dir` 加载未实测 / WarmPool 加载集不一致 | 实测确认 CLAUDE.md **走 cwd 隐式加载**(driver 已设 cmd.Dir),无 `--add-dir`,两风险均不成立 |
 | high | 语音路径 `adapter.go:615` 绕过 butler、被全部子域遗漏 | 改 `DeviceSystemPrompt` 签名时**三处一并改**;语音接 `(deviceID,"__default__")` 设备级摘要 |
 | high | 记忆投毒(指令性话术被持久化注入,放大越权) | §2 抗投毒三道防线(框定+deny+蒸馏 prompt 约束),不留到 v2 |
 | medium | resume 进行中会话摘要不刷新(无 model 那样的逃生通道) | v1 接受渐进延迟;对称刷新列 v2 |
@@ -101,14 +100,14 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 ## 实现 checklist
 
 **前置**
-- [ ] 实测闸门:`--add-dir` 加载 CLAUDE.md(含 cwd 隐式加载、warm-resume 路径)
+- [x] 实测闸门:CLAUDE.md 走 **cwd 隐式加载**(非 --add-dir;CLI 2.1.158 实测)
 
 **v1(静态画像 + 读注入)**
 - [ ] `internal/agent/memory`:Manager(memory.json + profiles.json,JSON 原子写,0600)+ `normalizeProject` + `Key()` + `SummaryReader`/`UserNeedsSink` 窄接口
 - [ ] `main.go`:`buildMemoryManager`(仿 `buildSessionManager`,缺失仅 Warnf 不 fatal)
 - [ ] 注入:`Deps.SystemPrompt` 加宽 `(deviceID,cwd)`;`persona.NewSystemPromptFn(reader)`(clamp + 抗投毒框定/deny);**三处 call site 全改(含语音 `adapter.go:615`)**
 - [ ] 项目画像:静态探测(go.mod/package.json/Cargo.toml/Makefile)写 `{cwd}/CLAUDE.md` marker 托管段(hash+minGap,异步挂 `engine.go` turnEnded,≤4KB,无绝对路径)
-- [ ] `claudecode`:`Send`(sessionFlags)+ `pool.spawnWarm` 同步注入 `--add-dir <cwd>`
+- [x] CLAUDE.md 加载:靠 cwd(driver 已设 `cmd.Dir=cwd`)——**无需 `--add-dir` 改动**
 - [ ] 测试:memory store(CRUD/key/normalize/clamp);注入(摘要拼接/deny/退化);画像(marker splice/hash 幂等/探测)
 
 **P1.5(蒸馏,默认关灰度)**
