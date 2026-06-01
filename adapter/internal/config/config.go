@@ -202,6 +202,29 @@ func LoadFromEnv() (Config, error) {
 	return cfg, nil
 }
 
+// ButlerConfig is the minimal configuration the butler dispatch MCP server
+// (ADR-021, `bbclaw-adapter mcp-server`) needs: the project allowlist plus the
+// credentials for the worker claude-code sessions. It deliberately omits the
+// ASR/TTS/OpenClaw settings — and their validation — that the full adapter
+// service requires, because the MCP server only dispatches coding workers and
+// never touches the voice pipeline.
+type ButlerConfig struct {
+	CwdPool         []CwdEntry
+	ClaudeBaseURL   string
+	ClaudeAuthToken string
+}
+
+// LoadButlerEnv reads only the env vars the butler MCP server needs. Unlike
+// LoadFromEnv it performs no validation, so the server starts cleanly without
+// ASR/TTS configuration.
+func LoadButlerEnv() ButlerConfig {
+	return ButlerConfig{
+		CwdPool:         parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
+		ClaudeBaseURL:   strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+		ClaudeAuthToken: strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
+	}
+}
+
 func (c Config) Validate() error {
 	switch c.normalizedMode() {
 	case "auto", "local", "cloud":
