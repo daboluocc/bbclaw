@@ -7,10 +7,10 @@ import (
 )
 
 const (
-	// envEnable gates the whole long-term-memory write pipeline. Default OFF
-	// (ADR-021 §4 安全分级): the link is only enabled after the Haiku distill
-	// chain is smoke-tested, and LOCAL-only — cloud multi-tenant v1 never wires
-	// the Writer (per-user scoping lands later).
+	// envEnable gates the whole long-term-memory write pipeline. Default ON
+	// so users get long-term memory out of the box. Set to 0/false/no/off to
+	// disable. LOCAL-only — cloud multi-tenant v1 never wires the Writer
+	// (per-user scoping lands later, ADR-021 §4).
 	envEnable = "BBCLAW_BUTLER_MEMORY_DISTILL"
 	// envModel overrides the distillation model; default is the cheapest Haiku.
 	envModel = "BBCLAW_BUTLER_MEMORY_MODEL"
@@ -21,11 +21,12 @@ const (
 )
 
 // Enabled reports whether the memory write pipeline is switched on via env.
-// Accepts 1/true/yes/on (case-insensitive); everything else (incl. unset) = off.
+// Accepts 1/true/yes/on (case-insensitive); everything else (incl. unset) = on.
+// Default is ON so users get the long-term memory feature out of the box.
 func Enabled() bool {
 	v := strings.TrimSpace(os.Getenv(envEnable))
 	if v == "" {
-		return false
+		return true  // default ON
 	}
 	if b, err := strconv.ParseBool(v); err == nil {
 		return b
