@@ -324,7 +324,7 @@ func (a *Adapter) handleAgentSessionsListLogicalRequest(write func(CloudEnvelope
 	if limit > 200 {
 		limit = 200
 	}
-	sessions := a.sessions.List(deviceID, driverName, limit)
+	sessions := a.sessions.ListDeviceFacing(deviceID, driverName, limit)
 	if sessions == nil {
 		sessions = []*logicalsession.LogicalSession{}
 	}
@@ -747,7 +747,7 @@ func (a *Adapter) handleAgentMenuRequest(write func(CloudEnvelope) error, env Cl
 		items := make([]menu.SessionItem, 0)
 		// NB: cloud path doesn't filter by SessionMaxAge (homeadapter Config has
 		// none; mirrors handleAgentSessionsListLogicalRequest which lists all).
-		for _, sess := range a.sessions.List(strings.TrimSpace(p.DeviceID), driver, 50) {
+		for _, sess := range a.sessions.ListDeviceFacing(strings.TrimSpace(p.DeviceID), driver, 50) {
 			items = append(items, menu.SessionItem{
 				ID:         string(sess.ID),
 				Title:      sess.Title,

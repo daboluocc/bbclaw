@@ -901,7 +901,7 @@ func (s *Server) handleAgentSessionsLogical(w http.ResponseWriter, r *http.Reque
 	if limit > 200 {
 		limit = 200
 	}
-	sessions := s.sessions.List(deviceID, driverName, limit)
+	sessions := s.sessions.ListDeviceFacing(deviceID, driverName, limit)
 	if sessions == nil {
 		sessions = []*logicalsession.LogicalSession{}
 	}

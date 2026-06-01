@@ -89,7 +89,7 @@ func (s *Server) handleAgentMenu(w http.ResponseWriter, r *http.Request) {
 		current := strings.TrimSpace(r.URL.Query().Get("current"))
 		now := time.Now()
 		items := make([]menu.SessionItem, 0)
-		for _, sess := range s.sessions.List(deviceID, driver, 50) {
+		for _, sess := range s.sessions.ListDeviceFacing(deviceID, driver, 50) {
 			if s.cfg.SessionMaxAge > 0 && sess.LastUsedAt.Before(now.Add(-s.cfg.SessionMaxAge)) {
 				continue // skip expired (matches legacy picker, T4)
 			}
