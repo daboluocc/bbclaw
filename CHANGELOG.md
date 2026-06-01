@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
 
 ### Added
+- **管家会话路由 — 设备 turn 永远路由到 workspace 管家会话 + `--mcp-config` + WarmPool 预热 (ADR-021 v1, #80)**：设备每次语音/文本 turn 不再自选 driver/session，统一路由到该设备专属的「管家」逻辑会话（`Role=butler`、`cwd=~/.bbclaw-adapter/workspace/`、`driver=claude-code`），管家靠 cwd 自动加载 workspace 的 CLAUDE.md 人设/记忆。
+  - **管家会话解析**（`logicalsession.Manager.EnsureButler`）：按 `deviceID+driver` 幂等解析/创建管家会话；首次铸造 `RoleButler`，后续复用以保留会话连续性。每设备一个管家。
+  - **路由落点**：`httpapi/agent.go handleAgentMessage`（local）与 `homeadapter/adapter.go handleChatTextViaAgent`（cloud 语音）在配置了 butler workspace 时，忽略设备请求的 driver/session，改喂管家会话走 `butler.Engine.RunTurn`。语音路径从「手撸 `drv.Start`/事件循环」统一到 butler 引擎，经 `voiceEventSink` 适配回 `voice.reply.delta`/`tool_call` 帧，云端协议帧序列不变。未配置 workspace 时（如单测）保持旧多会话行为不破。
+  - **`--mcp-config`（仅管家）**：`agent.StartOpts` 新增 `MCPConfig` 字段（契约同 `Model`/`SystemPrompt`，不支持的 driver 忽略）；claudecode `sessionFlags` 在非空时拼 `--mcp-config <path>`。`butler.Engine` 仅当解析到的会话 `Role==butler` 时注入 `Deps.ButlerMCPConfig`，worker/普通会话不带。`butlermcp.WriteConfig` 生成指向 `mcp-server` 子命令（#79）的 stdio MCP 配置文件，启动时写到 `~/.bbclaw-adapter/butler-mcp.json`。
+  - **WarmPool 预热管家**：`claudecode.WarmPool` 从单 `warmCwd` 扩成多 `warmCwds`（项目 cwd + 管家 workspace），每 cwd 独立维持 `size` 个预热条目，`Acquire(cwd)` 严格按 cwd 命中——管家每轮命中预热，避免 4-7s 冷启动。
 - **管家 MCP 派发 server — worker runner + `mcp-server` 子命令 (ADR-021 v1)**：补齐「管家 MCP 派发」最后一公里。
   - **`ClaudeWorkerRunner`**（`adapter/internal/butlermcp/runner_claude.go`）：落地 `WorkerRunner` 接口，复用 claudecode driver 在目标 cwd 起 worker（`--permission-mode acceptEdits`），消费 stream-json 累积 assistant 文本到 `EvTurnEnd`，`EvError` 透传为错误，输出超长时按头尾保留、中间省略裁剪（默认 8KB，避免把超长 transcript 回灌管家）。
   - **`bbclaw-adapter mcp-server` 子命令**（`adapter/internal/cmd/mcpserver.go`）：从 env 读 `BBCLAW_CWD_POOL`（allowlist）与 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`，装配 `ClaudeWorkerRunner` + `butlermcp.New`，在 stdio 上 `Serve`；**stdout 仅 JSON-RPC，日志全部走 stderr**（`obs.NewLoggerTo`）。新增 `config.LoadButlerEnv` 仅加载管家所需字段，跳过 ASR/TTS 校验。

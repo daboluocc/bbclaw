@@ -8,6 +8,10 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 )
 
+// ButlerDriver 是管家会话固定使用的 agent driver(ADR-021 §1):管家是 per-device 的
+// 编排者,跑在 claude-code 上以便加载 workspace 的 CLAUDE.md 人设并经 --mcp-config 派发。
+const ButlerDriver = "claude-code"
+
 // Request 是 caller 把自己的 transport 入参规整后传给 butler 的纯数据。
 // 差异 #10:deviceId 来源由 caller 决定(LOCAL=URL query;CLOUD=env.DeviceID)。
 type Request struct {
@@ -41,6 +45,12 @@ type Deps struct {
 	//   LOCAL  = s.agentCtx(长生命周期)
 	//   CLOUD  = 请求 ctx
 	StartCtx context.Context
+
+	// ButlerMCPConfig 是管家会话的 --mcp-config 文件路径(ADR-021 §2)。仅当本轮解析到的
+	// logical session 的 Role 为 logicalsession.RoleButler 时,才经 StartOpts.MCPConfig
+	// 下达给 driver(claudecode → --mcp-config),让管家可派发 worker。worker 会话不带。
+	// "" = 不注入(非管家路径或未配置 mcp-server)。
+	ButlerMCPConfig string
 }
 
 // Engine 持有不变的依赖;RunTurn 每次调用驱动一个完整 turn。
@@ -147,6 +157,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		logicalID         logicalsession.ID
 		resumeFromLogical string
 		logicalCwd        string
+		logicalRole       string
 		usingLogical      bool
 
 		sid   agent.SessionID
@@ -165,6 +176,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			logicalID = ls.ID
 			resumeFromLogical = ls.CLISessionID
 			logicalCwd = ls.Cwd
+			logicalRole = ls.Role
 			usingLogical = true
 			if resumeFromLogical != "" {
 				if dn, esid, found := d.Registry.Get(resumeFromLogical); found {
@@ -200,6 +212,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 					logicalID = recent.ID
 					resumeFromLogical = recent.CLISessionID
 					logicalCwd = recent.Cwd
+					logicalRole = recent.Role
 					usingLogical = true
 					if resumeFromLogical != "" {
 						if dn, esid, found := d.Registry.Get(resumeFromLogical); found {
@@ -310,6 +323,11 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			}
 			startOpts.Model = d.resolveModel(drv.Name())
 			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd)
+			// 仅管家会话(Role=butler)带 --mcp-config,让它能派发 worker(ADR-021 §2);
+			// worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
+			if logicalRole == logicalsession.RoleButler && d.ButlerMCPConfig != "" {
+				startOpts.MCPConfig = d.ButlerMCPConfig
+			}
 			isResumeAttempt := false
 			if attempt == 0 {
 				switch {

@@ -130,6 +130,17 @@ func (s *Server) SetSessionManager(m *logicalsession.Manager) { s.sessions = m }
 // router's first-registered-wins default applies as before).
 func (s *Server) SetDriverState(store *driverstate.Store) { s.driverState = store }
 
+// SetButlerWorkspace enables butler routing (ADR-021 §1): when workspaceCwd is
+// non-empty, every /v1/agent/message turn is routed to the calling device's
+// butler logical session (cwd=workspaceCwd, Role=butler, driver=claude-code)
+// instead of honouring the device-requested driver/session. mcpConfig is the
+// path to the butler's --mcp-config file (ADR-021 §2); empty disables dispatch.
+// Passing an empty workspaceCwd leaves the legacy multi-session path untouched.
+func (s *Server) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
+	s.butlerWorkspace = strings.TrimSpace(workspaceCwd)
+	s.butlerMCPConfig = strings.TrimSpace(mcpConfig)
+}
+
 // resolveActiveDriver picks the driver name to use when the request didn't
 // specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
 // own default. Both fall back gracefully to "" when neither resolves.
@@ -629,6 +640,21 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	requestedSession := strings.TrimSpace(req.SessionId)
 	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
 
+	// Butler routing (ADR-021 §1): when a butler workspace is configured, the
+	// device no longer picks a driver/session — every turn is routed to this
+	// device's butler logical session (cwd=workspace, Role=butler). We resolve
+	// (or create) it here and override the requested driver/session before the
+	// engine runs; RunTurn's ls- path then loads its cwd, and the butler role
+	// tells the engine to inject --mcp-config so dispatch works.
+	if s.butlerWorkspace != "" && s.sessions != nil {
+		if bsess, err := s.sessions.EnsureButler(deviceID, butler.ButlerDriver, s.butlerWorkspace); err != nil {
+			s.log.Warnf("butler: ensure failed device=%q err=%v; falling back to requested driver/session", deviceID, err)
+		} else {
+			requestedDriver = bsess.Driver
+			requestedSession = string(bsess.ID)
+		}
+	}
+
 	// Lazily-built stream writer. The parse phase may return a PreStream
 	// CodedError before any frame is written, in which case we reply with a
 	// plain JSON 4xx. Once RunTurn touches the Sink the response is committed
@@ -666,6 +692,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		Log:                s.log,
 		ResolveActiveModel: s.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
+		ButlerMCPConfig:    s.butlerMCPConfig,
 		StartCtx:           s.agentCtx,
 	})
 

@@ -596,3 +596,68 @@ func TestHandleAgentMessage_VoiceCommand(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleAgentMessage_ButlerRouting verifies ADR-021 §1: when a butler
+// workspace is configured, the device's requested driver/session is ignored and
+// the turn is routed to the device's butler logical session (driver=claude-code,
+// Role=butler), which is created on first use.
+func TestHandleAgentMessage_ButlerRouting(t *testing.T) {
+	butlerMock := newNamedMockDriver("claude-code") // butler.ButlerDriver
+	otherMock := newNamedMockDriver("mock2")
+	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
+	r := agent.NewRouter()
+	r.Register(butlerMock, obs.NewLogger())
+	r.Register(otherMock, obs.NewLogger())
+	srv.SetAgentRouter(r)
+
+	mgr, err := logicalsession.NewManager(filepath.Join(t.TempDir(), "sessions.json"), "/tmp/default", obs.NewLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	srv.SetSessionManager(mgr)
+	srv.SetButlerWorkspace("/ws", "/cfg/butler-mcp.json")
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Device asks for mock2, but butler routing must override to claude-code.
+	resp, err := http.Post(ts.URL+"/v1/agent/message?deviceId=dev-1", "application/json",
+		bytes.NewBufferString(`{"text":"hello","driver":"mock2"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	frames := readNDJSONFrames(t, resp.Body)
+	if len(frames) == 0 || frames[0]["type"] != "session" {
+		t.Fatalf("missing session frame: %+v", frames)
+	}
+	if frames[0]["driver"] != "claude-code" {
+		t.Fatalf("session driver=%v want claude-code (butler), not the requested mock2", frames[0]["driver"])
+	}
+	sid, _ := frames[0]["sessionId"].(string)
+	if !strings.HasPrefix(sid, "ls-") {
+		t.Fatalf("session id=%q want ls- butler logical id", sid)
+	}
+
+	// The butler driver must have received the text; the requested driver must not.
+	if got := butlerMock.receivedTexts(); len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("butler driver received=%v want [hello]", got)
+	}
+	if got := otherMock.receivedTexts(); len(got) != 0 {
+		t.Fatalf("requested driver mock2 received=%v want none (butler routing overrides)", got)
+	}
+
+	// A Role=butler session must now exist for the device.
+	butlers := 0
+	for _, s := range mgr.List("dev-1", "claude-code", 0) {
+		if s.Role == logicalsession.RoleButler && string(s.ID) == sid {
+			butlers++
+			if s.Cwd != "/ws" {
+				t.Errorf("butler cwd=%q want /ws", s.Cwd)
+			}
+		}
+	}
+	if butlers != 1 {
+		t.Fatalf("butler session count=%d want 1", butlers)
+	}
+}

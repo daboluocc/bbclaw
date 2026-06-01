@@ -29,23 +29,28 @@ type warmEntry struct {
 // Send() calls Acquire() to pull a matching entry and resumes it with
 // `--resume <id>`, cutting first-response latency from 4-7s to ~0.5s.
 //
-// Entries are bound to a specific working directory (warmCwd) so the
-// pre-warmed claude-code subprocess records its session JSONL under the
-// same project directory that the real Send() spawn will inherit. Acquire
-// strict-matches the entry cwd against the request cwd; mismatched
-// requests fall through to cold spawn.
+// Entries are bound to a specific working directory so the pre-warmed
+// claude-code subprocess records its session JSONL under the same project
+// directory that the real Send() spawn will inherit. Acquire strict-matches
+// the entry cwd against the request cwd; mismatched requests fall through to
+// cold spawn.
+//
+// The pool warms several cwds independently (warmCwds): the configured
+// default project plus the per-device butler workspace (ADR-021 §3), each
+// kept topped up to `size` idle entries so a butler turn hits a warm session
+// every round instead of paying the 4-7s cold-start.
 //
 // The pool is safe for concurrent use. Pool size and TTL are controlled by
-// BBCLAW_CLAUDE_POOL_SIZE and BBCLAW_CLAUDE_POOL_IDLE_TTL. The cwd is
+// BBCLAW_CLAUDE_POOL_SIZE and BBCLAW_CLAUDE_POOL_IDLE_TTL. The cwds are
 // passed in at construction (see NewWarmPool).
 type WarmPool struct {
-	bin     string
-	extra   []string
-	env     map[string]string // driver-level env overrides injected into warm spawns
-	warmCwd string            // working directory for spawnWarm; also the cwd stamped on each entry
-	size    int
-	idleTTL time.Duration
-	log     *obs.Logger
+	bin      string
+	extra    []string
+	env      map[string]string // driver-level env overrides injected into warm spawns
+	warmCwds []string          // working directories warmed independently; each entry is stamped with its cwd
+	size     int               // target idle entries PER cwd
+	idleTTL  time.Duration
+	log      *obs.Logger
 
 	mu      sync.Mutex
 	entries []warmEntry
@@ -62,17 +67,19 @@ type WarmPool struct {
 // NewWarmPool creates a WarmPool and starts its background replenish goroutine.
 // size=0 disables the pool entirely (Acquire always returns "", false).
 //
-// warmCwd is the working directory that spawnWarm uses and that each entry's
-// cwd is stamped with. Acquire strict-matches against this. Pass the canonical
-// project path (e.g. BBCLAW_DEFAULT_CWD or CwdPool[0].Path) — passing an
-// empty string makes the warm process inherit the adapter's own cwd, which
-// is rarely what callers want when CWD_POOL is configured.
-func NewWarmPool(bin string, extra []string, env map[string]string, warmCwd string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
+// warmCwds are the working directories spawnWarm uses; each entry is stamped
+// with the cwd it was warmed in and Acquire strict-matches against it. Pass the
+// canonical project path(s) (e.g. BBCLAW_DEFAULT_CWD / CwdPool[0].Path plus the
+// butler workspace) — an empty entry makes that warm process inherit the
+// adapter's own cwd, which is rarely what callers want when CWD_POOL is
+// configured. Duplicate and blank-only entries are de-duplicated; if none
+// remain the pool warms a single inherited-cwd ("") slot for legacy parity.
+func NewWarmPool(bin string, extra []string, env map[string]string, warmCwds []string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
 	p := &WarmPool{
 		bin:         bin,
 		extra:       extra,
 		env:         env,
-		warmCwd:     warmCwd,
+		warmCwds:    dedupeCwds(warmCwds),
 		size:        size,
 		idleTTL:     idleTTL,
 		log:         log,
@@ -186,39 +193,53 @@ func (p *WarmPool) evictExpired() {
 	p.entries = kept
 }
 
-// fill spawns no-op claude processes until the pool reaches its target size.
-// Each spawn is sequential to avoid hammering the API on startup.
+// fill spawns no-op claude processes until every warm cwd has `size` idle
+// entries. Each spawn is sequential to avoid hammering the API on startup.
 func (p *WarmPool) fill() {
-	for {
-		p.mu.Lock()
-		need := p.size - len(p.entries)
-		p.mu.Unlock()
-		if need <= 0 {
-			return
-		}
+	for _, cwd := range p.warmCwds {
+		for {
+			p.mu.Lock()
+			have := p.countForCwd(cwd)
+			p.mu.Unlock()
+			if have >= p.size {
+				break
+			}
 
-		// Check if we've been asked to stop.
-		select {
-		case <-p.done:
-			return
-		default:
-		}
+			// Check if we've been asked to stop.
+			select {
+			case <-p.done:
+				return
+			default:
+			}
 
-		entry, err := p.spawnWarm()
-		if err != nil {
-			p.log.Warnf("claude-code: pool warm failed: %v (will retry on next signal)", err)
-			return // back off; next signal or ticker will retry
-		}
+			entry, err := p.spawnWarm(cwd)
+			if err != nil {
+				p.log.Warnf("claude-code: pool warm failed cwd=%q: %v (will retry on next signal)", cwd, err)
+				break // back off this cwd; next signal or ticker will retry
+			}
 
-		p.mu.Lock()
-		// Re-check size under lock in case Drain() was called concurrently.
-		if len(p.entries) < p.size {
-			p.entries = append(p.entries, entry)
-			p.log.Infof("claude-code: pool warmed cliSession=%s cwd=%q pool=%d/%d",
-				entry.cliSessionID, entry.cwd, len(p.entries), p.size)
+			p.mu.Lock()
+			// Re-check size under lock in case Drain() was called concurrently.
+			if p.countForCwd(cwd) < p.size {
+				p.entries = append(p.entries, entry)
+				p.log.Infof("claude-code: pool warmed cliSession=%s cwd=%q pool=%d/%d",
+					entry.cliSessionID, entry.cwd, p.countForCwd(cwd), p.size)
+			}
+			p.mu.Unlock()
 		}
-		p.mu.Unlock()
 	}
+}
+
+// countForCwd returns the number of idle entries stamped with cwd. Caller must
+// hold p.mu.
+func (p *WarmPool) countForCwd(cwd string) int {
+	n := 0
+	for _, e := range p.entries {
+		if e.cwd == cwd {
+			n++
+		}
+	}
+	return n
 }
 
 // noopPrompt is the prompt used to pre-warm a session. It must be:
@@ -228,9 +249,9 @@ func (p *WarmPool) fill() {
 const noopPrompt = "respond with the single word: ready"
 
 // spawnWarm runs `claude -p <noopPrompt> --output-format stream-json --verbose`
-// and extracts the cli_session_id from the init event. The process runs to
-// completion; only the session ID is retained.
-func (p *WarmPool) spawnWarm() (warmEntry, error) {
+// in cwd and extracts the cli_session_id from the init event. The process runs
+// to completion; only the session ID is retained.
+func (p *WarmPool) spawnWarm(cwd string) (warmEntry, error) {
 	args := []string{"-p", noopPrompt, "--output-format", "stream-json", "--verbose"}
 	args = append(args, p.extra...)
 
@@ -249,11 +270,11 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 	} else {
 		cmd.Env = os.Environ()
 	}
-	// Pin the warm spawn to the configured cwd so its session JSONL lands in
-	// the same project directory that real Send() spawns will inherit. Empty
-	// warmCwd falls back to Go's "inherit parent cwd" behaviour, which is
-	// fine for deployments that haven't configured CWD_POOL.
-	cmd.Dir = p.warmCwd
+	// Pin the warm spawn to the requested cwd so its session JSONL lands in
+	// the same project directory that real Send() spawns will inherit. An empty
+	// cwd falls back to Go's "inherit parent cwd" behaviour, which is fine for
+	// deployments that haven't configured CWD_POOL.
+	cmd.Dir = cwd
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -305,9 +326,28 @@ func (p *WarmPool) spawnWarm() (warmEntry, error) {
 
 	return warmEntry{
 		cliSessionID: cliSessionID,
-		cwd:          p.warmCwd,
+		cwd:          cwd,
 		createdAt:    time.Now(),
 	}, nil
+}
+
+// dedupeCwds removes duplicate working directories while preserving order. When
+// the input is empty it returns a single inherited-cwd ("") slot so the pool
+// keeps the legacy "warm one entry in the adapter's own cwd" behaviour.
+func dedupeCwds(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }
 
 // Size returns the configured pool capacity.
@@ -325,10 +365,4 @@ func (p *WarmPool) injectEntry(e warmEntry) {
 	p.mu.Lock()
 	p.entries = append(p.entries, e)
 	p.mu.Unlock()
-}
-
-// poolFromEnv is a helper used by the driver to read pool config from env vars
-// and construct a WarmPool. Extracted here so driver.go stays clean.
-func poolFromEnv(bin string, extra []string, env map[string]string, warmCwd string, size int, idleTTL time.Duration, log *obs.Logger) *WarmPool {
-	return NewWarmPool(bin, extra, env, warmCwd, size, idleTTL, log)
 }

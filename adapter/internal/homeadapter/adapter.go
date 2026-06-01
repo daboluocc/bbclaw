@@ -61,6 +61,15 @@ type Adapter struct {
 	// driverState persists user-mutable driver preferences. Optional: when
 	// nil the agent proxy uses router defaults. Set via SetDriverState.
 	driverState *driverstate.Store
+
+	// butlerWorkspace is the per-device butler workspace cwd (ADR-021 §1). When
+	// non-empty (wired by main.go), the voice transcript path routes every turn
+	// to the device's butler logical session via the butler engine instead of
+	// the legacy one-shot driver spawn. Empty keeps the legacy voice path.
+	butlerWorkspace string
+	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
+	// §2), passed to the engine so the butler session can dispatch workers.
+	butlerMCPConfig string
 }
 
 type Status struct {
@@ -146,6 +155,18 @@ func (a *Adapter) defaultStartCwd() string {
 		return a.cwdPool[0].Path
 	}
 	return ""
+}
+
+// SetButlerWorkspace enables butler routing for the cloud voice path (ADR-021
+// §1): when workspaceCwd is non-empty, the voice transcript fan-out routes
+// every turn to the calling device's butler logical session (cwd=workspaceCwd,
+// Role=butler, driver=claude-code) through the butler engine instead of the
+// legacy one-shot driver spawn. mcpConfig is the butler's --mcp-config path
+// (ADR-021 §2); empty disables dispatch. Empty workspaceCwd leaves the legacy
+// voice path untouched.
+func (a *Adapter) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
+	a.butlerWorkspace = strings.TrimSpace(workspaceCwd)
+	a.butlerMCPConfig = strings.TrimSpace(mcpConfig)
 }
 
 // SetDriverState attaches the persistent driver-preference store, mirrored
@@ -599,6 +620,15 @@ func (a *Adapter) handleChatTextViaAgent(
 	text, sessionKey, streamID, driverName string,
 	routeStart time.Time,
 ) error {
+	// Butler routing (ADR-021 §1): when a butler workspace is configured, route
+	// the voice turn to the device's butler logical session through the shared
+	// butler engine (cwd=workspace, --mcp-config, warm-pool hit) instead of the
+	// legacy one-shot spawn below. Falls back to the legacy path when the butler
+	// can't be resolved so a transient session-store error never drops a turn.
+	if a.butlerWorkspace != "" && a.sessions != nil {
+		return a.handleChatTextViaButler(ctx, write, env, text, sessionKey, streamID, routeStart)
+	}
+
 	drv, ok := a.router.Get(driverName)
 	if !ok {
 		return fmt.Errorf("agent driver %q not registered", driverName)
@@ -671,6 +701,146 @@ loop:
 		Kind:       "voice.reply",
 		Payload:    map[string]any{"ok": true, "text": replyText},
 	})
+}
+
+// handleChatTextViaButler runs one voice turn through the shared butler engine
+// (ADR-021 §1). It resolves the device's butler logical session, runs the turn
+// via butler.Engine.RunTurn, and re-emits the agent events as the same cloud
+// frames the legacy voice path produced (voice.reply.delta / tool_call) so the
+// cloud relay protocol is byte-for-byte compatible. The accumulated assistant
+// text is sent as the final voice.reply envelope, exactly like before.
+func (a *Adapter) handleChatTextViaButler(
+	ctx context.Context,
+	write func(CloudEnvelope) error,
+	env CloudEnvelope,
+	text, sessionKey, streamID string,
+	routeStart time.Time,
+) error {
+	if a.agentSessions == nil {
+		a.agentSessions = newAgentProxyRegistry()
+	}
+
+	requestedDriver := butler.ButlerDriver
+	requestedSession := ""
+	if bsess, err := a.sessions.EnsureButler(env.DeviceID, butler.ButlerDriver, a.butlerWorkspace); err != nil {
+		// Non-fatal: without a butler session the engine still runs a fresh
+		// claude-code turn in the workspace, just without session continuity.
+		a.log.Warnf("butler: ensure failed device=%q err=%v; running butler turn without logical session", env.DeviceID, err)
+	} else {
+		requestedDriver = bsess.Driver
+		requestedSession = string(bsess.ID)
+	}
+
+	sink := &voiceEventSink{a: a, write: write, env: env, streamID: streamID, sessionKey: sessionKey, routeStart: routeStart}
+
+	eng := butler.NewEngine(butler.Deps{
+		Router:   a.router,
+		Sessions: a.sessions,
+		Registry: &cloudSessionRegistry{r: a.agentSessions},
+		Sink:     sink,
+		Policy: butler.Policy{
+			ReuseWindow:          0,
+			AllowBareCLIID:       true,
+			AutoTitle:            false,
+			EmitTurnEndFrame:     false,
+			EmitStartFailedFrame: false,
+			MaxAttempts:          2,
+		},
+		Metrics:            &cloudMetrics{m: a.metrics},
+		Log:                a.log,
+		ResolveActiveModel: a.resolveActiveModel,
+		SystemPrompt:       butler.DeviceSystemPrompt,
+		ButlerMCPConfig:    a.butlerMCPConfig,
+		StartCtx:           ctx,
+	})
+
+	_, runErr := eng.RunTurn(ctx, butler.Request{
+		Text:             text,
+		RequestedDriver:  requestedDriver,
+		RequestedSession: requestedSession,
+		DeviceID:         env.DeviceID,
+	})
+	if runErr != nil {
+		// ctx cancellation or a coded error after the stream committed: surface a
+		// failed voice.reply so the cloud (and device) don't hang on the turn.
+		a.log.Warnf("phase=voice_butler_failed device=%s session=%s elapsed_s=%.3f err=%v",
+			env.DeviceID, strings.TrimSpace(sessionKey), time.Since(routeStart).Seconds(), runErr)
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			Kind:       "voice.reply",
+			Payload:    map[string]any{"ok": false, "error": runErr.Error()},
+		})
+	}
+
+	replyText := sink.replyText()
+	a.log.Infof("phase=chat_text_request_done driver=%s session=%s elapsed_s=%.3f reply_chars=%d butler=true",
+		requestedDriver, sessionKey, time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		Kind:       "voice.reply",
+		Payload:    map[string]any{"ok": true, "text": replyText},
+	})
+}
+
+// voiceEventSink adapts butler.EventSink to the cloud voice protocol frames.
+// It maps EvText → voice.reply.delta and EvToolCall → tool_call (the exact
+// kinds the legacy handleChatTextViaAgent loop emitted) and accumulates the
+// assistant text for the final voice.reply envelope. Session frames are not
+// part of the voice protocol, so EmitSession is a no-op. All methods return
+// true: cloud streaming is best-effort and never aborts the turn on a dropped
+// write (matching the legacy writeEvent behaviour). The engine calls these
+// methods sequentially from its consume loop, so no locking is needed.
+type voiceEventSink struct {
+	a          *Adapter
+	write      func(CloudEnvelope) error
+	env        CloudEnvelope
+	streamID   string
+	sessionKey string
+	routeStart time.Time
+
+	parts    []string
+	deltaSeq int
+}
+
+func (v *voiceEventSink) EmitSession(string, bool, string) bool { return true }
+
+func (v *voiceEventSink) EmitEvent(ev agent.Event) bool {
+	switch ev.Type {
+	case agent.EvText:
+		if t := strings.TrimSpace(ev.Text); t != "" {
+			v.parts = append(v.parts, ev.Text)
+			v.deltaSeq++
+			v.a.log.Infof("phase=reply_delta_recv device=%s session=%s stream=%s delta_seq=%d text_chars=%d elapsed_s=%.3f",
+				v.env.DeviceID, strings.TrimSpace(v.sessionKey), strings.TrimSpace(v.streamID), v.deltaSeq,
+				utf8.RuneCountInString(ev.Text), time.Since(v.routeStart).Seconds())
+			v.writeEvent("voice.reply.delta", map[string]any{"text": ev.Text})
+		}
+	case agent.EvToolCall:
+		if ev.Tool != nil {
+			v.writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
+		}
+	}
+	return true
+}
+
+func (v *voiceEventSink) EmitError(code, text string, _ bool) bool {
+	v.a.log.Warnf("phase=voice_butler_error device=%s session=%s code=%s detail=%.120s",
+		v.env.DeviceID, strings.TrimSpace(v.sessionKey), code, text)
+	return true
+}
+
+func (v *voiceEventSink) writeEvent(kind string, payload map[string]any) {
+	if err := v.a.writeStreamEvent(v.write, v.env, kind, payload); err != nil {
+		v.a.log.Warnf("writeEvent failed kind=%s device=%s err=%v", kind, v.env.DeviceID, err)
+	}
+}
+
+func (v *voiceEventSink) replyText() string {
+	return strings.TrimSpace(strings.Join(v.parts, ""))
 }
 
 func (a *Adapter) writeStreamEvent(write func(CloudEnvelope) error, env CloudEnvelope, kind string, payload map[string]any) error {

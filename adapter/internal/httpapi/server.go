@@ -37,8 +37,8 @@ type AppConfig struct {
 	AudioInDir           string
 	AudioOutDir          string
 	ASRTranscribeTimeout time.Duration
-	SessionReuseWindow   time.Duration // 0 disables reuse
-	SessionMaxAge        time.Duration // 0 disables sweep
+	SessionReuseWindow   time.Duration     // 0 disables reuse
+	SessionMaxAge        time.Duration     // 0 disables sweep
 	CwdPool              []config.CwdEntry // populated from BBCLAW_CWD_POOL / BBCLAW_DEFAULT_CWD
 }
 
@@ -92,6 +92,15 @@ type Server struct {
 	// is the router's default and active_model falls back to driver-default.
 	// Set via SetDriverState from main.go.
 	driverState *driverstate.Store
+
+	// butlerWorkspace is the per-device butler workspace cwd (ADR-021 §1). When
+	// non-empty (wired by main.go), every /v1/agent/message turn is routed to
+	// the device's butler logical session instead of honouring the device's
+	// requested driver/session. Empty keeps the legacy multi-session behaviour.
+	butlerWorkspace string
+	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
+	// §2), passed to the engine so the butler session can dispatch workers.
+	butlerMCPConfig string
 
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
