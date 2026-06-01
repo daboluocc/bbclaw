@@ -1,8 +1,8 @@
 # ADR-020: 记忆管线 —— 用户需求记忆 + 本地项目画像(复用 Claude 原生)
 
 - **日期**: 2026-05-30
-- **状态**: 草案（设计已定;v1 范围明确,LLM 蒸馏延后到 P1.5;有一个**前置实测闸门**）
-- **关联**: ADR-018（设备管家 §2 记忆设计 + §6 spike）、ADR-014（逻辑会话)、ADR-016（driver/model 注入语义)、ADR-019（server-driven 菜单——记忆条目未来可作菜单)、`docs/PROJECT_PROFILE.md`
+- **状态**: 草案（设计已定;v1 范围明确,LLM 蒸馏延后到 P1.5;有一个**前置实测闸门**）。**部分 Superseded by ADR-021(2026-06-01)**:在「管家」模式下,§1 `memory.json` 用户需求存储 + §2 `--append-system-prompt` 摘要注入 + §4 蒸馏到 `memory.json` **均被 ADR-021 §4 取代** —— 管家长期记忆唯一落点改为 workspace `CLAUDE.md` 托管段,蒸馏 caller hook(`OnTurnDistill`)改为 engine 内部步骤 + `Deps.MemoryWriter`。**§3 本地项目画像(各项目 cwd 的 CLAUDE.md)仍独立有效,不受影响。**
+- **关联**: ADR-021（对话编排管家 §4 记忆落点收敛——取代本 ADR 的注入层）、ADR-018（设备管家 §2 记忆设计 + §6 spike）、ADR-014（逻辑会话)、ADR-016（driver/model 注入语义)、ADR-019（server-driven 菜单——记忆条目未来可作菜单)、`docs/PROJECT_PROFILE.md`
 
 ## 背景
 
@@ -22,6 +22,8 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 
 ### 1. 存储层 —— `internal/agent/memory`(JSON,不引 SQLite)
 
+> ⚠️ **管家模式下 Superseded by ADR-021 §4(2026-06-01)**:用户需求记忆不再落 `memory.json`,改为 workspace `CLAUDE.md` 托管段(`workspace.ReplaceManagedBlock`)。本节存储层在管家模式不实现;非管家场景如需可另议。
+
 照搬 `logicalsession/manager.go` 的原子持久化骨架(`tmp+fsync+rename` + 内存快照 + `RWMutex` + 缺/损文件降级不 fatal),**单一包 `internal/agent/memory`**(与 logicalsession 同级,butler 可依赖)。不引 SQLite/MCP(两仓零 DB、跑树莓派类设备、交叉编译敏感;数据量个位/十位级)。
 
 - **统一 project 主键**:`normalizeProject(cwd) = filepath.Clean(filepath.Abs(cwd))`,空 cwd → 哨兵 `"__default__"`。**全链路(存储/写/读注入)共用这一个函数**(批判指出四子域口径不一会导致读写 key 对不上)。
@@ -31,6 +33,8 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 - 窄接口视图:蒸馏侧用 `UserNeedsSink.Upsert(...)`、注入侧用 `SummaryReader.ReadSummary(deviceID, project) string`,**同一个 Manager 的两个视图**,不重复实现。
 
 ### 2. 记忆注入(进对话主路径,v1 ✅,低成本)
+
+> ⚠️ **管家模式下 Superseded by ADR-021 §4(2026-06-01)**:管家长期记忆走 workspace `CLAUDE.md`,由 claude `-p`(cwd=workspace)**原生隐式加载**(ADR-021 前置闸门②已实测),不再经 `--append-system-prompt` 注入用户需求摘要。本节的抗投毒三道防线(框定前缀 + deny 过滤 + 蒸馏 prompt 约束)**保留并沿用**到 ADR-021 §4 的写入侧 deny 过滤。
 
 - `Deps.SystemPrompt` 签名 `func(cwd string) string` → **`func(deviceID, cwd string) string`**(`engine.go` 调用处 `req.DeviceID`+`logicalCwd` 都在作用域,零新增数据流)。
 - `butler.DeviceSystemPrompt` → 闭包工厂 `NewSystemPromptFn(reader SummaryReader)`:静态人格+设备约束不变,尾部 append `reader.ReadSummary(deviceID, project)`(纯内存读、`RWMutex` RLock、无磁盘/LLM,量级同 `resolveActiveModel`)。`reader==nil` 退化为纯人格。
@@ -47,6 +51,8 @@ spike(CLI 2.1.156,ADR-018 §6)已静态核实:`--append-system-prompt` 存在且
 - 写入挂 `engine.go` turn 末 `turnEnded` 块、**goroutine 异步**,`hash` 去重 + `minGap`(默认 24h)去抖,绝不进主路径。托管段 ≤4KB 硬上限;**不写绝对路径**(隐私,只写类型/命令)。
 
 ### 4. LLM 蒸馏管线(⏳ P1.5,默认关,灰度)
+
+> ⚠️ **管家模式下 Superseded by ADR-021 §4(2026-06-01,已实现于 #83)**:蒸馏**不再走 caller hook `OnTurnDistill`**。最终采用 **engine 内部步骤 + `Deps.MemoryWriter` 窄接口**:engine 收尾点(`engine.go`)在【`Role==RoleButler && turnEnded && errorCount==0`】时调 `MemoryWriter.RecordTurn(userText, replyText, cwd)`(LOCAL/CLOUD 注入同一实现,而非按 caller 注入)。理由:蒸馏对两路完全相同,不该像 `OnTurnComplete` 那样按 caller 分叉;且 #80 后管家 turn 已统一走 `butler.Engine.RunTurn`,收尾点天然持有 `req.Text` + `lastText` + `logicalCwd` + `logicalRole`。下文「非阻塞 channel send 满即丢 / 单 worker 并发=1 / Haiku `claude -p` 蒸馏 JSON delta / 规则门控 / deny 过滤 / 失败全吞 / 默认 env 关 / cloud v1 不写」全部沿用,落点由 `UserNeedsSink.Upsert` 改为 **append 进 workspace `CLAUDE.md` 托管段**(hash 去重 + ≤4KB FIFO clamp + 原子写 0600)。
 
 挂 butler 新增 `Hooks.OnTurnDistill(DistillInput{UserText, Cwd, DeviceID, LogicalID})`(批判指出 `Notification`/`Result` 都不带 `req.Text`,需专用 hook 而非污染通知/reply 路径)。turn 末**非阻塞 channel send**(满即丢),后台**单 worker**(并发=1,与 warm replenish 共享信号量)起 `claude -p`(Haiku,最便宜)蒸馏成小 JSON delta → `UserNeedsSink.Upsert` / 追加 CLAUDE.md。规则门控:错误轮跳过、长度下限、每 N 轮/字数阈值、per-key cooldown、每日配额。失败全吞(log+metric),不重试,不碰主对话。**默认 env 关闭,链路实测打通后灰度**;**cloud 多用户场景 v1 不开蒸馏写入**(只 LOCAL),user 维度落地前避免污染。
 

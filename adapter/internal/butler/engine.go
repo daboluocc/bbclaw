@@ -51,6 +51,12 @@ type Deps struct {
 	// 下达给 driver(claudecode → --mcp-config),让管家可派发 worker。worker 会话不带。
 	// "" = 不注入(非管家路径或未配置 mcp-server)。
 	ButlerMCPConfig string
+
+	// Memory 是「管家长期记忆」写入侧(ADR-021 §4)。非 nil 且本轮为【管家会话 +
+	// turn 正常结束(errorCount==0)】时,engine 在收尾点把 {用户原话, 管家回复, cwd}
+	// 非阻塞投递给它做异步蒸馏 → append 进 workspace CLAUDE.md 托管段。nil = 整步跳过
+	// (默认;由 env BBCLAW_BUTLER_MEMORY_DISTILL 门控,且 cloud 多租户 v1 不注入)。
+	Memory MemoryWriter
 }
 
 // Engine 持有不变的依赖;RunTurn 每次调用驱动一个完整 turn。
@@ -525,6 +531,12 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			Type:      notifType,
 			Preview:   lastText,
 		})
+	}
+
+	// 管家长期记忆(ADR-021 §4):仅【管家会话 + turn 正常结束 + 无错误】才把本轮
+	// 投递给记忆管线。RecordTurn 契约保证非阻塞、自吞失败,engine 主路径不受影响。
+	if d.Memory != nil && logicalRole == logicalsession.RoleButler && turnEnded && errorCount == 0 {
+		d.Memory.RecordTurn(req.Text, lastText, logicalCwd)
 	}
 
 	// 收尾指标由 caller 经 MetricsSink.TurnDone 据原始信号自行判定名与分支

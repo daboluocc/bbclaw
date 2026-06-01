@@ -141,6 +141,11 @@ func (s *Server) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
 	s.butlerMCPConfig = strings.TrimSpace(mcpConfig)
 }
 
+// SetMemoryWriter attaches the butler long-term-memory write side (ADR-021 §4).
+// nil (the default) disables the memory step entirely. Wired by main.go only
+// when BBCLAW_BUTLER_MEMORY_DISTILL is enabled, and LOCAL-only.
+func (s *Server) SetMemoryWriter(w butler.MemoryWriter) { s.memoryWriter = w }
+
 // resolveActiveDriver picks the driver name to use when the request didn't
 // specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
 // own default. Both fall back gracefully to "" when neither resolves.
@@ -693,6 +698,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		ResolveActiveModel: s.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		ButlerMCPConfig:    s.butlerMCPConfig,
+		Memory:             s.memoryWriter,
 		StartCtx:           s.agentCtx,
 	})
 
