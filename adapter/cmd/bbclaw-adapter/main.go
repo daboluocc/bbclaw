@@ -25,6 +25,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/butler/memory"
 	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/cmd"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
@@ -172,6 +173,16 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		server.SetSessionManager(sessionMgr)
 		// Route local agent turns to the per-device butler session (ADR-021).
 		server.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
+		// Butler long-term memory (ADR-021 §4). LOCAL-only and gated off by
+		// default (BBCLAW_BUTLER_MEMORY_DISTILL); cloud relay never wires it.
+		if butlerWorkspace != "" {
+			if mdPath, perr := workspace.ClaudeMDPath(); perr != nil {
+				logger.Warnf("butler-memory: resolve CLAUDE.md path failed, memory disabled: %v", perr)
+			} else if w, on := memory.NewFromEnv(mdPath, os.Getenv("AGENT_CLAUDE_CODE_BIN"), logger); on {
+				server.SetMemoryWriter(w)
+				logger.Infof("butler-memory: long-term memory enabled path=%s", mdPath)
+			}
+		}
 	}
 	if driverStateStore != nil {
 		server.SetDriverState(driverStateStore)

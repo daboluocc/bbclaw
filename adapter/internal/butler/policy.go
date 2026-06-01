@@ -99,6 +99,20 @@ type Logger interface {
 	Errorf(format string, args ...any)
 }
 
+// MemoryWriter 是「管家长期记忆」的写入侧窄接口(ADR-021 §4 / 取代 ADR-020 §4 的
+// OnTurnDistill caller hook)。engine 在 turn 收尾点对【管家会话且 turn 正常结束】
+// 调用 RecordTurn 一次,把本轮用户原话与管家回复投递给后台蒸馏管线。
+//
+// 契约:RecordTurn 必须【非阻塞且立即返回】——实现内部用带缓冲 channel + select
+// 满即丢,绝不可在 engine 主路径上做任何 I/O 或阻塞。失败一律自吞,不向 engine
+// 反馈错误(记忆是尽力而为的旁路,绝不影响 turn 返回设备)。
+//
+// 蒸馏对 LOCAL/CLOUD 完全相同,故走 Deps 注入而非按 caller 注入的 Hooks;
+// Deps.Memory 为 nil 时 engine 整步跳过(默认即如此,见 env 门控)。
+type MemoryWriter interface {
+	RecordTurn(userText, replyText, cwd string)
+}
+
 // ─────────────────────────── 结构化错误 ───────────────────────────
 
 // CodedError 是解析期(pre-stream)或运行期结构化错误。Code 是稳定机器码;

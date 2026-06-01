@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
 
 ### Added
+- **管家长期记忆 — turn 末蒸馏要点 append 进 workspace CLAUDE.md (ADR-021 §4 v1, #83)**：给「管家」(`RoleButler`) 会话加持久长期记忆，让管家 `claude -p --resume`(cwd=workspace) 重启/换机后仍记得用户偏好与在做的项目。
+  - **写入机制（engine 内部步骤，不新增 caller hook）**：`butler.Engine` 收尾点在【`Role==RoleButler && turnEnded && errorCount==0`】时，经新增窄接口 `Deps.MemoryWriter.RecordTurn(userText, replyText, cwd)` **非阻塞**投递本轮。选 engine 内部步骤而非 `Hooks.OnTurnComplete`：通知/reply 路径都不带 `req.Text`(ADR-020 §4)，且蒸馏对 LOCAL/CLOUD 完全相同，不该按 caller 注入。`MemoryWriter==nil`(默认) 整步跳过。
+  - **记忆落点（唯一）**：workspace `CLAUDE.md` 的 `<!-- BEGIN/END BBClaw-managed -->` 托管段，复用 `workspace.ReplaceManagedBlock`。**砍掉 ADR-020 的 `memory.json` 注入层**（§1/§2/§4 在管家模式下 Superseded by ADR-021）；各项目 cwd 的 CLAUDE.md 项目画像仍是独立轴。
+  - **蒸馏管线（`internal/butler/memory`）**：后台**单 worker(并发=1)** 起 Haiku `claude -p` 把本轮蒸馏成 JSON delta（用户长期偏好 / 最近项目 / 关键决策三类）→ **deny 过滤**（含 `ignore previous`/`system prompt`/`bypass`/`你现在是…` 等指令式条目整条丢，防注入持久化）→ **hash 去重**（幂等）→ **≤4KB FIFO clamp**（防膨胀）→ **原子写 0600**。门控：跳过错误轮 / 过短 utterance / 队列满即丢。失败全吞(log)，绝不阻塞 turn 返回设备。
+  - **安全分级**：env `BBCLAW_BUTLER_MEMORY_DISTILL` 默认 **off**（链路 smoke 前不写）；LOCAL 灰度开；**cloud 多租户 v1 不注入写入**（user 维度落地前避免串写）。`BBCLAW_BUTLER_MEMORY_MODEL` / `BBCLAW_BUTLER_MEMORY_CLAUDE_BIN` 可覆盖模型与二进制。
+  - **单测**：marker splice append / hash 去重幂等 / ≤4KB FIFO clamp / deny 过滤命中 / 0600 / 原子写无副作用；engine 投递门控（管家 vs 非管家 vs 错误轮 vs nil）/ writer 非阻塞满即丢 / 过短跳过 / env 默认 off。Haiku 真链路属外部 CLI 依赖，留集成冒烟。
 - **管家会话路由 — 设备 turn 永远路由到 workspace 管家会话 + `--mcp-config` + WarmPool 预热 (ADR-021 v1, #80)**：设备每次语音/文本 turn 不再自选 driver/session，统一路由到该设备专属的「管家」逻辑会话（`Role=butler`、`cwd=~/.bbclaw-adapter/workspace/`、`driver=claude-code`），管家靠 cwd 自动加载 workspace 的 CLAUDE.md 人设/记忆。
   - **管家会话解析**（`logicalsession.Manager.EnsureButler`）：按 `deviceID+driver` 幂等解析/创建管家会话；首次铸造 `RoleButler`，后续复用以保留会话连续性。每设备一个管家。
   - **路由落点**：`httpapi/agent.go handleAgentMessage`（local）与 `homeadapter/adapter.go handleChatTextViaAgent`（cloud 语音）在配置了 butler workspace 时，忽略设备请求的 driver/session，改喂管家会话走 `butler.Engine.RunTurn`。语音路径从「手撸 `drv.Start`/事件循环」统一到 butler 引擎，经 `voiceEventSink` 适配回 `voice.reply.delta`/`tool_call` 帧，云端协议帧序列不变。未配置 workspace 时（如单测）保持旧多会话行为不破。

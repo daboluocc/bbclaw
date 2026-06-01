@@ -20,6 +20,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/adapter/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
@@ -101,6 +102,11 @@ type Server struct {
 	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
 	// §2), passed to the engine so the butler session can dispatch workers.
 	butlerMCPConfig string
+	// memoryWriter is the butler long-term-memory write side (ADR-021 §4).
+	// Optional: nil (the default) means the engine skips the memory step. Wired
+	// by main.go from memory.NewFromEnv only when the pipeline is enabled and
+	// only on LOCAL (cloud multi-tenant v1 never writes).
+	memoryWriter butler.MemoryWriter
 
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub

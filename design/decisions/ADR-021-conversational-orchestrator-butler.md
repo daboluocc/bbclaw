@@ -77,8 +77,8 @@ adapter 起一个 MCP server(stdio 子进程或本地 SSE),管家会话 spawn �
 
 - `~/.bbclaw-adapter/workspace/` 布局:`CLAUDE.md`(管家**人设**openclaw 风格预设 + **长期记忆**),adapter 出厂带一份默认 CLAUDE.md;用户改动用 marker 段隔离(BEGIN/END BBClaw-managed)。
 - **人设**(参考 openclaw 预设):管家是调度器、有 dispatch/list_projects 工具;设备约束(小屏/语音/PTT、简短可朗读、用用户语言);"复杂任务派给 worker、把进展讲给用户"。
-- **记忆 = 每 turn 总结要点 append 进 workspace 记忆**(轻量版 openclaw):挂 butler turn 末 `Hooks.OnTurnComplete`,把"用户长期偏好 / 最近在做的项目 / 关键决策"追加进 workspace CLAUDE.md 的 managed 段(marker+上限+hash 去重),管家 --resume(cwd=workspace)时原生加载。这就是用户说的"总结对话记录到记忆"——也回答了之前"蒸馏是干嘛":在管家模式下它是"把对话沉淀成可持久记忆",供管家重启/换机后仍记得。
-- **与 ADR-020 关系**:workspace CLAUDE.md = 管家长期记忆(本 ADR);各项目 cwd 的 CLAUDE.md = 项目画像(ADR-020 §3 仍独立);ADR-020 的"用户需求 → --append-system-prompt 摘要存储"在管家模式下**降级**——管家自己的对话上下文 + workspace 记忆已承担,不再需要单独的 memory.json 注入层(简化)。
+- **记忆 = 每 turn 总结要点 append 进 workspace 记忆**(轻量版 openclaw,**已实现于 #83**):**不挂 caller hook(不用 `Hooks.OnTurnComplete`)**,而是在 **`butler.Engine` 收尾点内部步骤**经窄接口 **`Deps.MemoryWriter`** 落地——engine 在【`Role==RoleButler && turnEnded && errorCount==0`】时调 `MemoryWriter.RecordTurn(userText, replyText, cwd)`,把"用户长期偏好 / 最近在做的项目 / 关键决策"经后台单 worker(并发=1)Haiku `claude -p` 蒸馏 → deny 过滤 → hash 去重 → ≤4KB FIFO clamp → 原子写(0600)追加进 workspace CLAUDE.md 的 managed 段;管家 `--resume`(cwd=workspace)时原生加载。**为何不用 `Hooks.OnTurnComplete`**:`Notification`/`Result` 都不带 `req.Text`(ADR-020 §4 指出加宽通知路径会污染),且蒸馏对 LOCAL/CLOUD 完全相同,不该按 caller 注入——故走 `Deps` 内部步骤而非 caller hook。**安全分级**:env `BBCLAW_BUTLER_MEMORY_DISTILL` 默认 **off**;LOCAL 灰度开;cloud 多租户 v1 **不注入**(user 维度落地前避免串写)。这就是用户说的"总结对话记录到记忆"——也回答了之前"蒸馏是干嘛":在管家模式下它是"把对话沉淀成可持久记忆",供管家重启/换机后仍记得。
+- **与 ADR-020 关系(Accepted,2026-06-01)**:workspace CLAUDE.md = 管家长期记忆**唯一落点**(本 ADR);各项目 cwd 的 CLAUDE.md = 项目画像(ADR-020 §3 仍独立);ADR-020 的"用户需求 → memory.json + --append-system-prompt 摘要注入 + 蒸馏到 memory.json"在管家模式下**降级/Superseded**——管家自己的对话上下文 + workspace 记忆已承担,**砍掉单独的 memory.json 注入层**(简化)。ADR-020 §1/§2/§4 已标注「管家模式下 Superseded by ADR-021 §4」。
 
 ## 前置实测闸门（✅ 已通过,实测 CLI 2.1.158,2026-05-30）
 
