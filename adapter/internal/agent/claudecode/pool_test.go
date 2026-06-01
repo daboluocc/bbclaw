@@ -248,3 +248,71 @@ func TestLenAndSize(t *testing.T) {
 		t.Errorf("Len after inject: want 1, got %d", p.Len())
 	}
 }
+
+// TestDedupeCwds verifies cwd de-duplication and the empty→[""] legacy fallback.
+func TestDedupeCwds(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty falls back to inherited", nil, []string{""}},
+		{"dedup preserves order", []string{"/a", "/b", "/a"}, []string{"/a", "/b"}},
+		{"project plus butler", []string{"/proj", "/ws"}, []string{"/proj", "/ws"}},
+		{"butler equals project collapses", []string{"/ws", "/ws"}, []string{"/ws"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dedupeCwds(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("dedupeCwds(%v)=%v want %v", tc.in, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("dedupeCwds(%v)=%v want %v", tc.in, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestAcquireMultiCwd verifies that entries warmed under different cwds (the
+// project cwd and the butler workspace) are acquired independently and that a
+// hit in one cwd doesn't consume the other's entry.
+func TestAcquireMultiCwd(t *testing.T) {
+	p := newTestPool(1, 10*time.Minute)
+	p.injectEntry(warmEntry{cliSessionID: "proj-sid", cwd: "/proj", createdAt: time.Now()})
+	p.injectEntry(warmEntry{cliSessionID: "butler-sid", cwd: "/ws", createdAt: time.Now()})
+
+	id, ok := p.Acquire("/ws")
+	if !ok || id != "butler-sid" {
+		t.Fatalf("butler acquire: got id=%q ok=%v want butler-sid", id, ok)
+	}
+	// The project entry must still be present after the butler hit.
+	id, ok = p.Acquire("/proj")
+	if !ok || id != "proj-sid" {
+		t.Fatalf("project acquire: got id=%q ok=%v want proj-sid", id, ok)
+	}
+	if p.Len() != 0 {
+		t.Fatalf("pool len=%d want 0 after both acquired", p.Len())
+	}
+}
+
+// TestCountForCwd verifies per-cwd accounting used by fill() to keep each warm
+// cwd topped up to `size` independently.
+func TestCountForCwd(t *testing.T) {
+	p := newTestPool(2, 10*time.Minute)
+	p.injectEntry(warmEntry{cliSessionID: "a", cwd: "/proj", createdAt: time.Now()})
+	p.injectEntry(warmEntry{cliSessionID: "b", cwd: "/proj", createdAt: time.Now()})
+	p.injectEntry(warmEntry{cliSessionID: "c", cwd: "/ws", createdAt: time.Now()})
+
+	if n := p.countForCwd("/proj"); n != 2 {
+		t.Errorf("countForCwd(/proj)=%d want 2", n)
+	}
+	if n := p.countForCwd("/ws"); n != 1 {
+		t.Errorf("countForCwd(/ws)=%d want 1", n)
+	}
+	if n := p.countForCwd("/none"); n != 0 {
+		t.Errorf("countForCwd(/none)=%d want 0", n)
+	}
+}

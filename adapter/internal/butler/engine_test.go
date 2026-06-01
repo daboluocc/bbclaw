@@ -90,6 +90,8 @@ type scriptedDriver struct {
 	startN        int
 	resumeIDs     []string
 	systemPrompts []string
+	mcpConfigs    []string
+	cwds          []string
 	sendTexts     []string
 	scripts       [][]agent.Event // per-Send event scripts
 	sendCalls     int
@@ -107,6 +109,8 @@ func (d *scriptedDriver) Start(_ context.Context, opts agent.StartOpts) (agent.S
 	d.startN++
 	d.resumeIDs = append(d.resumeIDs, opts.ResumeID)
 	d.systemPrompts = append(d.systemPrompts, opts.SystemPrompt)
+	d.mcpConfigs = append(d.mcpConfigs, opts.MCPConfig)
+	d.cwds = append(d.cwds, opts.Cwd)
 	return agent.SessionID(d.name + "-sid"), nil
 }
 func (d *scriptedDriver) Send(_ agent.SessionID, text string) error {

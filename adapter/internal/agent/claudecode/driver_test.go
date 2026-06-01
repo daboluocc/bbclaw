@@ -239,21 +239,24 @@ func TestSessionFlags(t *testing.T) {
 		name         string
 		model        string
 		systemPrompt string
+		mcpConfig    string
 		extra        []string
 		want         []string
 	}{
-		{"empty", "", "", nil, nil},
-		{"model only", "claude-opus-4-8", "", nil,
+		{"empty", "", "", "", nil, nil},
+		{"model only", "claude-opus-4-8", "", "", nil,
 			[]string{"--model", "claude-opus-4-8"}},
-		{"system prompt only", "", "be brief", nil,
+		{"system prompt only", "", "be brief", "", nil,
 			[]string{"--append-system-prompt", "be brief"}},
-		{"model+prompt+extra", "m", "p", []string{"--foo", "bar"},
-			[]string{"--model", "m", "--append-system-prompt", "p", "--foo", "bar"}},
-		{"extra only", "", "", []string{"--model", "x"}, []string{"--model", "x"}},
+		{"mcp-config only (butler)", "", "", "/cfg/butler-mcp.json", nil,
+			[]string{"--mcp-config", "/cfg/butler-mcp.json"}},
+		{"model+prompt+mcp+extra", "m", "p", "/cfg.json", []string{"--foo", "bar"},
+			[]string{"--model", "m", "--append-system-prompt", "p", "--mcp-config", "/cfg.json", "--foo", "bar"}},
+		{"extra only", "", "", "", []string{"--model", "x"}, []string{"--model", "x"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := session{model: tc.model, systemPrompt: tc.systemPrompt}
+			s := session{model: tc.model, systemPrompt: tc.systemPrompt, mcpConfig: tc.mcpConfig}
 			got := s.sessionFlags(tc.extra)
 			if join(got) != join(tc.want) {
 				t.Errorf("sessionFlags = %v, want %v", got, tc.want)

@@ -75,6 +75,12 @@ type Options struct {
 	// cwd", which is the legacy behaviour and only safe when CWD_POOL is
 	// unset.
 	WarmCwd string
+	// ButlerWorkspaceCwd is the per-device butler workspace directory (ADR-021
+	// §3). When non-empty it is warmed alongside WarmCwd so the butler session,
+	// which always runs with cwd=workspace, hits a pre-warmed session every
+	// round instead of paying the cold-start penalty. Empty disables butler
+	// pre-warming (the butler still works, just cold the first turn).
+	ButlerWorkspaceCwd string
 }
 
 // New constructs a Driver. The logger is required; pass obs.NewLogger() if
@@ -108,9 +114,17 @@ func New(opts Options, log *obs.Logger) *Driver {
 	for k, v := range opts.Env {
 		driverEnv[k] = v
 	}
-	pool := NewWarmPool(bin, extra, driverEnv, opts.WarmCwd, opts.PoolSize, idleTTL, log)
+	// Warm the configured project cwd plus the butler workspace (ADR-021 §3) so
+	// both a regular session and the per-device butler session hit a pre-warmed
+	// claude session. dedupeCwds (inside NewWarmPool) collapses overlaps and
+	// falls back to a single inherited-cwd slot when both are empty.
+	warmCwds := []string{opts.WarmCwd}
+	if opts.ButlerWorkspaceCwd != "" {
+		warmCwds = append(warmCwds, opts.ButlerWorkspaceCwd)
+	}
+	pool := NewWarmPool(bin, extra, driverEnv, warmCwds, opts.PoolSize, idleTTL, log)
 	if opts.PoolSize > 0 {
-		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s warm_cwd=%q", opts.PoolSize, idleTTL, opts.WarmCwd)
+		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s warm_cwd=%q butler_cwd=%q", opts.PoolSize, idleTTL, opts.WarmCwd, opts.ButlerWorkspaceCwd)
 	}
 	if baseURL, ok := driverEnv["ANTHROPIC_BASE_URL"]; ok {
 		log.Infof("claude-code: ANTHROPIC_BASE_URL=%s", baseURL)
@@ -165,6 +179,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		env:          opts.Env,
 		model:        strings.TrimSpace(opts.Model),
 		systemPrompt: strings.TrimSpace(opts.SystemPrompt),
+		mcpConfig:    strings.TrimSpace(opts.MCPConfig),
 		rootCtx:      ctx,
 	}
 	d.mu.Lock()
@@ -363,6 +378,7 @@ type session struct {
 	env          map[string]string
 	model        string // empty = use driver/operator default
 	systemPrompt string // empty = no --append-system-prompt
+	mcpConfig    string // empty = no --mcp-config (butler session only)
 	rootCtx      context.Context
 
 	seq uint64
@@ -387,6 +403,11 @@ func (s *session) sessionFlags(driverExtra []string) []string {
 	}
 	if s.systemPrompt != "" {
 		out = append(out, "--append-system-prompt", s.systemPrompt)
+	}
+	// --mcp-config wires the butler dispatch MCP server (ADR-021 §2). Only the
+	// per-device butler session carries it; worker sessions leave it empty.
+	if s.mcpConfig != "" {
+		out = append(out, "--mcp-config", s.mcpConfig)
 	}
 	return append(out, driverExtra...)
 }

@@ -87,6 +87,14 @@ type StartOpts struct {
 	// claudecode passes it as --append-system-prompt. Drivers that can't inject
 	// a system prompt just ignore it (same contract as Model).
 	SystemPrompt string
+
+	// MCPConfig, when non-empty, is the path to a Model Context Protocol config
+	// file the backend should load for this session. It is set only for the
+	// per-device "butler" session (ADR-021 §2) so the conversational butler can
+	// dispatch coding work to worker agents through the `mcp-server` subcommand;
+	// worker sessions never get it. claudecode passes it as --mcp-config. Drivers
+	// that can't load MCP servers just ignore it (same contract as Model).
+	MCPConfig string
 }
 
 // Driver is the contract every per-CLI implementation must satisfy.

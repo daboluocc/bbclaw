@@ -25,6 +25,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/cmd"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/homeadapter"
@@ -96,7 +97,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, butlerWorkspace, butlerMCPConfig string, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -169,6 +170,8 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	server.SetAgentRouter(agentRouter)
 	if sessionMgr != nil {
 		server.SetSessionManager(sessionMgr)
+		// Route local agent turns to the per-device butler session (ADR-021).
+		server.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
 	}
 	if driverStateStore != nil {
 		server.SetDriverState(driverStateStore)
@@ -226,11 +229,20 @@ var k_driver_registry = []driverReg{
 			if warmCwd == "" && len(cfg.CwdPool) > 0 {
 				warmCwd = cfg.CwdPool[0].Path
 			}
+			// Butler workspace (ADR-021 §3): warm it alongside the project cwd
+			// so the per-device butler session, which always runs cwd=workspace,
+			// hits a pre-warmed claude session every round. Best-effort — a
+			// resolution failure just disables butler pre-warming.
+			butlerCwd := ""
+			if dir, derr := workspace.Dir(); derr == nil {
+				butlerCwd = dir
+			}
 			opts := claudecode.Options{
-				PoolSize:    cfg.ClaudePoolSize,
-				PoolIdleTTL: cfg.ClaudePoolIdleTTL,
-				ExtraArgs:   parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
-				WarmCwd:     warmCwd,
+				PoolSize:           cfg.ClaudePoolSize,
+				PoolIdleTTL:        cfg.ClaudePoolIdleTTL,
+				ExtraArgs:          parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
+				WarmCwd:            warmCwd,
+				ButlerWorkspaceCwd: butlerCwd,
 			}
 			if cfg.ClaudeBaseURL != "" || cfg.ClaudeAuthToken != "" {
 				opts.Env = make(map[string]string)
@@ -506,6 +518,37 @@ func parseArgList(raw string) []string {
 	return out
 }
 
+// butlerMCPEnv collects the environment the butler's --mcp-config server entry
+// embeds so the spawned `mcp-server` subprocess sees a deterministic project
+// allowlist + credentials regardless of how the parent claude process scrubs
+// its environment (ADR-021 §2). Returns nil when nothing needs embedding (the
+// subprocess then relies purely on inherited env).
+func butlerMCPEnv(cfg config.Config) map[string]string {
+	env := map[string]string{}
+	if v := strings.TrimSpace(os.Getenv("BBCLAW_CWD_POOL")); v != "" {
+		env["BBCLAW_CWD_POOL"] = v
+	}
+	if cfg.DefaultCwd != "" {
+		env["BBCLAW_DEFAULT_CWD"] = cfg.DefaultCwd
+	}
+	if cfg.ClaudeBaseURL != "" {
+		env["ANTHROPIC_BASE_URL"] = cfg.ClaudeBaseURL
+	}
+	if cfg.ClaudeAuthToken != "" {
+		env["ANTHROPIC_AUTH_TOKEN"] = cfg.ClaudeAuthToken
+	}
+	if v := strings.TrimSpace(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")); v != "" {
+		env["AGENT_CLAUDE_CODE_EXTRA_ARGS"] = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AGENT_CLAUDE_CODE_BIN")); v != "" {
+		env["AGENT_CLAUDE_CODE_BIN"] = v
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
 // probeTCP dials addr with the given timeout and returns whether the dial
 // succeeded. Immediately closes the connection on success.
 func probeTCP(addr string, timeout time.Duration) bool {
@@ -528,10 +571,33 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	// butler session runs with cwd=workspace so Claude loads this persona +
 	// long-term memory natively. Non-fatal: degrade like driverstate if the
 	// scaffold can't be written.
+	butlerWorkspace := ""
 	if dir, err := workspace.EnsureScaffold(); err != nil {
 		logger.Warnf("workspace: scaffold failed, butler CLAUDE.md unavailable: %v", err)
 	} else {
+		butlerWorkspace = dir
 		logger.Infof("workspace: ready dir=%s", dir)
+	}
+
+	// Write the butler's --mcp-config so its session can dispatch coding work to
+	// worker agents through the `mcp-server` subcommand (ADR-021 §2). Only the
+	// per-device butler session is spawned with this config; worker sessions
+	// don't get it. Non-fatal: degrade to a butler without dispatch.
+	butlerMCPConfig := ""
+	if butlerWorkspace != "" {
+		if self, err := os.Executable(); err != nil {
+			logger.Warnf("butler-mcp: resolve executable failed, dispatch disabled: %v", err)
+		} else if dataDir, derr := workspace.DataDir(); derr != nil {
+			logger.Warnf("butler-mcp: resolve data dir failed, dispatch disabled: %v", derr)
+		} else {
+			cfgPath := filepath.Join(dataDir, "butler-mcp.json")
+			if p, werr := butlermcp.WriteConfig(cfgPath, self, butlerMCPEnv(cfg)); werr != nil {
+				logger.Warnf("butler-mcp: write config failed, dispatch disabled: %v", werr)
+			} else {
+				butlerMCPConfig = p
+				logger.Infof("butler-mcp: config ready path=%s", p)
+			}
+		}
 	}
 
 	if len(cfg.CwdPool) > 0 {
@@ -561,6 +627,8 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		cloudRelay.SetRouter(agentRouter)
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
+			// Route cloud voice turns to the per-device butler session (ADR-021).
+			cloudRelay.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
 		}
 		if driverStateStore != nil {
 			cloudRelay.SetDriverState(driverStateStore)
@@ -597,7 +665,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, butlerWorkspace, butlerMCPConfig, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)

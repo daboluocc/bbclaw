@@ -44,8 +44,8 @@ const dirMode = 0o700
 // fileShape is the on-disk JSON layout. The map key duplicates the inner
 // LogicalSession.ID for O(1) lookup on load.
 type fileShape struct {
-	Version  int                        `json:"version"`
-	Sessions map[ID]*LogicalSession     `json:"sessions"`
+	Version  int                    `json:"version"`
+	Sessions map[ID]*LogicalSession `json:"sessions"`
 }
 
 // Manager owns the in-memory logical session table and its persistence.
@@ -205,6 +205,35 @@ func (m *Manager) CreateWithRole(deviceID, driver, cwd, title, role string) (*Lo
 	// Return a copy so callers can't mutate the stored session by accident.
 	out := *s
 	return &out, nil
+}
+
+// EnsureButler returns the per-device butler logical session, creating it on
+// first use (ADR-021 §1). The butler is the single session every device
+// voice/text turn routes to: Role=RoleButler, a fixed cwd (the butler
+// workspace), and a stable driver. It is idempotent — repeated calls for the
+// same deviceID+driver return the existing butler session instead of minting a
+// new one, so the conversation (and its CLI session continuity) is preserved
+// across turns. cwd is only used when the session is created the first time;
+// later calls return the stored session verbatim.
+func (m *Manager) EnsureButler(deviceID, driver, cwd string) (*LogicalSession, error) {
+	if driver == "" {
+		return nil, errors.New("logicalsession: driver must not be empty")
+	}
+	m.mu.RLock()
+	for _, s := range m.sessions {
+		if s.Role == RoleButler && s.DeviceID == deviceID && s.Driver == driver {
+			out := *s
+			m.mu.RUnlock()
+			return &out, nil
+		}
+	}
+	m.mu.RUnlock()
+	// Not found — mint one. The (astronomically rare) race where two concurrent
+	// callers both miss the scan and create a butler is benign: both sessions
+	// are valid butlers for the device and the next EnsureButler returns
+	// whichever the scan finds first. Device turns are serialized per-device in
+	// practice, so this effectively never happens.
+	return m.CreateWithRole(deviceID, driver, cwd, "butler", RoleButler)
 }
 
 // Get returns the session by id, or (nil, false) if not found.
