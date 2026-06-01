@@ -33,6 +33,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/pipeline"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
+	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -522,6 +523,16 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	sessionMgr := buildSessionManager(logger)
 	driverStateStore := buildDriverState(logger)
 	applyDriverStateDefault(agentRouter, driverStateStore, logger)
+
+	// Ensure the butler workspace + default CLAUDE.md exist (ADR-021 §4). The
+	// butler session runs with cwd=workspace so Claude loads this persona +
+	// long-term memory natively. Non-fatal: degrade like driverstate if the
+	// scaffold can't be written.
+	if dir, err := workspace.EnsureScaffold(); err != nil {
+		logger.Warnf("workspace: scaffold failed, butler CLAUDE.md unavailable: %v", err)
+	} else {
+		logger.Infof("workspace: ready dir=%s", dir)
+	}
 
 	if len(cfg.CwdPool) > 0 {
 		names := make([]string, len(cfg.CwdPool))
