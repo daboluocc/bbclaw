@@ -605,3 +605,163 @@ func TestSweepRollbackOnPersistFailure(t *testing.T) {
 		t.Error("session dropped from map after failed sweep persist (no rollback)")
 	}
 }
+
+// TestCreateDefaultRoleEmpty verifies the legacy Create entrypoint mints a
+// session with the empty role (RoleNone) — backward compatible.
+func TestCreateDefaultRoleEmpty(t *testing.T) {
+	m, _ := newTestManager(t)
+	s, err := m.Create("dev-1", "claude-code", "/p", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if s.Role != RoleNone {
+		t.Errorf("Create should default to RoleNone, got %q", s.Role)
+	}
+}
+
+// TestCreateWithRolePersistAndReject verifies role validation and that the
+// role survives a write→reload cycle.
+func TestCreateWithRolePersistAndReject(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	mA, err := NewManager(path, "/tmp/default", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager A: %v", err)
+	}
+
+	butler, err := mA.CreateWithRole("dev-1", "claude-code", "/p", "butler", RoleButler)
+	if err != nil {
+		t.Fatalf("CreateWithRole butler: %v", err)
+	}
+	worker, err := mA.CreateWithRole("dev-1", "claude-code", "/p", "worker", RoleWorker)
+	if err != nil {
+		t.Fatalf("CreateWithRole worker: %v", err)
+	}
+	if butler.Role != RoleButler || worker.Role != RoleWorker {
+		t.Fatalf("roles not set: butler=%q worker=%q", butler.Role, worker.Role)
+	}
+
+	// Unknown role must be rejected.
+	if _, err := mA.CreateWithRole("dev-1", "claude-code", "/p", "x", "supervisor"); err == nil {
+		t.Error("CreateWithRole with unknown role should error")
+	}
+
+	// Reload from disk and confirm roles persisted.
+	mB, err := NewManager(path, "/tmp/default", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager B: %v", err)
+	}
+	gotB, ok := mB.Get(butler.ID)
+	if !ok || gotB.Role != RoleButler {
+		t.Errorf("butler role not persisted: ok=%v role=%q", ok, gotB.Role)
+	}
+	gotW, ok := mB.Get(worker.ID)
+	if !ok || gotW.Role != RoleWorker {
+		t.Errorf("worker role not persisted: ok=%v role=%q", ok, gotW.Role)
+	}
+}
+
+// TestListDeviceFacingExcludesWorker verifies device-facing listings drop
+// worker sessions while List (butler/dispatch layer) still sees them.
+func TestListDeviceFacingExcludesWorker(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	plain, err := m.Create("dev-1", "claude-code", "/p", "plain")
+	if err != nil {
+		t.Fatalf("Create plain: %v", err)
+	}
+	butler, err := m.CreateWithRole("dev-1", "claude-code", "/p", "butler", RoleButler)
+	if err != nil {
+		t.Fatalf("Create butler: %v", err)
+	}
+	worker, err := m.CreateWithRole("dev-1", "claude-code", "/p", "worker", RoleWorker)
+	if err != nil {
+		t.Fatalf("Create worker: %v", err)
+	}
+
+	// Full List sees all three (butler/dispatch still relies on this).
+	if got := m.List("dev-1", "", 0); len(got) != 3 {
+		t.Errorf("List should return all 3 sessions, got %d", len(got))
+	}
+
+	// Device-facing list excludes the worker.
+	df := m.ListDeviceFacing("dev-1", "", 0)
+	if len(df) != 2 {
+		t.Fatalf("ListDeviceFacing should return 2 (plain+butler), got %d", len(df))
+	}
+	for _, s := range df {
+		if s.ID == worker.ID {
+			t.Errorf("ListDeviceFacing leaked worker session %s", worker.ID)
+		}
+		if s.Role == RoleWorker {
+			t.Errorf("ListDeviceFacing returned a RoleWorker session: %+v", s)
+		}
+	}
+	_ = plain
+	_ = butler
+}
+
+// TestListDeviceFacingFilterBeforeLimit verifies workers are filtered before
+// the limit is applied, so they cannot crowd visible sessions out of a capped
+// result.
+func TestListDeviceFacingFilterBeforeLimit(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// Mint workers first (older), then a visible session (newest by LastUsedAt).
+	for i := 0; i < 3; i++ {
+		if _, err := m.CreateWithRole("dev-1", "claude-code", "/p", "w", RoleWorker); err != nil {
+			t.Fatalf("Create worker %d: %v", i, err)
+		}
+	}
+	visible, err := m.Create("dev-1", "claude-code", "/p", "visible")
+	if err != nil {
+		t.Fatalf("Create visible: %v", err)
+	}
+
+	df := m.ListDeviceFacing("dev-1", "", 1)
+	if len(df) != 1 {
+		t.Fatalf("expected 1 result under limit, got %d", len(df))
+	}
+	if df[0].ID != visible.ID {
+		t.Errorf("limit dropped the visible session in favor of a worker: got %s", df[0].ID)
+	}
+}
+
+// TestLegacyRecordLoadsAsRoleNone verifies a sessions.json written before the
+// Role field existed (no "role" key) loads with RoleNone and stays
+// device-visible.
+func TestLegacyRecordLoadsAsRoleNone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	legacy := `{
+  "version": 1,
+  "sessions": {
+    "ls-deadbeefdeadbeef": {
+      "id": "ls-deadbeefdeadbeef",
+      "deviceId": "dev-1",
+      "driver": "claude-code",
+      "cwd": "/p",
+      "title": "legacy",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "lastUsedAt": "2026-01-01T00:00:00Z"
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+	m, err := NewManager(path, "/tmp/default", testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	got, ok := m.Get("ls-deadbeefdeadbeef")
+	if !ok {
+		t.Fatal("legacy session not loaded")
+	}
+	if got.Role != RoleNone {
+		t.Errorf("legacy record should load as RoleNone, got %q", got.Role)
+	}
+	if df := m.ListDeviceFacing("dev-1", "", 0); len(df) != 1 {
+		t.Errorf("legacy session should be device-visible, ListDeviceFacing returned %d", len(df))
+	}
+}

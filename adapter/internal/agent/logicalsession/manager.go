@@ -117,12 +117,29 @@ func NewManager(path, defaultCwd string, log *obs.Logger) (*Manager, error) {
 	return m, nil
 }
 
-// Create mints a new logical session with a fresh "ls-<short-uuid>" id.
-// cwd may be "" → fall back to manager's defaultCwd. title may be "".
-// Returns the persisted session.
+// Create mints a new logical session with a fresh "ls-<short-uuid>" id and an
+// empty role (RoleNone) — a plain device-facing session. cwd may be "" → fall
+// back to manager's defaultCwd. title may be "". Returns the persisted session.
+//
+// Kept signature-stable for backward compatibility; callers that need to mint
+// butler/worker sessions (ADR-021) use CreateWithRole.
 func (m *Manager) Create(deviceID, driver, cwd, title string) (*LogicalSession, error) {
+	return m.CreateWithRole(deviceID, driver, cwd, title, RoleNone)
+}
+
+// CreateWithRole mints a new logical session with the given role (RoleNone,
+// RoleButler, or RoleWorker — see ADR-021 §3). RoleWorker sessions are excluded
+// from device-facing listings (ListDeviceFacing). Other behavior matches
+// Create. An unknown role is rejected.
+func (m *Manager) CreateWithRole(deviceID, driver, cwd, title, role string) (*LogicalSession, error) {
 	if driver == "" {
 		return nil, errors.New("logicalsession: driver must not be empty")
+	}
+	switch role {
+	case RoleNone, RoleButler, RoleWorker:
+		// ok
+	default:
+		return nil, fmt.Errorf("logicalsession: unknown role %q", role)
 	}
 	if cwd == "" {
 		cwd = m.defaultCwd
@@ -173,6 +190,7 @@ func (m *Manager) Create(deviceID, driver, cwd, title string) (*LogicalSession, 
 		Title:      title,
 		CreatedAt:  now,
 		LastUsedAt: now,
+		Role:       role,
 	}
 	m.sessions[id] = s
 
@@ -182,8 +200,8 @@ func (m *Manager) Create(deviceID, driver, cwd, title string) (*LogicalSession, 
 		return nil, err
 	}
 
-	m.log.Infof("logicalsession: created id=%s device=%s driver=%s cwd=%s",
-		id, deviceID, driver, cwd)
+	m.log.Infof("logicalsession: created id=%s device=%s driver=%s cwd=%s role=%q",
+		id, deviceID, driver, cwd, role)
 	// Return a copy so callers can't mutate the stored session by accident.
 	out := *s
 	return &out, nil
@@ -207,8 +225,23 @@ func (m *Manager) Get(id ID) (*LogicalSession, bool) {
 }
 
 // List returns sessions for a device (any driver if driver==""), sorted
-// by LastUsedAt desc. Cap at limit (0 = no cap).
+// by LastUsedAt desc. Cap at limit (0 = no cap). All roles are included —
+// the butler/dispatch layer (ADR-021) relies on List to see worker sessions.
+// Device-facing endpoints must use ListDeviceFacing instead.
 func (m *Manager) List(deviceID, driver string, limit int) []*LogicalSession {
+	return m.list(deviceID, driver, limit, false)
+}
+
+// ListDeviceFacing is like List but excludes RoleWorker sessions, which are
+// internal dispatch artifacts the device must never see (ADR-021 §3). The
+// worker filter is applied before the limit so workers cannot crowd out
+// visible sessions from the capped result.
+func (m *Manager) ListDeviceFacing(deviceID, driver string, limit int) []*LogicalSession {
+	return m.list(deviceID, driver, limit, true)
+}
+
+// list is the shared implementation behind List and ListDeviceFacing.
+func (m *Manager) list(deviceID, driver string, limit int, excludeWorker bool) []*LogicalSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -218,6 +251,9 @@ func (m *Manager) List(deviceID, driver string, limit int) []*LogicalSession {
 			continue
 		}
 		if driver != "" && s.Driver != driver {
+			continue
+		}
+		if excludeWorker && s.Role == RoleWorker {
 			continue
 		}
 		cp := *s

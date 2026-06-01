@@ -131,7 +131,7 @@ adapter 起一个 MCP server(stdio 子进程或本地 SSE),管家会话 spawn �
 - [ ] adapter MCP 派发 server(Go):`list_projects` / `dispatch`(超时降级)/ `task_status` / `task_result`;cwd 限 CwdPool
 - [ ] 管家会话路由:设备 turn 永远路由到 per-device 管家 logical session(cwd=workspace);claudecode spawn 加 `--mcp-config`(CLAUDE.md 靠 cwd 自动加载);WarmPool 预热管家
 - [ ] worker:复用 claudecode driver/`butler.Engine` 在目标 cwd 跑;同步阻塞拿 `EvTurnEnd`;输出裁剪回管家
-- [ ] logicalsession 加 `Role`(butler|worker);worker 不进设备菜单
+- [x] logicalsession 加 `Role`(butler|worker);worker 不进设备菜单 —— `LogicalSession.Role` + `RoleButler`/`RoleWorker` 常量、`Manager.CreateWithRole`(`Create` 保持空 role 向后兼容)、`Manager.ListDeviceFacing` 过滤 worker;4 处设备朝向入口(httpapi menu/agent、homeadapter agent_proxy ×2)改用 `ListDeviceFacing`。角色写入交 #80/#79 (issue #82)
 - [ ] 记忆:butler turn 末把对话要点 append 进 workspace CLAUDE.md managed 段(marker+上限+hash)
 - [ ] 测试:管家路由、dispatch(同步/降级/cwd 白名单拒绝)、worker 生命周期、记忆 append 幂等
 
