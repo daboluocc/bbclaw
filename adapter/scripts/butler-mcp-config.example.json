@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bbclaw-butler": {
+      "command": "bbclaw-adapter",
+      "args": ["mcp-server"],
+      "env": {
+        "BBCLAW_CWD_POOL": "demo:/tmp/bbclaw-demo-project"
+      }
+    }
+  }
+}

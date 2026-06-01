@@ -2,6 +2,7 @@ package obs
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -16,6 +17,16 @@ type Logger struct {
 func NewLogger() *Logger {
 	return &Logger{
 		base:   log.New(os.Stdout, "", 0),
+		prefix: "bbclaw-adapter",
+	}
+}
+
+// NewLoggerTo builds a Logger that writes to w instead of stdout. The
+// `mcp-server` subcommand uses this with os.Stderr because its stdout is the
+// MCP JSON-RPC channel and must never carry log lines (ADR-021 §前置闸门).
+func NewLoggerTo(w io.Writer) *Logger {
+	return &Logger{
+		base:   log.New(w, "", 0),
 		prefix: "bbclaw-adapter",
 	}
 }

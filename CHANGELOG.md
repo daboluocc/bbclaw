@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
 
 ### Added
+- **管家 MCP 派发 server — worker runner + `mcp-server` 子命令 (ADR-021 v1)**：补齐「管家 MCP 派发」最后一公里。
+  - **`ClaudeWorkerRunner`**（`adapter/internal/butlermcp/runner_claude.go`）：落地 `WorkerRunner` 接口，复用 claudecode driver 在目标 cwd 起 worker（`--permission-mode acceptEdits`），消费 stream-json 累积 assistant 文本到 `EvTurnEnd`，`EvError` 透传为错误，输出超长时按头尾保留、中间省略裁剪（默认 8KB，避免把超长 transcript 回灌管家）。
+  - **`bbclaw-adapter mcp-server` 子命令**（`adapter/internal/cmd/mcpserver.go`）：从 env 读 `BBCLAW_CWD_POOL`（allowlist）与 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`，装配 `ClaudeWorkerRunner` + `butlermcp.New`，在 stdio 上 `Serve`；**stdout 仅 JSON-RPC，日志全部走 stderr**（`obs.NewLoggerTo`）。新增 `config.LoadButlerEnv` 仅加载管家所需字段，跳过 ASR/TTS 校验。
+  - **e2e 冒烟**（`adapter/scripts/butler-mcp-smoke.sh` + `butler-mcp-config.example.json`）：协议层冒烟无需真实 claude；`BBCLAW_BUTLER_LIVE=1` 时跑 `claude -p --mcp-config` 真链路（claude 不在 PATH 时自动跳过，CI 不依赖）。
 - **TTS 阅读模式 + Chat 本地 tail 缓存 (ADR-017)**：解决两个 UX 痛点。
   - **阅读模式**：TTS 播报中按 UP 翻看历史不再被下一句 chunk 拉回底部 — chat transcript 加了 `follow_tail` 锁存，UP 即进入阅读模式，DOWN 滚回底部自动恢复 follow，期间底栏显示 "● 阅读中 (DOWN 到底回到实时)" 提示。
   - **Chat tail 缓存**：每个 driver 在 NVS 里维护一个 1.5KB 的最近消息环（key `cc/<驱动短码>`），睡眠/唤醒回到 chat 时先用本地 cache 渲染最近几条消息，再 fire adapter fetch；adapter 不在线也能看到刚才的对话。Fetch 成功后清缓存重写以保持远端为 SoT。
