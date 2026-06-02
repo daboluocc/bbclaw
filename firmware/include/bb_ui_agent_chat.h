@@ -210,50 +210,8 @@ void bb_ui_agent_chat_voice_listening(int begin);
  */
 void bb_ui_agent_chat_voice_processing(void);
 
-/* ── Phase S1 — Session Picker (multi-session management) ── */
-
-/**
- * Open the session picker overlay. Triggers an async fetch of sessions
- * for the current driver, then builds the picker UI on completion.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_session_picker_show(void);
-
-/**
- * Close the session picker overlay.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_session_picker_hide(void);
-
-/**
- * Move the session picker highlight. delta = -1 (up) / +1 (down), wraps.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_session_picker_move(int delta);
-
-/**
- * Confirm the currently highlighted session picker row.
- * Returns action code:
- *   0 = switched to selected session
- *   2 = user chose "+ 新建 session" (triggers CWD picker)
- *  -1 = no action (picker not visible, driver row selected, or invalid state)
- * Must be called inside the LVGL lock.
- */
-int bb_ui_agent_chat_session_picker_select(void);
-
-/**
- * Cycle the driver selector while the session picker is open and the driver
- * row (row 0) is highlighted.
- * Returns 1 if the event was consumed (driver row was active), 0 if the
- * caller should fall back to the normal close-picker + cycle-driver path.
- * Must be called inside the LVGL lock.
- */
-int bb_ui_agent_chat_session_picker_driver_cycle(int delta);
-
-/**
- * Returns 1 if the session picker is currently visible (loading or shown).
- */
-int bb_ui_agent_chat_session_picker_is_visible(void);
+/* Session picker removed (ADR-021-firmware-ui v2, issue #103).
+ * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h). */
 
 /* ── CWD Pool Picker (issue #30) ── */
 

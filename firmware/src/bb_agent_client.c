@@ -1034,3 +1034,118 @@ esp_err_t bb_agent_send_message(const char* text, const char* session_id, const 
   }
   return ESP_OK;
 }
+
+/* ── public: list recent dispatch tasks (ADR-021-firmware-ui §1.4) ── */
+
+esp_err_t bb_agent_list_dispatch_recent(bb_agent_dispatch_entry_t* out_list, int cap, int* out_count) {
+  if (out_count != NULL) {
+    *out_count = 0;
+  }
+
+  char url[256] = {0};
+  agent_build_url(url, sizeof(url), "/v1/butler/dispatch/recent");
+
+  bb_http_dyn_accum_t accum = {0};
+  esp_http_client_config_t cfg;
+  bb_http_cfg_init(&cfg, url, BBCLAW_HTTP_TIMEOUT_MS, HTTP_METHOD_GET,
+                   http_event_handler_dyn, &accum);
+
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (client == NULL) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
+  esp_http_client_cleanup(client);
+
+  if (err != ESP_OK) {
+    free(accum.buf);
+    ESP_LOGE(TAG, "list_dispatch_recent transport err=%s", esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300 || accum.buf == NULL) {
+    ESP_LOGE(TAG, "list_dispatch_recent http status=%d body=%.120s", status,
+             accum.buf != NULL ? accum.buf : "(null)");
+    free(accum.buf);
+    return ESP_FAIL;
+  }
+
+  cJSON* root = cJSON_Parse(accum.buf);
+  free(accum.buf);
+  accum.buf = NULL;
+  if (root == NULL) {
+    ESP_LOGE(TAG, "list_dispatch_recent parse failed");
+    return ESP_FAIL;
+  }
+
+  /* Response is a top-level JSON array (no wrapper object). */
+  if (!cJSON_IsArray(root)) {
+    ESP_LOGE(TAG, "list_dispatch_recent: expected JSON array");
+    cJSON_Delete(root);
+    return ESP_FAIL;
+  }
+
+  int total = cJSON_GetArraySize(root);
+  if (out_count != NULL) {
+    *out_count = total;
+  }
+  if (out_list != NULL && cap > 0) {
+    int n = total < cap ? total : cap;
+    for (int i = 0; i < n; i++) {
+      const cJSON* item = cJSON_GetArrayItem(root, i);
+      if (item == NULL) continue;
+      bb_agent_dispatch_entry_t* slot = &out_list[i];
+      memset(slot, 0, sizeof(*slot));
+
+      const cJSON* task_id = cJSON_GetObjectItemCaseSensitive(item, "taskId");
+      if (cJSON_IsString(task_id) && task_id->valuestring != NULL) {
+        strncpy(slot->task_id, task_id->valuestring, sizeof(slot->task_id) - 1);
+        slot->task_id[sizeof(slot->task_id) - 1] = '\0';
+      }
+
+      const cJSON* cwd = cJSON_GetObjectItemCaseSensitive(item, "cwd");
+      if (cJSON_IsString(cwd) && cwd->valuestring != NULL) {
+        strncpy(slot->cwd, cwd->valuestring, sizeof(slot->cwd) - 1);
+        slot->cwd[sizeof(slot->cwd) - 1] = '\0';
+      }
+
+      const cJSON* title = cJSON_GetObjectItemCaseSensitive(item, "title");
+      if (cJSON_IsString(title) && title->valuestring != NULL) {
+        strncpy(slot->title, title->valuestring, sizeof(slot->title) - 1);
+        slot->title[sizeof(slot->title) - 1] = '\0';
+      }
+
+      const cJSON* st = cJSON_GetObjectItemCaseSensitive(item, "status");
+      if (cJSON_IsString(st) && st->valuestring != NULL) {
+        strncpy(slot->status, st->valuestring, sizeof(slot->status) - 1);
+        slot->status[sizeof(slot->status) - 1] = '\0';
+      }
+
+      const cJSON* started = cJSON_GetObjectItemCaseSensitive(item, "startedAt");
+      if (cJSON_IsString(started) && started->valuestring != NULL) {
+        /* ISO 8601 — crude epoch-ms parse for relative time display only. */
+        struct tm tm_val = {0};
+        if (sscanf(started->valuestring, "%d-%d-%dT%d:%d:%d",
+                   &tm_val.tm_year, &tm_val.tm_mon, &tm_val.tm_mday,
+                   &tm_val.tm_hour, &tm_val.tm_min, &tm_val.tm_sec) == 6) {
+          tm_val.tm_year -= 1900;
+          tm_val.tm_mon -= 1;
+          time_t t = mktime(&tm_val);
+          if (t != (time_t)-1) {
+            slot->started_at_ms = (int64_t)t * 1000LL;
+          }
+        }
+      }
+
+      const cJSON* elapsed = cJSON_GetObjectItemCaseSensitive(item, "elapsedMs");
+      if (cJSON_IsNumber(elapsed)) {
+        slot->elapsed_ms = (int64_t)elapsed->valuedouble;
+      }
+    }
+  }
+
+  ESP_LOGI(TAG, "list_dispatch_recent ok total=%d", total);
+  cJSON_Delete(root);
+  return ESP_OK;
+}

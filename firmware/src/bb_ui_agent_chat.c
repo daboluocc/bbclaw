@@ -136,9 +136,8 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 #define BB_CHAT_PICKER_MAX_ITEMS 12
 #define BB_CHAT_DRIVER_CACHE_MAX 6
 
-/* Session picker (Phase S1) — full-screen overlay for multi-session switching. */
-#define BB_SESSION_PICKER_MAX      16
-#define BB_SESSION_PICKER_VISIBLE  6
+/* Session picker removed (ADR-021-firmware-ui v2, issue #103).
+ * BB_SESSION_PICKER_ROW_H kept for history-fetch row sizing compatibility. */
 #define BB_SESSION_PICKER_ROW_H    20
 
 /* Phase S3 — history replay tunables.
@@ -156,11 +155,6 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 #define BB_CWD_PICKER_MAX      8
 #define BB_CWD_PICKER_VISIBLE  5
 #define BB_CWD_PICKER_ROW_H    20
-
-/* Action codes returned by session_picker_select(). */
-#define BB_SESSION_PICKER_ACTION_SWITCH       0
-#define BB_SESSION_PICKER_ACTION_NEW_SESSION  2
-#define BB_SESSION_PICKER_ACTION_NONE        (-1)
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
@@ -215,18 +209,8 @@ typedef struct {
   volatile int driver_fetch_pending;
   volatile uint32_t driver_fetch_generation;
 
-  /* Session picker (Phase S1) — multi-session management. */
-  bb_agent_session_info_t session_list[BB_SESSION_PICKER_MAX];
-  int session_list_count;
-  int session_picker_sel;              /* highlighted row (0-based, includes + New / Settings) */
-  int session_picker_active_idx;       /* index of current session in list (-1 if not found) */
-  int session_picker_visible;          /* 0=hidden, 1=loading, 2=visible */
-  lv_obj_t* session_picker_root;
-  lv_obj_t* session_picker_title;      /* title label — updated by apply_styles for position indicator */
-  /* ADR-016: Driver row dropped from session picker (driver selection lives
-   * in Settings now). Layout is "+ New" at row 0, then sessions. */
-  lv_obj_t* session_picker_items[BB_SESSION_PICKER_MAX + 1]; /* New + sessions */
-  int session_picker_total_rows;       /* session_list_count + 1 (just "+ New") */
+  /* Session picker removed (ADR-021-firmware-ui v2, issue #103).
+   * session_fetch fields kept as stale-guard pattern reference for history. */
   volatile int session_fetch_pending;
   volatile uint32_t session_fetch_generation;
 
@@ -322,11 +306,6 @@ static void tts_cancel_in_flight(void);
 /* Forward decls for Phase 4.2.5 / Phase 5 async driver fetch (used by cycle_driver). */
 static void spawn_driver_fetch_task(void);
 static void apply_driver_cache_idx(void);
-
-/* Forward decls for session picker UI (used by on_driver_fetch_done to rebuild
- * the picker in-place when the driver list arrives after the picker is open). */
-static void session_picker_build_ui(void);
-static void session_picker_apply_styles(void);
 
 /* Forward decls for Phase S3 history replay (defined alongside session-fetch). */
 static void spawn_history_fetch_task(int before, int is_initial);
@@ -1342,7 +1321,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   if (theme->on_enter != NULL) theme->on_enter(parent);
   if (theme->set_state != NULL) theme->set_state(BB_AGENT_STATE_SLEEP);
   /* Initialize s_chat.driver_name with the fallback so downstream callers
-   * (session_picker_select / spawn_history_fetch_task / session_store_save)
+   * (spawn_history_fetch_task / session_store_save)
    * always see a non-empty driver. The first SESSION frame from adapter
    * will overwrite this with the real driver name. Without this, picking a
    * session from the picker before any agent turn happens triggers the
@@ -1701,13 +1680,7 @@ static void on_driver_fetch_done(void* user_data) {
   }
   /* If the session picker is already visible, rebuild it so the driver row
    * reflects the freshly-loaded driver list instead of staying at "drv: ...".
-   * Preserve the current selection so the cursor doesn't jump. */
-  if (s_chat.session_picker_visible == 2) {
-    int saved_sel = s_chat.session_picker_sel;
-    session_picker_build_ui();
-    s_chat.session_picker_sel = saved_sel;
-    session_picker_apply_styles();
-  }
+  /* Session picker removed (ADR-021-firmware-ui v2) — no picker to rebuild. */
   free(res);
 }
 
@@ -1757,103 +1730,10 @@ static void spawn_driver_fetch_task(void) {
   }
 }
 
-/* ── Phase S1 — session picker (multi-session management) ──
- *
- * Full-screen overlay listing sessions for the current driver. Fetched
- * asynchronously via bb_agent_list_sessions (already implemented for both
- * local_home and cloud_saas). Pattern mirrors spawn_driver_fetch_task.
- */
-
-typedef struct {
-  uint32_t gen;
-  esp_err_t err;
-  int total;
-  bb_agent_session_info_t entries[BB_SESSION_PICKER_MAX];
-} session_fetch_result_t;
-
-#define BB_SESSION_FETCH_TASK_STACK 4096
-#define BB_SESSION_FETCH_TASK_PRIO  4
-
-static void session_picker_apply_styles(void);
-static void session_picker_build_ui(void);
-
-static void on_session_fetch_done(void* user_data) {
-  session_fetch_result_t* res = (session_fetch_result_t*)user_data;
-  if (res == NULL) return;
-  s_chat.session_fetch_pending = 0;
-  if (!s_chat.active || res->gen != s_chat.session_fetch_generation) {
-    free(res);
-    return;
-  }
-  if (res->err != ESP_OK) {
-    ESP_LOGW(TAG, "session fetch failed: %s", esp_err_to_name(res->err));
-    s_chat.session_list_count = 0;
-    s_chat.session_picker_visible = 0;
-    free(res);
-    return;
-  }
-  int total = res->total > BB_SESSION_PICKER_MAX ? BB_SESSION_PICKER_MAX : res->total;
-  memcpy(s_chat.session_list, res->entries, sizeof(res->entries[0]) * (size_t)total);
-  s_chat.session_list_count = total;
-
-  /* Find the active session in the list. */
-  s_chat.session_picker_active_idx = -1;
-  for (int i = 0; i < total; ++i) {
-    if (s_chat.session_id[0] != '\0' &&
-        strcmp(s_chat.session_list[i].id, s_chat.session_id) == 0) {
-      s_chat.session_picker_active_idx = i;
-      /* ADR-016: surface the adapter-side title to the bottom bar so the
-       * left cell switches from the sid hex tail to the friendly alias
-       * (e.g. "daboluocc-bbclaw") as soon as the session-list fetch lands. */
-      bb_display_set_session_alias(s_chat.session_list[i].title);
-      break;
-    }
-  }
-
-  s_chat.session_picker_visible = 2;
-  session_picker_build_ui();
-  free(res);
-}
-
-static void session_fetch_task(void* arg) {
-  uint32_t my_gen = (uint32_t)(uintptr_t)arg;
-  session_fetch_result_t* res = (session_fetch_result_t*)calloc(1, sizeof(*res));
-  if (res == NULL) {
-    s_chat.session_fetch_pending = 0;
-    vTaskDelete(NULL);
-    return;
-  }
-  res->gen = my_gen;
-  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
-    vTaskDelay(pdMS_TO_TICKS(200));
-  }
-  const char* drv = s_chat.driver_name[0] != '\0'
-                      ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-  res->err = bb_agent_list_sessions(drv, res->entries, BB_SESSION_PICKER_MAX, &res->total);
-  safe_lv_async_call(on_session_fetch_done, res);
-  vTaskDelete(NULL);
-}
-
-static void spawn_session_fetch_task(void) {
-  if (s_chat.session_fetch_pending) return;
-  s_chat.session_fetch_pending = 1;
-  uint32_t gen = ++s_chat.session_fetch_generation;
-  TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(session_fetch_task, "ses_fetch",
-                              BB_SESSION_FETCH_TASK_STACK,
-                              (void*)(uintptr_t)gen,
-                              BB_SESSION_FETCH_TASK_PRIO, &t);
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreate failed");
-    s_chat.session_fetch_pending = 0;
-  }
-}
-
 /* ── Phase S3 — history replay fetch ───────────────────────────────────────
  *
  * Lifecycle:
- *   1. session_picker_select() rebuilds the empty transcript and calls
- *      spawn_history_fetch_task(-1, is_initial=1).
+ *   1. spawn_history_fetch_task(-1, is_initial=1) is called after session switch.
  *   2. The worker task calls bb_agent_load_messages() (HTTP GET, blocks
  *      until response or timeout).
  *   3. Worker hands the result struct (which OWNS the bb_agent_message_t
@@ -2071,62 +1951,8 @@ static void history_state_reset(void) {
   s_chat.history_fetch_generation++;
 }
 
-/* ── Session picker UI ── */
+/* Session picker UI removed (ADR-021-firmware-ui v2, issue #103). */
 
-#define BB_SPICKER_BG       0x12211b
-#define BB_SPICKER_FG       0xc8e2d6
-#define BB_SPICKER_FG_DIM   0x6b8c80
-#define BB_SPICKER_SEL_BG   0x2ec4a0
-#define BB_SPICKER_SEL_FG   0x0a0e0c
-#define BB_SPICKER_TITLE_H  22
-
-static void session_picker_apply_styles(void) {
-  const int total = s_chat.session_picker_total_rows;
-  if (total == 0) return;
-  int first = s_chat.session_picker_sel - BB_SESSION_PICKER_VISIBLE / 2;
-  if (first < 0) first = 0;
-  if (first + BB_SESSION_PICKER_VISIBLE > total) {
-    first = total - BB_SESSION_PICKER_VISIBLE;
-    if (first < 0) first = 0;
-  }
-  for (int i = 0; i < total; ++i) {
-    lv_obj_t* row = s_chat.session_picker_items[i];
-    if (row == NULL) continue;
-    int visible = (i >= first && i < first + BB_SESSION_PICKER_VISIBLE);
-    if (visible) {
-      lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (i == s_chat.session_picker_sel) {
-      lv_obj_set_style_bg_color(row, lv_color_hex(BB_SPICKER_SEL_BG), 0);
-      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-      lv_obj_set_style_text_color(row, lv_color_hex(BB_SPICKER_SEL_FG), 0);
-    } else {
-      lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-      lv_obj_set_style_text_color(row, lv_color_hex(BB_SPICKER_FG_DIM), 0);
-    }
-  }
-
-  /* Update title position indicator: "Sessions (drv) cur/total" when a
-   * session row is selected; "Sessions (drv) total" otherwise. */
-  if (s_chat.session_picker_title != NULL) {
-    const int n_sessions = s_chat.session_list_count;
-    const char* drv = s_chat.driver_name[0] != '\0'
-                        ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-    char title_buf[64];
-    if (n_sessions > 0 && s_chat.session_picker_sel >= 1) {
-      /* sel >= 1 means a session row is highlighted (sel==0 is "+ New") */
-      int cur = s_chat.session_picker_sel; /* 1-based among session rows */
-      snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d/%d", drv, cur, n_sessions);
-    } else if (n_sessions > 0) {
-      snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d", drv, n_sessions);
-    } else {
-      snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
-    }
-    lv_label_set_text(s_chat.session_picker_title, title_buf);
-  }
-}
 
 static void format_relative_time(int64_t last_used_ms, char* buf, int buf_len) {
   if (last_used_ms <= 0) {
@@ -2152,178 +1978,6 @@ static void format_relative_time(int64_t last_used_ms, char* buf, int buf_len) {
   } else {
     snprintf(buf, (size_t)buf_len, "%dd", (int)(diff_s / 86400));
   }
-}
-
-static void session_picker_build_ui(void) {
-  if (s_chat.parent == NULL) return;
-
-#ifdef BBCLAW_HAVE_CJK_FONT
-  extern const lv_font_t lv_font_bbclaw_cjk;
-  const lv_font_t* font = &lv_font_bbclaw_cjk;
-#else
-  const lv_font_t* font = lv_font_get_default();
-#endif
-
-  /* Tear down previous picker if any. */
-  if (s_chat.session_picker_root != NULL) {
-    lv_obj_del(s_chat.session_picker_root);
-    s_chat.session_picker_root = NULL;
-    s_chat.session_picker_title = NULL;
-    memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
-  }
-
-  const int n_sessions = s_chat.session_list_count;
-  /* ADR-016 layout: [+ 新建 session] [session 0..n-1].
-   * Driver selection moved to Settings — picker is for sessions only. */
-  const int total_rows = n_sessions + 1; /* New + sessions */
-  s_chat.session_picker_total_rows = total_rows;
-  /* Active idx is into session_list[]; the picker visual idx is shifted by 1
-   * because row 0 is "+ 新建 session". When no session is active, default
-   * focus to row 0 (New). */
-  s_chat.session_picker_sel = (s_chat.session_picker_active_idx >= 0)
-                                ? s_chat.session_picker_active_idx + 1 : 0;
-
-  /* Full-screen overlay. */
-  s_chat.session_picker_root = lv_obj_create(s_chat.parent);
-  lv_obj_remove_style_all(s_chat.session_picker_root);
-  /* Fixed size — lv_pct(100) on the root combined with flex column children
-   * triggers the same LVGL 9.5 layout oscillation that hangs transcript.
-   * Screen is 320x172; the picker covers the full display. */
-  lv_obj_set_size(s_chat.session_picker_root, 320, 172);
-  lv_obj_align(s_chat.session_picker_root, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_obj_set_style_bg_color(s_chat.session_picker_root, lv_color_hex(BB_SPICKER_BG), 0);
-  lv_obj_set_style_bg_opa(s_chat.session_picker_root, LV_OPA_COVER, 0);
-  lv_obj_set_style_pad_all(s_chat.session_picker_root, 2, 0);
-  lv_obj_set_flex_flow(s_chat.session_picker_root, LV_FLEX_FLOW_COLUMN);
-  lv_obj_clear_flag(s_chat.session_picker_root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_move_foreground(s_chat.session_picker_root);
-
-  /* Title row. */
-  lv_obj_t* title = lv_label_create(s_chat.session_picker_root);
-  s_chat.session_picker_title = title;
-  lv_obj_set_size(title, 316, BB_SPICKER_TITLE_H);
-  lv_obj_set_style_text_color(title, lv_color_hex(BB_SPICKER_FG), 0);
-  lv_obj_set_style_text_font(title, font, 0);
-  lv_obj_set_style_pad_left(title, 2, 0);
-  lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
-  char title_buf[48];
-  const char* drv = s_chat.driver_name[0] != '\0'
-                      ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
-  if (n_sessions > 0) {
-    /* Show position indicator: current index is unknown at build time (sel
-     * may be on Driver or New row), so show total count for now. The
-     * apply_styles pass will update it once sel is known. */
-    snprintf(title_buf, sizeof(title_buf), "Sessions (%s) %d", drv, n_sessions);
-  } else {
-    snprintf(title_buf, sizeof(title_buf), "Sessions (%s)", drv);
-  }
-  lv_label_set_text(title, title_buf);
-
-  /* Row 0: "+ 新建 session" fixed entry. (ADR-016: Driver row removed — driver
-   * selection now lives in Settings, reached by long-press OK from chat.) */
-  {
-    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, 316, BB_SESSION_PICKER_ROW_H);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_text_font(row, font, 0);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(row, "+ 新建 session");
-    s_chat.session_picker_items[0] = row;
-  }
-
-  /* Session rows: "preview [Nm] [Xt] [<]" */
-  for (int i = 0; i < n_sessions; ++i) {
-    lv_obj_t* row = lv_label_create(s_chat.session_picker_root);
-    lv_obj_set_size(row, 316, BB_SESSION_PICKER_ROW_H);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_pad_right(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_text_font(row, font, 0);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
-
-    const bb_agent_session_info_t* si = &s_chat.session_list[i];
-    const char* title = si->title;
-    /* Fallback order: title → cwd_name → "(untitled)" */
-    if (title == NULL || title[0] == '\0') {
-      title = (si->cwd_name[0] != '\0') ? si->cwd_name : "(untitled)";
-    }
-
-    char time_buf[8] = {0};
-    format_relative_time(si->last_used_ms, time_buf, sizeof(time_buf));
-
-    char suffix[32] = {0};
-    int off = 0;
-    if (si->message_count > 0) {
-      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %dm", si->message_count);
-    }
-    if (time_buf[0] != '\0') {
-      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", time_buf);
-    }
-    /* Prefer the human-readable pool name; fall back to raw cwd only if
-     * neither cwd_name nor cwd is available (old adapter). */
-    const char* cwd_label = si->cwd_name[0] != '\0' ? si->cwd_name
-                          : si->cwd[0] != '\0'       ? si->cwd
-                          : NULL;
-    if (cwd_label != NULL) {
-      off += snprintf(suffix + off, sizeof(suffix) - (size_t)off, " %s", cwd_label);
-    }
-    if (i == s_chat.session_picker_active_idx) {
-      snprintf(suffix + off, sizeof(suffix) - (size_t)off, " <");
-    }
-
-    int title_max = 22 - (int)strlen(suffix);
-    if (title_max < 6) title_max = 6;
-
-    char row_buf[48];
-    snprintf(row_buf, sizeof(row_buf), "%.*s%s", title_max, title, suffix);
-    lv_label_set_text(row, row_buf);
-    /* ADR-016: sessions occupy visual rows [1 .. n_sessions]; row 0 = "+ New". */
-    s_chat.session_picker_items[1 + i] = row;
-  }
-
-  session_picker_apply_styles();
-  ESP_LOGI(TAG, "session_picker: built %d sessions + 1 fixed row (+ New)", n_sessions);
-}
-
-/* ── Session picker public API ── */
-
-void bb_ui_agent_chat_session_picker_show(void) {
-  if (!s_chat.active || s_chat.parent == NULL) return;
-  if (s_chat.session_picker_visible) return;
-  s_chat.session_picker_visible = 1; /* loading */
-  ESP_LOGI(TAG, "session_picker: show (fetching sessions for '%s')",
-           s_chat.driver_name[0] != '\0' ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK);
-  /* If the driver cache hasn't been populated yet (e.g. picker opened before
-   * the initial chat_open fetch completed), kick a fresh fetch so the driver
-   * row will update once the result arrives. */
-  if (s_chat.driver_cache_count <= 0 && !s_chat.driver_fetch_pending) {
-    spawn_driver_fetch_task();
-  }
-  spawn_session_fetch_task();
-}
-
-void bb_ui_agent_chat_session_picker_hide(void) {
-  if (!s_chat.active) return;
-  if (s_chat.session_picker_root != NULL) {
-    lv_obj_del(s_chat.session_picker_root);
-    s_chat.session_picker_root = NULL;
-    s_chat.session_picker_title = NULL;
-    memset(s_chat.session_picker_items, 0, sizeof(s_chat.session_picker_items));
-  }
-  s_chat.session_picker_visible = 0;
-  s_chat.session_picker_total_rows = 0;
-  ESP_LOGI(TAG, "session_picker: hidden");
-}
-
-void bb_ui_agent_chat_session_picker_move(int delta) {
-  if (!s_chat.active || s_chat.session_picker_visible != 2) return;
-  const int total = s_chat.session_picker_total_rows;
-  if (total == 0) return;
-  int sel = ((s_chat.session_picker_sel + delta) % total + total) % total;
-  if (sel == s_chat.session_picker_sel) return;
-  s_chat.session_picker_sel = sel;
-  session_picker_apply_styles();
 }
 
 /* Common transcript-reset + topbar-refresh used after both session-switch and
@@ -2475,7 +2129,7 @@ static void spawn_new_session_task(const char* cwd_name) {
  * (backward-compatible with single-project setups).
  *
  * Lifecycle:
- *   1. session_picker_select() detects the "+ 新建" row.
+ *   1. history fetch is triggered after session switch.
  *   2. If cwd_pool_count > 1 (already cached) → show picker immediately.
  *      If not yet fetched → spawn cwd_pool_fetch_task, show picker when done.
  *      If pool has ≤ 1 entry → create session directly (existing behaviour).
@@ -2722,111 +2376,6 @@ void bb_ui_agent_chat_cwd_picker_cancel(void) {
  * route UP/DOWN/OK/BACK to it instead of the session picker). */
 int bb_ui_agent_chat_cwd_picker_is_visible(void) {
   return (s_chat.active && s_chat.cwd_picker_visible > 0) ? 1 : 0;
-}
-
-int bb_ui_agent_chat_session_picker_select(void) {
-  if (!s_chat.active || s_chat.session_picker_visible != 2) {
-    return BB_SESSION_PICKER_ACTION_NONE;
-  }
-  const int sel = s_chat.session_picker_sel;
-  const int n = s_chat.session_list_count;
-
-  if (sel == 0) {
-    /* "+ 新建 session" row — fetch CWD pool; if > 1 entry show project picker,
-     * otherwise create directly (backward-compatible). */
-    ESP_LOGI(TAG, "session_picker: new session requested");
-    bb_ui_agent_chat_session_picker_hide();
-    /* Mark cwd_picker as loading so key handler routes to it. */
-    s_chat.cwd_picker_visible = 1;
-    spawn_cwd_pool_fetch_or_use_cache();
-    return BB_SESSION_PICKER_ACTION_NEW_SESSION;
-  }
-
-  if (sel >= 1 && sel <= n) {
-    /* Session row — switch to it. (ADR-016: visual idx shifted by 1, row 0 = "+ New".) */
-    const int idx = sel - 1;
-    const bb_agent_session_info_t* session = &s_chat.session_list[idx];
-    ESP_LOGI(TAG, "session_picker: switch to '%s'", session->id);
-
-    strncpy(s_chat.session_id, session->id, sizeof(s_chat.session_id) - 1);
-    s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
-    bb_session_store_save(s_chat.driver_name, session->id);
-    bb_notification_ack(session->id);
-
-    apply_session_switch_ui(session->id, session->title);
-
-    /* Phase S3 — fetch history for the just-selected session. The fetch is
-     * async (worker task); the empty transcript is what the user sees in the
-     * meantime. We don't gate session_picker_hide() on the response so picker
-     * UX stays snappy. */
-    history_state_reset();
-    spawn_history_fetch_task(-1, /*is_initial=*/1);
-
-    bb_ui_agent_chat_session_picker_hide();
-    return BB_SESSION_PICKER_ACTION_SWITCH;
-  }
-
-  return BB_SESSION_PICKER_ACTION_NONE;
-}
-
-int bb_ui_agent_chat_session_picker_is_visible(void) {
-  return (s_chat.active && s_chat.session_picker_visible > 0) ? 1 : 0;
-}
-
-/**
- * Cycle the driver selection while the session picker is open and the driver
- * row (row 0) is highlighted.  Returns 1 if the event was consumed (driver
- * row was selected), 0 if the caller should fall back to the normal
- * close-picker + cycle-driver behaviour.
- *
- * Must be called inside the LVGL lock.
- */
-int bb_ui_agent_chat_session_picker_driver_cycle(int delta) {
-  if (!s_chat.active || s_chat.session_picker_visible != 2) return 0;
-  /* Consume LEFT/RIGHT unconditionally while the picker is open — driver
-   * cycling applies regardless of which row is highlighted.  This prevents
-   * the event from falling through to the "close picker + cycle driver"
-   * default path in bb_radio_app.c, which looked like the picker being
-   * closed unexpectedly. */
-  if (delta == 0) return 1;
-
-  /* If the driver cache is still loading, kick a fetch and report handled. */
-  if (s_chat.driver_cache_count <= 0) {
-    spawn_driver_fetch_task();
-    return 1;
-  }
-  const int n = s_chat.driver_cache_count;
-  if (n <= 1) return 1;  /* single driver — nothing to cycle */
-
-  /* Positive-modulo wrap (handles delta=-1 going from 0 → n-1). */
-  int next = ((s_chat.driver_cache_idx + delta) % n + n) % n;
-  s_chat.driver_cache_idx = next;
-  const char* name = s_chat.driver_cache[next].name;
-  if (name == NULL || name[0] == '\0') return 1;
-
-  /* Update in-memory driver name (NVS write deferred to next send, consistent
-   * with cycle_driver behaviour). */
-  strncpy(s_chat.driver_name, name, sizeof(s_chat.driver_name) - 1);
-  s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
-
-  /* Clear stale session list and rebuild picker immediately so the driver row
-   * text updates without waiting for the network round-trip. */
-  s_chat.session_list_count = 0;
-  s_chat.session_picker_active_idx = -1;
-  session_picker_build_ui();
-  /* Keep the driver row selected after the rebuild. */
-  s_chat.session_picker_sel = 0;
-  session_picker_apply_styles();
-
-  /* Kick an async session fetch for the new driver; stale-generation guard
-   * in on_session_fetch_done will drop any in-flight result from the old
-   * driver. */
-  s_chat.session_fetch_pending = 0;
-  spawn_session_fetch_task();
-
-  ESP_LOGI(TAG, "session_picker: driver cycled to '%s' (delta=%+d, idx=%d/%d)",
-           name, delta, next, n);
-  return 1;
 }
 
 /* ── Phase 4.5 — voice bridge helpers ── */
