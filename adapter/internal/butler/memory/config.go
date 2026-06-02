@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,16 +18,45 @@ const (
 	// envClaudeBin overrides the claude binary path used for distillation.
 	envClaudeBin = "BBCLAW_BUTLER_MEMORY_CLAUDE_BIN"
 
+	// envConsolidate gates the second-layer consolidation engine (ADR-022).
+	// Default OFF (灰度): the inbox keeps its FIFO behaviour until explicitly
+	// enabled. Requires envEnable to be on as well (consolidation archives what
+	// distill appends). LOCAL-only, same as the distill pipeline.
+	envConsolidate          = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE"
+	envConsolidateThreshold = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_THRESHOLD"
+	envConsolidateIdle      = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_IDLE"
+	envConsolidateMaxGap    = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_MAXGAP"
+	envConsolidateCooldown  = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_COOLDOWN"
+	envConsolidateMaxPerDim = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_MAXPERDIM"
+
 	defaultModel = "claude-3-5-haiku-latest"
+
+	// Consolidation trigger defaults (ADR-022 §1). Conservative for v1 灰度.
+	defaultThresholdRatio = 0.75
+	defaultIdleGap        = 5 * time.Minute
+	defaultMaxGap         = 6 * time.Hour
+	defaultCooldown       = 10 * time.Minute
 )
 
 // Enabled reports whether the memory write pipeline is switched on via env.
 // Accepts 1/true/yes/on (case-insensitive); everything else (incl. unset) = on.
 // Default is ON so users get the long-term memory feature out of the box.
 func Enabled() bool {
-	v := strings.TrimSpace(os.Getenv(envEnable))
+	return parseBoolEnv(envEnable, true)
+}
+
+// ConsolidateEnabled reports whether the second-layer consolidation engine is
+// switched on via env. Default OFF (灰度, ADR-022 §5).
+func ConsolidateEnabled() bool {
+	return parseBoolEnv(envConsolidate, false)
+}
+
+// parseBoolEnv reads a boolean env var, returning def when unset/blank and
+// accepting 1/true/yes/on (case-insensitive) as true, everything else false.
+func parseBoolEnv(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return true  // default ON
+		return def
 	}
 	if b, err := strconv.ParseBool(v); err == nil {
 		return b
@@ -44,6 +74,10 @@ func Enabled() bool {
 // disabled (the default) so callers leave Deps.Memory nil and the engine skips
 // the whole step. claudeBin is the operator-resolved binary path; an env
 // override (BBCLAW_BUTLER_MEMORY_CLAUDE_BIN) takes precedence when set.
+//
+// When BBCLAW_BUTLER_MEMORY_CONSOLIDATE is on, a Consolidator is attached to the
+// same single worker so the inbox is periodically archived into MEMORY/*.md
+// (ADR-022). Consolidation is disabled by default.
 func NewFromEnv(claudeMDPath, claudeBin string, log Logger) (*Writer, bool) {
 	if !Enabled() {
 		return nil, false
@@ -57,5 +91,65 @@ func NewFromEnv(claudeMDPath, claudeBin string, log Logger) (*Writer, bool) {
 	}
 	store := NewStore(claudeMDPath)
 	distiller := newClaudeDistiller(claudeBin, model)
-	return NewWriter(store, distiller, log), true
+
+	w := newWriter(store, distiller, log)
+
+	if ConsolidateEnabled() {
+		maxPerDim := intEnv(envConsolidateMaxPerDim, defaultMaxPerDim)
+		summarizer := newClaudeSummarizer(claudeBin, model, maxPerDim)
+		cons := NewConsolidator(claudeMDPath, summarizer, log)
+		cons.maxPerDim = maxPerDim
+		w.consolidator = cons
+		w.trig = triggerConfig{
+			maxBytes:       store.maxBytes,
+			thresholdRatio: floatEnv(envConsolidateThreshold, defaultThresholdRatio),
+			idleGap:        durationEnv(envConsolidateIdle, defaultIdleGap),
+			maxGap:         durationEnv(envConsolidateMaxGap, defaultMaxGap),
+			cooldown:       durationEnv(envConsolidateCooldown, defaultCooldown),
+		}
+		if log != nil {
+			log.Infof("butler-memory: consolidation enabled (threshold=%.2f idle=%s maxGap=%s cooldown=%s)",
+				w.trig.thresholdRatio, w.trig.idleGap, w.trig.maxGap, w.trig.cooldown)
+		}
+	}
+
+	w.start()
+	return w, true
+}
+
+// intEnv reads a non-negative int env var, falling back to def on unset/invalid.
+func intEnv(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
+
+// floatEnv reads a positive float env var, falling back to def on unset/invalid.
+func floatEnv(key string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+		return f
+	}
+	return def
+}
+
+// durationEnv reads a Go duration env var (e.g. "5m", "6h"), falling back to def
+// on unset/invalid.
+func durationEnv(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	return def
 }

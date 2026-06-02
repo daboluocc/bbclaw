@@ -2,10 +2,12 @@ package memory
 
 import "testing"
 
-func TestEnabledDefaultsOff(t *testing.T) {
+func TestEnabledDefaultsOn(t *testing.T) {
+	// Since 63e80fc the long-term-memory pipeline defaults ON when env unset so
+	// users get it out of the box; only an explicit falsy value disables it.
 	t.Setenv(envEnable, "")
-	if Enabled() {
-		t.Error("memory pipeline must default OFF when env unset")
+	if !Enabled() {
+		t.Error("memory pipeline must default ON when env unset")
 	}
 }
 
@@ -25,7 +27,7 @@ func TestEnabledParsesTruthyValues(t *testing.T) {
 }
 
 func TestNewFromEnvReturnsNilWhenDisabled(t *testing.T) {
-	t.Setenv(envEnable, "")
+	t.Setenv(envEnable, "0") // explicit disable (default is ON since 63e80fc)
 	w, on := NewFromEnv("/tmp/CLAUDE.md", "claude", nil)
 	if on || w != nil {
 		t.Errorf("NewFromEnv when disabled = (%v, %v), want (nil, false)", w, on)
