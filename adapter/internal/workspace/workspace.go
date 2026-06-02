@@ -17,6 +17,7 @@ package workspace
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,12 +31,49 @@ const (
 	workspaceName  = "workspace"
 	claudeMDName   = "CLAUDE.md"
 
+	// memoryDirName is the workspace sub-directory holding the butler's
+	// dimensioned long-term memory files (ADR-022 / #90). It complements the
+	// CLAUDE.md managed block: CLAUDE.md is loaded natively every turn, while
+	// the MEMORY/ files are read on demand via the index in the persona.
+	memoryDirName = "MEMORY"
+
 	// ManagedBegin / ManagedEnd delimit the adapter-managed region inside
 	// CLAUDE.md. Anything between them is owned by the adapter (long-term
 	// memory); anything outside is the user's and is never touched.
 	ManagedBegin = "<!-- BEGIN BBClaw-managed -->"
 	ManagedEnd   = "<!-- END BBClaw-managed -->"
 )
+
+// MemoryDimension describes one dimensioned long-term memory file under
+// workspace/MEMORY/. The set is anchored on ADR-022 (#90); it lives here as
+// data so the dimensions stay cheap to revise and so the consolidation engine
+// (sub-task B) can reuse the same definitions when writing.
+type MemoryDimension struct {
+	// File is the file name under MEMORY/ (e.g. "preferences.md").
+	File string
+	// Skeleton is the empty placeholder written when the file is missing.
+	Skeleton string
+}
+
+// MemoryDimensions is the canonical set of long-term memory dimension files
+// the butler maintains: user preferences, recent projects, and key decisions.
+var MemoryDimensions = []MemoryDimension{
+	{
+		File: "preferences.md",
+		Skeleton: "# 用户长期偏好\n\n" +
+			"<!-- 由 BBClaw 自动维护：用户稳定的口味、习惯与默认选择。 -->\n",
+	},
+	{
+		File: "projects.md",
+		Skeleton: "# 最近在做的项目\n\n" +
+			"<!-- 由 BBClaw 自动维护：用户近期关注的项目与进展线索。 -->\n",
+	},
+	{
+		File: "decisions.md",
+		Skeleton: "# 关键决策记录\n\n" +
+			"<!-- 由 BBClaw 自动维护：影响后续工作的重要决策及其原因。 -->\n",
+	},
+}
 
 // DataDir resolves the adapter data directory: $BBCLAW_DATA_DIR when set,
 // otherwise ~/.bbclaw-adapter. Shared with driverstate and logicalsession.
@@ -68,6 +106,27 @@ func ClaudeMDPath() (string, error) {
 	return filepath.Join(dir, claudeMDName), nil
 }
 
+// MemoryDir returns the workspace MEMORY/ directory (Dir()/MEMORY), where the
+// dimensioned long-term memory files live.
+func MemoryDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, memoryDirName), nil
+}
+
+// MemoryFilePath returns the path to a memory dimension file under MEMORY/
+// (e.g. MemoryFilePath("preferences.md")). The consolidation engine (sub-task
+// B) uses this to locate the file it writes into.
+func MemoryFilePath(name string) (string, error) {
+	dir, err := MemoryDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name), nil
+}
+
 // EnsureScaffold guarantees the workspace directory exists and that its
 // CLAUDE.md is usable. It is idempotent and conservative:
 //
@@ -95,6 +154,7 @@ func EnsureScaffold() (string, error) {
 		if err := os.WriteFile(path, []byte(DefaultClaudeMD), 0o644); err != nil {
 			return "", fmt.Errorf("write default CLAUDE.md %s: %w", path, err)
 		}
+		ensureMemoryScaffold(dir)
 		return dir, nil
 	case err != nil:
 		return "", fmt.Errorf("read CLAUDE.md %s: %w", path, err)
@@ -108,7 +168,34 @@ func EnsureScaffold() (string, error) {
 			return "", fmt.Errorf("append managed block to %s: %w", path, err)
 		}
 	}
+	ensureMemoryScaffold(dir)
 	return dir, nil
+}
+
+// ensureMemoryScaffold creates the MEMORY/ directory and the dimension files
+// under it when missing, writing an empty skeleton for each (0600 — memory
+// content is more sensitive than the persona). It is idempotent: existing
+// files are never clobbered. Per the butler scaffold contract, any failure
+// here is logged and swallowed — it must never abort EnsureScaffold or block
+// adapter startup, since the persona remains usable without the MEMORY files.
+func ensureMemoryScaffold(workspaceDir string) {
+	memDir := filepath.Join(workspaceDir, memoryDirName)
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		log.Printf("workspace: create MEMORY dir %s failed (non-fatal): %v", memDir, err)
+		return
+	}
+	for _, dim := range MemoryDimensions {
+		file := filepath.Join(memDir, dim.File)
+		if _, err := os.Stat(file); err == nil {
+			continue // existing file: never clobber
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("workspace: stat MEMORY file %s failed (non-fatal): %v", file, err)
+			continue
+		}
+		if err := os.WriteFile(file, []byte(dim.Skeleton), 0o600); err != nil {
+			log.Printf("workspace: write MEMORY file %s failed (non-fatal): %v", file, err)
+		}
+	}
 }
 
 // HasManagedBlock reports whether content contains a well-formed managed block.
