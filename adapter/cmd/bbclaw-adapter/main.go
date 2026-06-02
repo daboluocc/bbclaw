@@ -25,6 +25,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/asr"
 	"github.com/daboluocc/bbclaw/adapter/internal/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter/internal/butler/memory"
 	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/cmd"
@@ -187,6 +188,9 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	if driverStateStore != nil {
 		server.SetDriverState(driverStateStore)
 	}
+	// Wire the process-level dispatch recorder for GET /v1/butler/dispatch/recent.
+	dispatchRecorder := butler.NewDispatchRecorder()
+	server.SetDispatchRecorder(dispatchRecorder)
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),

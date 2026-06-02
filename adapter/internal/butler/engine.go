@@ -32,6 +32,12 @@ type Deps struct {
 	Metrics  MetricsSink
 	Log      Logger
 
+	// DispatchRecorder is the process-level ring buffer for mcp__bbclaw__
+	// dispatch events (ADR-021-firmware-ui §1.4). Optional: when nil dispatch
+	// events are still forwarded to the device but not recorded for the
+	// GET /v1/butler/dispatch/recent API. Wired by main.go.
+	DispatchRecorder *DispatchRecorder
+
 	// ResolveActiveModel 注入:两 caller 各传自己的。driver 为驱动名,返回持久化
 	// active_model 或 ""。butler 不缓存其结果以保留 ADR-016 mid-session 语义。
 	ResolveActiveModel func(driver string) string
@@ -440,6 +446,11 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 					}
 				case agent.EvTurnEnd:
 					turnEnded = true
+				case agent.EvDispatchStatus:
+					// Record into ring buffer (non-driver layer, ADR-021 §1.4).
+					if d.DispatchRecorder != nil {
+						d.DispatchRecorder.Record(ev)
+					}
 				}
 
 				// EvSessionInit 一律不外发(两边一致)。
