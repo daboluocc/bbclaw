@@ -49,3 +49,19 @@ void bb_display_set_chat_active(int active);
  *  告诉用户"按 DOWN 到底回到实时流"；on=0 恢复正常 alias/sid 显示。
  *  由 bb_chat_transcript 在 follow-tail 锁存变化时调用，不需要外部驱动。 */
 void bb_display_set_reading_hint(int on);
+
+/** ADR-021-firmware-ui §1.2: butler cwd 用于 bottom_bar 左侧 "[B] <cwd>" 显示。
+ *  NULL/"" 时显示 "[B]"（无 cwd）。 */
+void bb_display_set_butler_cwd(const char* cwd);
+
+/** ADR-021-firmware-ui §1.2: dispatch_status 帧注入顶部 s_lbl_status。
+ *  phase: "started" | "done" | "async" | "error"
+ *  cwd: 派发目标项目（started 时有效，可为 NULL）
+ *  task_id: MCP tool_use id（async 时显示，可为 NULL）
+ *  elapsed_ms: worker 耗时（done/async 时有效） */
+void bb_display_set_dispatch_status(const char* phase, const char* cwd,
+                                    const char* task_id, int64_t elapsed_ms);
+
+/** ADR-021-firmware-ui §1.3: 记忆条数更新 footer 右侧 "mem: N+M" 显示。
+ *  inbox=-1 或 profile=-1 时降级为 "mem: ?" */
+void bb_display_set_mem_stats(int inbox, int profile);

@@ -23,6 +23,9 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 #define UI_ME_ACCENT    0x2ec4a0
 #define UI_SAFE_LEFT    10
 #define UI_SAFE_RIGHT   12
+/* Footer bar — must match bb_lvgl_display.c constants */
+#define UI_SAFE_BOTTOM  10
+#define UI_BOTTOM_BAR_H 16
 
 static lv_obj_t* s_view;
 static lv_obj_t* s_obj_shackle;
@@ -30,6 +33,11 @@ static lv_obj_t* s_obj_body;
 static lv_obj_t* s_obj_slot;
 static lv_obj_t* s_lbl_title;
 static lv_obj_t* s_lbl_hint;
+
+/* Footer status bar (ADR-021-firmware-ui §2) */
+static lv_obj_t* s_obj_footer;
+static lv_obj_t* s_lbl_footer_left;
+static lv_obj_t* s_lbl_footer_right;
 
 /* Large battery widget (below padlock) */
 static lv_obj_t* s_bat_container;
@@ -181,6 +189,48 @@ void bb_page_locked_create(lv_obj_t* scr) {
     lv_obj_add_flag(s_bat_container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_bat_pct_lbl, LV_OBJ_FLAG_HIDDEN);
   }
+
+  /* ADR-021-firmware-ui §2: shared footer status bar — "[B] <cwd>" + "mem: N+M"
+   * LOCKED page shows the basic footer (no Task List summary per §1.4). */
+  {
+    const int bar_w = DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT;
+    const int bar_y = DISP_H - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H;
+    const int half  = bar_w / 2;
+
+    s_obj_footer = lv_obj_create(s_view);
+    lv_obj_remove_style_all(s_obj_footer);
+    lv_obj_set_size(s_obj_footer, bar_w, UI_BOTTOM_BAR_H);
+    lv_obj_set_pos(s_obj_footer, UI_SAFE_LEFT, bar_y);
+    lv_obj_clear_flag(s_obj_footer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_obj_footer, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_border_width(s_obj_footer, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_side(s_obj_footer, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_obj_footer, lv_color_hex(UI_TEXT_DIM), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(s_obj_footer, LV_OPA_30, LV_PART_MAIN);
+
+    const int lh = (int)lv_font_get_line_height(font) + 1;
+    const int txt_y = (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1;
+
+    s_lbl_footer_left = lv_label_create(s_obj_footer);
+    lv_obj_set_width(s_lbl_footer_left, half - 4);
+    lv_obj_set_height(s_lbl_footer_left, lh + 2);
+    lv_obj_set_style_text_color(s_lbl_footer_left, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_footer_left, font, 0);
+    lv_obj_set_style_text_align(s_lbl_footer_left, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(s_lbl_footer_left, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+    lv_label_set_text(s_lbl_footer_left, "[B]");
+    lv_obj_set_pos(s_lbl_footer_left, 0, txt_y);
+
+    s_lbl_footer_right = lv_label_create(s_obj_footer);
+    lv_obj_set_width(s_lbl_footer_right, half - 4);
+    lv_obj_set_height(s_lbl_footer_right, lh + 2);
+    lv_obj_set_style_text_color(s_lbl_footer_right, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_footer_right, font, 0);
+    lv_obj_set_style_text_align(s_lbl_footer_right, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_long_mode(s_lbl_footer_right, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+    lv_label_set_text(s_lbl_footer_right, "mem: ?");
+    lv_obj_set_pos(s_lbl_footer_right, half + 4, txt_y);
+  }
 }
 
 void bb_page_locked_set_visible(int visible) {
@@ -257,4 +307,26 @@ void bb_page_locked_update_status(const char* status) {
     lv_label_set_text(s_lbl_title, "设备已锁定");
     lv_label_set_text(s_lbl_hint, "请按住说话键后说出密语");
   }
+}
+
+void bb_page_locked_update_footer(const char* cwd, int mem_inbox, int mem_profile) {
+  if (s_lbl_footer_left == NULL || s_lbl_footer_right == NULL) return;
+
+  /* Left: "[B] <cwd>" or "[B]" */
+  char left_buf[56];
+  if (cwd != NULL && cwd[0] != '\0') {
+    snprintf(left_buf, sizeof(left_buf), "[B] %s", cwd);
+  } else {
+    snprintf(left_buf, sizeof(left_buf), "[B]");
+  }
+  lv_label_set_text(s_lbl_footer_left, left_buf);
+
+  /* Right: "mem: N+M" or "mem: ?" */
+  char right_buf[24];
+  if (mem_inbox >= 0 && mem_profile >= 0) {
+    snprintf(right_buf, sizeof(right_buf), "mem: %d+%d", mem_inbox, mem_profile);
+  } else {
+    snprintf(right_buf, sizeof(right_buf), "mem: ?");
+  }
+  lv_label_set_text(s_lbl_footer_right, right_buf);
 }

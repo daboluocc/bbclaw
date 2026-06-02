@@ -218,6 +218,35 @@ static char s_bottom_alias[24];
  * bb_display_set_reading_hint. */
 static int s_reading_hint_on;
 
+/* ADR-021-firmware-ui §1.2: butler cwd for bottom_bar "[B] <cwd>" left cell */
+static char s_butler_cwd[48];
+
+/* ADR-021-firmware-ui §1.3: mem stats for bottom_bar "mem: N+M" right cell.
+ * -1 means unknown → renders as "mem: ?". */
+static int s_mem_inbox   = -1;
+static int s_mem_profile = -1;
+
+/* ADR-021-firmware-ui §1.2: dispatch status state machine.
+ * Tracks the current butler dispatch phase and auto-revert timer. */
+typedef enum {
+  DISPATCH_PHASE_NONE = 0,
+  DISPATCH_PHASE_STARTED,
+  DISPATCH_PHASE_DONE,
+  DISPATCH_PHASE_ASYNC,
+  DISPATCH_PHASE_ERROR,
+} dispatch_phase_t;
+
+typedef struct {
+  dispatch_phase_t phase;
+  char cwd[48];
+  char task_id[64];
+  int64_t elapsed_ms;
+  /* non-NULL while a timed revert is pending */
+  lv_timer_t* revert_timer;
+} bb_dispatch_state_t;
+
+static bb_dispatch_state_t s_dispatch = {0};
+
 /* LVGL objects — locked moved to bb_page_locked.c */
 
 /* LVGL objects — active (status bar + text) */
@@ -405,57 +434,35 @@ static void apply_battery_widget(void) {
 static void apply_bottom_bar(void) {
   if (s_lbl_bottom_session == NULL || s_lbl_bottom_cwd == NULL) return;
 
-  char alias_text[24];
-  char session_text[32];
-  char model_text[40];
-  int reading_hint;
+  /* ADR-021-firmware-ui §1.2: left cell — "[B] <cwd>" (butler badge + workspace) */
+  char left_buf[56];
+  char butler_cwd[48];
   portENTER_CRITICAL(&s_state_lock);
-  strncpy(alias_text, s_bottom_alias, sizeof(alias_text) - 1);
-  alias_text[sizeof(alias_text) - 1] = '\0';
-  reading_hint = s_reading_hint_on;
-  const char* sid = s_bottom_session;
-  if (sid[0] == '\0') {
-    session_text[0] = '\0';
-  } else {
-    /* Tail of the sid is the most distinguishing part; show the last 10
-     * hex chars after stripping the "ls-"/"cs-" prefix the same way the
-     * theme topbar does. Mirrors bb_ui_agent_chat::session_id_short. */
-    const char* hex = sid;
-    if (hex[0] != '\0' && hex[1] != '\0' && hex[2] == '-') hex += 3;
-    size_t hlen = strlen(hex);
-    const int show = 10;
-    const char* tail = hlen > (size_t)show ? hex + hlen - show : hex;
-    strncpy(session_text, tail, sizeof(session_text) - 1);
-    session_text[sizeof(session_text) - 1] = '\0';
-  }
-  strncpy(model_text, s_bottom_model, sizeof(model_text) - 1);
-  model_text[sizeof(model_text) - 1] = '\0';
+  strncpy(butler_cwd, s_butler_cwd, sizeof(butler_cwd) - 1);
+  butler_cwd[sizeof(butler_cwd) - 1] = '\0';
   portEXIT_CRITICAL(&s_state_lock);
 
-  /* ADR-016: prefer logical session alias (adapter title field, e.g.
-   * "daboluocc-bbclaw") over the raw sid. Falls back to sid tail when
-   * the adapter hasn't reported a title (e.g. fresh new session, or
-   * driver_cycle restoring a sid from NVS without metadata). */
-  (void)reading_hint;  /* ADR-017 hint removed — kept setter for ABI but
-                         no longer drawn (scrolling now intuitively works
-                         during TTS, marker turned out to be noise). */
-  if (alias_text[0] != '\0') {
-    lv_label_set_text(s_lbl_bottom_session, alias_text);
-  } else if (session_text[0] != '\0') {
-    char buf[40];
-    snprintf(buf, sizeof(buf), "sid %s", session_text);
-    lv_label_set_text(s_lbl_bottom_session, buf);
+  if (butler_cwd[0] != '\0') {
+    snprintf(left_buf, sizeof(left_buf), "[B] %s", butler_cwd);
   } else {
-    lv_label_set_text(s_lbl_bottom_session, "no session");
+    snprintf(left_buf, sizeof(left_buf), "[B]");
   }
+  lv_label_set_text(s_lbl_bottom_session, left_buf);
 
-  /* ADR-016: right cell shows active model (was cwd_name). When unknown
-   * (adapter not yet polled) fall back to "—" so the bar isn't blank. */
-  if (model_text[0] == '\0') {
-    lv_label_set_text(s_lbl_bottom_cwd, "—");
+  /* ADR-021-firmware-ui §1.3: right cell — "mem: N+M" or "mem: ?" */
+  char right_buf[24];
+  int inbox, profile;
+  portENTER_CRITICAL(&s_state_lock);
+  inbox   = s_mem_inbox;
+  profile = s_mem_profile;
+  portEXIT_CRITICAL(&s_state_lock);
+
+  if (inbox >= 0 && profile >= 0) {
+    snprintf(right_buf, sizeof(right_buf), "mem: %d+%d", inbox, profile);
   } else {
-    lv_label_set_text(s_lbl_bottom_cwd, model_text);
+    snprintf(right_buf, sizeof(right_buf), "mem: ?");
   }
+  lv_label_set_text(s_lbl_bottom_cwd, right_buf);
 }
 
 /* ── Status icon ── */
@@ -1219,13 +1226,54 @@ static void refresh_ui(void) {
       portEXIT_CRITICAL(&s_state_lock);
       bb_page_locked_update_battery(bat_supported, bat_available, bat_percent, bat_low, bat_charging);
     }
+    /* ADR-021-firmware-ui §2: refresh LOCKED footer with butler cwd + mem stats */
+    {
+      char locked_cwd[48];
+      int locked_inbox, locked_profile;
+      portENTER_CRITICAL(&s_state_lock);
+      strncpy(locked_cwd, s_butler_cwd, sizeof(locked_cwd) - 1);
+      locked_cwd[sizeof(locked_cwd) - 1] = '\0';
+      locked_inbox   = s_mem_inbox;
+      locked_profile = s_mem_profile;
+      portEXIT_CRITICAL(&s_state_lock);
+      bb_page_locked_update_footer(locked_cwd, locked_inbox, locked_profile);
+    }
     s_record_view_visible = 0;
   } else {
     /* ACTIVE view (chat) — full layout with top bar + bottom bar */
     const char* status_text = status;
     if (strcmp(status, BB_STATUS_TX) == 0) status_text = "LISTENING";
     else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) status_text = "PROCESSING";
-    lv_label_set_text(s_lbl_status, status_text[0] != '\0' ? status_text : BB_STATUS_READY);
+
+    /* ADR-021-firmware-ui §1.2: dispatch phase overlay — highest priority.
+     * error > async > done > started > 常态 */
+    {
+      char dispatch_text[80] = {0};
+      dispatch_phase_t dp = s_dispatch.phase;
+      if (dp == DISPATCH_PHASE_ERROR) {
+        snprintf(dispatch_text, sizeof(dispatch_text), "派发失败 ❌");
+      } else if (dp == DISPATCH_PHASE_ASYNC) {
+        if (s_dispatch.task_id[0] != '\0') {
+          snprintf(dispatch_text, sizeof(dispatch_text), "已转异步 #%.12s", s_dispatch.task_id);
+        } else {
+          snprintf(dispatch_text, sizeof(dispatch_text), "已转异步");
+        }
+      } else if (dp == DISPATCH_PHASE_DONE) {
+        long long elapsed_s = (long long)(s_dispatch.elapsed_ms / 1000LL);
+        snprintf(dispatch_text, sizeof(dispatch_text), "worker 完成 ✅ (%llus)", elapsed_s);
+      } else if (dp == DISPATCH_PHASE_STARTED) {
+        if (s_dispatch.cwd[0] != '\0') {
+          snprintf(dispatch_text, sizeof(dispatch_text), "派发中: %s…", s_dispatch.cwd);
+        } else {
+          snprintf(dispatch_text, sizeof(dispatch_text), "派发中…");
+        }
+      }
+      if (dispatch_text[0] != '\0') {
+        lv_label_set_text(s_lbl_status, dispatch_text);
+      } else {
+        lv_label_set_text(s_lbl_status, status_text[0] != '\0' ? status_text : BB_STATUS_READY);
+      }
+    }
     apply_status_icon(status);
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
     apply_battery_widget();
@@ -1778,4 +1826,88 @@ void bb_display_set_tts_sentence(const char* sentence_text) {
   s_auto_scroll_pause_until_ms = bb_now_ms() + UI_MANUAL_SCROLL_PAUSE_MS;
 
   lvgl_port_unlock();
+}
+
+/* ── ADR-021-firmware-ui §1.2 / §1.3: dispatch status + footer helpers ── */
+
+/* Revert timer callback: clears the dispatch overlay and re-renders status */
+static void dispatch_revert_timer_cb(lv_timer_t* timer) {
+  (void)timer;
+  s_dispatch.phase = DISPATCH_PHASE_NONE;
+  s_dispatch.revert_timer = NULL;
+  if (s_ready) refresh_ui();
+}
+
+void bb_display_set_butler_cwd(const char* cwd) {
+  portENTER_CRITICAL(&s_state_lock);
+  if (cwd == NULL) {
+    s_butler_cwd[0] = '\0';
+  } else {
+    strncpy(s_butler_cwd, cwd, sizeof(s_butler_cwd) - 1);
+    s_butler_cwd[sizeof(s_butler_cwd) - 1] = '\0';
+  }
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
+}
+
+void bb_display_set_dispatch_status(const char* phase, const char* cwd,
+                                    const char* task_id, int64_t elapsed_ms) {
+  if (phase == NULL || phase[0] == '\0') return;
+
+  /* Cancel any pending revert timer before updating state */
+  if (!lvgl_port_lock(50)) return;
+  if (s_dispatch.revert_timer != NULL) {
+    lv_timer_del(s_dispatch.revert_timer);
+    s_dispatch.revert_timer = NULL;
+  }
+  lvgl_port_unlock();
+
+  portENTER_CRITICAL(&s_state_lock);
+  if (strcmp(phase, "started") == 0) {
+    s_dispatch.phase = DISPATCH_PHASE_STARTED;
+  } else if (strcmp(phase, "done") == 0) {
+    s_dispatch.phase = DISPATCH_PHASE_DONE;
+  } else if (strcmp(phase, "async") == 0) {
+    s_dispatch.phase = DISPATCH_PHASE_ASYNC;
+  } else if (strcmp(phase, "error") == 0) {
+    s_dispatch.phase = DISPATCH_PHASE_ERROR;
+  } else {
+    portEXIT_CRITICAL(&s_state_lock);
+    return;
+  }
+  if (cwd != NULL) {
+    strncpy(s_dispatch.cwd, cwd, sizeof(s_dispatch.cwd) - 1);
+    s_dispatch.cwd[sizeof(s_dispatch.cwd) - 1] = '\0';
+  } else {
+    s_dispatch.cwd[0] = '\0';
+  }
+  if (task_id != NULL) {
+    strncpy(s_dispatch.task_id, task_id, sizeof(s_dispatch.task_id) - 1);
+    s_dispatch.task_id[sizeof(s_dispatch.task_id) - 1] = '\0';
+  } else {
+    s_dispatch.task_id[0] = '\0';
+  }
+  s_dispatch.elapsed_ms = elapsed_ms;
+  portEXIT_CRITICAL(&s_state_lock);
+
+  if (s_ready) refresh_ui();
+
+  /* done/async/error: schedule auto-revert after 4 seconds */
+  if (s_dispatch.phase != DISPATCH_PHASE_STARTED) {
+    if (lvgl_port_lock(50)) {
+      s_dispatch.revert_timer = lv_timer_create(dispatch_revert_timer_cb, 4000, NULL);
+      if (s_dispatch.revert_timer != NULL) {
+        lv_timer_set_repeat_count(s_dispatch.revert_timer, 1);
+      }
+      lvgl_port_unlock();
+    }
+  }
+}
+
+void bb_display_set_mem_stats(int inbox, int profile) {
+  portENTER_CRITICAL(&s_state_lock);
+  s_mem_inbox   = inbox;
+  s_mem_profile = profile;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (s_ready) refresh_ui();
 }
