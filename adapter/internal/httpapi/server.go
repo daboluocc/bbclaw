@@ -111,6 +111,11 @@ type Server struct {
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
 	notifQueue *NotificationQueue
+
+	// dispatchRecorder is the process-level ring buffer for
+	// GET /v1/butler/dispatch/recent (ADR-021-firmware-ui §1.4).
+	// Wired via SetDispatchRecorder from main.go. Optional: nil disables the endpoint.
+	dispatchRecorder *butler.DispatchRecorder
 }
 
 func NewServer(cfg AppConfig, streams *audio.Manager, asrProvider ASRProvider, ttsProvider TTSProvider, sink OpenClawSink, logger *obs.Logger, metrics *obs.Metrics) *Server {
@@ -150,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agent/sessions/{id}/messages", s.withAuth(s.handleAgentSessionMessages))
 	mux.HandleFunc("POST /v1/agent/sessions/{id}/approve", s.withAuth(s.handleAgentSessionApprove))
 	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", s.withAuth(s.handleAgentDeleteSession))
+	mux.HandleFunc("GET /v1/butler/dispatch/recent", s.withAuth(s.handleButlerDispatchRecent))
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
 	// Playground is unauthenticated on purpose — it's a dev-only single-page
 	// UI for dogfooding agent drivers. Protect your adapter by not exposing

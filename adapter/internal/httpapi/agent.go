@@ -699,6 +699,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		ButlerMCPConfig:    s.butlerMCPConfig,
 		Memory:             s.memoryWriter,
+		DispatchRecorder:   s.dispatchRecorder,
 		StartCtx:           s.agentCtx,
 	})
 
@@ -1184,6 +1185,24 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 	case agent.EvSessionInit:
 		// Internal event — not forwarded to the device.
 		return true
+	case agent.EvDispatchStatus:
+		if ev.Dispatch != nil {
+			d := ev.Dispatch
+			dispatchFrame := map[string]any{
+				"phase":  d.Phase,
+				"taskId": d.TaskID,
+			}
+			if d.Cwd != "" {
+				dispatchFrame["cwd"] = d.Cwd
+			}
+			if d.ElapsedMs > 0 {
+				dispatchFrame["elapsedMs"] = d.ElapsedMs
+			}
+			if d.Error != "" {
+				dispatchFrame["error"] = d.Error
+			}
+			frame["dispatch"] = dispatchFrame
+		}
 	}
 	if err := sw.write(frame); err != nil {
 		s.log.Warnf("agent: write frame failed: %v", err)
