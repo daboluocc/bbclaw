@@ -97,8 +97,8 @@ func TestParseStreamJSON_MCPDispatch_Error(t *testing.T) {
 	if evs[1].Dispatch == nil || evs[1].Dispatch.Phase != "error" {
 		t.Errorf("event 1: want phase=error, got %+v", evs[1].Dispatch)
 	}
-	if evs[1].Dispatch.Error != "timeout" {
-		t.Errorf("event 1: want error=timeout, got %q", evs[1].Dispatch.Error)
+	if evs[1].Dispatch.ErrorMsg != "timeout" {
+		t.Errorf("event 1: want error=timeout, got %q", evs[1].Dispatch.ErrorMsg)
 	}
 }
 

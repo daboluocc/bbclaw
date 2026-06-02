@@ -108,6 +108,11 @@ type Server struct {
 	// only on LOCAL (cloud multi-tenant v1 never writes).
 	memoryWriter butler.MemoryWriter
 
+	// dispatchRing is the in-memory ring buffer for butler dispatch tasks
+	// (ADR-021-firmware-ui §1.4). Non-nil when butler mode is active; wired
+	// via SetDispatchRing from main.go. Used by GET /v1/butler/dispatch/recent.
+	dispatchRing *butler.DispatchRing
+
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
 	notifQueue *NotificationQueue

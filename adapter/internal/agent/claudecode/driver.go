@@ -482,10 +482,9 @@ type streamContent struct {
 	Text       string          `json:"text,omitempty"`
 	Name       string          `json:"name,omitempty"`
 	ID         string          `json:"id,omitempty"`
+	ToolUseID  string          `json:"tool_use_id,omitempty"` // present in tool_result frames
 	Input      json.RawMessage `json:"input,omitempty"`
-	ToolUseID  string          `json:"tool_use_id,omitempty"` // present in tool_result blocks
-	Content    string          `json:"content,omitempty"`     // tool_result text payload
-	IsError    bool            `json:"is_error,omitempty"`    // tool_result error flag
+	Content    json.RawMessage `json:"content,omitempty"` // tool_result content (string or array)
 }
 
 type streamUsage struct {
@@ -497,6 +496,10 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 	sc := bufio.NewScanner(r)
 	// stream-json can emit long lines (large tool_result payloads).
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// toolUseNames maps tool_use.id → tool_use.name so that tool_result frames
+	// (in the "user" envelope) can look up which tool produced each result and
+	// decide whether to emit EvDispatchStatus (ADR-021-firmware-ui §1.2).
+	toolUseNames := make(map[string]string)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -526,30 +529,14 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 						s.emit(agent.Event{Type: agent.EvText, Text: c.Text})
 					}
 				case "tool_use":
-					if strings.HasPrefix(c.Name, "mcp__bbclaw__") {
-						// MCP butler dispatch: emit EvDispatchStatus(started) and
-						// track in pendingDispatches for tool_result correlation.
-						var inp struct {
-							Project string `json:"project"`
-							Cwd     string `json:"cwd"`
-							Task    string `json:"task"`
-						}
-						_ = json.Unmarshal(c.Input, &inp)
-						cwd := inp.Cwd
-						if cwd == "" {
-							cwd = inp.Project
-						}
-						title := truncateDispatchTitle(inp.Task)
-						log.Infof("claude-code: mcp dispatch started sid=%s tool=%s id=%s cwd=%q title=%q", s.id, c.Name, c.ID, cwd, title)
-						if s.pendingDispatches == nil {
-							s.pendingDispatches = make(map[string]*pendingDispatch)
-						}
-						s.pendingDispatches[c.ID] = &pendingDispatch{
-							toolUseID: c.ID,
-							cwd:       cwd,
-							title:     title,
-							startedAt: time.Now(),
-						}
+					if isMCPBBClawDispatch(c.Name) {
+						// mcp__bbclaw__dispatch tool: emit EvDispatchStatus(started)
+						// so butler.Engine can record it in the ring buffer and
+						// the device can show "派发中: <cwd>…" in s_lbl_status.
+						// (ADR-021-firmware-ui §1.2)
+						toolUseNames[c.ID] = c.Name // track id→name for tool_result lookup
+						cwd, title := parseDispatchInput(c.Input)
+						log.Infof("claude-code: dispatch started sid=%s id=%s cwd=%q", s.id, c.ID, cwd)
 						s.emit(agent.Event{
 							Type: agent.EvDispatchStatus,
 							Dispatch: &agent.DispatchStatus{
@@ -560,10 +547,8 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 							},
 						})
 					} else {
-						// Display-only: we surface tool_use frames as EvToolCall
-						// so the playground / device UI can render them, but
-						// Capabilities().ToolApproval stays false because the
-						// approval round-trip is not yet implemented (Phase 2).
+						// All other tool_use frames: surface as EvToolCall (display-only).
+						// Capabilities().ToolApproval stays false (Phase 2).
 						hint := summarizeToolInput(c.Name, c.Input)
 						log.Infof("claude-code: tool_use sid=%s tool=%s id=%s hint=%q", s.id, c.Name, c.ID, hint)
 						s.emit(agent.Event{
@@ -578,66 +563,16 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 				}
 			}
 		case "user":
-			// tool_result frames: parse mcp__bbclaw__ dispatch results into
-			// EvDispatchStatus events. Other tool_results are still discarded.
-			if env.Message == nil {
-				continue
-			}
-			for _, c := range env.Message.Content {
-				if c.Type != "tool_result" {
-					continue
-				}
-				pd, ok := s.pendingDispatches[c.ToolUseID]
-				if !ok {
-					// not a tracked mcp dispatch — discard (Phase 1 behaviour preserved)
-					continue
-				}
-				elapsed := time.Since(pd.startedAt).Milliseconds()
-				delete(s.pendingDispatches, c.ToolUseID)
-
-				// Parse the butlermcp dispatch result JSON.
-				// Schema: {"status":"done"|"running"|"error", "taskId":"…", "error":"…"}
-				// "running" means the worker degraded to async.
-				var result struct {
-					Status string `json:"status"`
-					TaskID string `json:"taskId"`
-					Error  string `json:"error"`
-				}
-				_ = json.Unmarshal([]byte(c.Content), &result)
-
-				phase := result.Status
-				switch phase {
-				case "done":
-					// inline completion
-				case "running":
-					phase = "async"
-				case "error":
-					// keep as-is
-				default:
-					if c.IsError {
-						phase = "error"
-					} else {
-						phase = "done"
+			// tool_result frames: parse MCP bbclaw dispatch results and emit
+			// EvDispatchStatus. All other tool_results remain ignored (Phase 1).
+			if env.Message != nil {
+				for _, c := range env.Message.Content {
+					if c.Type == "tool_result" && isMCPBBClawDispatch(toolUseNames[c.ToolUseID]) {
+						ds := parseDispatchResult(c.ToolUseID, c.Content)
+						log.Infof("claude-code: dispatch result sid=%s id=%s phase=%s elapsed=%dms", s.id, ds.TaskID, ds.Phase, ds.ElapsedMs)
+						s.emit(agent.Event{Type: agent.EvDispatchStatus, Dispatch: ds})
 					}
 				}
-
-				taskID := result.TaskID
-				if taskID == "" {
-					taskID = pd.toolUseID
-				}
-				errMsg := result.Error
-				log.Infof("claude-code: mcp dispatch result sid=%s id=%s phase=%s elapsed=%dms", s.id, taskID, phase, elapsed)
-				s.emit(agent.Event{
-					Type: agent.EvDispatchStatus,
-					Dispatch: &agent.DispatchStatus{
-						Phase:     phase,
-						TaskID:    taskID,
-						Cwd:       pd.cwd,
-						Title:     pd.title,
-						ElapsedMs: elapsed,
-						Error:     errMsg,
-					},
-				})
 			}
 		case "result":
 			if env.Usage != nil {
@@ -802,29 +737,110 @@ func summarizeToolInput(name string, raw json.RawMessage) string {
 	}
 }
 
-// truncateDispatchTitle truncates a dispatch task description to at most 24
-// Unicode code points or 48 bytes, whichever limit is hit first, appending "…"
-// when truncation occurs. This keeps the title safe for the 1.47" display.
-func truncateDispatchTitle(s string) string {
-	const maxRunes = 24
-	const maxBytes = 48
-	if len(s) <= maxBytes {
-		r := []rune(s)
-		if len(r) <= maxRunes {
-			return s
-		}
-		return string(r[:maxRunes]) + "…"
+// ─── dispatch helpers (ADR-021-firmware-ui §1.2) ────────────────────────────
+
+// mcpBBClawDispatchTool is the exact tool name that signals a butler dispatch.
+// Only this tool emits EvDispatchStatus; other mcp__bbclaw__* tools (list_projects,
+// task_status, task_result) continue to emit EvToolCall as usual, avoiding
+// spurious "派发中…" labels for non-dispatch MCP calls.
+const mcpBBClawDispatchTool = "mcp__bbclaw__dispatch"
+
+// isMCPBBClawDispatch returns true iff name is exactly the dispatch tool.
+func isMCPBBClawDispatch(name string) bool {
+	return name == mcpBBClawDispatchTool
+}
+
+// parseDispatchInput extracts cwd and title from the dispatch tool_use input JSON.
+// Returns empty strings on any parse error (non-fatal: ring buffer just has less info).
+// Accepts both new schema (cwd/prompt) and legacy schema (project/task).
+func parseDispatchInput(raw json.RawMessage) (cwd, title string) {
+	if len(raw) == 0 {
+		return "", ""
 	}
-	// byte limit: walk rune-by-rune to stay valid UTF-8
-	n := 0
-	runeCount := 0
-	for i, r := range s {
-		if runeCount >= maxRunes || i >= maxBytes {
-			_ = i
-			break
-		}
-		n += len(string(r))
-		runeCount++
+	var in struct {
+		Cwd     string `json:"cwd"`
+		Prompt  string `json:"prompt"`
+		Project string `json:"project"` // legacy field name
+		Task    string `json:"task"`    // legacy field name
 	}
-	return s[:n] + "…"
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return "", ""
+	}
+	cwd = strings.TrimSpace(in.Cwd)
+	if cwd == "" {
+		cwd = strings.TrimSpace(in.Project)
+	}
+	prompt := strings.TrimSpace(in.Prompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(in.Task)
+	}
+	return cwd, truncateCJK(prompt, 24)
+}
+
+// dispatchResultContent is the JSON shape the MCP dispatch tool returns.
+type dispatchResultContent struct {
+	Status    string `json:"status"`    // "done" | "running" | "async" | "error"
+	TaskID    string `json:"taskId"`
+	ElapsedMs int64  `json:"elapsedMs"`
+	Error     string `json:"error"`
+}
+
+// parseDispatchResult parses a tool_result content blob from the "user" envelope.
+// toolUseID is the originating tool_use.id (used as TaskID fallback).
+// content is json.RawMessage that may be a JSON string or a JSON array of content blocks.
+func parseDispatchResult(toolUseID string, raw json.RawMessage) *agent.DispatchStatus {
+	ds := &agent.DispatchStatus{TaskID: toolUseID, Phase: "done"}
+	if len(raw) == 0 {
+		return ds
+	}
+
+	// content can be a bare JSON string or an array like [{"type":"text","text":"..."}]
+	var text string
+	if raw[0] == '"' {
+		_ = json.Unmarshal(raw, &text)
+	} else if raw[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &blocks); err == nil {
+			for _, b := range blocks {
+				if b.Type == "text" {
+					text = b.Text
+					break
+				}
+			}
+		}
+	} else {
+		// Try direct object parse
+		text = string(raw)
+	}
+
+	// Try to parse the text as dispatchResultContent JSON
+	var res dispatchResultContent
+	if err := json.Unmarshal([]byte(text), &res); err == nil {
+		if res.TaskID != "" {
+			ds.TaskID = res.TaskID
+		}
+		if res.Status != "" {
+			phase := res.Status
+			if phase == "running" {
+				phase = "async"
+			}
+			ds.Phase = phase
+		}
+		ds.ElapsedMs = res.ElapsedMs
+		ds.ErrorMsg = res.Error
+	}
+	return ds
+}
+
+// truncateCJK truncates s to at most maxCJK CJK characters (or 2*maxCJK bytes
+// for ASCII-only strings), appending "…" when truncation occurs.
+func truncateCJK(s string, maxCJK int) string {
+	runes := []rune(s)
+	if len(runes) <= maxCJK {
+		return s
+	}
+	return string(runes[:maxCJK]) + "…"
 }

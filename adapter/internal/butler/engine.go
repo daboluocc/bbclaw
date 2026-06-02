@@ -63,6 +63,12 @@ type Deps struct {
 	// 非阻塞投递给它做异步蒸馏 → append 进 workspace CLAUDE.md 托管段。nil = 整步跳过
 	// (默认;由 env BBCLAW_BUTLER_MEMORY_DISTILL 门控,且 cloud 多租户 v1 不注入)。
 	Memory MemoryWriter
+
+	// DispatchRing 是派发任务的 in-memory ring buffer(ADR-021-firmware-ui §1.4)。
+	// 非 nil 时,engine 订阅 EvDispatchStatus 事件,把每次 dispatch phase 转换
+	// append/upsert 进 ring buffer,供 GET /v1/butler/dispatch/recent 读取。
+	// nil = 不维护 ring buffer(功能不阻塞)。
+	DispatchRing *DispatchRing
 }
 
 // Engine 持有不变的依赖;RunTurn 每次调用驱动一个完整 turn。
@@ -424,6 +430,16 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 							d.Log.Warnf("agent: UpdateCLISessionID (init) logical=%s cli=%s err=%v", logicalID, ev.Text, err)
 						}
 					}
+				case agent.EvDispatchStatus:
+					// Record in both ring buffers; do NOT forward to device NDJSON stream here —
+					// the httpapi layer emits it separately via writeAgentEvent when it
+					// observes the event on the sink (ADR-021-firmware-ui §1.2).
+					if d.DispatchRing != nil && ev.Dispatch != nil {
+						d.DispatchRing.Record(ev.Dispatch)
+					}
+					if d.DispatchRecorder != nil {
+						d.DispatchRecorder.Record(ev)
+					}
 				case agent.EvText:
 					textCount++
 					lastText = ev.Text
@@ -446,17 +462,17 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 					}
 				case agent.EvTurnEnd:
 					turnEnded = true
-				case agent.EvDispatchStatus:
-					// Record into ring buffer (non-driver layer, ADR-021 §1.4).
-					if d.DispatchRecorder != nil {
-						d.DispatchRecorder.Record(ev)
-					}
 				}
 
 				// EvSessionInit 一律不外发(两边一致)。
 				if ev.Type == agent.EvSessionInit {
 					continue
 				}
+
+				// EvDispatchStatus: forward to device NDJSON stream so firmware can
+				// update s_lbl_status in real time (ADR-021-firmware-ui §1.2).
+				// Ring buffer recording was already done above.
+				// (EvDispatchStatus falls through to EmitEvent below like other events.)
 
 				// turn_end 外发分歧(差异 EmitTurnEndFrame)。
 				// LOCAL:发一帧 NDJSON turn_end(写失败则直接 return,复刻原 writeAgentEvent

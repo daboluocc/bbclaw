@@ -9,18 +9,6 @@ import (
 
 const dispatchRingCap = 50
 
-// DispatchEntry is one recorded dispatch task, surfaced by
-// GET /v1/butler/dispatch/recent (ADR-021-firmware-ui §1.4).
-type DispatchEntry struct {
-	TaskID    string    `json:"taskId"`
-	Cwd       string    `json:"cwd"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`    // "started" | "done" | "async" | "error"
-	StartedAt time.Time `json:"startedAt"`
-	ElapsedMs int64     `json:"elapsedMs,omitempty"`
-	Error     string    `json:"error,omitempty"`
-}
-
 // DispatchRecorder is a process-level in-memory ring buffer that tracks
 // mcp__bbclaw__ dispatch events consumed from EvDispatchStatus events.
 // It is safe for concurrent use (HTTP handler reads, driver goroutine writes).
@@ -73,7 +61,7 @@ func (r *DispatchRecorder) Record(ev agent.Event) {
 		if entry, ok := r.byID[d.TaskID]; ok {
 			entry.Status = d.Phase
 			entry.ElapsedMs = d.ElapsedMs
-			entry.Error = d.Error
+			entry.ErrorMsg = d.ErrorMsg
 		}
 		// If no existing entry (e.g. recorder started after started event),
 		// create a minimal entry so we don't lose the data entirely.
@@ -85,7 +73,7 @@ func (r *DispatchRecorder) Record(ev agent.Event) {
 				Status:    d.Phase,
 				StartedAt: time.Now(),
 				ElapsedMs: d.ElapsedMs,
-				Error:     d.Error,
+				ErrorMsg:  d.ErrorMsg,
 			}
 			r.entries = append(r.entries, entry)
 			r.byID[d.TaskID] = entry
