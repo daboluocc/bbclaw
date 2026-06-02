@@ -1134,6 +1134,19 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
     return;
   }
 
+  /* ADR-021-firmware-ui §1.2: butler dispatch progress → top status label */
+  if (event->type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS && event->dispatch != NULL) {
+    const bb_dispatch_status_t* ds = event->dispatch;
+    ESP_LOGI(TAG, "phase=dispatch_status phase=%s cwd=%s taskId=%s elapsedMs=%lld",
+             ds->phase, ds->cwd, ds->task_id, (long long)ds->elapsed_ms);
+    bb_display_set_dispatch_status(ds->phase, ds->cwd, ds->task_id, ds->elapsed_ms);
+    /* Also update butler cwd from "started" phase so footer left cell stays current */
+    if (strcmp(ds->phase, "started") == 0 && ds->cwd[0] != '\0') {
+      bb_display_set_butler_cwd(ds->cwd);
+    }
+    return;
+  }
+
   if (event->type == BB_FINISH_STREAM_EVENT_REPLY_DELTA && event->text != NULL && event->text[0] != '\0') {
     /* reply delta replaces only the reply portion, keep process log prefix */
     size_t prefix_len = 0;

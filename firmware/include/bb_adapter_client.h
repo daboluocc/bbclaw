@@ -47,7 +47,18 @@ typedef enum {
   BB_FINISH_STREAM_EVENT_ERROR,
   BB_FINISH_STREAM_EVENT_THINKING,
   BB_FINISH_STREAM_EVENT_TOOL_CALL,
+  /* ADR-021-firmware-ui §1.2: butler dispatch progress (started/done/async/error) */
+  BB_FINISH_STREAM_EVENT_DISPATCH_STATUS,
 } bb_finish_stream_event_type_t;
+
+/* Dispatch status payload — carried in bb_finish_stream_event_t.dispatch when
+ * type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS. */
+typedef struct {
+  char phase[16];    /* "started" | "done" | "async" | "error" */
+  char task_id[64];  /* tool_use id from adapter */
+  char cwd[64];      /* project cwd (filled on started) */
+  int64_t elapsed_ms; /* worker elapsed time (filled on done/async) */
+} bb_dispatch_status_t;
 
 typedef struct {
   bb_finish_stream_event_type_t type;
@@ -55,6 +66,8 @@ typedef struct {
   const char* text;
   bb_tts_chunk_t* tts_chunk; /* callback owns this when non-NULL */
   int reply_wait_timed_out;
+  /* non-NULL when type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS */
+  const bb_dispatch_status_t* dispatch;
 } bb_finish_stream_event_t;
 
 typedef void (*bb_finish_stream_event_cb_t)(bb_finish_stream_event_t* event, void* user_ctx);

@@ -161,6 +161,24 @@ static void emit_finish_stream_event(bb_finish_stream_event_cb_t cb, void* user_
       .text = text,
       .tts_chunk = tts_chunk,
       .reply_wait_timed_out = reply_wait_timed_out,
+      .dispatch = NULL,
+  };
+  cb(&event, user_ctx);
+}
+
+/* ADR-021-firmware-ui §1.2: emit a dispatch_status event from a parsed
+ * bb_dispatch_status_t. Separate helper to avoid touching every call site of
+ * emit_finish_stream_event. */
+static void emit_dispatch_event(bb_finish_stream_event_cb_t cb, void* user_ctx,
+                                const bb_dispatch_status_t* ds) {
+  if (cb == NULL || ds == NULL) return;
+  bb_finish_stream_event_t event = {
+      .type = BB_FINISH_STREAM_EVENT_DISPATCH_STATUS,
+      .phase = ds->phase,
+      .text = NULL,
+      .tts_chunk = NULL,
+      .reply_wait_timed_out = 0,
+      .dispatch = ds,
   };
   cb(&event, user_ctx);
 }
@@ -870,6 +888,21 @@ static void ws_handle_text_message(const char* msg) {
       emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL,
                                name, NULL, 0);
     }
+  } else if (strcmp(kind, "dispatch_status") == 0) {
+    /* ADR-021-firmware-ui §1.2: butler dispatch progress via WS relay */
+    if (s_ws.finish_on_event != NULL) {
+      bb_dispatch_status_t ds = {0};
+      const char* dp = strstr(msg, "\"dispatch\"");
+      const char* src = (dp != NULL) ? strchr(dp, '{') : msg;
+      if (src == NULL) src = msg;
+      (void)json_extract_string(src, "phase",   ds.phase,   sizeof(ds.phase));
+      (void)json_extract_string(src, "taskId",  ds.task_id, sizeof(ds.task_id));
+      (void)json_extract_string(src, "cwd",     ds.cwd,     sizeof(ds.cwd));
+      ds.elapsed_ms = (int64_t)json_extract_int(src, "elapsedMs", 0);
+      if (ds.phase[0] != '\0') {
+        emit_dispatch_event(s_ws.finish_on_event, s_ws.finish_user_ctx, &ds);
+      }
+    }
   } else if (strcmp(kind, "tts.chunk") == 0) {
     /* Agent-bus path / abort path don't want TTS — skip base64 decode + alloc
      * entirely. dispatch_tts_chunk_event would also drop the chunk, but we
@@ -1313,6 +1346,25 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
     (void)json_extract_string(line, "name", name, sizeof(name));
     if (accum->on_event != NULL && name[0] != '\0') {
       emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL, name, NULL, 0);
+    }
+    return;
+  }
+
+  /* ADR-021-firmware-ui §1.2: butler dispatch progress frame */
+  if (strcmp(type, "dispatch_status") == 0) {
+    if (accum->on_event != NULL) {
+      bb_dispatch_status_t ds = {0};
+      /* dispatch object is nested under "dispatch" key */
+      const char* dp = strstr(line, "\"dispatch\"");
+      const char* src = (dp != NULL) ? strchr(dp, '{') : line;
+      if (src == NULL) src = line;
+      (void)json_extract_string(src, "phase",   ds.phase,   sizeof(ds.phase));
+      (void)json_extract_string(src, "taskId",  ds.task_id, sizeof(ds.task_id));
+      (void)json_extract_string(src, "cwd",     ds.cwd,     sizeof(ds.cwd));
+      ds.elapsed_ms = (int64_t)json_extract_int(src, "elapsedMs", 0);
+      if (ds.phase[0] != '\0') {
+        emit_dispatch_event(accum->on_event, accum->user_ctx, &ds);
+      }
     }
     return;
   }
