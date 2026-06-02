@@ -26,6 +26,7 @@
 #include "bb_transport.h"
 #include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_task_list.h"
 #include "bb_session_store.h"
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
@@ -781,7 +782,7 @@ static void on_nav_event(bb_nav_event_t event) {
   if ((event == BB_NAV_EVENT_UP || event == BB_NAV_EVENT_DOWN) &&
       s_app_state == BBCLAW_STATE_CHAT &&
       s_agent_chat_active &&
-      !bb_ui_agent_chat_session_picker_is_visible() &&
+      !bb_ui_task_list_visible() &&
       !bb_ui_agent_chat_cwd_picker_is_visible()) {
     bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? -2 : 2);
     s_last_activity_ms = bb_now_ms();  /* keep idle-timeout fresh */
@@ -1732,7 +1733,7 @@ static void stream_task(void* arg) {
             }
             int busy = agent_chat_is_busy_locked();
             int cwd_up = bb_ui_agent_chat_cwd_picker_is_visible();
-            int picker_up = bb_ui_agent_chat_session_picker_is_visible();
+            int task_list_up = bb_ui_task_list_visible();
             if (cwd_up) {
               /* CWD picker is open — route nav to it. */
               switch (nav) {
@@ -1762,58 +1763,37 @@ static void stream_task(void* arg) {
                   break;
                 default: break;
               }
-            } else if (picker_up) {
-              /* Session picker is open — route nav to picker. Longer lock
-               * timeout (600ms) tolerates LVGL congestion during TTS playback. */
+            } else if (task_list_up) {
+              /* Task List page is open (ADR-021-firmware-ui §3, issue #103).
+               * Route ↑↓ to row selection, OK to task_status turn, BACK to CHAT. */
               switch (nav) {
                 case BB_NAV_EVENT_UP:
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_session_picker_move(-1);
+                    bb_ui_task_list_move(-1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_DOWN:
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_session_picker_move(+1);
+                    bb_ui_task_list_move(+1);
                     lvgl_port_unlock();
                   }
                   break;
                 case BB_NAV_EVENT_OK:
+                  /* Sends "task_status #<taskId>" turn and returns to CHAT. */
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_session_picker_select();
+                    bb_ui_task_list_activate();
                     lvgl_port_unlock();
                   } else {
-                    ESP_LOGW(TAG, "CHAT picker: OK select lock timeout");
+                    ESP_LOGW(TAG, "CHAT task_list: OK activate lock timeout");
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_session_picker_hide();
+                    bb_ui_task_list_hide();
                     lvgl_port_unlock();
                   }
                   break;
-                case BB_NAV_EVENT_LEFT:
-                case BB_NAV_EVENT_RIGHT: {
-                  /* If the driver row is highlighted, cycle driver in-place
-                   * and re-fetch sessions; otherwise close picker and cycle. */
-                  int consumed = 0;
-                  if (lvgl_port_lock(600)) {
-                    consumed = bb_ui_agent_chat_session_picker_driver_cycle(
-                        nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
-                    lvgl_port_unlock();
-                  }
-                  if (!consumed) {
-                    /* Non-driver row: close picker, then cycle driver. */
-                    if (lvgl_port_lock(600)) {
-                      bb_ui_agent_chat_session_picker_hide();
-                      lvgl_port_unlock();
-                    }
-                    if (!busy) {
-                      agent_chat_cycle_driver_locked(nav == BB_NAV_EVENT_RIGHT ? +1 : -1);
-                    }
-                  }
-                  break;
-                }
                 default: break;
               }
             } else {
@@ -1849,15 +1829,14 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_OK:
-                  /* Allow opening session picker even while TTS/agent is busy —
-                   * picker is a passive list overlay and does not disturb the
-                   * background stream. Longer lock timeout accommodates LVGL
-                   * task congestion during TTS chunk playback. */
+                  /* Short-press OK → Task List page (ADR-021-firmware-ui §3, issue #103).
+                   * Passive screen switch; allowed even while TTS/agent is busy.
+                   * Long-press OK → SETTINGS (handled by nav driver, emitted as BACK). */
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_session_picker_show();
+                    bb_ui_task_list_show();
                     lvgl_port_unlock();
                   } else {
-                    ESP_LOGW(TAG, "CHAT: OK session picker lock timeout");
+                    ESP_LOGW(TAG, "CHAT: OK task_list lock timeout");
                   }
                   break;
                 case BB_NAV_EVENT_BACK:
@@ -2981,7 +2960,7 @@ static void stream_task(void* arg) {
          * (e.g. creating a new session, streaming reply, fetching sessions).
          * Those states represent an in-progress user interaction and must
          * not trip the 30s idle timer. */
-        int picker_open = bb_ui_agent_chat_session_picker_is_visible() ||
+        int picker_open = bb_ui_task_list_visible() ||
                           bb_ui_agent_chat_cwd_picker_is_visible();
         int busy = agent_chat_is_busy_locked();
         if (!picker_open && !busy &&

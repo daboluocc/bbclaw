@@ -213,6 +213,19 @@ typedef struct {
 } bb_agent_cwd_entry_t;
 
 /**
+ * One task entry from GET /v1/butler/dispatch/recent (ADR-021-firmware-ui §1.4).
+ * Represents a recently dispatched background task.
+ */
+typedef struct {
+  char task_id[64];   /* tool_use.id used by butler MCP dispatch */
+  char cwd[32];       /* target project short name */
+  char title[52];     /* prompt snippet, truncated to ~24 CJK chars */
+  char status[16];    /* "running" | "done" | "error" | "async" */
+  int64_t started_at_ms; /* Unix epoch ms; 0 if unavailable */
+  int64_t elapsed_ms;    /* worker wall time; 0 if not completed */
+} bb_agent_dispatch_entry_t;
+
+/**
  * GET /v1/agent/cwd-pool — list available project working directories (issue #30).
  *
  * @param out_list   Caller-provided array; may be NULL (count-only query).
@@ -221,3 +234,14 @@ typedef struct {
  * @return ESP_OK / error code.
  */
 esp_err_t bb_agent_list_cwd_pool(bb_agent_cwd_entry_t* out_list, int cap, int* out_count);
+
+/**
+ * GET /v1/butler/dispatch/recent — list recent dispatch tasks (ADR-021-firmware-ui §1.4).
+ * Returns up to `cap` entries ordered newest-first.
+ *
+ * @param out_list   Caller-provided array; may be NULL (count-only query).
+ * @param cap        Capacity of out_list; ignored when out_list is NULL.
+ * @param out_count  Total entries returned (not capped by cap).
+ * @return ESP_OK / error code. Returns ESP_OK with *out_count=0 when buffer is empty.
+ */
+esp_err_t bb_agent_list_dispatch_recent(bb_agent_dispatch_entry_t* out_list, int cap, int* out_count);
