@@ -38,3 +38,4 @@
 | [ADR-019](ADR-019-server-driven-menu-protocol.md) | Server-Driven 菜单协议——把设备 picker 渲染下沉到 adapter | 2026-05-30 | 已接受（待实现） |
 | [ADR-020](ADR-020-memory-pipeline.md) | 记忆管线——用户需求记忆 + 本地项目画像（复用 Claude 原生） | 2026-05-30 | 草案（v1 范围明确，蒸馏延后） |
 | [ADR-021](ADR-021-conversational-orchestrator-butler.md) | 对话式编排管家——Claude 管家会话 + MCP 派发到 worker CLI Agent | 2026-05-30 | 草案（方向已定，2 个 spike 闸门） |
+| [ADR-022](ADR-022-memory-consolidation-and-profile-docs.md) | 记忆整理——收件箱 + 画像文档两层记忆（consolidation 归档进 workspace/MEMORY/） | 2026-06-02 | 已接受（v1 范围明确，5 项决策定稿） |
