@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **设备端 CWD picker + new-session 死代码整链清理**：ADR-021 v2 砍掉 session picker 后，CWD picker（issue #30）唯一入口（session picker 的「+ 新建 session」行）随之断链，整条链路不可达：CWD picker overlay UI 与按键路由、设备端 new-session worker（`spawn_new_session_task` 等）、客户端 API `bb_agent_create_session` / `bb_agent_list_cwd_pool`（`POST /v1/agent/sessions` / `GET /v1/agent/cwd-pool` 设备侧调用）、`bb_display_set_cwd_name` 及 `format_relative_time`。设备 turn 已由 adapter `EnsureButler` 强制路由管家会话，设备端不再创建 session。共删 ~650 行（6 个源文件 + 3 个头文件）。
+
 ### Fixed
+- **固件编译失败**：(1) `bb_ui_agent_chat.c` 一处旧注释缺 `*/` 结尾，与下一行注释嵌套触发 `-Werror=comment`；(2) `bb_lvgl_display.c` / `bb_page_locked.c` 底栏 `"mem: %d+%d"` 在 int 极值下可能截断 24 字节 buffer 触发 `-Werror=format-truncation`，inbox/profile 显示值钳制到 999。
 - **电池电量显示不准 (P0)**：第一版线性映射（3300mV→0%，4200mV→100%）不符合锂电池放电曲线，导致满电掉电飞快、中段卡住、低电量突然归零。`bb_power.c` 改为 OCV–SoC 放电曲线查表 + 线性插值，并新增三项滤波：(1) 跨周期 EMA 电压低通（`BBCLAW_POWER_EMA_ALPHA_PCT`，默认 25%）吸收 PTT/功放/WiFi 负载瞬态；(2) 百分比迟滞（`BBCLAW_POWER_HYSTERESIS_PCT`，默认 2%）消除 ±1% 抖动；(3) ADC dummy read 规避高阻分压首读偏低。曲线表与方案见 `firmware/docs/feat/power-management-foundation.md`。充电检测仍为 TODO（需 VBUS 脚）。
 - **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
 

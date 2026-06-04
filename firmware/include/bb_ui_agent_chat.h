@@ -211,32 +211,6 @@ void bb_ui_agent_chat_voice_listening(int begin);
 void bb_ui_agent_chat_voice_processing(void);
 
 /* Session picker removed (ADR-021-firmware-ui v2, issue #103).
- * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h). */
-
-/* ── CWD Pool Picker (issue #30) ── */
-
-/**
- * Returns 1 if the CWD project picker is currently visible (loading or shown).
- * When visible, key events should be routed to the CWD picker instead of the
- * session picker.
- */
-int bb_ui_agent_chat_cwd_picker_is_visible(void);
-
-/**
- * Move the CWD picker highlight. delta = -1 (up) / +1 (down), wraps.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_cwd_picker_move(int delta);
-
-/**
- * Confirm the currently highlighted CWD picker entry (OK key).
- * Creates a new session with the selected project's cwd_name.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_cwd_picker_confirm(void);
-
-/**
- * Cancel the CWD picker (BACK key). Hides the picker without creating a session.
- * Must be called inside the LVGL lock.
- */
-void bb_ui_agent_chat_cwd_picker_cancel(void);
+ * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h).
+ * CWD pool picker (issue #30) removed with it — device-side session creation
+ * is gone; turns are routed to the butler session by the adapter. */

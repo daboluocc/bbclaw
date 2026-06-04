@@ -36,9 +36,6 @@ void bb_display_set_session_id(const char* session_id);
  *  非空时优先显示，比 hex sid 更直观；NULL/"" 时回退到 sid 短截。
  *  Session picker 选择已知 session 时调用；其余路径(新建/cycle/启动恢复)传空字符串。 */
 void bb_display_set_session_alias(const char* alias);
-/** 底栏 CWD pool 名；NULL/"" 清空。ADR-016: 不再绘制（位置让给 model），
- *  仍保留 setter 供诊断 / 未来重新启用。 */
-void bb_display_set_cwd_name(const char* cwd_name);
 /** ADR-016: 底栏右半显示的 model id/label；NULL/"" 显示 em-dash 占位。
  *  由 Settings 切换 model 或者 chat 启动时从 active driver cache 读取触发。 */
 void bb_display_set_active_model(const char* model_label);

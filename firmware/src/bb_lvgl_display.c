@@ -204,11 +204,8 @@ static int s_scroll_ai;
 static int s_focus_ai;
 static char s_status[32];
 static char s_bottom_session[64];
-static char s_bottom_cwd[48];
 /* ADR-016: bottom-bar right side now shows the active model id/label so
- * users can see "what brain am I talking to" at a glance. cwd info still
- * lives in s_bottom_cwd but is no longer painted — it's reachable via the
- * Settings overlay (and from server logs). */
+ * users can see "what brain am I talking to" at a glance. */
 static char s_bottom_model[40];
 /* ADR-016 polish: friendly alias (logical session title from adapter) shown
  * on the bottom-bar left instead of the raw sid when non-empty. */
@@ -458,6 +455,8 @@ static void apply_bottom_bar(void) {
   portEXIT_CRITICAL(&s_state_lock);
 
   if (inbox >= 0 && profile >= 0) {
+    if (inbox > 999) inbox = 999;
+    if (profile > 999) profile = 999;
     snprintf(right_buf, sizeof(right_buf), "mem: %d+%d", inbox, profile);
   } else {
     snprintf(right_buf, sizeof(right_buf), "mem: ?");
@@ -1726,20 +1725,6 @@ void bb_display_set_session_id(const char* session_id) {
   }
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
-}
-
-void bb_display_set_cwd_name(const char* cwd_name) {
-  portENTER_CRITICAL(&s_state_lock);
-  if (cwd_name == NULL) {
-    s_bottom_cwd[0] = '\0';
-  } else {
-    strncpy(s_bottom_cwd, cwd_name, sizeof(s_bottom_cwd) - 1);
-    s_bottom_cwd[sizeof(s_bottom_cwd) - 1] = '\0';
-  }
-  portEXIT_CRITICAL(&s_state_lock);
-  /* ADR-016: cwd no longer painted on the bottom bar (model took its slot).
-   * Skip refresh_ui — the value is still kept for diagnostic purposes (e.g.
-   * future "where is claude running" hint). */
 }
 
 /* ADR-016 polish: bottom-bar left-cell alias (logical session title).

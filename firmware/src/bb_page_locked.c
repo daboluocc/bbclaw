@@ -324,6 +324,8 @@ void bb_page_locked_update_footer(const char* cwd, int mem_inbox, int mem_profil
   /* Right: "mem: N+M" or "mem: ?" */
   char right_buf[24];
   if (mem_inbox >= 0 && mem_profile >= 0) {
+    if (mem_inbox > 999) mem_inbox = 999;
+    if (mem_profile > 999) mem_profile = 999;
     snprintf(right_buf, sizeof(right_buf), "mem: %d+%d", mem_inbox, mem_profile);
   } else {
     snprintf(right_buf, sizeof(right_buf), "mem: ?");

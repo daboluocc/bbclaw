@@ -776,14 +776,13 @@ static void on_nav_event(bb_nav_event_t event) {
    * scroll worker which lives on a dedicated FreeRTOS task and is never
    * blocked by audio I/O. The version counter is deliberately NOT bumped
    * in this branch — letting stream_task also dispatch later would
-   * double-scroll once it catches up. Pickers (session/cwd) still need
-   * the stream_task path, so skip fast-path when one is open. */
+   * double-scroll once it catches up. The Task List page still needs
+   * the stream_task path, so skip fast-path when it is open. */
   int fast_path = 0;
   if ((event == BB_NAV_EVENT_UP || event == BB_NAV_EVENT_DOWN) &&
       s_app_state == BBCLAW_STATE_CHAT &&
       s_agent_chat_active &&
-      !bb_ui_task_list_visible() &&
-      !bb_ui_agent_chat_cwd_picker_is_visible()) {
+      !bb_ui_task_list_visible()) {
     bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? -2 : 2);
     s_last_activity_ms = bb_now_ms();  /* keep idle-timeout fresh */
     fast_path = 1;
@@ -1745,38 +1744,8 @@ static void stream_task(void* arg) {
               break; /* consume the edge; do not forward to chat internals */
             }
             int busy = agent_chat_is_busy_locked();
-            int cwd_up = bb_ui_agent_chat_cwd_picker_is_visible();
             int task_list_up = bb_ui_task_list_visible();
-            if (cwd_up) {
-              /* CWD picker is open — route nav to it. */
-              switch (nav) {
-                case BB_NAV_EVENT_UP:
-                  if (lvgl_port_lock(200)) {
-                    bb_ui_agent_chat_cwd_picker_move(-1);
-                    lvgl_port_unlock();
-                  }
-                  break;
-                case BB_NAV_EVENT_DOWN:
-                  if (lvgl_port_lock(200)) {
-                    bb_ui_agent_chat_cwd_picker_move(+1);
-                    lvgl_port_unlock();
-                  }
-                  break;
-                case BB_NAV_EVENT_OK:
-                  if (lvgl_port_lock(200)) {
-                    bb_ui_agent_chat_cwd_picker_confirm();
-                    lvgl_port_unlock();
-                  }
-                  break;
-                case BB_NAV_EVENT_BACK:
-                  if (lvgl_port_lock(200)) {
-                    bb_ui_agent_chat_cwd_picker_cancel();
-                    lvgl_port_unlock();
-                  }
-                  break;
-                default: break;
-              }
-            } else if (task_list_up) {
+            if (task_list_up) {
               /* Task List page is open (ADR-021-firmware-ui §3, issue #103).
                * Route ↑↓ to row selection, OK to task_status turn, BACK to CHAT. */
               switch (nav) {
@@ -2973,8 +2942,7 @@ static void stream_task(void* arg) {
          * (e.g. creating a new session, streaming reply, fetching sessions).
          * Those states represent an in-progress user interaction and must
          * not trip the 30s idle timer. */
-        int picker_open = bb_ui_task_list_visible() ||
-                          bb_ui_agent_chat_cwd_picker_is_visible();
+        int picker_open = bb_ui_task_list_visible();
         int busy = agent_chat_is_busy_locked();
         if (!picker_open && !busy &&
             now_ms - s_last_activity_ms > BBCLAW_CHAT_IDLE_TIMEOUT_MS) {
