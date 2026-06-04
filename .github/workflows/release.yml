@@ -39,7 +39,7 @@ jobs:
     env:
       RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install ESP-IDF v5.5
         # Pin to release/v5.5 branch — local dev runs on v5.5.2 (see CLAUDE.md).
@@ -93,7 +93,7 @@ jobs:
              "release-stage/firmware/bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: firmware-bin
           path: release-stage/firmware/
@@ -182,9 +182,9 @@ jobs:
     env:
       RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: adapter/go.mod
           cache-dependency-path: adapter/go.sum
@@ -202,7 +202,7 @@ jobs:
           ./scripts/release_build.sh "$RELEASE_VERSION" >/dev/null
 
       - name: Upload adapter artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: adapter-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -219,16 +219,16 @@ jobs:
     env:
       RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download firmware artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firmware-bin
           path: release-artifacts/
 
       - name: Download adapter artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-artifacts/
           pattern: adapter-*
