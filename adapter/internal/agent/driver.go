@@ -28,14 +28,14 @@ const (
 type EventType string
 
 const (
-	EvText           EventType = "text"            // assistant text fragment
-	EvToolCall       EventType = "tool_call"       // permission request (Capabilities.ToolApproval)
-	EvStatus         EventType = "status"          // running/waiting/idle/offline
-	EvTokens         EventType = "tokens"          // usage stats
-	EvError          EventType = "error"           // driver-level error
-	EvTurnEnd        EventType = "turn_end"        // one assistant turn finished
-	EvSessionInit    EventType = "session_init"    // CLI reported its real session id (Text field)
-	EvDispatchStatus EventType = "dispatch_status" // mcp__bbclaw__ tool dispatch progress (ADR-021 §1.2)
+	EvText            EventType = "text"            // assistant text fragment
+	EvToolCall        EventType = "tool_call"       // permission request (Capabilities.ToolApproval)
+	EvStatus          EventType = "status"          // running/waiting/idle/offline
+	EvTokens          EventType = "tokens"          // usage stats
+	EvError           EventType = "error"           // driver-level error
+	EvTurnEnd         EventType = "turn_end"        // one assistant turn finished
+	EvSessionInit     EventType = "session_init"    // CLI reported its real session id (Text field)
+	EvDispatchStatus  EventType = "dispatch_status" // MCP bbclaw tool dispatch progress (ADR-021-firmware-ui §1.2)
 )
 
 // Event is the single type every driver emits on its Events channel.
@@ -47,23 +47,25 @@ type Event struct {
 
 	Tool     *ToolCall
 	Tokens   *Tokens
-	Dispatch *DispatchStatus // set when Type == EvDispatchStatus
+	Dispatch *DispatchStatus // non-nil when Type == EvDispatchStatus
 }
 
-// DispatchStatus carries butler dispatch progress for mcp__bbclaw__* tool calls
-// (ADR-021-firmware-ui §1.2). Phase transitions:
-//
-//	started → running (implicit, via startedAt tracking) → done | async | error
-//
-// ElapsedMs is the wall-clock duration from started to the final phase.
-// For "async" it equals the inline-wait timeout in milliseconds.
+// DispatchStatus carries butler dispatch progress information (ADR-021-firmware-ui §1.2).
+// Emitted by the claudecode driver when it observes mcp__bbclaw__dispatch tool_use /
+// tool_result frames; consumed by butler.Engine to maintain the ring buffer.
 type DispatchStatus struct {
-	Phase     string // "started" | "done" | "async" | "error"
-	TaskID    string // claude tool_use.id for started; butlermcp taskId for done/async/error
-	Cwd       string // resolved working directory (basename)
-	Title     string // task description, truncated to 24 CJK chars / 48 bytes
-	ElapsedMs int64  // 0 for "started"; wall-clock ms for terminal phases
-	Error     string // non-empty on phase="error"
+	// Phase is one of: "started" | "done" | "running" | "async" | "error"
+	Phase string
+	// TaskID is the tool_use.id from the claude stream (or MCP-returned taskId).
+	TaskID string
+	// Cwd is the dispatch target project path (populated from tool_use input; may be empty).
+	Cwd string
+	// Title is the truncated dispatch prompt (up to 24 CJK chars / 48 bytes).
+	Title string
+	// ElapsedMs is the worker elapsed time in milliseconds (populated for done/async phases).
+	ElapsedMs int64
+	// ErrorMsg holds the failure description when Phase == "error".
+	ErrorMsg string
 }
 
 type ToolCall struct {

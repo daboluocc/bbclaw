@@ -288,3 +288,160 @@ func TestDefaultModelMatchesCatalog(t *testing.T) {
 		t.Errorf("default model %q is not in the catalog", def)
 	}
 }
+
+// ─── dispatch_status tests (ADR-021-firmware-ui §1.2) ───────────────────────
+
+// TestParseStreamJSONDispatchStarted verifies that mcp__bbclaw__dispatch tool_use
+// frames emit EvDispatchStatus(started) instead of EvToolCall.
+func TestParseStreamJSONDispatchStarted(t *testing.T) {
+	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_disp1","name":"mcp__bbclaw__dispatch","input":{"cwd":"bbclaw","prompt":"重构 auth"}}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("want 1 event, got %d: %+v", len(evs), evs)
+	}
+	ev := evs[0]
+	if ev.Type != agent.EvDispatchStatus {
+		t.Fatalf("want EvDispatchStatus, got %v", ev.Type)
+	}
+	if ev.Dispatch == nil {
+		t.Fatal("Dispatch field is nil")
+	}
+	if ev.Dispatch.Phase != "started" {
+		t.Errorf("want phase=started, got %q", ev.Dispatch.Phase)
+	}
+	if ev.Dispatch.TaskID != "tu_disp1" {
+		t.Errorf("want taskId=tu_disp1, got %q", ev.Dispatch.TaskID)
+	}
+	if ev.Dispatch.Cwd != "bbclaw" {
+		t.Errorf("want cwd=bbclaw, got %q", ev.Dispatch.Cwd)
+	}
+}
+
+// TestParseStreamJSONNonDispatchMCPToolStillEvToolCall verifies that other
+// mcp__bbclaw__* tools (list_projects, task_status, task_result) are NOT
+// treated as dispatch and still emit EvToolCall.
+func TestParseStreamJSONNonDispatchMCPToolStillEvToolCall(t *testing.T) {
+	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_ls","name":"mcp__bbclaw__list_projects","input":{}}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("want 1 event, got %d", len(evs))
+	}
+	if evs[0].Type != agent.EvToolCall {
+		t.Errorf("want EvToolCall for non-dispatch MCP tool, got %v", evs[0].Type)
+	}
+}
+
+// TestParseStreamJSONDispatchToolResult verifies that a tool_result frame for
+// mcp__bbclaw__dispatch emits EvDispatchStatus with the parsed phase/elapsedMs.
+// The transcript must contain the tool_use frame first so toolUseNames is populated.
+func TestParseStreamJSONDispatchToolResult(t *testing.T) {
+	// tool_use first so the parser maps tu_disp1 → mcp__bbclaw__dispatch
+	// tool_result content is a JSON-encoded string (quotes escaped inside the outer JSON)
+	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_disp1","name":"mcp__bbclaw__dispatch","input":{"cwd":"bbclaw","prompt":"重构 auth"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_disp1","content":"{\"status\":\"done\",\"taskId\":\"tu_disp1\",\"elapsedMs\":3200}"}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	// expect: 1 EvDispatchStatus(started) + 1 EvDispatchStatus(done)
+	if len(evs) != 2 {
+		t.Fatalf("want 2 events (started+done), got %d: %+v", len(evs), evs)
+	}
+	if evs[0].Type != agent.EvDispatchStatus || evs[0].Dispatch.Phase != "started" {
+		t.Errorf("event 0: want EvDispatchStatus(started), got %+v", evs[0])
+	}
+	ev := evs[1]
+	if ev.Type != agent.EvDispatchStatus {
+		t.Fatalf("event 1: want EvDispatchStatus, got %v", ev.Type)
+	}
+	if ev.Dispatch.Phase != "done" {
+		t.Errorf("want phase=done, got %q", ev.Dispatch.Phase)
+	}
+	if ev.Dispatch.ElapsedMs != 3200 {
+		t.Errorf("want elapsedMs=3200, got %d", ev.Dispatch.ElapsedMs)
+	}
+}
+
+// TestParseStreamJSONDispatchAsyncPhase verifies the async phase parsing.
+func TestParseStreamJSONDispatchAsyncPhase(t *testing.T) {
+	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_async1","name":"mcp__bbclaw__dispatch","input":{"cwd":"proj","prompt":"大重构"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_async1","content":"{\"status\":\"async\",\"taskId\":\"tu_async1\"}"}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("want 2 events, got %d", len(evs))
+	}
+	if evs[1].Dispatch.Phase != "async" {
+		t.Errorf("want phase=async, got %q", evs[1].Dispatch.Phase)
+	}
+}
+
+// TestParseStreamJSONDispatchErrorPhase verifies the error phase and ErrorMsg.
+func TestParseStreamJSONDispatchErrorPhase(t *testing.T) {
+	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_err1","name":"mcp__bbclaw__dispatch","input":{"cwd":"proj","prompt":"lint"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_err1","content":"{\"status\":\"error\",\"taskId\":\"tu_err1\",\"error\":\"timeout\"}"}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("want 2 events, got %d", len(evs))
+	}
+	if evs[1].Dispatch.Phase != "error" {
+		t.Errorf("want phase=error, got %q", evs[1].Dispatch.Phase)
+	}
+	if evs[1].Dispatch.ErrorMsg != "timeout" {
+		t.Errorf("want error=timeout, got %q", evs[1].Dispatch.ErrorMsg)
+	}
+}
+
+// TestParseStreamJSONNonMCPToolResultIgnored verifies that a tool_result for a
+// non-mcp__bbclaw__dispatch tool_use_id is silently ignored (no events emitted).
+func TestParseStreamJSONNonMCPToolResultIgnored(t *testing.T) {
+	const transcript = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash_123","content":"exit 0"}]}}
+`
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	close(s.events)
+
+	var evs []agent.Event
+	for e := range s.events {
+		evs = append(evs, e)
+	}
+	if len(evs) != 0 {
+		t.Errorf("want 0 events for non-dispatch tool_result, got %d: %+v", len(evs), evs)
+	}
+}

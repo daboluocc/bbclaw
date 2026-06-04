@@ -174,6 +174,13 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		server.SetSessionManager(sessionMgr)
 		// Route local agent turns to the per-device butler session (ADR-021).
 		server.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
+		// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4): track dispatch
+		// task progress and serve GET /v1/butler/dispatch/recent.
+		if butlerWorkspace != "" {
+			dispatchRing := butler.NewDispatchRing()
+			server.SetDispatchRing(dispatchRing)
+			logger.Infof("butler-dispatch: ring buffer enabled")
+		}
 		// Butler long-term memory (ADR-021 §4). LOCAL-only and gated off by
 		// default (BBCLAW_BUTLER_MEMORY_DISTILL); cloud relay never wires it.
 		if butlerWorkspace != "" {

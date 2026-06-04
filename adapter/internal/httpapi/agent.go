@@ -146,6 +146,11 @@ func (s *Server) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
 // when BBCLAW_BUTLER_MEMORY_DISTILL is enabled, and LOCAL-only.
 func (s *Server) SetMemoryWriter(w butler.MemoryWriter) { s.memoryWriter = w }
 
+// SetDispatchRing attaches the in-memory dispatch ring buffer (ADR-021-firmware-ui §1.4).
+// When set, GET /v1/butler/dispatch/recent serves recent dispatch entries from it.
+// Wired by main.go when butler mode is active.
+func (s *Server) SetDispatchRing(r *butler.DispatchRing) { s.dispatchRing = r }
+
 // resolveActiveDriver picks the driver name to use when the request didn't
 // specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
 // own default. Both fall back gracefully to "" when neither resolves.
@@ -700,6 +705,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		ButlerMCPConfig:    s.butlerMCPConfig,
 		Memory:             s.memoryWriter,
 		DispatchRecorder:   s.dispatchRecorder,
+		DispatchRing:       s.dispatchRing,
 		StartCtx:           s.agentCtx,
 	})
 
@@ -1180,29 +1186,30 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 			frame["tool"] = ev.Tool.Tool
 			frame["hint"] = ev.Tool.Hint
 		}
+	case agent.EvDispatchStatus:
+		// ADR-021-firmware-ui §1.2: forward dispatch_status frame to device.
+		// {"type":"dispatch_status","seq":N,"dispatch":{"phase":"…","taskId":"…","cwd":"…","elapsedMs":N}}
+		if ev.Dispatch != nil {
+			d := map[string]any{
+				"phase":  ev.Dispatch.Phase,
+				"taskId": ev.Dispatch.TaskID,
+			}
+			if ev.Dispatch.Cwd != "" {
+				d["cwd"] = ev.Dispatch.Cwd
+			}
+			if ev.Dispatch.ElapsedMs > 0 {
+				d["elapsedMs"] = ev.Dispatch.ElapsedMs
+			}
+			if ev.Dispatch.ErrorMsg != "" {
+				d["error"] = ev.Dispatch.ErrorMsg
+			}
+			frame["dispatch"] = d
+		}
 	case agent.EvTurnEnd:
 		// no extra fields
 	case agent.EvSessionInit:
 		// Internal event — not forwarded to the device.
 		return true
-	case agent.EvDispatchStatus:
-		if ev.Dispatch != nil {
-			d := ev.Dispatch
-			dispatchFrame := map[string]any{
-				"phase":  d.Phase,
-				"taskId": d.TaskID,
-			}
-			if d.Cwd != "" {
-				dispatchFrame["cwd"] = d.Cwd
-			}
-			if d.ElapsedMs > 0 {
-				dispatchFrame["elapsedMs"] = d.ElapsedMs
-			}
-			if d.Error != "" {
-				dispatchFrame["error"] = d.Error
-			}
-			frame["dispatch"] = dispatchFrame
-		}
 	}
 	if err := sw.write(frame); err != nil {
 		s.log.Warnf("agent: write frame failed: %v", err)
