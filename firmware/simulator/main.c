@@ -211,6 +211,7 @@ static void populate_preview_state(const app_state_t* state) {
   (void)bb_display_init();
 
   if (state->mode == APP_MODE_IDLE) {
+    bb_display_set_battery(1, 1, 82, 0, 0);
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "READY");
     return;
   }
