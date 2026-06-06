@@ -1818,6 +1818,18 @@ static void on_history_fetch_done(void* user_data) {
   if (res->err != ESP_OK) {
     if (res->err == ESP_ERR_NOT_SUPPORTED) {
       ESP_LOGI(TAG, "history fetch: driver does not support replay (sid=%s)", res->session_id);
+    } else if (res->err == ESP_ERR_NOT_FOUND) {
+      /* Logical session is gone server-side (SESSION_NOT_FOUND). The stored id
+       * is stale — drop it from NVS and reset in-memory/transcript so the next
+       * turn opens a fresh session instead of replaying a dead one every boot. */
+      ESP_LOGW(TAG, "history fetch: session gone server-side, clearing stale sid=%s",
+               res->session_id);
+      const char* drv = res->driver_name[0] != '\0' ? res->driver_name : BB_CHAT_DRIVER_FALLBACK;
+      bb_session_store_save(drv, "");
+      s_chat.session_id[0] = '\0';
+      bb_display_set_session_id("");
+      bb_chat_transcript_clear();
+      bb_chat_cache_clear();
     } else {
       ESP_LOGW(TAG, "history fetch failed err=%s", esp_err_to_name(res->err));
     }

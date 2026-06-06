@@ -668,8 +668,16 @@ esp_err_t bb_agent_load_messages(const char* session_id,
   }
   if (status < 200 || status >= 300 || accum.buf == NULL) {
     ESP_LOGE(TAG, "load_messages http status=%d body=%.120s", status, accum.buf != NULL ? accum.buf : "(null)");
+    /* Adapter/cloud reports the logical session is gone (expired, or server
+     * restarted). Surface a distinct code so the caller can drop the stale
+     * session id and start fresh instead of treating it as a generic fail. */
+    esp_err_t ret = ESP_FAIL;
+    if (accum.buf != NULL && status == 400 &&
+        strstr(accum.buf, "SESSION_NOT_FOUND") != NULL) {
+      ret = ESP_ERR_NOT_FOUND;
+    }
     free(accum.buf);
-    return ESP_FAIL;
+    return ret;
   }
 
   cJSON* root = cJSON_Parse(accum.buf);

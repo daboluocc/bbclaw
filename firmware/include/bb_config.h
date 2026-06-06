@@ -560,7 +560,10 @@ const char *bbclaw_session_key(void);
 #endif
 
 #ifndef BBCLAW_AUDIO_INMP441_GAIN_NUM
-#define BBCLAW_AUDIO_INMP441_GAIN_NUM 8
+/* 8x saturated near-field speech (pcm diag showed max pegged at INT16_MAX with
+ * heavy positive clipping), which can degrade cloud ASR. 4x leaves ~2 bits of
+ * headroom while staying loud enough for the INMP441's low raw level. */
+#define BBCLAW_AUDIO_INMP441_GAIN_NUM 4
 #endif
 
 #ifndef BBCLAW_AUDIO_INMP441_GAIN_DEN
