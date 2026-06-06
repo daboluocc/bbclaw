@@ -17,10 +17,12 @@ static const char* TAG = "bb_theme_anim";
 /*
  * buddy-anim — the single shipping agent-chat theme.
  *
- * 布局：topbar（状态 + buddy face/mood 右侧）/ 全宽滚动 transcript。每个九态
- * （sleep/idle/busy/attention/celebrate/dizzy/heart/listening/speaking）附一个
- * LVGL 动效，靠 lv_anim 驱动 obj 属性（透明度/位置/缩放/颜色）让角色"动起来"，
- * 不依赖美术资产。Buddy 动画限制在 topbar 右侧 ~86×20 区域内。
+ * 布局：overlay 透明（Phase 7），顶/底栏由底层 ACTIVE 视图提供；本主题拥有
+ * 中间 transcript + 一个浮在 transcript 右上角的 buddy 小窗（face+mood，
+ * 半透明底）。每个九态（sleep/idle/busy/attention/celebrate/dizzy/heart/
+ * listening/speaking）附一个 LVGL 动效，靠 lv_anim 驱动 obj 属性（透明度/
+ * 位置/缩放/颜色）让角色"动起来"，不依赖美术资产。录音遮罩 show 时会
+ * move_foreground 盖住 buddy，避免 LISTENING 双重提示。
  *
  * 历史回放（Phase S3）：transcript 是 LVGL flex column；append_history_message
  * 在末尾追加完成的 user/assistant label，prepend_history_message 把更老的批次
@@ -53,13 +55,19 @@ static const char* TAG = "bb_theme_anim";
 #define MSG_RADIUS     6
 #define MSG_HMARGIN    SCREEN_CORNER_INSET_X
 
-/* Face label home position (relative to topbar buddy container). Animations
- * transform around this baseline so we always have a stable resting pose.
- * The container is ~86x20, so keep amplitudes small. */
+/* Floating buddy widget — top-right corner of the transcript area, two
+ * stacked lines (face over mood) on a translucent rounded chip. Face/mood
+ * home positions are relative to this container; animations transform
+ * around the baseline so we always have a stable resting pose. Amplitudes
+ * stay small (±1-4 px) to fit the chip. */
+#define BUDDY_W        96
+#define BUDDY_H        38
+#define BUDDY_MARGIN_X SCREEN_CORNER_INSET_X
+#define BUDDY_MARGIN_Y 2
 #define FACE_X0        0
-#define FACE_Y0        2
+#define FACE_Y0        3
 #define MOOD_X0        0
-#define MOOD_Y0        2
+#define MOOD_Y0        21
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;
@@ -430,8 +438,8 @@ static void theme_on_enter(lv_obj_t* parent) {
   lv_obj_set_style_bg_opa(s_st.root, LV_OPA_TRANSP, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
 
-  /* Phase 7: buddy-anim's own topbar/face/mood/battery removed.
-   * Those now live in bb_lvgl_display.c's ACTIVE view underneath. */
+  /* Phase 7: buddy-anim's own topbar (status/driver/session/battery)
+   * removed — those live in bb_lvgl_display.c's ACTIVE view underneath. */
   s_st.topbar = NULL;
   s_st.topbar_icon = NULL;
   s_st.topbar_driver_lbl = NULL;
@@ -440,9 +448,6 @@ static void theme_on_enter(lv_obj_t* parent) {
   s_st.topbar_bat_fill = NULL;
   s_st.topbar_bat_frame = NULL;
   s_st.topbar_bat_lbl = NULL;
-  s_st.topbar_buddy = NULL;
-  s_st.face_lbl = NULL;
-  s_st.mood_lbl = NULL;
 
   /* ── Transcript — aligned with underlying ACTIVE view's content area ── */
   /* Underlying content_y ≈ 32, content_h ≈ 112 (172 - 32 - 10 - 16 - 2).
@@ -453,6 +458,40 @@ static void theme_on_enter(lv_obj_t* parent) {
 
   /* Recording overlay — sits on top of transcript, hidden until PTT pressed */
   bb_chat_recording_create(s_st.root, 320, transcript_h, transcript_y);
+
+  /* ── Floating buddy — translucent chip at the transcript's top-right.
+   * Host objects for the nine per-state animations (apply_state_anim).
+   * The recording mask move_foreground()s itself on show, so during PTT
+   * capture the mask wins and we avoid a duplicate "listening" hint. ── */
+  s_st.topbar_buddy = lv_obj_create(s_st.root);
+  lv_obj_remove_style_all(s_st.topbar_buddy);
+  lv_obj_set_size(s_st.topbar_buddy, BUDDY_W, BUDDY_H);
+  lv_obj_set_pos(s_st.topbar_buddy, 320 - BUDDY_W - BUDDY_MARGIN_X,
+                 transcript_y + BUDDY_MARGIN_Y);
+  lv_obj_set_style_bg_color(s_st.topbar_buddy, lv_color_hex(UI_SCR_BG), 0);
+  lv_obj_set_style_bg_opa(s_st.topbar_buddy, LV_OPA_60, 0);
+  lv_obj_set_style_radius(s_st.topbar_buddy, 6, 0);
+  lv_obj_clear_flag(s_st.topbar_buddy,
+                    LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+  s_st.face_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_width(s_st.face_lbl, BUDDY_W);
+  lv_obj_set_style_text_align(s_st.face_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(s_st.face_lbl, lv_color_hex(UI_BUDDY_FG), 0);
+  lv_obj_set_style_text_font(s_st.face_lbl, theme_font(), 0);
+  lv_obj_set_pos(s_st.face_lbl, FACE_X0, FACE_Y0);
+
+  s_st.mood_lbl = lv_label_create(s_st.topbar_buddy);
+  lv_obj_set_width(s_st.mood_lbl, BUDDY_W);
+  lv_obj_set_style_text_align(s_st.mood_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(s_st.mood_lbl, lv_color_hex(UI_BUDDY_DIM), 0);
+  lv_obj_set_style_text_font(s_st.mood_lbl, theme_font(), 0);
+  lv_obj_set_pos(s_st.mood_lbl, MOOD_X0, MOOD_Y0);
+
+  /* Render whatever state was posted before/at enter so the buddy starts
+   * animated instead of waiting for the next set_state. */
+  refresh_buddy_text();
+  apply_state_anim(s_st.state);
 
   s_st.active_assistant = NULL;
   s_st.dots_timer = NULL;

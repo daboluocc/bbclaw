@@ -146,7 +146,7 @@ typedef enum {
 | `src/bb_chat_recording.c` | 录音波形遮罩（骨架） |
 | `src/bb_chat_pickers.c` | session/cwd/driver picker 转发层 |
 | `src/bb_lvgl_display.c` | LVGL 初始化 + 视图切换调度 |
-| `src/bb_theme_buddy_anim.c` | Chat overlay（Phase 7 后变透明，只剩 transcript） |
+| `src/bb_theme_buddy_anim.c` | Chat overlay（Phase 7 后变透明：transcript + 右上角浮动 buddy 表情小窗） |
 
 ### 3.2 状态转换
 
@@ -163,6 +163,7 @@ Phase 7 架构：底层 ACTIVE 视图提供顶栏+底栏骨架，overlay 透明�
 
 - **顶栏**（底层 `bb_lvgl_display.c`）：mode icon + status icon + status text + WiFi + battery + clock
 - **对话区**（overlay `bb_chat_transcript.c`）：消息气泡流
+- **buddy 表情小窗**（overlay `bb_theme_buddy_anim.c`）：对话区右上角 ~96×38 半透明圆角 chip，face + mood 两行，九态各配一个 lv_anim 动效（呼吸/浮动/点点/摇摆/心跳/抖动/变色/弹跳，见 `design/AGENT_STATE_MACHINE.md`）；录音遮罩 show 时 move_foreground 盖住它
 - **底栏**（底层 `bb_lvgl_display.c`）：session id + cwd name
 - **录音时**：底层 `s_view_speaking` 在对话区位置显示波形动画
 - **picker 时**：overlay 弹出 session/cwd 选择器覆盖对话区
