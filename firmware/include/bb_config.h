@@ -186,6 +186,21 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_SPK_TEST_ON_BOOT 1
 #endif
 
+/** 开机点阵动画（诺基亚式 "BBCLAW" 逐列扫亮，见 STATE_MACHINE.md §3.5）。0=关闭 */
+#ifndef BBCLAW_BOOT_SPLASH_ENABLE
+#define BBCLAW_BOOT_SPLASH_ENABLE 1
+#endif
+
+/** 开机语音相对动画开始的最小延迟（ms）——压在扫列完成之后一点 */
+#ifndef BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS
+#define BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS 1150
+#endif
+
+/** 开机动画最短展示时长（ms），语音播完后不足则补足再淡出 */
+#ifndef BBCLAW_BOOT_SPLASH_MIN_MS
+#define BBCLAW_BOOT_SPLASH_MIN_MS 2600
+#endif
+
 #ifndef BBCLAW_PA_EN_GPIO
 #define BBCLAW_PA_EN_GPIO -1
 #endif

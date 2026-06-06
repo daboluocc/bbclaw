@@ -175,7 +175,23 @@ Phase 7 架构：底层 ACTIVE 视图提供顶栏+底栏骨架，overlay 透明�
 | `BBCLAW_CHAT_IDLE_TIMEOUT_MS` | 30s | CHAT → STANDBY |
 | `BBCLAW_STANDBY_LOCK_TIMEOUT_MS` | 120s | STANDBY → LOCKED（仅 cloud_saas） |
 
-### 3.5 状态栏模式指示器
+### 3.5 开机动画（Boot Splash）
+
+诺基亚式像素点阵开机动画，与开机语音播报协同：
+
+- **视觉**：复用待机页的点阵语言（dot 5px / pitch 9px / 5×7 字模），全屏深色底上先铺出 "BBCLAW" 六字母的 ghost 点阵，然后**逐列扫亮**（左→右，35ms/列，最新列青色高亮、下一拍沉淀为冷白），扫完后青色下划线从左向右生长收尾
+- **层级**：挂在 `lv_layer_top()`，盖住启动落入的任何底层视图（LOCKED / STANDBY / ACTIVE）；结束后整体淡出删除
+- **语音协同**：开机语音（`BBCLAW_SPK_TEST_ON_BOOT` 的 boot wav）延迟到动画扫列完成后才播——`bb_radio_app_start` 在播放前等到动画开始后 ≥ `BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS`（默认 1150ms ≈ 30 列扫完）；语音播完后若总展示不足 `BBCLAW_BOOT_SPLASH_MIN_MS`（默认 2600ms）补足再淡出
+- **文件**：`src/bb_page_boot.c`；开关 `BBCLAW_BOOT_SPLASH_ENABLE`（默认 1）
+
+```
+display init ──▶ splash show ──▶ (硬件 init 继续) ──▶ 等到 ≥VOICE_DELAY ──▶ boot wav
+                   │ 扫列动画在 LVGL task 独立跑                              │
+                   └──────────── 等到 ≥MIN_MS ◀──────────────────────────────┘
+                                      └──▶ 淡出删除 → 露出 LOCKED/STANDBY
+```
+
+### 3.6 状态栏模式指示器
 
 在 `UI_VIEW_ACTIVE` 状态下，状态栏左侧显示当前运行模式：
 

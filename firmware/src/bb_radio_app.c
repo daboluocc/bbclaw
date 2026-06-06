@@ -19,6 +19,7 @@
 #include "bb_motor.h"
 #include "bb_nav_input.h"
 #include "bb_ogg_opus.h"
+#include "bb_page_boot.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
 #include "bb_state.h"
@@ -3045,6 +3046,15 @@ esp_err_t bb_radio_app_start(void) {
   log_pin_summary();
 
   ESP_ERROR_CHECK(bb_display_init());
+  /* 开机点阵动画 — 盖在底层视图之上，扫列动画在 LVGL task 独立跑；
+   * 下面的硬件 init 照常进行，语音播报在 SPK TEST 处对齐动画时间轴
+   * （design/STATE_MACHINE.md §3.5）。 */
+  int64_t splash_start_ms = 0;
+#if BBCLAW_BOOT_SPLASH_ENABLE
+  bb_page_boot_show();
+  splash_start_ms = bb_now_ms();
+#endif
+  (void)splash_start_ms;
   bb_display_set_cloud_mode(bb_transport_is_cloud_saas());
   refresh_power_display();
   if (passphrase_unlock_enabled()) {
@@ -3093,6 +3103,14 @@ esp_err_t bb_radio_app_start(void) {
 #endif
 #if BBCLAW_SPK_TEST_ON_BOOT
   show_status_processing("SPK TEST");
+  /* 配合开机动画：语音压在点阵扫列完成之后一点再出。动画起点到此处
+   * 的硬件 init 只花几百 ms，不足 VOICE_DELAY 的部分补 delay。 */
+  if (splash_start_ms > 0) {
+    int64_t splash_elapsed = bb_now_ms() - splash_start_ms;
+    if (splash_elapsed < BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS) {
+      vTaskDelay(pdMS_TO_TICKS((uint32_t)(BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS - splash_elapsed)));
+    }
+  }
   if (bb_audio_start_playback() == ESP_OK) {
     esp_err_t spk_err = bb_play_embedded_boot_wav();
     if (spk_err != ESP_OK) {
@@ -3100,6 +3118,17 @@ esp_err_t bb_radio_app_start(void) {
       (void)bb_audio_play_test_tone(1000, 350, 5000);
     }
     (void)bb_audio_stop_playback();
+  }
+#endif
+#if BBCLAW_BOOT_SPLASH_ENABLE
+  /* 语音播完（或未启用语音）后，确保动画至少展示 MIN_MS 再淡出，露出
+   * 底层 LOCKED/STANDBY 视图。 */
+  {
+    int64_t splash_shown = bb_now_ms() - splash_start_ms;
+    if (splash_shown < BBCLAW_BOOT_SPLASH_MIN_MS) {
+      vTaskDelay(pdMS_TO_TICKS((uint32_t)(BBCLAW_BOOT_SPLASH_MIN_MS - splash_shown)));
+    }
+    bb_page_boot_dismiss();
   }
 #endif
   ESP_ERROR_CHECK(bb_ptt_init(BBCLAW_PTT_GPIO, on_ptt_changed));
