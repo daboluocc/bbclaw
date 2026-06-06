@@ -2936,9 +2936,23 @@ static void stream_task(void* arg) {
       }
     }
 
-    /* ── Dual-level idle timeout: CHAT → STANDBY → LOCKED ── */
+    /* ── Dual-level idle timeout: CHAT → STANDBY → LOCKED ──
+     *
+     * "Idle" = device idle AND speaker idle. Speaker idle needs three flags
+     * because audio output lags the turn lifecycle:
+     *   - s_tts_playback_active        — voice-PTT pipeline (tts_stream_task)
+     *   - bb_ui_agent_chat_tts_speaking — chat reply TTS pipeline; the turn
+     *     ends (busy → 0) while this task keeps synthesizing + playing
+     *     sentences, so the speaker talks long after agent_chat_is_busy
+     *     clears. Without this check the 30 s timer expires mid-speech and
+     *     yanks the UI to standby while audio is still coming out.
+     *   - bb_audio_is_playback_active  — I2S TX channel level; catches any
+     *     other playback (tones, boot test) the two task flags don't cover.
+     */
+    int speaker_active = s_tts_playback_active || bb_ui_agent_chat_tts_speaking() ||
+                         bb_audio_is_playback_active();
     if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy &&
-        !s_tts_playback_active) {
+        !speaker_active) {
       int64_t now_ms = bb_now_ms();
       if (agent_chat_is_active()) {
         /* Don't idle-exit while pickers are open or agent is still busy
@@ -2966,9 +2980,11 @@ static void stream_task(void* arg) {
           s_last_activity_ms = now_ms;
         }
       }
-    } else if (s_tts_playback_active) {
-      /* TTS playback in progress — treat as activity so the chat-idle and
-       * standby→locked timers don't fire mid-reply and cut the audio. */
+    } else if (speaker_active) {
+      /* Speaker still talking (either TTS pipeline, or raw I2S TX) — treat
+       * as activity so the idle timers restart from the END of speech: the
+       * user gets the full BBCLAW_CHAT_IDLE_TIMEOUT_MS of quiet time before
+       * the standby page comes in, never mid-sentence. */
       s_last_activity_ms = bb_now_ms();
     }
 

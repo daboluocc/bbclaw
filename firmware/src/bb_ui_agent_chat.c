@@ -1965,6 +1965,13 @@ int bb_ui_agent_chat_is_busy(void) {
   return (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) ? 1 : 0;
 }
 
+int bb_ui_agent_chat_tts_speaking(void) {
+  /* tts_task is set by tts_kick_or_spawn and NULL'd by tts_playback_task on
+   * exit. Cross-task read of an aligned pointer is atomic on Xtensa; a stale
+   * read just delays the idle timer by one 20 ms poll tick. */
+  return s_chat.tts_task != NULL ? 1 : 0;
+}
+
 int bb_ui_agent_chat_is_adapter_offline(void) {
   return (s_chat.active && s_chat.driver_cache_offline) ? 1 : 0;
 }

@@ -127,6 +127,17 @@ void bb_ui_agent_chat_set_active_model(const char* model_label);
 int bb_ui_agent_chat_is_busy(void);
 
 /**
+ * Returns 1 while the chat reply TTS pipeline is alive (synthesizing or
+ * playing sentences). This outlives bb_ui_agent_chat_is_busy(): the turn
+ * ends (busy → 0) while the TTS task keeps draining the reply buffer
+ * sentence-by-sentence, so the speaker is still talking for potentially
+ * tens of seconds afterwards. Used by radio_app's idle-timeout gate so
+ * CHAT → STANDBY never fires mid-speech ("speaker idle" check).
+ * Safe to call from any task (single aligned pointer read).
+ */
+int bb_ui_agent_chat_tts_speaking(void);
+
+/**
  * Returns 1 when the last driver fetch returned HOME_ADAPTER_OFFLINE (502).
  * Used by radio_app to reject PTT when the adapter is known to be offline.
  * Cleared automatically when a subsequent driver fetch succeeds.
