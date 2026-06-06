@@ -15,11 +15,13 @@ extern "C" {
  *  No-op if already shown. Call right after bb_display_init(). */
 void bb_page_boot_show(void);
 
-/** Fade the splash out (~350ms) and delete it. No-op if never shown /
- *  already dismissed. */
+/** Destroy the splash synchronously (hard cut, no fade — a parent-opa fade
+ *  would composite through a transient full-screen layer buffer and used to
+ *  starve esp_wifi_init's internal DMA buffers). All splash resources are
+ *  freed when this returns. No-op if never shown / already dismissed. */
 void bb_page_boot_dismiss(void);
 
-/** 1 while the splash object exists (including during the fade-out). */
+/** 1 while the splash object exists. */
 int bb_page_boot_active(void);
 
 #ifdef __cplusplus

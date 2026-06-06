@@ -9,9 +9,9 @@
  *
  * The splash lives on lv_layer_top() so it covers whichever base view
  * (LOCKED / STANDBY / ACTIVE) the app boots into. bb_page_boot_dismiss()
- * fades the whole thing out and deletes it. Voice sync (boot wav delayed
- * until the sweep finishes) is the caller's job — see bb_radio_app_start
- * and design/STATE_MACHINE.md §3.5.
+ * destroys it synchronously (hard cut, no fade — see the comment inside).
+ * Voice sync (boot wav delayed until the sweep finishes) is the caller's
+ * job — see bb_radio_app_start and design/STATE_MACHINE.md §3.5.
  */
 #include "bb_page_boot.h"
 
@@ -47,7 +47,6 @@ static const char* TAG = "bb_page_boot";
 #define BOOT_TICK_MS      35                       /* one column per tick   */
 #define TOTAL_COLS        (LETTER_COUNT * MX_COLS) /* 30 → sweep ≈ 1.05 s   */
 #define UNDERLINE_STEP_PX 26                       /* grow ≈ 0.4 s          */
-#define DISMISS_FADE_MS   350
 
 /* 5×7 letter glyphs, MSB→LSB = leftmost→rightmost of 5 columns. */
 static const uint8_t GLYPH_B[MX_ROWS] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
@@ -124,17 +123,6 @@ static void destroy_locked(void) {
   s_underline = NULL;
 }
 
-static void dismiss_opa_cb(void* obj, int32_t v) {
-  lv_obj_set_style_opa((lv_obj_t*)obj, (lv_opa_t)v, 0);
-}
-
-static void dismiss_done_cb(lv_anim_t* a) {
-  (void)a;
-  /* Runs in the LVGL task — already under the port lock. */
-  destroy_locked();
-  ESP_LOGI(TAG, "splash dismissed");
-}
-
 void bb_page_boot_show(void) {
   if (!lvgl_port_lock(1000)) {
     ESP_LOGW(TAG, "show: lvgl lock timeout — skipping splash");
@@ -193,27 +181,16 @@ void bb_page_boot_dismiss(void) {
     ESP_LOGW(TAG, "dismiss: lvgl lock timeout — splash stays until next try");
     return;
   }
-  if (s_root == NULL) {
-    lvgl_port_unlock();
-    return;
-  }
-  /* Stop the reveal timer first so it can't touch dots mid-fade. */
-  if (s_timer != NULL) {
-    lv_timer_del(s_timer);
-    s_timer = NULL;
-  }
-
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, s_root);
-  lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
-  lv_anim_set_duration(&a, DISMISS_FADE_MS);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
-  lv_anim_set_exec_cb(&a, dismiss_opa_cb);
-  lv_anim_set_completed_cb(&a, dismiss_done_cb);
-  lv_anim_start(&a);
-
+  /* Synchronous, no fade — deliberately. A parent-opa fade makes LVGL
+   * composite the full screen through a transient layer buffer, and the
+   * fade window used to overlap esp_wifi_init, whose 10×1600 B static RX
+   * DMA buffers then failed with ESP_ERR_NO_MEM → boot loop. The splash
+   * and the standby/locked views share a near-black background, so a hard
+   * cut is visually fine. After this returns, every splash resource has
+   * been freed. */
+  destroy_locked();
   lvgl_port_unlock();
+  ESP_LOGI(TAG, "splash dismissed");
 }
 
 int bb_page_boot_active(void) {

@@ -3128,6 +3128,8 @@ esp_err_t bb_radio_app_start(void) {
     if (splash_shown < BBCLAW_BOOT_SPLASH_MIN_MS) {
       vTaskDelay(pdMS_TO_TICKS((uint32_t)(BBCLAW_BOOT_SPLASH_MIN_MS - splash_shown)));
     }
+    /* 同步销毁（无淡出）——返回即全部资源已释放，后面的 esp_wifi_init
+     * 申请 10×1600B 内部 DMA RX 缓冲不再与 splash 渲染/合成并发。 */
     bb_page_boot_dismiss();
   }
 #endif
@@ -3140,6 +3142,9 @@ esp_err_t bb_radio_app_start(void) {
   ESP_ERROR_CHECK(bb_gateway_node_connect());
 
   show_status_processing(BB_STATUS_WIFI);
+  /* WiFi 静态 RX 缓冲（10×1600B）必须从内部 DMA 堆拿；此处留一份水位
+   * 快照，再出 ESP_ERR_NO_MEM 时可直接定位是谁吃掉了内部堆。 */
+  log_heap_snapshot("pre_wifi_init");
   esp_err_t wifi_err = bb_wifi_init_and_connect();
   if (wifi_err != ESP_OK) {
     ESP_LOGE(TAG, "wifi init failed err=%s", esp_err_to_name(wifi_err));
