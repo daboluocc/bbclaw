@@ -1905,9 +1905,12 @@ static void stream_task(void* arg) {
           continue;
         }
         s_last_activity_ms = bb_now_ms();
-        /* Chat is now active; next loop iteration picks up the PTT. */
-        vTaskDelay(pdMS_TO_TICKS(20));
-        continue;
+        /* Chat is now active — fall through so this same PTT edge reaches
+         * the chat_voice branch below (LISTENING state + recording mask +
+         * press haptic). Previously we consumed the edge and `continue`d:
+         * the arm path further down still started recording off the raw
+         * s_ptt_pressed level, so a PTT press straight from standby
+         * captured audio with no visual/haptic feedback at all. */
       }
       /* Phase 4.5: agent voice bridge — chat overlay is on the LCD, so the
        * legacy show_status_* writes go to a hidden surface. Use the chat
