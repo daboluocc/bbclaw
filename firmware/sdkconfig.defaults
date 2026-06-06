@@ -45,10 +45,17 @@ CONFIG_TINYUSB_CDC_COUNT=2
 # LVGL snapshot module — needed by the REQ_SCREENSHOT handler to capture
 # lv_screen_active() into an RGB565 buffer.
 CONFIG_LV_USE_SNAPSHOT=y
-# Switch LVGL from its builtin static-pool allocator to libc malloc, which
-# on ESP-IDF backs onto the heap caps allocator (including PSRAM). The
-# builtin pool's static array bloats the binary if grown to fit a 110 KB
-# snapshot; libc malloc keeps the binary lean and lets PSRAM absorb the
-# allocation dynamically.
+# LVGL allocator: custom PSRAM-first (src/bb_lvgl_mem.c). History:
+#   builtin static pool → 64KB 池放不下 110KB snapshot buffer；
+#   CLIB malloc → 配合 SPIRAM_MALLOC_ALWAYSINTERNAL=16384，每个小 lv_obj
+#   都落内部 RAM —— 点阵 UI 的数百个 dot 对象把内部堆吃碎，运行时
+#   websocket task 8KB 连续栈拿不到（internal_largest=7680）→ 语音流挂。
+# custom 分配器把所有 LVGL 分配导去 PSRAM（内部 RAM 兜底），内部 RAM
+# 留给 task 栈 / WiFi+I2S DMA 这些只能用内部的场景。
 # CONFIG_LV_USE_BUILTIN_MALLOC is not set
-CONFIG_LV_USE_CLIB_MALLOC=y
+# CONFIG_LV_USE_CLIB_MALLOC is not set
+CONFIG_LV_USE_CUSTOM_MALLOC=y
+
+# 内部 RAM 保留水位 32K→64K：可去 PSRAM 的 malloc 更早转移到 PSRAM，
+# 不再把内部堆抽干到 xTaskCreate 失败的程度。
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536

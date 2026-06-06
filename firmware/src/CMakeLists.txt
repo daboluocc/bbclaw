@@ -11,6 +11,7 @@ set(_bb_srcs
     "bb_ogg_opus.cpp"
     "bb_lvgl_assets.c"
     "bb_lvgl_display.c"
+    "bb_lvgl_mem.c"
     "bb_page_standby.c"
     "bb_page_locked.c"
     "bb_page_boot.c"
@@ -106,3 +107,8 @@ endif()
 
 # lv_font_conv 生成的 .c 用 LV_LVGL_H_INCLUDE_SIMPLE 选择 "lvgl.h"（与 managed lvgl__lvgl 布局一致）
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE=1)
+
+# LV_USE_CUSTOM_MALLOC：lvgl 组件库引用 bb_lvgl_mem.c 的 lv_*_core 实现，但
+# 静态归档扫描顺序下 libsrc.a 的该 obj 没有被任何已解析符号牵出 → 链接失败。
+# 用 -u 强制把这个 obj 拉进链接（一个符号即可整 obj 拉入）。
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_malloc_core")
