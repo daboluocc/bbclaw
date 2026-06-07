@@ -62,3 +62,42 @@
 
 下版 PCB 修好 PUSH 后，可保留 Flipper 模式（KEY1/KEY2 继续作 OK/BACK，
 PUSH 成为冗余），或切回 `BUTTONS_INSTEAD_OF_ENC` + 单 KEY，由设计决定。
+
+---
+
+## BRD-001 — 开发板（breadboard）PTT 按键模块极性与 BBClaw PCB 相反
+
+- **发现日期**: 2026-06-07
+- **影响板**: breadboard 开发板（不影响 bbclaw PCB / atk-dnesp32s3-box）
+- **性质**: 接线/元件差异，不是 PCB bug；记录在此供板级配置对照
+- **症状**: 开发板 PTT 换用带 OUT 脚的按键模块后，固件 PTT 行为整体倒置：
+  闲时持续判定"按住"（持续开麦），真按下反而判定"松开"。
+- **根因**:
+  开发板按键模块 OUT 脚为**推挽输出，按下=HIGH、松开=LOW**（主动驱动）；
+  而 BBClaw PCB 的 U5（GT-TC072A 电容触摸）是**闲时 HIGH、按下=LOW**。
+  `boards/breadboard/board_config.h` 此前按"裸按键接 GND"配置
+  （`ACTIVE_LEVEL=0` + 内部上拉），与模块实际极性完全相反；
+  且内部上拉在模块断线/未上电时会把 GPIO 拉 HIGH——按旧配置读作
+  "未按下"碰巧安全，但换 `ACTIVE_LEVEL=1` 后必须改**下拉**才故障安全。
+
+### 两板 PTT 极性对照
+
+| 板子 | 按键类型 | 按下电平 | 闲时电平 | ACTIVE_LEVEL | 内部偏置 |
+|------|---------|---------|---------|--------------|---------|
+| bbclaw PCB | GT-TC072A 触摸，推挽 | LOW | HIGH | 0 | 上拉 |
+| breadboard | 按键模块 OUT 脚，推挽 | **HIGH** | **LOW** | **1** | **下拉** |
+
+### 固件侧修正（已生效）
+
+`bb_ptt.c` 驱动本身极性无关，仅改 `boards/breadboard/board_config.h`：
+
+```c
+#define BBCLAW_PTT_GPIO         7
+#define BBCLAW_PTT_ACTIVE_LEVEL 1   // 按下=HIGH
+#define BBCLAW_PTT_PULL_UP      0   // bb_ptt.c 据此启用内部下拉：断线时读 LOW=未按下，故障安全
+```
+
+验证手段：
+- 开机日志 `bb_ptt: ptt init gpio=7 active_level=1 pull=down`
+- `bb_button_test.c` 的电平探测日志（"按下后电平=X → 作 PTT 时 ACTIVE_LEVEL 填该值"）
+- GPIO7 非 strapping 脚，支持内部下拉，无副作用
