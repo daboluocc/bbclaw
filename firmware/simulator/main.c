@@ -29,6 +29,7 @@ typedef enum {
   APP_MODE_NOTIFICATION = 2,
   APP_MODE_SPEAKING = 3,
   APP_MODE_NETCONN = 4,
+  APP_MODE_LOCKED = 5,
 } app_mode_t;
 
 typedef struct {
@@ -93,6 +94,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_SPEAKING;
       } else if (strcmp(argv[i], "netconn") == 0) {
         state->mode = APP_MODE_NETCONN;
+      } else if (strcmp(argv[i], "locked") == 0) {
+        state->mode = APP_MODE_LOCKED;
       } else {
         state->mode = APP_MODE_AUTO;
       }
@@ -217,6 +220,14 @@ static void populate_preview_state(const app_state_t* state) {
   if (state->mode == APP_MODE_IDLE) {
     bb_display_set_battery(1, 1, 82, 0, 0);
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "READY");
+    return;
+  }
+
+  if (state->mode == APP_MODE_LOCKED) {
+    bb_display_set_locked(1);
+    bb_display_set_battery(1, 1, 82, 0, 0);
+    /* --status VERIFY / "VERIFY TX" / "VERIFY ERR" previews those beats */
+    (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "LOCKED");
     return;
   }
 

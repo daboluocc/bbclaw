@@ -27,6 +27,7 @@
 
 #include "bb_config.h"
 #include "bb_time.h"
+#include "bb_ui_theme.h"
 #include "bb_wifi.h"
 #include "lvgl.h"
 
@@ -49,11 +50,11 @@ LV_FONT_DECLARE(lv_font_montserrat_14)
 
 static const char* TAG = "bb_page_netconn";
 
-/* ── palette — same family as bb_page_boot.c / bb_page_standby.c ── */
-#define UI_SCR_BG    0x070b0e
-#define UI_DOT_LIT   0xdfeaec
-#define UI_DOT_GHOST 0x152128
-#define UI_ACCENT    0x2ec4a0
+/* ── palette — design/UI_DESIGN_LANGUAGE.md tokens ── */
+#define UI_SCR_BG    BB_UI_BG
+#define UI_DOT_LIT   BB_UI_DOT_LIT
+#define UI_DOT_GHOST BB_UI_DOT_GHOST
+#define UI_ACCENT    BB_UI_ACCENT
 
 /* ── WiFi glyph geometry — base dot + 3 concentric dot-arcs ── */
 #define MX_DOT       5

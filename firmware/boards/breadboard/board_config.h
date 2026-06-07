@@ -22,12 +22,15 @@
 #define BBCLAW_AUDIO_I2S_MCK_GPIO  2
 
 /*
- * PTT: plain push-button on breadboard — one end to GPIO7, the other to GND.
- * Idle pulled HIGH by internal pull-up; pressed = LOW (matches BBClaw PCB NAV key on GPIO1).
+ * PTT: button module with OUT pin (push-pull output) — OUT wired to GPIO7.
+ * Pressed = OUT drives HIGH, released = OUT drives LOW — OPPOSITE polarity to
+ * the BBClaw PCB touch sensor (GT-TC072A: idle HIGH, pressed LOW). See
+ * design/hardware_errata.md BRD-001.
+ * Internal pull-DOWN as fail-safe: module unpowered/disconnected reads LOW = released.
  */
 #define BBCLAW_PTT_GPIO         7
-#define BBCLAW_PTT_ACTIVE_LEVEL 0
-#define BBCLAW_PTT_PULL_UP      1
+#define BBCLAW_PTT_ACTIVE_LEVEL 1
+#define BBCLAW_PTT_PULL_UP      0
 
 /*
  * Navigation: Flipper Zero 6-button layout (Phase 5 / Option B — full events).

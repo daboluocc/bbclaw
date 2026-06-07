@@ -10,6 +10,7 @@
 #include "bb_page_locked.h"
 #include "bb_chat_recording.h"
 #include "bb_status.h"
+#include "bb_ui_theme.h"
 
 #if defined(BBCLAW_SIMULATOR)
 #include <stdint.h>
@@ -80,13 +81,12 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define DISP_W BBCLAW_ST7789_WIDTH
 #define DISP_H BBCLAW_ST7789_HEIGHT
 
-/* Colors */
-#define UI_SCR_BG        0x0a0e0c
-#define UI_TEXT_MAIN     0xd8ebe4
-#define UI_TEXT_DIM      0x7a9a8c
-#define UI_STATUS_FG     0x8fbcac
-#define UI_ME_ACCENT     0x2ec4a0
-#define UI_AI_ACCENT     0x4a9fd8
+/* Colors — design/UI_DESIGN_LANGUAGE.md tokens */
+#define UI_SCR_BG        BB_UI_BG
+#define UI_TEXT_MAIN     BB_UI_DOT_LIT
+#define UI_TEXT_DIM      BB_UI_TEXT_DIM
+#define UI_STATUS_FG     BB_UI_TEXT_DIM
+#define UI_ME_ACCENT     BB_UI_ACCENT
 
 /* Layout */
 #define UI_SAFE_LEFT     10
@@ -135,11 +135,18 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 
 /* Recording speaking view */
 #define UI_RECORD_UPDATE_MS       48
+/* Speaking-view VU — dot-matrix columns (design/UI_DESIGN_LANGUAGE.md):
+ * 10 columns × 5 rows, lit bottom-up with level, peak dot teal while
+ * voiced. Smoothing still runs in virtual px (MIN_H..MAX_H) and maps to
+ * lit-row count at paint time — same idiom as bb_chat_recording.c. */
 #define UI_RECORD_BAR_COUNT       10
-#define UI_RECORD_BAR_W           10
-#define UI_RECORD_BAR_GAP         4
+#define UI_RECORD_DOT_ROWS        5
+#define UI_RECORD_DOT             5
+#define UI_RECORD_DOT_PITCH       8
 #define UI_RECORD_BAR_MIN_H       6
 #define UI_RECORD_BAR_MAX_H       38
+#define UI_RECORD_METER_W         ((UI_RECORD_BAR_COUNT - 1) * UI_RECORD_DOT_PITCH + UI_RECORD_DOT)
+#define UI_RECORD_METER_H         ((UI_RECORD_DOT_ROWS - 1) * UI_RECORD_DOT_PITCH + UI_RECORD_DOT)
 #define UI_RECORD_HALO_BASE_PX    54
 #define UI_RECORD_HALO_SPAN_PX    18
 #define UI_RECORD_LEVEL_STALE_MS  280
@@ -274,7 +281,7 @@ static lv_obj_t* s_lbl_record_title;
 static lv_obj_t* s_lbl_record_state;
 static lv_obj_t* s_lbl_record_hint;
 static lv_obj_t* s_obj_record_meter;
-static lv_obj_t* s_obj_record_bar[UI_RECORD_BAR_COUNT];
+static lv_obj_t* s_obj_record_dot[UI_RECORD_BAR_COUNT][UI_RECORD_DOT_ROWS]; /* [col][row], row 0 = top */
 static lv_obj_t* s_scroll_text;
 static lv_obj_t* s_lbl_text;
 
@@ -397,9 +404,9 @@ static void apply_battery_widget(void) {
   /* Choose fill color by state: charging > low > normal */
   uint32_t fill_color;
   if (charging) {
-    fill_color = 0x4cd964; /* green */
+    fill_color = BB_UI_OK;
   } else if (low) {
-    fill_color = 0xe66f6f; /* red */
+    fill_color = BB_UI_ERR;
   } else {
     fill_color = UI_ME_ACCENT; /* theme green */
   }
@@ -415,7 +422,7 @@ static void apply_battery_widget(void) {
   /* Frame border color matches fill for charging/low, dim otherwise */
   if (s_obj_status_battery_frame != NULL) {
     lv_obj_set_style_border_color(s_obj_status_battery_frame,
-                                  lv_color_hex(charging ? 0x4cd964 : (low ? 0xe66f6f : UI_STATUS_FG)), 0);
+                                  lv_color_hex(charging ? BB_UI_OK : (low ? BB_UI_ERR : UI_STATUS_FG)), 0);
   }
 
   /* Charging lightning overlay */
@@ -601,22 +608,38 @@ static int scroll_cont_chain_visible(const lv_obj_t* cont) {
   return 1;
 }
 
-static void set_record_bar_height(lv_obj_t* bar, int height) {
-  if (bar == NULL) return;
+/* Map one column's smoothed virtual height to lit dots, bottom-up. Lit dots
+ * are cool white; the peak dot is teal while voiced. */
+static void set_record_column(int col, int height, int voiced) {
   if (height < UI_RECORD_BAR_MIN_H) {
     height = UI_RECORD_BAR_MIN_H;
   } else if (height > UI_RECORD_BAR_MAX_H) {
     height = UI_RECORD_BAR_MAX_H;
   }
-  lv_obj_set_size(bar, UI_RECORD_BAR_W, height);
-  lv_obj_set_y(bar, UI_RECORD_BAR_MAX_H - height);
+  int rows_lit = 1 + ((height - UI_RECORD_BAR_MIN_H) * (UI_RECORD_DOT_ROWS - 1) +
+                      (UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H) / 2) /
+                         (UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H);
+  for (int r = 0; r < UI_RECORD_DOT_ROWS; ++r) {
+    lv_obj_t* d = s_obj_record_dot[col][r];
+    if (d == NULL) continue;
+    int from_bottom = UI_RECORD_DOT_ROWS - r;
+    uint32_t color;
+    if (from_bottom > rows_lit) {
+      color = BB_UI_DOT_GHOST;
+    } else if (from_bottom == rows_lit && voiced) {
+      color = UI_ME_ACCENT; /* peak dot */
+    } else {
+      color = UI_TEXT_MAIN;
+    }
+    lv_obj_set_style_bg_color(d, lv_color_hex(color), 0);
+  }
 }
 
 static void reset_recording_meter_visuals(void) {
   s_record_anim_tick = 0;
   for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
     s_record_bar_visual[i] = UI_RECORD_BAR_MIN_H;
-    set_record_bar_height(s_obj_record_bar[i], UI_RECORD_BAR_MIN_H);
+    set_record_column(i, UI_RECORD_BAR_MIN_H, 0);
   }
   if (s_obj_record_halo_outer != NULL) {
     lv_obj_set_size(s_obj_record_halo_outer, UI_RECORD_HALO_BASE_PX + 14, UI_RECORD_HALO_BASE_PX + 14);
@@ -685,8 +708,7 @@ static void refresh_recording_meter(void) {
       current_h -= (current_h - target_h + 2) / 3;
     }
     s_record_bar_visual[i] = (uint8_t)current_h;
-    set_record_bar_height(s_obj_record_bar[i], current_h);
-    lv_obj_set_style_bg_opa(s_obj_record_bar[i], voiced ? LV_OPA_COVER : LV_OPA_70, 0);
+    set_record_column(i, current_h, voiced);
   }
 
   if (s_obj_record_halo_outer != NULL) {
@@ -862,7 +884,7 @@ static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
 
   /* Charging lightning label — centered over the frame, hidden by default */
   s_obj_status_battery_charge_lbl = lv_label_create(container);
-  lv_obj_set_style_text_color(s_obj_status_battery_charge_lbl, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_text_color(s_obj_status_battery_charge_lbl, lv_color_hex(BB_UI_BG), 0);
   lv_obj_set_style_text_font(s_obj_status_battery_charge_lbl, lv_font_get_default(), 0);
   lv_label_set_text(s_obj_status_battery_charge_lbl, LV_SYMBOL_CHARGE);
   lv_obj_set_pos(s_obj_status_battery_charge_lbl, 4, 0);
@@ -1106,23 +1128,24 @@ static void create_ui(void) {
 
     s_obj_record_meter = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_meter);
-    lv_obj_set_size(s_obj_record_meter,
-                    UI_RECORD_BAR_COUNT * UI_RECORD_BAR_W + (UI_RECORD_BAR_COUNT - 1) * UI_RECORD_BAR_GAP,
-                    UI_RECORD_BAR_MAX_H);
-    lv_obj_set_pos(s_obj_record_meter,
-                   (body_w - (UI_RECORD_BAR_COUNT * UI_RECORD_BAR_W + (UI_RECORD_BAR_COUNT - 1) * UI_RECORD_BAR_GAP)) / 2,
-                   content_h - UI_RECORD_BAR_MAX_H - 26);
+    lv_obj_set_size(s_obj_record_meter, UI_RECORD_METER_W, UI_RECORD_METER_H);
+    lv_obj_set_pos(s_obj_record_meter, (body_w - UI_RECORD_METER_W) / 2,
+                   content_h - UI_RECORD_METER_H - 26);
     lv_obj_clear_flag(s_obj_record_meter, LV_OBJ_FLAG_SCROLLABLE);
 
     for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
-      s_obj_record_bar[i] = lv_obj_create(s_obj_record_meter);
-      lv_obj_remove_style_all(s_obj_record_bar[i]);
-      lv_obj_set_pos(s_obj_record_bar[i], i * (UI_RECORD_BAR_W + UI_RECORD_BAR_GAP),
-                     UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H);
-      lv_obj_set_style_radius(s_obj_record_bar[i], 3, 0);
-      lv_obj_set_style_bg_color(s_obj_record_bar[i], lv_color_hex(UI_ME_ACCENT), 0);
-      lv_obj_set_style_bg_opa(s_obj_record_bar[i], LV_OPA_70, 0);
-      set_record_bar_height(s_obj_record_bar[i], UI_RECORD_BAR_MIN_H);
+      for (int r = 0; r < UI_RECORD_DOT_ROWS; ++r) {
+        lv_obj_t* d = lv_obj_create(s_obj_record_meter);
+        lv_obj_remove_style_all(d);
+        lv_obj_set_size(d, UI_RECORD_DOT, UI_RECORD_DOT);
+        lv_obj_set_pos(d, i * UI_RECORD_DOT_PITCH, r * UI_RECORD_DOT_PITCH);
+        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
+        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+        s_obj_record_dot[i][r] = d;
+      }
+      set_record_column(i, UI_RECORD_BAR_MIN_H, 0);
     }
   }
 

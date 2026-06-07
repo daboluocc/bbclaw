@@ -15,6 +15,7 @@
 #include "bb_display.h"
 #include "bb_notification.h"
 #include "bb_session_store.h"
+#include "bb_ui_theme.h"
 #include "bb_state.h"
 #include "bb_time.h"
 #include "bb_wifi.h"
@@ -1467,11 +1468,13 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
  * s_chat.picker_sel + an explicit re-render).
  * ───────────────────────────────────────────────────────────────────── */
 
-#define BB_PICKER_BG       0x12211b
-#define BB_PICKER_FG       0xc8e2d6
-#define BB_PICKER_FG_DIM   0x6b8c80
-#define BB_PICKER_SEL_BG   0x2ec4a0
-#define BB_PICKER_SEL_FG   0x0a0e0c
+/* design/UI_DESIGN_LANGUAGE.md tokens — selected row = ghost face + teal
+ * left-edge bar + cool-white text (shared list selection idiom). */
+#define BB_PICKER_BG       BB_UI_BG
+#define BB_PICKER_FG       BB_UI_DOT_LIT
+#define BB_PICKER_FG_DIM   BB_UI_TEXT_DIM
+#define BB_PICKER_SEL_BG   BB_UI_DOT_GHOST
+#define BB_PICKER_SEL_FG   BB_UI_DOT_LIT
 #define BB_PICKER_ROW_H    16
 #define BB_PICKER_VISIBLE  3   /* show 3 rows; user sees current + neighbors */
 
@@ -1497,8 +1500,12 @@ static void picker_apply_styles(void) {
       lv_obj_set_style_bg_color(row, lv_color_hex(BB_PICKER_SEL_BG), 0);
       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_SEL_FG), 0);
+      lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_border_width(row, 0, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG_DIM), 0);
     }
   }

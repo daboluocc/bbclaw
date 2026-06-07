@@ -18,6 +18,7 @@
 
 #include "bb_lvgl_assets.h"
 #include "bb_time.h"
+#include "bb_ui_theme.h"
 #include "lvgl.h"
 
 #ifdef BBCLAW_HAVE_CJK_FONT
@@ -27,18 +28,25 @@ static const lv_font_t* rec_font(void) { return &lv_font_bbclaw_cjk; }
 static const lv_font_t* rec_font(void) { return lv_font_get_default(); }
 #endif
 
-/* ── colour palette (matches bb_theme_buddy_anim / bb_lvgl_display) ── */
-#define UI_SCR_BG    0x0a0e0c
-#define UI_TEXT_MAIN 0xd8ebe4
-#define UI_TEXT_DIM  0x7a9a8c
-#define UI_ME_ACCENT 0x2ec4a0
+/* ── colour palette — design/UI_DESIGN_LANGUAGE.md tokens ── */
+#define UI_SCR_BG    BB_UI_BG
+#define UI_TEXT_MAIN BB_UI_DOT_LIT
+#define UI_TEXT_DIM  BB_UI_TEXT_DIM
+#define UI_DOT_GHOST BB_UI_DOT_GHOST
+#define UI_ME_ACCENT BB_UI_ACCENT
 
-/* ── VU meter geometry ── */
+/* ── VU meter geometry — dot-matrix columns (design/UI_DESIGN_LANGUAGE.md):
+ * 7 columns × 5 rows of small dots, lit bottom-up with level; the peak dot
+ * flashes teal while voiced. Smoothing still runs in "virtual px" units
+ * (REC_BAR_MIN_H..REC_BAR_MAX_H) and maps to lit-row count at paint time. */
 #define REC_BAR_COUNT   7
-#define REC_BAR_W       10
-#define REC_BAR_GAP     4
+#define REC_DOT_ROWS    5
+#define REC_DOT         4  /* dot diameter — compact grid (base is 5/9)     */
+#define REC_DOT_PITCH   7
 #define REC_BAR_MIN_H   4
 #define REC_BAR_MAX_H   24
+#define REC_METER_W     ((REC_BAR_COUNT - 1) * REC_DOT_PITCH + REC_DOT)
+#define REC_METER_H     ((REC_DOT_ROWS - 1) * REC_DOT_PITCH + REC_DOT)
 
 /* ── timing ── */
 #define REC_UPDATE_MS       48   /* timer period — matches bb_lvgl_display */
@@ -52,7 +60,7 @@ typedef struct {
   lv_obj_t*   lbl_title;
   lv_obj_t*   lbl_hint;
   lv_obj_t*   meter;
-  lv_obj_t*   bars[REC_BAR_COUNT];
+  lv_obj_t*   dots[REC_BAR_COUNT][REC_DOT_ROWS]; /* [col][row], row 0 = top */
   lv_timer_t* timer;
 
   /* written from audio task, read from LVGL timer — volatile is sufficient
@@ -88,21 +96,35 @@ static const lv_image_dsc_t* rec_anim_icon(uint32_t tick) {
   }
 }
 
-static void set_bar_height(lv_obj_t* bar, int h) {
-  if (bar == NULL) return;
+/* Map the smoothed virtual height (REC_BAR_MIN_H..REC_BAR_MAX_H) of one
+ * column to lit dots, bottom-up. Lit dots are cool white; the peak dot is
+ * teal while voiced (the boot/netconn "newest element flashes teal" beat). */
+static void set_column(int col, int h, int voiced) {
   if (h < REC_BAR_MIN_H) h = REC_BAR_MIN_H;
   if (h > REC_BAR_MAX_H) h = REC_BAR_MAX_H;
-  lv_obj_set_size(bar, REC_BAR_W, h);
-  lv_obj_set_y(bar, REC_BAR_MAX_H - h);
+  int rows_lit = 1 + ((h - REC_BAR_MIN_H) * (REC_DOT_ROWS - 1) +
+                      (REC_BAR_MAX_H - REC_BAR_MIN_H) / 2) /
+                         (REC_BAR_MAX_H - REC_BAR_MIN_H);
+  for (int r = 0; r < REC_DOT_ROWS; r++) {
+    lv_obj_t* d = s_rec.dots[col][r];
+    if (d == NULL) continue;
+    int from_bottom = REC_DOT_ROWS - r; /* 1 = bottom row, ROWS = top row */
+    uint32_t color;
+    if (from_bottom > rows_lit) {
+      color = UI_DOT_GHOST;
+    } else if (from_bottom == rows_lit && voiced) {
+      color = UI_ME_ACCENT; /* peak dot */
+    } else {
+      color = UI_TEXT_MAIN;
+    }
+    lv_obj_set_style_bg_color(d, lv_color_hex(color), 0);
+  }
 }
 
 static void reset_meter_visuals(void) {
   for (int i = 0; i < REC_BAR_COUNT; i++) {
     s_rec.bar_visual[i] = REC_BAR_MIN_H;
-    set_bar_height(s_rec.bars[i], REC_BAR_MIN_H);
-    if (s_rec.bars[i] != NULL) {
-      lv_obj_set_style_bg_opa(s_rec.bars[i], LV_OPA_70, 0);
-    }
+    set_column(i, REC_BAR_MIN_H, 0);
   }
   if (s_rec.img_badge != NULL) {
     lv_image_set_src(s_rec.img_badge, &bb_img_tx);
@@ -173,12 +195,7 @@ static void rec_timer_cb(lv_timer_t* t) {
     if (target_h > cur)      cur += (target_h - cur + 1) / 2;
     else if (target_h < cur) cur -= (cur - target_h + 2) / 3;
     s_rec.bar_visual[i] = (uint8_t)cur;
-    set_bar_height(s_rec.bars[i], cur);
-
-    if (s_rec.bars[i] != NULL) {
-      lv_obj_set_style_bg_opa(s_rec.bars[i],
-                              voiced ? LV_OPA_COVER : LV_OPA_70, 0);
-    }
+    set_column(i, cur, voiced);
   }
 
   /* Mic badge: animate icon when voiced, static tx icon otherwise */
@@ -248,28 +265,31 @@ void bb_chat_recording_create(lv_obj_t* parent, int width, int height_px,
   lv_label_set_text(s_rec.lbl_title, "正在聆听");
   lv_obj_set_pos(s_rec.lbl_title, 0, badge_y + badge_size + 6);
 
-  /* ── VU meter (7 bars, centered) ── */
-  const int meter_w = REC_BAR_COUNT * REC_BAR_W + (REC_BAR_COUNT - 1) * REC_BAR_GAP;
-  const int meter_x = (w - meter_w) / 2;
+  /* ── VU meter — 7×5 dot-matrix columns, centered ── */
+  const int meter_x = (w - REC_METER_W) / 2;
   /* Position meter below title, leaving room for hint at bottom */
-  const int meter_y = h - REC_BAR_MAX_H - 20;
+  const int meter_y = h - REC_METER_H - 18;
 
   s_rec.meter = lv_obj_create(s_rec.root);
   lv_obj_remove_style_all(s_rec.meter);
-  lv_obj_set_size(s_rec.meter, meter_w, REC_BAR_MAX_H);
+  lv_obj_set_size(s_rec.meter, REC_METER_W, REC_METER_H);
   lv_obj_set_pos(s_rec.meter, meter_x, meter_y);
   lv_obj_clear_flag(s_rec.meter, LV_OBJ_FLAG_SCROLLABLE);
 
   for (int i = 0; i < REC_BAR_COUNT; i++) {
-    s_rec.bars[i] = lv_obj_create(s_rec.meter);
-    lv_obj_remove_style_all(s_rec.bars[i]);
-    lv_obj_set_pos(s_rec.bars[i], i * (REC_BAR_W + REC_BAR_GAP),
-                   REC_BAR_MAX_H - REC_BAR_MIN_H);
-    lv_obj_set_style_radius(s_rec.bars[i], 3, 0);
-    lv_obj_set_style_bg_color(s_rec.bars[i], lv_color_hex(UI_ME_ACCENT), 0);
-    lv_obj_set_style_bg_opa(s_rec.bars[i], LV_OPA_70, 0);
-    set_bar_height(s_rec.bars[i], REC_BAR_MIN_H);
+    for (int r = 0; r < REC_DOT_ROWS; r++) {
+      lv_obj_t* d = lv_obj_create(s_rec.meter);
+      lv_obj_remove_style_all(d);
+      lv_obj_set_size(d, REC_DOT, REC_DOT);
+      lv_obj_set_pos(d, i * REC_DOT_PITCH, r * REC_DOT_PITCH);
+      lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_color(d, lv_color_hex(UI_DOT_GHOST), 0);
+      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+      lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+      s_rec.dots[i][r] = d;
+    }
     s_rec.bar_visual[i] = REC_BAR_MIN_H;
+    set_column(i, REC_BAR_MIN_H, 0);
   }
 
   /* ── "松开发送" hint (bottom) ── */

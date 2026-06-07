@@ -40,6 +40,7 @@
 #include "bb_agent_client.h"
 #include "bb_session_store.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_theme.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
@@ -57,13 +58,14 @@ static const char* TAG = "bb_ui_settings";
 #define BB_SETTINGS_FETCH_TASK_STACK 4096
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
 
-/* Visual */
-#define UI_BG          0x0a0e0c
-#define UI_HEADER_FG   0xd8ebe4
-#define UI_ROW_FG      0xa6c4ba
-#define UI_ROW_SEL_FG  0xffffff
-#define UI_ROW_SEL_BG  0x2ec4a0
-#define UI_ROW_CHECK_FG 0x2ec4a0
+/* Visual — design/UI_DESIGN_LANGUAGE.md tokens. Selected row = ghost face +
+ * teal left-edge bar + cool-white text (shared list selection idiom). */
+#define UI_BG          BB_UI_BG
+#define UI_HEADER_FG   BB_UI_DOT_LIT
+#define UI_ROW_FG      BB_UI_TEXT_DIM
+#define UI_ROW_SEL_FG  BB_UI_DOT_LIT
+#define UI_ROW_SEL_BG  BB_UI_DOT_GHOST
+#define UI_ROW_CHECK_FG BB_UI_ACCENT
 
 #define HEADER_H 22
 #define ROW_H    26
@@ -219,10 +221,14 @@ static void highlight_selected(void) {
     if (row == NULL) continue;
     if (i == s_st.sel) {
       lv_obj_set_style_bg_color(row, lv_color_hex(UI_ROW_SEL_BG), 0);
-      lv_obj_set_style_bg_opa(row, LV_OPA_50, 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_SEL_FG), 0);
+      lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_border_width(row, 0, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
     }
   }

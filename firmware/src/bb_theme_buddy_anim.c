@@ -8,6 +8,7 @@
 #include "bb_lvgl_element_assets.h"
 #include "bb_power.h"
 #include "bb_ui_settings.h"
+#include "bb_ui_theme.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
 #include "lvgl.h"
@@ -29,18 +30,20 @@ static const char* TAG = "bb_theme_anim";
  * 插到顶部（lv_obj_move_to_index(0)）实现"上翻自动加载"。
  */
 
-#define UI_SCR_BG      0x0a0e0c
-#define UI_TEXT_MAIN   0xd8ebe4
-#define UI_TEXT_DIM    0x7a9a8c
-#define UI_STATUS_FG   0x8fbcac
-#define UI_ME_ACCENT   0x2ec4a0
-#define UI_AI_ACCENT   0x4a9fd8
-#define UI_TOOL_FG     0x9aa5a1
-#define UI_ERROR_FG    0xe66f6f
-#define UI_BUDDY_FG    0xf0e6c8
-#define UI_BUDDY_DIM   0xa49a83
-#define UI_ATTN_FG     0xffd166
-#define UI_CELEB_FG    0xff8fd0
+/* design/UI_DESIGN_LANGUAGE.md tokens — buddy 九态全收敛单色+青：face 冷白、
+ * mood 冷蓝灰，attention/celebrate 的暖色（金黄/粉）统一映射到唯一强调青，
+ * 状态差异交给动效（变色脉冲 vs 弹跳）表达。 */
+#define UI_SCR_BG      BB_UI_BG
+#define UI_TEXT_MAIN   BB_UI_DOT_LIT
+#define UI_TEXT_DIM    BB_UI_TEXT_DIM
+#define UI_STATUS_FG   BB_UI_TEXT_DIM
+#define UI_ME_ACCENT   BB_UI_ACCENT
+#define UI_TOOL_FG     BB_UI_TEXT_DIM
+#define UI_ERROR_FG    BB_UI_ERR
+#define UI_BUDDY_FG    BB_UI_DOT_LIT
+#define UI_BUDDY_DIM   BB_UI_TEXT_DIM
+#define UI_ATTN_FG     BB_UI_ACCENT
+#define UI_CELEB_FG    BB_UI_ACCENT
 
 /* Screen corner inset — prevents content from being clipped by the physical
  * display's rounded corners (~R12-R16 on the 1.47" ST7789 panel). */

@@ -14,6 +14,7 @@
 
 #include "bb_agent_client.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_theme.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -28,14 +29,15 @@ static const char* TAG = "bb_task_list";
 #define BB_TASK_LIST_ROW_H    22  /* ADR §4.2: row height 22px */
 #define BB_TASK_LIST_TITLE_H  22
 
-/* Colour palette — same dark-green family as session picker */
-#define BB_TL_BG       0x12211b
-#define BB_TL_FG       0xc8e2d6
-#define BB_TL_FG_DIM   0x6b8c80
-#define BB_TL_FG_RUN   0x2ec4a0  /* running highlight (primary) */
-#define BB_TL_FG_ERR   0xe05050  /* error red */
-#define BB_TL_SEL_BG   0x2ec4a0
-#define BB_TL_SEL_FG   0x0a0e0c
+/* Colour palette — design/UI_DESIGN_LANGUAGE.md tokens. Selected row =
+ * ghost face + teal left-edge bar + cool-white text (shared list idiom). */
+#define BB_TL_BG       BB_UI_BG
+#define BB_TL_FG       BB_UI_DOT_LIT
+#define BB_TL_FG_DIM   BB_UI_TEXT_DIM
+#define BB_TL_FG_RUN   BB_UI_ACCENT /* running highlight (primary) */
+#define BB_TL_FG_ERR   BB_UI_ERR    /* error red */
+#define BB_TL_SEL_BG   BB_UI_DOT_GHOST
+#define BB_TL_SEL_FG   BB_UI_DOT_LIT
 
 /* ── Module state ── */
 typedef struct {
@@ -160,8 +162,12 @@ static void task_list_apply_styles(void) {
       lv_obj_set_style_bg_color(row, lv_color_hex(BB_TL_SEL_BG), 0);
       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(BB_TL_SEL_FG), 0);
+      lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_border_width(row, 0, 0);
       uint32_t fg = BB_TL_FG;
       if (strcmp(e->status, "running") == 0) fg = BB_TL_FG_RUN;
       else if (strcmp(e->status, "error") == 0) fg = BB_TL_FG_ERR;

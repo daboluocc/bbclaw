@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-06-07
+
+### Changed
+- **全 UI 统一点阵设计语言（dot-matrix / Nothing-style，design/UI_DESIGN_LANGUAGE.md）**：开机动画 / 网络连接页 / 待机时钟三页确立的视觉语言推广到全机。新建唯一真相 token 表 `design/UI_DESIGN_LANGUAGE.md` + `firmware/include/bb_ui_theme.h`，11 个 UI 源文件的本地调色板全部收敛为 token 引用，禁止裸 hex 色。关键视觉变化：
+  - **底色统一**：旧 `0x0a0e0c`（偏亮）全部换 `BB_UI_BG 0x070b0e`——页面切换不再有底色跳变；状态栏/底栏暖绿 `0x8fbcac` 与旧暖灰次级文字统一为冷蓝灰 `BB_UI_TEXT_DIM 0x6e8a93`
+  - **LOCKED 页点阵重构**：锁形改点阵画法（7 点 shackle 弧 + 5×4 点 body + 青色 keyhole 呼吸点），密语验证时呼吸加速、失败时 body 闪红一拍；顺手修复旧布局 title y=208 / hint y=230 在 172px 屏上**越界不可见**的 bug——文案移到锁形右侧块内
+  - **录音 VU 点阵化**：chat 录音遮罩（7×5）与语音 speaking 视图（10×5）的连续条 VU 全部改为点阵柱，bottom-up 点亮、峰值点 voiced 时青色闪——与开机扫列同节拍语言；平滑攻衰减逻辑保留
+  - **聊天气泡单色化**：assistant 蓝色 `0x4a9fd8` 弃用，改 ghost 深灰面 + 冷白文字；用户气泡保留青色 30%——左右对齐 + 色块强弱区分说话者
+  - **buddy 九态全收敛单色+青**：face 暖奶油/mood 暖棕/attention 金黄/celebrate 粉全部映射到冷白/冷蓝灰/青三色，状态差异交给既有动效表达
+  - **列表选中态统一**：Settings / 任务列表 / chat picker 三处选中行统一为「ghost 行面 + 青色左缘 3px 竖条 + 冷白文字」（替换旧的青底白字/青底黑字混用）
+  - 模拟器新增 `--mode locked`（支持 `--status "VERIFY ERR"` 等预览验证态）
+
 ## [0.4.5] - 2026-06-07
 
 ### Removed

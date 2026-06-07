@@ -148,6 +148,9 @@ typedef enum {
 | `src/bb_lvgl_display.c` | LVGL 初始化 + 视图切换调度 |
 | `src/bb_theme_buddy_anim.c` | Chat overlay（Phase 7 后变透明：transcript + 右上角浮动 buddy 表情小窗） |
 
+> 全机视觉语言（调色板 token、点阵 motif、各页面应用矩阵）见
+> `design/UI_DESIGN_LANGUAGE.md`，代码侧落地为 `firmware/include/bb_ui_theme.h`。
+
 ### 3.2 状态转换
 
 ```
