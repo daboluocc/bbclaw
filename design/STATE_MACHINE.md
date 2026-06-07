@@ -180,15 +180,45 @@ Phase 7 架构：底层 ACTIVE 视图提供顶栏+底栏骨架，overlay 透明�
 诺基亚式像素点阵开机动画，与开机语音播报协同：
 
 - **视觉**：复用待机页的点阵语言（dot 5px / pitch 9px / 5×7 字模），全屏深色底上先铺出 "BBCLAW" 六字母的 ghost 点阵，然后**逐列扫亮**（左→右，35ms/列，最新列青色高亮、下一拍沉淀为冷白），扫完后青色下划线从左向右生长收尾
-- **层级**：挂在 `lv_layer_top()`，盖住启动落入的任何底层视图（LOCKED / STANDBY / ACTIVE）；结束后整体淡出删除
-- **语音协同**：开机语音（`BBCLAW_SPK_TEST_ON_BOOT` 的 boot wav）延迟到动画扫列完成后才播——`bb_radio_app_start` 在播放前等到动画开始后 ≥ `BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS`（默认 1150ms ≈ 30 列扫完）；语音播完后若总展示不足 `BBCLAW_BOOT_SPLASH_MIN_MS`（默认 2600ms）补足再淡出
+- **层级**：挂在 `lv_layer_top()`，盖住启动落入的任何底层视图（LOCKED / STANDBY / ACTIVE）；结束后**同步硬切删除**（不做 opa fade——fade 会触发 LVGL 全屏 transient layer buffer，与 `esp_wifi_init` 的 10×1600B 内部 DMA 申请冲突 → NO_MEM boot loop）
+- **语音协同**：开机语音（`BBCLAW_SPK_TEST_ON_BOOT` 的 boot wav）延迟到动画扫列完成后才播——`bb_radio_app_start` 在播放前等到动画开始后 ≥ `BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS`（默认 1150ms ≈ 30 列扫完）；语音播完后若总展示不足 `BBCLAW_BOOT_SPLASH_MIN_MS`（默认 2600ms）补足
+- **动画收尾保障**：扫列动画跑在 LVGL task 的 `lv_timer` 上，boot 期间音频 init/播放可能饿 LVGL task 导致节拍落后墙钟。dismiss 不只看 MIN_MS——补足后还要轮询 `bb_page_boot_anim_done()`（50ms 步长）直到动画真正收尾，上限多等 `BBCLAW_BOOT_SPLASH_ANIM_GRACE_MS`（默认 2000ms，防 LVGL 卡死时无限等），保证扫列+下划线完整播完才硬切
 - **文件**：`src/bb_page_boot.c`；开关 `BBCLAW_BOOT_SPLASH_ENABLE`（默认 1）
 
 ```
 display init ──▶ splash show ──▶ (硬件 init 继续) ──▶ 等到 ≥VOICE_DELAY ──▶ boot wav
                    │ 扫列动画在 LVGL task 独立跑                              │
-                   └──────────── 等到 ≥MIN_MS ◀──────────────────────────────┘
-                                      └──▶ 淡出删除 → 露出 LOCKED/STANDBY
+                   └──── 等到 ≥MIN_MS 且 anim_done（grace ≤2s）◀─────────────┘
+                                      └──▶ 同步硬切删除 → netconn 页接管（§3.5.1）
+```
+
+### 3.5.1 网络连接动画（Netconn Page）
+
+待机页是点阵时钟，SNTP 同步前没有内容可显示（全 ghost ≈ 黑屏），而 WiFi 连接最长可达
+30s+/SSID。开机动画硬切后由本页无缝接管，盖屏直到时钟有东西可看：
+
+- **视觉**：同点阵语言（dot 5px / pitch 9px，同 palette）。屏幕中央偏上是**点阵 WiFi
+  弧形图标**——底部 1 个基点 + 3 层同心弧（3/5/7 点），ghost 铺底后自下而上逐层点亮
+  （~420ms/层，最新层青色闪、下一拍沉淀冷白），全亮后归 ghost 循环；图标下方一行
+  `WiFi  <ssid>` 标签，每 ~500ms 轮询 `bb_wifi_get_active_ssid()`，重试切换 SSID 时
+  自动跟随（这就是"目前正在尝试连接的 WiFi"）
+- **相位**：连接中（弧循环）→ 连上（`bb_wifi_is_connected()`，弧全亮定格青色，标签换
+  `SYNC TIME`）→ 时间就绪（`bb_wall_time_ready()`）自销毁，露出已有时间的待机时钟
+- **自销毁兜底**：连上后超过 `BBCLAW_NETCONN_SYNC_TIMEOUT_MS`（默认 10s）时间仍未
+  就绪也自销毁；待机时钟自身对 "--:--" 渲染居中横杠兜底，任何路径不再黑屏
+- **显式退场**：provisioning 模式（让位 AP info 显示）和 wifi init 失败
+  （让位错误显示）由 `bb_radio_app_start` 显式 dismiss
+- **层级/内存**：挂 `lv_layer_top()`；show/dismiss 与 splash 同样**同步硬切、不做
+  fade**（同 §3.5 的 NO_MEM 教训）；对象预算 ~20 dots + 1 标签，远小于 splash 的 210 dots
+- **线程**：页内 lv_timer（LVGL task）轮询 app task 写的 wifi 状态/SSID，snprintf
+  拷贝显示，弱一致可接受（与 AP info 显示同级别）
+- **文件**：`src/bb_page_netconn.c`；开关 `BBCLAW_NETCONN_PAGE_ENABLE`（默认 1）
+
+```
+splash 硬切 ──▶ netconn show ──▶ esp_wifi_init/connect（页面自轮询 SSID）
+   ├─ 连上 ──▶ SYNC TIME 相位 ──▶ time ready 或超时 10s ──▶ 自销毁 → 待机时钟
+   ├─ provisioning ──▶ radio app 显式 dismiss → AP info
+   └─ 失败 ──▶ radio app 显式 dismiss → 错误显示
 ```
 
 ### 3.6 状态栏模式指示器

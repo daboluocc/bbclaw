@@ -31,6 +31,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_assets.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_display.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_standby.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_netconn.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_locked.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_transcript.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_recording.c"

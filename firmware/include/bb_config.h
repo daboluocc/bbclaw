@@ -196,9 +196,25 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS 1150
 #endif
 
-/** 开机动画最短展示时长（ms），语音播完后不足则补足再淡出 */
+/** 开机动画最短展示时长（ms），语音播完后不足则补足再硬切 */
 #ifndef BBCLAW_BOOT_SPLASH_MIN_MS
 #define BBCLAW_BOOT_SPLASH_MIN_MS 2600
+#endif
+
+/** MIN_MS 之后再等动画真正收尾的上限（ms）——LVGL task 被音频饿到时
+ *  扫列节拍会落后墙钟，靠 bb_page_boot_anim_done() 轮询补齐 */
+#ifndef BBCLAW_BOOT_SPLASH_ANIM_GRACE_MS
+#define BBCLAW_BOOT_SPLASH_ANIM_GRACE_MS 2000
+#endif
+
+/** 网络连接点阵动画页（WiFi 弧 + 当前 SSID，见 STATE_MACHINE.md §3.5.1）。0=关闭 */
+#ifndef BBCLAW_NETCONN_PAGE_ENABLE
+#define BBCLAW_NETCONN_PAGE_ENABLE 1
+#endif
+
+/** WiFi 连上后等待 SNTP 时间就绪的上限（ms），超时自销毁露出待机页 */
+#ifndef BBCLAW_NETCONN_SYNC_TIMEOUT_MS
+#define BBCLAW_NETCONN_SYNC_TIMEOUT_MS 10000
 #endif
 
 #ifndef BBCLAW_PA_EN_GPIO

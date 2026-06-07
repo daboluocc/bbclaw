@@ -20,6 +20,7 @@
 #include "bb_nav_input.h"
 #include "bb_ogg_opus.h"
 #include "bb_page_boot.h"
+#include "bb_page_netconn.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
 #include "bb_state.h"
@@ -3121,12 +3122,18 @@ esp_err_t bb_radio_app_start(void) {
   }
 #endif
 #if BBCLAW_BOOT_SPLASH_ENABLE
-  /* 语音播完（或未启用语音）后，确保动画至少展示 MIN_MS 再淡出，露出
-   * 底层 LOCKED/STANDBY 视图。 */
+  /* 语音播完（或未启用语音）后，确保动画至少展示 MIN_MS。 */
   {
     int64_t splash_shown = bb_now_ms() - splash_start_ms;
     if (splash_shown < BBCLAW_BOOT_SPLASH_MIN_MS) {
       vTaskDelay(pdMS_TO_TICKS((uint32_t)(BBCLAW_BOOT_SPLASH_MIN_MS - splash_shown)));
+    }
+    /* 扫列动画跑在 LVGL task 的 lv_timer 上，音频 init/播放会饿 LVGL task
+     * 导致节拍落后墙钟——MIN_MS 到点不代表列扫完了。再轮询等动画真正收尾，
+     * 上限 GRACE_MS 防 LVGL 卡死时无限等（design/STATE_MACHINE.md §3.5）。 */
+    int64_t grace_deadline = bb_now_ms() + BBCLAW_BOOT_SPLASH_ANIM_GRACE_MS;
+    while (!bb_page_boot_anim_done() && bb_now_ms() < grace_deadline) {
+      vTaskDelay(pdMS_TO_TICKS(50));
     }
     /* 同步销毁（无淡出）——返回即全部资源已释放，后面的 esp_wifi_init
      * 申请 10×1600B 内部 DMA RX 缓冲不再与 splash 渲染/合成并发。 */
@@ -3142,16 +3149,25 @@ esp_err_t bb_radio_app_start(void) {
   ESP_ERROR_CHECK(bb_gateway_node_connect());
 
   show_status_processing(BB_STATUS_WIFI);
+#if BBCLAW_NETCONN_PAGE_ENABLE
+  /* 网络连接点阵动画——盖住 SNTP 同步前没内容可显示的待机时钟，实时
+   * 显示正在尝试的 SSID；连上且时间就绪（或超时）后自销毁，露出已有
+   * 时间的待机页（design/STATE_MACHINE.md §3.5.1）。provisioning /
+   * 失败路径在下面显式 dismiss。 */
+  bb_page_netconn_show();
+#endif
   /* WiFi 静态 RX 缓冲（10×1600B）必须从内部 DMA 堆拿；此处留一份水位
    * 快照，再出 ESP_ERR_NO_MEM 时可直接定位是谁吃掉了内部堆。 */
   log_heap_snapshot("pre_wifi_init");
   esp_err_t wifi_err = bb_wifi_init_and_connect();
   if (wifi_err != ESP_OK) {
     ESP_LOGE(TAG, "wifi init failed err=%s", esp_err_to_name(wifi_err));
+    bb_page_netconn_dismiss();
     show_status_error(BB_STATUS_WIFI_ERR);
     return wifi_err;
   }
   if (bb_wifi_is_provisioning_mode()) {
+    bb_page_netconn_dismiss();
     char ap_line[BBCLAW_DISPLAY_CHAT_LINE_LEN];
     char hint_line[BBCLAW_DISPLAY_CHAT_LINE_LEN];
     snprintf(ap_line, sizeof(ap_line), "AP %s", bb_wifi_get_ap_ssid());

@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-07
+
 ### Removed
 - **设备端 CWD picker + new-session 死代码整链清理**：ADR-021 v2 砍掉 session picker 后，CWD picker（issue #30）唯一入口（session picker 的「+ 新建 session」行）随之断链，整条链路不可达：CWD picker overlay UI 与按键路由、设备端 new-session worker（`spawn_new_session_task` 等）、客户端 API `bb_agent_create_session` / `bb_agent_list_cwd_pool`（`POST /v1/agent/sessions` / `GET /v1/agent/cwd-pool` 设备侧调用）、`bb_display_set_cwd_name` 及 `format_relative_time`。设备 turn 已由 adapter `EnsureButler` 强制路由管家会话，设备端不再创建 session。共删 ~650 行（6 个源文件 + 3 个头文件）。
 
 ### Fixed
+- **开机动画没播完就被硬切**：splash dismiss 只看墙钟 `BBCLAW_BOOT_SPLASH_MIN_MS`（2600ms），但扫列动画跑在 LVGL task 的 `lv_timer` 上，boot 期间音频 init / boot wav 播放会饿 LVGL task，节拍落后墙钟 → 到点时列没扫完/下划线没长完就被销毁。修复：新增 `bb_page_boot_anim_done()`（收尾 tick 自删 timer 即 done），`bb_radio_app_start` 在 MIN_MS 补足后继续 50ms 轮询等动画真正收尾，上限 `BBCLAW_BOOT_SPLASH_ANIM_GRACE_MS`（默认 2000ms）防 LVGL 卡死无限等。设计文档 `STATE_MACHINE.md` §3.5 同步。
+- **待机时钟 SNTP 同步前全黑**：`bb_page_standby_refresh_clock` 对 `"--:--"`（时间未就绪）解析不到数字 → 4 个 slot 全 ghost ≈ 黑屏。兜底：无数字时各 slot 渲染居中横杠（5×7 中间行 3 点亮），任何 fallback 路径下时钟页都有内容。
 - **麦克风近场削顶导致云端 ASR 识别为空**：INMP441 软件增益 8x 对近场/稍大声说话把波形顶到 `INT16_MAX`（pcm diag `max=32767 clipped=17`、正向严重削顶、负偏分布），失真音频上行后云端 ASR 返回空文本（`phase=asr text= (empty)` → `agent_chat: empty transcript`）。`BBCLAW_AUDIO_INMP441_GAIN_NUM` 8→4，保留 ~2 bit 动态余量同时对 INMP441 偏低的原始电平仍够响。
 - **失效逻辑会话每次开机刷 `SESSION_NOT_FOUND`**：设备重启后从 NVS 复用上次逻辑会话 id，若该会话已在 adapter/cloud 侧失效，拉历史返回 HTTP 400 `SESSION_NOT_FOUND`，旧逻辑当通用失败处理、本地 id 永不清除 → 每次开机复现、历史区常空。修复：`bb_agent_load_messages` 对 `SESSION_NOT_FOUND` 返回独立的 `ESP_ERR_NOT_FOUND`，`on_history_fetch_done` 据此自愈——清 NVS 会话（`bb_session_store_save(drv, "")`）+ 重置内存 `session_id` + 清残留 transcript/cache，下个 turn 由 adapter 新建会话并自动存回 NVS。
 - **运行时内部 RAM 耗尽 → websocket task 创建失败、语音流挂**（`Error create websocket task`，internal_free=27KB / largest=7.6KB < 8KB task 栈）：bbclaw 板配置用 CLIB malloc + `SPIRAM_MALLOC_ALWAYSINTERNAL=16384`，每个小 lv_obj 都落内部 RAM——点阵 UI 风格（待机页 140+ dots、开机动画 210+ dots、聊天气泡）数百个小对象把内部堆吃碎。修复双管齐下：(1) 新增 `bb_lvgl_mem.c` 自定义 LVGL 分配器（`CONFIG_LV_USE_CUSTOM_MALLOC`），所有 LVGL 分配 PSRAM 优先、内部兜底，内部 RAM 留给 task 栈和 WiFi/I2S DMA；(2) `SPIRAM_MALLOC_RESERVE_INTERNAL` 32K→64K，可去 PSRAM 的 malloc 更早转移。`sdkconfig.defaults` / `sdkconfig` / `sdkconfig.bbclaw.latest` 三处同步（顺带修正 committed sdkconfig 与 defaults 的 BUILTIN/CLIB 漂移）。
@@ -19,10 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **回复语音没播完就被切到待机页**：CHAT→STANDBY 的 30s 空闲判定只看 voice-PTT 管线的 `s_tts_playback_active`，而 agent 回复朗读走的是 `bb_ui_agent_chat.c` 里独立的 `tts_playback_task`（turn 结束 busy=0 后仍逐句合成+播放，喇叭输出显著滞后于 turn 生命周期），长回复播到一半就被 idle 定时器拉去待机页。修复：空闲判定改为「设备空闲 + 喇叭空闲」三重检查——`s_tts_playback_active`（语音管线）+ 新增 `bb_ui_agent_chat_tts_speaking()`（chat 朗读任务存活，含合成等待期）+ `bb_audio_is_playback_active()`（I2S TX 通道电平，兜底提示音等）。喇叭活跃期间持续刷新活动时间戳，待机倒计时从**语音完整结束**那一刻起算。
 - **待机页直接按 PTT 无「正在聆听」动画/震动反馈**：`stream_task` 的 STANDBY→CHAT 唤醒分支先消费了 PTT 版本号再 `continue`，下一轮循环只剩 `s_ptt_pressed` 电平驱动的 arm 录音路径，唯一触发 LISTENING 状态 + 录音波形遮罩 + 按下震动的 `chat_voice` 边沿分支被整个跳过——录音在跑但屏幕毫无反馈。修复：`agent_chat_enter()` 成功后不再吞边沿，落穿到同一迭代的 `chat_voice` 分支，行为与已在 CHAT 页按 PTT 完全一致（含 busy/adapter-offline 防护）。
 - **固件编译失败**：(1) `bb_ui_agent_chat.c` 一处旧注释缺 `*/` 结尾，与下一行注释嵌套触发 `-Werror=comment`；(2) `bb_lvgl_display.c` / `bb_page_locked.c` 底栏 `"mem: %d+%d"` 在 int 极值下可能截断 24 字节 buffer 触发 `-Werror=format-truncation`，inbox/profile 显示值钳制到 999。
-- **电池电量显示不准 (P0)**：第一版线性映射（3300mV→0%，4200mV→100%）不符合锂电池放电曲线，导致满电掉电飞快、中段卡住、低电量突然归零。`bb_power.c` 改为 OCV–SoC 放电曲线查表 + 线性插值，并新增三项滤波：(1) 跨周期 EMA 电压低通（`BBCLAW_POWER_EMA_ALPHA_PCT`，默认 25%）吸收 PTT/功放/WiFi 负载瞬态；(2) 百分比迟滞（`BBCLAW_POWER_HYSTERESIS_PCT`，默认 2%）消除 ±1% 抖动；(3) ADC dummy read 规避高阻分压首读偏低。曲线表与方案见 `firmware/docs/feat/power-management-foundation.md`。充电检测仍为 TODO（需 VBUS 脚）。
-- **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
 
 ### Added
+- **网络连接点阵动画页 (`bb_page_netconn.c`, STATE_MACHINE.md §3.5.1)**：待机页是点阵时钟，SNTP 同步前没有内容可显示，而 WiFi 连接最长 30s+/SSID——开机动画硬切后用户面对近乎黑屏。新增网络连接页无缝接管：同点阵语言（5px dot / 同 palette）的 WiFi 弧形图标（底部基点 + 3 层同心点弧，共 16 dots）自下而上逐层点亮循环（420ms/层，最新层青色闪、下一拍沉淀冷白），图标下方实时显示正在尝试的 SSID（`WiFi <ssid>`，每 tick 轮询 `bb_wifi_get_active_ssid()`，多 slot 重试时自动跟随）；连上后弧全亮定格青色、标签换 `SYNC TIME`，等到 `bb_wall_time_ready()`（或连上后超时 `BBCLAW_NETCONN_SYNC_TIMEOUT_MS`，默认 10s）自销毁，露出**已有时间**的待机时钟。provisioning / wifi 失败路径由 `bb_radio_app_start` 显式 dismiss 让位 AP info / 错误显示。show/dismiss 与 splash 同样同步硬切不做 fade（NO_MEM 教训）。开关 `BBCLAW_NETCONN_PAGE_ENABLE`（默认 1）。
 - **诺基亚式像素点阵开机动画 + 语音协同 (`bb_page_boot.c`)**：开机后在 `lv_layer_top()` 全屏深色底铺出 "BBCLAW" 六字母 5×7 ghost 点阵（复用待机页点阵语言：dot 5px / pitch 9px），逐列扫亮（35ms/列，最新列青色高亮、下一拍沉淀冷白），扫完青色下划线从左向右生长收尾，结束整体淡出露出底层视图。开机语音（boot wav）延迟到扫列完成后才播：`bb_radio_app_start` 在 SPK TEST 前等到动画开始 ≥`BBCLAW_BOOT_SPLASH_VOICE_DELAY_MS`（默认 1150ms），播完后不足 `BBCLAW_BOOT_SPLASH_MIN_MS`（默认 2600ms）补足再淡出。开关 `BBCLAW_BOOT_SPLASH_ENABLE`（默认 1）。设计文档 `STATE_MACHINE.md` §3.5。
 - **管家记忆「沉淀引擎」— 收件箱归档进 MEMORY 多维画像并清空 (ADR-022 v1, #92)**：在 ADR-021 §4 per-turn distill（收件箱 append）之上新增**第二层「沉淀」**：后台把 workspace `CLAUDE.md` 托管段（收件箱）归档进 `MEMORY/*.md` 多维画像并清空收件箱，使 4KB 从「FIFO 静默丢失硬上限」降级为「整理缓冲」。默认 **off** 灰度、LOCAL-only。
   - **触发器（四类 + cooldown，`trigger.go`）**：阈值（收件箱 ≥75% `maxBytes`）/ 空闲（`idleGap`，默认 5min）/ 兜底（`maxGap`，默认 6h）/ per-key cooldown（默认 10min）。决策是纯函数 `decideTrigger`（cooldown 门 → 阈值 → 空闲 → 兜底，空收件箱永不触发），I/O 与决策分离便于表驱动测试。挂在 `MemoryWriter.RecordTurn`（engine.go:538）打 turn 末时间戳（单次轻量赋值，保持非阻塞契约）；阈值在 worker 每轮 append 后同步检查，空闲/兜底由轻量 ticker 周期驱动。
@@ -48,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`bbclaw-adapter mcp-server` 子命令**（`adapter/internal/cmd/mcpserver.go`）：从 env 读 `BBCLAW_CWD_POOL`（allowlist）与 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`，装配 `ClaudeWorkerRunner` + `butlermcp.New`，在 stdio 上 `Serve`；**stdout 仅 JSON-RPC，日志全部走 stderr**（`obs.NewLoggerTo`）。新增 `config.LoadButlerEnv` 仅加载管家所需字段，跳过 ASR/TTS 校验。
   - **e2e 冒烟**（`adapter/scripts/butler-mcp-smoke.sh` + `butler-mcp-config.example.json`）：协议层冒烟无需真实 claude；`BBCLAW_BUTLER_LIVE=1` 时跑 `claude -p --mcp-config` 真链路（claude 不在 PATH 时自动跳过，CI 不依赖）。
 - **逻辑会话 Role 字段 + worker 不进设备菜单 (ADR-021, #82)**：为"设备 ↔ 管家(butler) ↔ N 个 worker"会话分层打底。`logicalsession.LogicalSession` 新增 `Role` 字段（`butler` / `worker` / 空=向后兼容的普通会话）及 `RoleButler`/`RoleWorker`/`RoleNone` 常量；`Manager.CreateWithRole` 支持指定角色（`Create` 保持原签名、默认空 role，现有 5 个调用点零改动）。新增 `Manager.ListDeviceFacing`（在 limit 之前先剔除 worker），4 处设备朝向入口改用它：`httpapi` 的 sessions 菜单与 `handleAgentSessionsLogical`、`homeadapter/agent_proxy` 的 cloud relay 列表与菜单两处镜像逻辑——确保 cloud 模式下 worker 也不泄漏给设备。底层 `List` 仍返回全量供 butler/dispatch 使用。旧无 Role 记录反序列化为空 role 仍按普通会话列出；角色的实际写入由 #80(butler)/#79(worker) 消费。
+
+## [0.4.4] - 2026-05-29
+
+### Fixed
+- **电池电量显示不准 (P0)**：第一版线性映射（3300mV→0%，4200mV→100%）不符合锂电池放电曲线，导致满电掉电飞快、中段卡住、低电量突然归零。`bb_power.c` 改为 OCV–SoC 放电曲线查表 + 线性插值，并新增三项滤波：(1) 跨周期 EMA 电压低通（`BBCLAW_POWER_EMA_ALPHA_PCT`，默认 25%）吸收 PTT/功放/WiFi 负载瞬态；(2) 百分比迟滞（`BBCLAW_POWER_HYSTERESIS_PCT`，默认 2%）消除 ±1% 抖动；(3) ADC dummy read 规避高阻分压首读偏低。曲线表与方案见 `firmware/docs/feat/power-management-foundation.md`。充电检测仍为 TODO（需 VBUS 脚）。
+- **CHAT 最外层长按 OK 进不了菜单**：新 PCB rev 把 OK 移到编码器按压（IO1），`bb_nav_input` 把长按 OK 改发 `BB_NAV_EVENT_BACK` 替代旧的 `OK_LONG`，但 `bb_radio_app` CHAT 状态里"进 SETTINGS"那条路径还挂在 `OK_LONG` 上，导致长按落到空 BACK case 上没反应。把进 SETTINGS 行为合并到 BACK 处理里——busy 时维持取消 in-flight turn 的旧语义，空闲时进入 SETTINGS 浮层。
+
+### Added
 - **TTS 阅读模式 + Chat 本地 tail 缓存 (ADR-017)**：解决两个 UX 痛点。
   - **阅读模式**：TTS 播报中按 UP 翻看历史不再被下一句 chunk 拉回底部 — chat transcript 加了 `follow_tail` 锁存，UP 即进入阅读模式，DOWN 滚回底部自动恢复 follow，期间底栏显示 "● 阅读中 (DOWN 到底回到实时)" 提示。
   - **Chat tail 缓存**：每个 driver 在 NVS 里维护一个 1.5KB 的最近消息环（key `cc/<驱动短码>`），睡眠/唤醒回到 chat 时先用本地 cache 渲染最近几条消息，再 fire adapter fetch；adapter 不在线也能看到刚才的对话。Fetch 成功后清缓存重写以保持远端为 SoT。

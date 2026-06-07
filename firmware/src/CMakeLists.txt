@@ -15,6 +15,7 @@ set(_bb_srcs
     "bb_page_standby.c"
     "bb_page_locked.c"
     "bb_page_boot.c"
+    "bb_page_netconn.c"
     "bb_chat_transcript.c"
     "bb_chat_cache.c"
     "bb_chat_recording.c"

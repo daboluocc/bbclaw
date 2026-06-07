@@ -109,10 +109,15 @@ static void build_digit(int slot) {
   }
 }
 
-/* Light/dim the dots of one slot to render `digit` (0-9), or all-ghost if <0. */
+#define DIGIT_DASH (-2) /* centered dash — pre-SNTP "--:--" placeholder */
+
+/* Light/dim the dots of one slot to render `digit` (0-9), a centered dash
+ * (DIGIT_DASH), or all-ghost if any other negative value. */
 static void set_digit(int slot, int digit) {
   for (int r = 0; r < MX_ROWS; r++) {
-    uint8_t bits = (digit >= 0 && digit <= 9) ? GLYPH[digit][r] : 0;
+    uint8_t bits = 0;
+    if (digit >= 0 && digit <= 9) bits = GLYPH[digit][r];
+    else if (digit == DIGIT_DASH && r == MX_ROWS / 2) bits = 0x0E;
     for (int c = 0; c < MX_COLS; c++) {
       int on = (bits >> (MX_COLS - 1 - c)) & 1;
       lv_obj_set_style_bg_color(
@@ -252,6 +257,9 @@ void bb_page_standby_refresh_clock(const char* hm) {
   }
   /* Right-align so "9:05" → _9:05 keeps minutes in the last two slots. */
   if (n == 3) { d[3] = d[2]; d[2] = d[1]; d[1] = d[0]; d[0] = -1; }
+  /* No digits at all ("--:--", wall time not ready) → centered dashes,
+   * not an all-ghost (≈black) screen. */
+  if (n == 0) { d[0] = d[1] = d[2] = d[3] = DIGIT_DASH; }
 
   for (int slot = 0; slot < 4; slot++) set_digit(slot, d[slot]);
 }

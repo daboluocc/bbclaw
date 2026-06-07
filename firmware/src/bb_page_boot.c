@@ -196,3 +196,12 @@ void bb_page_boot_dismiss(void) {
 int bb_page_boot_active(void) {
   return s_root != NULL ? 1 : 0;
 }
+
+int bb_page_boot_anim_done(void) {
+  /* boot_timer_cb deletes s_timer on its final tick, so timer-gone means the
+   * sweep + underline have fully rendered. Benign race: both fields are only
+   * written under the LVGL lock, and a stale read here just delays the
+   * caller's poll by one step. */
+  if (s_root == NULL) return 1;
+  return s_timer == NULL ? 1 : 0;
+}

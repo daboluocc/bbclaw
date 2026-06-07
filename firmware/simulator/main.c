@@ -9,6 +9,7 @@
 
 #include "bb_config.h"
 #include "bb_display.h"
+#include "bb_page_netconn.h"
 #include "bb_time.h"
 #include "lvgl.h"
 #include "src/drivers/sdl/lv_sdl_keyboard.h"
@@ -27,6 +28,7 @@ typedef enum {
   /* Legacy aliases for CLI compat */
   APP_MODE_NOTIFICATION = 2,
   APP_MODE_SPEAKING = 3,
+  APP_MODE_NETCONN = 4,
 } app_mode_t;
 
 typedef struct {
@@ -89,6 +91,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_NOTIFICATION;
       } else if (strcmp(argv[i], "speaking") == 0) {
         state->mode = APP_MODE_SPEAKING;
+      } else if (strcmp(argv[i], "netconn") == 0) {
+        state->mode = APP_MODE_NETCONN;
       } else {
         state->mode = APP_MODE_AUTO;
       }
@@ -213,6 +217,15 @@ static void populate_preview_state(const app_state_t* state) {
   if (state->mode == APP_MODE_IDLE) {
     bb_display_set_battery(1, 1, 82, 0, 0);
     (void)bb_display_show_status(state->status[0] != '\0' ? state->status : "READY");
+    return;
+  }
+
+  if (state->mode == APP_MODE_NETCONN) {
+    /* Standby beneath, netconn page on lv_layer_top — wifi stub never
+     * connects so the page loops its arc animation forever. */
+    bb_display_set_battery(1, 1, 82, 0, 0);
+    (void)bb_display_show_status("READY");
+    bb_page_netconn_show();
     return;
   }
 
