@@ -83,7 +83,12 @@ func TestRecordTurnNonBlockingWhenQueueFull(t *testing.T) {
 		block: block,
 	}
 	w := NewWriter(NewStore(path), d, nil)
-	defer close(block)
+	// Deliberately never close(block): unblocking at test end would let the
+	// worker drain the queued memos and write into t.TempDir concurrently
+	// with its RemoveAll cleanup — a "directory not empty" flake (seen on CI
+	// linux-amd64). Parking the worker inside Distill guarantees no writes;
+	// the goroutine dies with the test binary.
+	_ = block
 
 	// Saturate: 1 in-flight (worker blocked in Distill) + fill the buffered
 	// channel. Further RecordTurn calls must return immediately (drop), never
