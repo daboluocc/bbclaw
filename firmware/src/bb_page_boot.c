@@ -16,17 +16,18 @@
 #include "bb_page_boot.h"
 
 #include "bb_config.h"
+#include "bb_ui_theme.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
 
 static const char* TAG = "bb_page_boot";
 
-/* ── palette — same family as bb_page_standby.c ── */
-#define UI_SCR_BG    0x070b0e
-#define UI_DOT_LIT   0xdfeaec
-#define UI_DOT_GHOST 0x152128
-#define UI_ACCENT    0x2ec4a0
+/* ── palette — design/UI_DESIGN_LANGUAGE.md tokens ── */
+#define UI_SCR_BG    BB_UI_BG
+#define UI_DOT_LIT   BB_UI_DOT_LIT
+#define UI_DOT_GHOST BB_UI_DOT_GHOST
+#define UI_ACCENT    BB_UI_ACCENT
 
 /* ── dot-matrix geometry ── */
 #define MX_DOT       5

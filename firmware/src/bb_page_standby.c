@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_ui_theme.h"
 #include "lvgl.h"
 
 #if LV_FONT_MONTSERRAT_14
@@ -25,12 +26,12 @@ LV_FONT_DECLARE(lv_font_montserrat_14)
 #define DISP_W BBCLAW_ST7789_WIDTH
 #define DISP_H BBCLAW_ST7789_HEIGHT
 
-/* ── palette ── */
-#define UI_SCR_BG     0x070b0e  /* deep cool near-black            */
-#define UI_DOT_LIT    0xdfeaec  /* cool white — active matrix dot  */
-#define UI_DOT_GHOST  0x152128  /* dim cool — inactive matrix dot  */
-#define UI_ACCENT     0x2ec4a0  /* teal — breathing colon          */
-#define UI_WORDMARK   0x4f6f67  /* dim teal-grey — footer wordmark */
+/* ── palette — design/UI_DESIGN_LANGUAGE.md tokens ── */
+#define UI_SCR_BG     BB_UI_BG        /* deep cool near-black            */
+#define UI_DOT_LIT    BB_UI_DOT_LIT   /* cool white — active matrix dot  */
+#define UI_DOT_GHOST  BB_UI_DOT_GHOST /* dim cool — inactive matrix dot  */
+#define UI_ACCENT     BB_UI_ACCENT    /* teal — breathing colon          */
+#define UI_WORDMARK   BB_UI_WORDMARK  /* dim teal-grey — footer wordmark */
 
 /* ── dot-matrix geometry ── */
 #define MX_DOT     5            /* dot diameter                    */

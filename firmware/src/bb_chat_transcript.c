@@ -14,19 +14,22 @@
 
 #include "bb_chat_cache.h"
 #include "bb_display.h"
+#include "bb_ui_theme.h"
 #include "lvgl.h"
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;
 #endif
 
-/* Color palette — matches buddy-anim */
-#define UI_TEXT_MAIN   0xd8ebe4
-#define UI_TEXT_DIM    0x7a9a8c
-#define UI_ME_ACCENT   0x2ec4a0
-#define UI_AI_ACCENT   0x4a9fd8
-#define UI_TOOL_FG     0x9aa5a1
-#define UI_ERROR_FG    0xe66f6f
+/* Color palette — design/UI_DESIGN_LANGUAGE.md tokens. Monochrome + teal:
+ * user bubble = teal tint (right-aligned), assistant bubble = solid ghost
+ * surface (left-aligned) — alignment + tone separate the speakers, no blue. */
+#define UI_TEXT_MAIN   BB_UI_DOT_LIT
+#define UI_TEXT_DIM    BB_UI_TEXT_DIM
+#define UI_ME_ACCENT   BB_UI_ACCENT
+#define UI_AI_SURFACE  BB_UI_DOT_GHOST /* assistant bubble face */
+#define UI_TOOL_FG     BB_UI_TEXT_DIM
+#define UI_ERROR_FG    BB_UI_ERR
 
 #define MSG_PAD     4
 #define MSG_RADIUS  6
@@ -99,6 +102,14 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
   /* Removed: lv_obj_set_style_align(LV_ALIGN_RIGHT_MID) — it fights with the
    * parent's flex layout and was part of the hang condition. text_align
    * alone gives the right visual effect. */
+  return lbl;
+}
+
+/* Assistant bubble — solid ghost surface (not a 30% tint): reads as a card
+ * against BB_UI_BG and keeps the transcript monochrome. */
+static lv_obj_t* make_assistant_label(void) {
+  lv_obj_t* lbl = make_msg_label(UI_AI_SURFACE, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+  if (lbl != NULL) lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
   return lbl;
 }
 
@@ -176,8 +187,7 @@ void bb_chat_transcript_append_user(const char* text) {
 void bb_chat_transcript_append_assistant_chunk(const char* delta) {
   if (s_transcript == NULL || delta == NULL) return;
   if (s_active_assistant == NULL) {
-    s_active_assistant = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN,
-                                        LV_TEXT_ALIGN_LEFT, 0);
+    s_active_assistant = make_assistant_label();
     if (s_active_assistant == NULL) return;
     lv_label_set_text(s_active_assistant, delta);
   } else {
@@ -227,7 +237,7 @@ void bb_chat_transcript_append_history(const char* role, const char* content) {
   if (is_user) {
     lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
   } else {
-    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+    lbl = make_assistant_label();
   }
   if (lbl == NULL) return;
   lv_label_set_text(lbl, content);
@@ -241,7 +251,7 @@ void bb_chat_transcript_prepend_history(const char* role, const char* content) {
   if (is_user) {
     lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
   } else {
-    lbl = make_msg_label(UI_AI_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_LEFT, 0);
+    lbl = make_assistant_label();
   }
   if (lbl == NULL) return;
   lv_label_set_text(lbl, content);

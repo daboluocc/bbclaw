@@ -21,6 +21,7 @@
 #include "bb_ogg_opus.h"
 #include "bb_page_boot.h"
 #include "bb_page_netconn.h"
+#include "bb_ui_theme.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
 #include "bb_state.h"
@@ -456,7 +457,7 @@ static int settings_overlay_enter(void) {
   lv_obj_set_size(s_settings_root, lv_pct(100), lv_pct(100));
   lv_obj_set_pos(s_settings_root, 0, 0);
   lv_obj_clear_flag(s_settings_root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_color(s_settings_root, lv_color_hex(0x0a0e0c), 0);
+  lv_obj_set_style_bg_color(s_settings_root, lv_color_hex(BB_UI_BG), 0);
   lv_obj_set_style_bg_opa(s_settings_root, LV_OPA_COVER, 0);
   lv_obj_move_foreground(s_settings_root);
   bb_ui_settings_show(s_settings_root);
