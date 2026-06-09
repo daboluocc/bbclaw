@@ -16,10 +16,15 @@
 #include "bb_page_boot.h"
 
 #include "bb_config.h"
+#include "bb_ota.h"
 #include "bb_ui_theme.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
+
+#if LV_FONT_MONTSERRAT_14
+LV_FONT_DECLARE(lv_font_montserrat_14)
+#endif
 
 static const char* TAG = "bb_page_boot";
 
@@ -28,6 +33,7 @@ static const char* TAG = "bb_page_boot";
 #define UI_DOT_LIT   BB_UI_DOT_LIT
 #define UI_DOT_GHOST BB_UI_DOT_GHOST
 #define UI_ACCENT    BB_UI_ACCENT
+#define UI_TEXT_DIM  BB_UI_TEXT_DIM
 
 /* ── dot-matrix geometry ── */
 #define MX_DOT       5
@@ -43,6 +49,7 @@ static const char* TAG = "bb_page_boot";
 #define WORDMARK_Y   ((BBCLAW_ST7789_HEIGHT - LETTER_H) / 2 - 8)
 #define UNDERLINE_Y  (WORDMARK_Y + LETTER_H + 14)
 #define UNDERLINE_H  3
+#define VERSION_Y    (UNDERLINE_Y + UNDERLINE_H + 12)
 
 /* ── timing ── */
 #define BOOT_TICK_MS      35                       /* one column per tick   */
@@ -63,7 +70,16 @@ static const uint8_t* const WORDMARK[LETTER_COUNT] = {
 static lv_obj_t* s_root;
 static lv_obj_t* s_dots[LETTER_COUNT][MX_ROWS][MX_COLS];
 static lv_obj_t* s_underline;
+static lv_obj_t* s_version;
 static lv_timer_t* s_timer;
+
+static const lv_font_t* small_font_fn(void) {
+#if LV_FONT_MONTSERRAT_14
+  return &lv_font_montserrat_14;
+#else
+  return lv_font_get_default();
+#endif
+}
 static int s_reveal_col;    /* next global column (0..TOTAL_COLS) to light  */
 static int s_underline_w;
 
@@ -122,6 +138,7 @@ static void destroy_locked(void) {
     s_root = NULL;
   }
   s_underline = NULL;
+  s_version = NULL;
 }
 
 void bb_page_boot_show(void) {
@@ -168,6 +185,17 @@ void bb_page_boot_show(void) {
   lv_obj_set_style_radius(s_underline, 2, 0);
   lv_obj_set_style_bg_color(s_underline, lv_color_hex(UI_ACCENT), 0);
   lv_obj_set_style_bg_opa(s_underline, LV_OPA_COVER, 0);
+
+  /* Current firmware version under the wordmark — confirms which build / OTA
+   * slot actually booted (esp_app_desc, available this early in boot). */
+  s_version = lv_label_create(s_root);
+  lv_obj_remove_style_all(s_version);
+  lv_obj_set_style_text_color(s_version, lv_color_hex(UI_TEXT_DIM), 0);
+  lv_obj_set_style_text_font(s_version, small_font_fn(), 0);
+  lv_obj_set_style_text_align(s_version, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(s_version, BBCLAW_ST7789_WIDTH);
+  lv_obj_set_pos(s_version, 0, VERSION_Y);
+  lv_label_set_text(s_version, bb_ota_get_current_version());
 
   s_reveal_col = 0;
   s_underline_w = 1;
