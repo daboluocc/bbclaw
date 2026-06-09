@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-06-10
+
+### Fixed
+- **OTA 变砖修复(关键)**: 发布固件改用 `firmware/sdkconfig.bbclaw.latest`(OCTAL PSRAM
+  + bbclaw 板 + cloud_saas + 生产云 URL)构建。此前 CI 走 `sdkconfig.defaults`(QUAD PSRAM
+  + breadboard + local_home),发的固件 OTA 到八线 PSRAM 的 bbclaw PCB 会
+  `wrong PSRAM line mode` → `Failed to init external RAM` → boot loop。OTA 链路本周才修通,
+  v0.4.8 是第一个真正被 OTA 的 CI 构建,因此首次暴露。(#120 #121;默认板也改为 bbclaw)
+
+### Added
+- **开机动画下方显示当前固件版本**(`bb_ota_get_current_version`),便于确认实际启动的
+  构建 / OTA 分区。(#119)
+
 ## [0.4.8] - 2026-06-10
 
 ### Added
