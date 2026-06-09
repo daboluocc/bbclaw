@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-06-10
+
+### Fixed
+- **OTA 升级后设备变"新设备"**: `device_id` 原为 `BBClaw-<固件版本>-<MAC>`,版本号从
+  tag 注入后,每次 OTA 都会改变 `device_id` → 云端当作全新设备要求重新配对
+  (`claim_required`、配置回默认)。改为 `BBClaw-<MAC>`,与固件版本无关、跨 OTA 稳定。
+  一次性影响:现有已配对设备的 id 会变一次,需重新认领一次,此后永久稳定。(#123)
+
 ## [0.4.10] - 2026-06-10
 
 ### Fixed
