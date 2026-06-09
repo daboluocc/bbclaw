@@ -26,7 +26,13 @@ LOG_FILE ?= $(LOG_DIR)/adapter-runtime.log
 ENV_FILE ?= $(CURDIR)/.env
 ADAPTER_RUN_MATCH ?= go run .*./cmd/bbclaw-adapter|/bbclaw-adapter($$| )
 
-.PHONY: help build web test clean-run-procs run dev log sync-env sync-env-reset
+# 安装路径：默认装到用户级 ~/.local/bin（免 sudo，记得把它加进 PATH）
+# 装到系统全局：make install PREFIX=/usr/local（写 /usr/local 通常需 sudo）
+BIN_NAME    ?= bbclaw-adapter
+PREFIX      ?= $(HOME)/.local
+INSTALL_DIR ?= $(PREFIX)/bin
+
+.PHONY: help build web test clean-run-procs run dev log sync-env sync-env-reset install uninstall
 
 help:
 	@echo "BBClaw adapter"
@@ -38,10 +44,13 @@ help:
 	@echo "  make run            # 运行 bbclaw-adapter，配置: $(ENV_FILE)"
 	@echo "  make log            # tail -f 运行日志"
 	@echo "  make build          # 构建到 $(BIN_DIR)/bbclaw-adapter"
+	@echo "  make install        # build 后安装到 $(INSTALL_DIR)/$(BIN_NAME)"
+	@echo "  make uninstall      # 从 $(INSTALL_DIR) 移除 $(BIN_NAME)"
 	@echo "  make web            # 构建 Vue 管理页 SPA → internal/adminui/dist（提交进仓库）"
 	@echo "  make test           # go test ./..."
 	@echo ""
 	@echo "覆盖配置文件: make run ENV_FILE=/path/to/x.env"
+	@echo "安装到全局:   make install PREFIX=/usr/local（可能需 sudo）"
 	@echo "示例文件: .env.example"
 
 sync-env:
@@ -55,6 +64,18 @@ sync-env-reset:
 build:
 	@mkdir -p "$(BIN_DIR)"
 	cd "$(CURDIR)" && $(GO) build -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/bbclaw-adapter" ./cmd/bbclaw-adapter
+
+# 把编译产物安装到系统路径，区别于 `make run`（go run 临时跑）。
+# 默认装到 ~/.local/bin（免 sudo）；装全局用 make install PREFIX=/usr/local。
+install: build
+	@mkdir -p "$(INSTALL_DIR)"
+	install -m 0755 "$(BIN_DIR)/bbclaw-adapter" "$(INSTALL_DIR)/$(BIN_NAME)"
+	@echo "installed: $(INSTALL_DIR)/$(BIN_NAME)"
+	@command -v "$(BIN_NAME)" >/dev/null 2>&1 || \
+		echo "提示: $(INSTALL_DIR) 不在 PATH 中，请加入后再使用 $(BIN_NAME)"
+
+uninstall:
+	@rm -f "$(INSTALL_DIR)/$(BIN_NAME)" && echo "removed: $(INSTALL_DIR)/$(BIN_NAME)"
 
 # Rebuild the embedded Vue admin SPA. dist/ is committed so plain `make build`
 # (and the release pipeline) need no Node — run this only when web/ changes.
