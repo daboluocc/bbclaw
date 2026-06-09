@@ -21,6 +21,7 @@
 #include "bb_ogg_opus.h"
 #include "bb_page_boot.h"
 #include "bb_page_netconn.h"
+#include "bb_page_ota.h"
 #include "bb_ui_theme.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
@@ -46,6 +47,11 @@
 #include "lvgl.h"
 
 static const char* TAG = "bb_radio_app";
+
+/* Forwards OTA download progress to the on-screen dot-matrix progress page. */
+static void ota_ui_progress_cb(int percent) {
+  bb_page_ota_set_progress(percent);
+}
 
 #if BBCLAW_SPK_TEST_ON_BOOT
 extern const uint8_t _binary_bbclaw_wav_start[] asm("_binary_bbclaw_wav_start");
@@ -3229,14 +3235,18 @@ esp_err_t bb_radio_app_start(void) {
           esp_err_t ota_err = bb_ota_check(&ota_info);
           if (ota_err == ESP_OK && ota_info.has_update) {
             ESP_LOGI(TAG, "OTA update available: version=%s size=%u", ota_info.version, ota_info.size);
-            (void)bb_display_show_chat_turn("Updating...", ota_info.version);
-            esp_err_t dl_err = bb_ota_download_and_flash(&ota_info, NULL);
+            /* Dot-matrix progress page on lv_layer_top, fed by the download
+             * progress callback (replaces the old silent NULL). */
+            bb_page_ota_show(ota_info.version);
+            esp_err_t dl_err = bb_ota_download_and_flash(&ota_info, ota_ui_progress_cb);
             if (dl_err == ESP_OK) {
               ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
+              bb_page_ota_set_done();  /* shows "REBOOTING" during apply's pre-reboot delay */
               (void)bb_ota_apply_update();
               /* Never returns */
             } else {
               ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+              bb_page_ota_dismiss();
             }
           }
         }
