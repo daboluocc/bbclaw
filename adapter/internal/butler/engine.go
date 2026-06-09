@@ -42,10 +42,10 @@ type Deps struct {
 	// active_model 或 ""。butler 不缓存其结果以保留 ADR-016 mid-session 语义。
 	ResolveActiveModel func(driver string) string
 
-	// SystemPrompt 注入(ADR-018 §3):据 logical cwd 构造每轮的系统提示,经
+	// SystemPrompt 注入(ADR-018 §3):据 logical cwd 和当前设备 ID 构造每轮的系统提示,经
 	// StartOpts.SystemPrompt 下达给 driver(claudecode → --append-system-prompt)。
 	// nil = 不注入。两 caller 通常都传 butler.DeviceSystemPrompt。
-	SystemPrompt func(cwd string) string
+	SystemPrompt func(cwd, deviceID string) string
 
 	// StartCtx 是传给 drv.Start 的 ctx(差异 #9)。
 	//   LOCAL  = s.agentCtx(长生命周期)
@@ -124,11 +124,11 @@ func (d Deps) resolveModel(driver string) string {
 	return d.ResolveActiveModel(driver)
 }
 
-func (d Deps) buildSystemPrompt(cwd string) string {
+func (d Deps) buildSystemPrompt(cwd, deviceID string) string {
 	if d.SystemPrompt == nil {
 		return ""
 	}
-	return d.SystemPrompt(cwd)
+	return d.SystemPrompt(cwd, deviceID)
 }
 
 // RunTurn 跑完整个 turn 骨架(解析→主动 resume 校验→attempt 循环→收尾)。
@@ -340,7 +340,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 				startOpts.Cwd = logicalCwd
 			}
 			startOpts.Model = d.resolveModel(drv.Name())
-			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd)
+			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd, req.DeviceID)
 			// 仅管家会话(Role=butler)带 --mcp-config,让它能派发 worker(ADR-021 §2);
 			// worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
 			if logicalRole == logicalsession.RoleButler && d.ButlerMCPConfig != "" {

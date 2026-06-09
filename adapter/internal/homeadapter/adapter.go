@@ -642,7 +642,7 @@ func (a *Adapter) handleChatTextViaAgent(
 	// Voice turns get the same butler device persona as session turns (ADR-018
 	// §3) so the backend keeps replies short/speakable instead of leaking the
 	// cwd or dumping walls of code to a 1.47" screen.
-	startOpts.SystemPrompt = butler.DeviceSystemPrompt(startOpts.Cwd)
+	startOpts.SystemPrompt = butler.DeviceSystemPrompt(startOpts.Cwd, env.DeviceID)
 	sid, err := drv.Start(ctx, startOpts)
 	if err != nil {
 		return fmt.Errorf("agent start: %w", err)
