@@ -50,3 +50,13 @@ esp_err_t bb_device_config_apply_update(int version, const char* updates_json);
  * @param config_json  JSON object with full config
  */
 esp_err_t bb_device_config_apply_welcome(const char* config_json);
+
+/**
+ * Set volume percentage locally (device-initiated change).
+ * Clamps to [0, 100], persists to NVS immediately.
+ * Also bumps s_applied_cloud_volume_pct so a subsequent cloud re-send
+ * of the same value won't overwrite the local choice.
+ *
+ * @param pct  Volume 0–100
+ */
+esp_err_t bb_device_config_set_volume_pct(int pct);

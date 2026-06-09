@@ -38,6 +38,8 @@
 #include <string.h>
 
 #include "bb_agent_client.h"
+#include "bb_audio.h"
+#include "bb_device_config.h"
 #include "bb_session_store.h"
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_theme.h"
@@ -76,11 +78,13 @@ typedef enum {
   LEVEL_MAIN = 0,
   LEVEL_DRIVER_PICKER,
   LEVEL_MODEL_PICKER,
+  LEVEL_VOLUME_ADJUST,
 } settings_level_t;
 
 typedef enum {
   MAIN_ROW_DRIVER = 0,
   MAIN_ROW_MODEL,
+  MAIN_ROW_VOLUME,
   MAIN_ROW_TTS,
   MAIN_ROW_BACK,
   MAIN_ROW_COUNT,
@@ -116,6 +120,12 @@ typedef struct {
    * driver_cache[i].active_model directly. */
 
   int tts_enabled;
+
+  /* Volume adjust state */
+  int volume_pct;        /* current working value while in LEVEL_VOLUME_ADJUST */
+  int volume_dirty;      /* 1 = changed since entering adjust mode */
+  lv_obj_t* vol_fill;    /* fill rect inside the big bar (partial-update ref) */
+  lv_obj_t* vol_pct_lbl; /* "NN%" label next to the bar (partial-update ref) */
 } settings_state_t;
 
 static settings_state_t s_st = {0};
@@ -270,6 +280,25 @@ static void render_main(void) {
   snprintf(buf, sizeof(buf), "Model: %s", current_model_label(active));
   lv_label_set_text(s_st.rows[MAIN_ROW_MODEL], buf);
 
+  /* Row: Volume — show mini bar as text art + percent */
+  {
+    int pct = s_st.volume_pct;
+    const int BLOCKS = 10;
+    int filled = (pct * BLOCKS + 50) / 100;
+    if (filled < 0) filled = 0;
+    if (filled > BLOCKS) filled = BLOCKS;
+    char mini[16];
+    int ci = 0;
+    mini[ci++] = '[';
+    for (int k = 0; k < BLOCKS; k++) {
+      mini[ci++] = (k < filled) ? '#' : '-';
+    }
+    mini[ci++] = ']';
+    mini[ci] = '\0';
+    snprintf(buf, sizeof(buf), "Vol: %s %d%%", mini, pct);
+  }
+  lv_label_set_text(s_st.rows[MAIN_ROW_VOLUME], buf);
+
   /* Row: TTS */
   snprintf(buf, sizeof(buf), "TTS: %s", s_st.tts_enabled ? "On" : "Off");
   lv_label_set_text(s_st.rows[MAIN_ROW_TTS], buf);
@@ -342,11 +371,104 @@ static void render_model_picker(void) {
   highlight_selected();
 }
 
+/* ── Render: Volume adjust page ── */
+
+#define VOL_BAR_X      8
+#define VOL_BAR_Y      48
+#define VOL_BAR_H      28
+#define VOL_BAR_BORDER 2
+#define VOL_PCT_LABEL_Y  84
+
+static void render_volume_adjust(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "Volume");
+
+  /* Reuse rows_box as a plain container for volume adjust widgets so that
+   * destroy_rows() cleans them all up when leaving this level. */
+  destroy_rows();
+  s_st.rows_box = lv_obj_create(s_st.root);
+  lv_obj_remove_style_all(s_st.rows_box);
+  lv_obj_set_size(s_st.rows_box, lv_pct(100), lv_pct(100) - HEADER_H);
+  lv_obj_align(s_st.rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
+  lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
+
+  /* Compute bar width from display width */
+  lv_coord_t disp_w = lv_obj_get_width(s_st.root);
+  lv_coord_t bar_w = disp_w - VOL_BAR_X * 2;
+  lv_coord_t inner_w = bar_w - VOL_BAR_BORDER * 2;
+  int pct = s_st.volume_pct;
+  lv_coord_t fill_w = (lv_coord_t)(pct * (int)inner_w / 100);
+  if (fill_w < 0) fill_w = 0;
+  if (fill_w > inner_w) fill_w = inner_w;
+
+  /* Bar container */
+  lv_obj_t* container = lv_obj_create(s_st.rows_box);
+  lv_obj_remove_style_all(container);
+  lv_obj_set_size(container, bar_w, VOL_BAR_H);
+  lv_obj_set_pos(container, VOL_BAR_X, VOL_BAR_Y - HEADER_H);
+  lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+
+  /* Fill rect (accent color) */
+  lv_obj_t* fill = lv_obj_create(container);
+  lv_obj_remove_style_all(fill);
+  lv_obj_set_size(fill, fill_w, VOL_BAR_H - VOL_BAR_BORDER * 2);
+  lv_obj_set_pos(fill, VOL_BAR_BORDER, VOL_BAR_BORDER);
+  lv_obj_set_style_radius(fill, 2, 0);
+  lv_obj_set_style_bg_color(fill, lv_color_hex(BB_UI_ACCENT), 0);
+  lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+  s_st.vol_fill = fill;
+
+  /* Border frame on top */
+  lv_obj_t* frame = lv_obj_create(container);
+  lv_obj_remove_style_all(frame);
+  lv_obj_set_size(frame, bar_w, VOL_BAR_H);
+  lv_obj_set_pos(frame, 0, 0);
+  lv_obj_set_style_radius(frame, 3, 0);
+  lv_obj_set_style_border_width(frame, VOL_BAR_BORDER, 0);
+  lv_obj_set_style_border_color(frame, lv_color_hex(BB_UI_ACCENT), 0);
+  lv_obj_set_style_border_opa(frame, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(frame, LV_OPA_0, 0);
+  lv_obj_clear_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
+
+  /* Percentage label */
+  lv_obj_t* pct_lbl = lv_label_create(s_st.rows_box);
+  lv_obj_set_style_text_color(pct_lbl, lv_color_hex(BB_UI_DOT_LIT), 0);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  lv_label_set_text(pct_lbl, buf);
+  lv_obj_set_pos(pct_lbl, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H);
+  s_st.vol_pct_lbl = pct_lbl;
+
+  /* Hint label */
+  lv_obj_t* hint = lv_label_create(s_st.rows_box);
+  lv_obj_set_style_text_color(hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
+  lv_label_set_text(hint, "UP/DOWN to adjust  OK/BACK to save");
+  lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + 20);
+}
+
+/* Partial update — only change fill width and label; no object rebuild */
+static void update_volume_bar(int pct) {
+  if (s_st.vol_fill == NULL || s_st.vol_pct_lbl == NULL) return;
+  lv_coord_t disp_w = lv_obj_get_width(s_st.root);
+  lv_coord_t bar_w = disp_w - VOL_BAR_X * 2;
+  lv_coord_t inner_w = bar_w - VOL_BAR_BORDER * 2;
+  lv_coord_t fill_w = (lv_coord_t)(pct * (int)inner_w / 100);
+  if (fill_w < 0) fill_w = 0;
+  if (fill_w > inner_w) fill_w = inner_w;
+  lv_obj_set_width(s_st.vol_fill, fill_w);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  lv_label_set_text(s_st.vol_pct_lbl, buf);
+}
+
 static void rerender(void) {
   switch (s_st.level) {
-    case LEVEL_MAIN:          render_main(); break;
-    case LEVEL_DRIVER_PICKER: render_driver_picker(); break;
-    case LEVEL_MODEL_PICKER:  render_model_picker(); break;
+    case LEVEL_MAIN:           render_main(); break;
+    case LEVEL_DRIVER_PICKER:  render_driver_picker(); break;
+    case LEVEL_MODEL_PICKER:   render_model_picker(); break;
+    case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
   }
 }
 
@@ -573,6 +695,11 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   /* Initialise level + cursor before any LVGL work. */
   s_st.level = LEVEL_MAIN;
   s_st.sel = MAIN_ROW_DRIVER;
+  /* Load current volume from persisted config. */
+  s_st.volume_pct = bb_device_config_get()->volume_pct;
+  s_st.volume_dirty = 0;
+  s_st.vol_fill = NULL;
+  s_st.vol_pct_lbl = NULL;
   /* Seed active_driver from NVS cache so the first paint of the main page
    * shows something sensible even before the async fetch lands. */
   if (s_st.active_driver[0] == '\0') {
@@ -625,6 +752,20 @@ int bb_ui_settings_is_active(void) {
 
 void bb_ui_settings_handle_rotate(int delta) {
   if (!s_st.active || delta == 0) return;
+
+  /* Volume adjust mode: change value directly, update bar in-place. */
+  if (s_st.level == LEVEL_VOLUME_ADJUST) {
+    int v = s_st.volume_pct + delta * 5;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    if (v == s_st.volume_pct) return;
+    s_st.volume_pct = v;
+    s_st.volume_dirty = 1;
+    bb_audio_set_volume_pct(v);
+    update_volume_bar(v);
+    return;
+  }
+
   int row_count;
   switch (s_st.level) {
     case LEVEL_MAIN:
@@ -667,6 +808,14 @@ int bb_ui_settings_handle_click(void) {
           }
           break;
         }
+        case MAIN_ROW_VOLUME:
+          /* Enter volume adjust sub-level */
+          s_st.level = LEVEL_VOLUME_ADJUST;
+          s_st.volume_dirty = 0;
+          s_st.vol_fill = NULL;
+          s_st.vol_pct_lbl = NULL;
+          rerender();
+          break;
         case MAIN_ROW_TTS: {
           /* In-place toggle (no sub-picker — binary value). */
           s_st.tts_enabled = !s_st.tts_enabled;
@@ -733,6 +882,17 @@ int bb_ui_settings_handle_click(void) {
       return_to_main(MAIN_ROW_MODEL);
       return 0;
     }
+
+    case LEVEL_VOLUME_ADJUST:
+      /* OK in adjust mode: persist and return to main */
+      if (s_st.volume_dirty) {
+        bb_device_config_set_volume_pct(s_st.volume_pct);
+        s_st.volume_dirty = 0;
+      }
+      s_st.vol_fill = NULL;
+      s_st.vol_pct_lbl = NULL;
+      return_to_main(MAIN_ROW_VOLUME);
+      return 0;
   }
   return 0;
 }
@@ -747,6 +907,16 @@ int bb_ui_settings_handle_back(void) {
       return 0;
     case LEVEL_MODEL_PICKER:
       return_to_main(MAIN_ROW_MODEL);
+      return 0;
+    case LEVEL_VOLUME_ADJUST:
+      /* BACK: persist then return to main (same as OK) */
+      if (s_st.volume_dirty) {
+        bb_device_config_set_volume_pct(s_st.volume_pct);
+        s_st.volume_dirty = 0;
+      }
+      s_st.vol_fill = NULL;
+      s_st.vol_pct_lbl = NULL;
+      return_to_main(MAIN_ROW_VOLUME);
       return 0;
   }
   return 0;
