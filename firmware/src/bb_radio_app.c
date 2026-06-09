@@ -2852,8 +2852,19 @@ static void stream_task(void* arg) {
         remember_transport_state(&state);
         if (health_err == ESP_OK && bb_transport_is_cloud_saas()) {
           if (state.cloud_volume_pct >= 0) {
+            /* The locally-saved volume (applied at boot + via the on-device
+             * Volume setting) is the source of truth. Only let the cloud value
+             * override when it *changes at runtime* — a deliberate remote
+             * action. The first heartbeat after boot just records the cloud
+             * baseline so it doesn't clobber the user's local choice, and a
+             * cloud re-send of an unchanged value is a no-op (so a device-side
+             * adjustment is never silently reverted). */
             static int s_applied_cloud_volume_pct = -1;
-            if (state.cloud_volume_pct != s_applied_cloud_volume_pct) {
+            static int s_cloud_volume_baseline_set = 0;
+            if (!s_cloud_volume_baseline_set) {
+              s_applied_cloud_volume_pct = state.cloud_volume_pct;
+              s_cloud_volume_baseline_set = 1;
+            } else if (state.cloud_volume_pct != s_applied_cloud_volume_pct) {
               s_applied_cloud_volume_pct = state.cloud_volume_pct;
               bb_audio_set_volume_pct(state.cloud_volume_pct);
             }
@@ -3092,6 +3103,11 @@ esp_err_t bb_radio_app_start(void) {
     show_status_error("AUDIO ERR");
     return audio_err;
   }
+  /* Apply the user's persisted volume so the on-device Volume setting survives
+   * reboots. bb_audio_init() starts at the compiled-in default; without this
+   * the saved value would only take effect after a manual restart (and in
+   * cloud_saas the cloud value would otherwise win on the first heartbeat). */
+  bb_audio_set_volume_pct(bb_device_config_get()->volume_pct);
 #if BBCLAW_XL9555_ENABLE
   {
     esp_err_t xl_err = bb_xl9555_init();

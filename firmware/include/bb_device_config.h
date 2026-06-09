@@ -53,9 +53,11 @@ esp_err_t bb_device_config_apply_welcome(const char* config_json);
 
 /**
  * Set volume percentage locally (device-initiated change).
- * Clamps to [0, 100], persists to NVS immediately.
- * Also bumps s_applied_cloud_volume_pct so a subsequent cloud re-send
- * of the same value won't overwrite the local choice.
+ * Clamps to [0, 100], persists to NVS immediately so the choice survives
+ * reboots (re-applied at boot in bb_radio_app via bb_audio_set_volume_pct).
+ * The cloud heartbeat only overrides the volume when the cloud value changes
+ * at runtime, so a local change is never clobbered by a cloud re-send of an
+ * unchanged value.
  *
  * @param pct  Volume 0–100
  */
