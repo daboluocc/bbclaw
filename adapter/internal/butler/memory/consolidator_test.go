@@ -34,14 +34,25 @@ func inboxWith(lines ...string) string {
 		strings.Join(lines, "\n") + "\n" + workspace.ManagedEnd + "\n"
 }
 
-func readProfile(t *testing.T, dir, dim string) (string, bool) {
+// dimFile maps a test dimension key ("preference","project","decision") to its
+// plural on-disk filename, matching the workspace scaffold (#124 fix).
+func dimFile(key string) string {
+	for _, d := range dimensions {
+		if d.Key == key {
+			return d.File
+		}
+	}
+	return key + ".md" // fallback for unknown keys
+}
+
+func readProfile(t *testing.T, dir, dimKey string) (string, bool) {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, memoryDirName, dim+".md"))
+	b, err := os.ReadFile(filepath.Join(dir, memoryDirName, dimFile(dimKey)))
 	if os.IsNotExist(err) {
 		return "", false
 	}
 	if err != nil {
-		t.Fatalf("read profile %s: %v", dim, err)
+		t.Fatalf("read profile %s: %v", dimKey, err)
 	}
 	return string(b), true
 }
@@ -86,7 +97,7 @@ func TestConsolidateProfilesWrittenWith0600(t *testing.T) {
 	if err := c.Consolidate(context.Background()); err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
-	info, err := os.Stat(filepath.Join(dir, memoryDirName, "preference.md"))
+	info, err := os.Stat(filepath.Join(dir, memoryDirName, dimFile("preference")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,5 +235,79 @@ func TestParseDimensionsNoObjectIsEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("want empty, got %+v", got)
+	}
+}
+
+// TestConsolidateWritesPluralFileNames verifies that consolidate creates
+// preferences.md / projects.md / decisions.md (plural), not the singular
+// orphan names that nothing else reads (#124 Task 2 defect 1).
+func TestConsolidateWritesPluralFileNames(t *testing.T) {
+	path := writeCLAUDE(t, inboxWith("- [preference] plural test"))
+	dir := filepath.Dir(path)
+	sum := &stubSummarizer{result: map[string][]string{
+		"preference": {"plural test"},
+		"project":    {"my project"},
+		"decision":   {},
+	}}
+	c := NewConsolidator(path, sum, nil)
+	if err := c.Consolidate(context.Background()); err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+
+	// Plural files must exist.
+	for _, wantFile := range []string{"preferences.md", "projects.md", "decisions.md"} {
+		full := filepath.Join(dir, memoryDirName, wantFile)
+		if _, err := os.Stat(full); err != nil {
+			t.Errorf("expected plural file %s to exist: %v", wantFile, err)
+		}
+	}
+	// Singular orphan files must NOT be created.
+	for _, badFile := range []string{"preference.md", "project.md", "decision.md"} {
+		full := filepath.Join(dir, memoryDirName, badFile)
+		if _, err := os.Stat(full); err == nil {
+			t.Errorf("singular orphan file %s must not exist", badFile)
+		}
+	}
+}
+
+// TestConsolidatePreservesPrewarmBlocksOutsideManagedBlock verifies that
+// content written outside the managed sub-block (e.g. <!-- prewarm:NAME -->
+// markers or AI-authored free text) survives a consolidate pass (#124 Task 2
+// defect 2: full-file overwrite used to wipe prewarm blocks).
+func TestConsolidatePreservesPrewarmBlocksOutsideManagedBlock(t *testing.T) {
+	path := writeCLAUDE(t, inboxWith("- [project] prewarm test"))
+	dir := filepath.Dir(path)
+
+	// Seed projects.md with prewarm content outside the managed block.
+	preexisting := "# 最近在做的项目\n\n<!-- prewarm:PROJECTS -->\n一些预热内容\n<!-- /prewarm:PROJECTS -->\n"
+	projPath := filepath.Join(dir, memoryDirName, "projects.md")
+	if err := os.MkdirAll(filepath.Join(dir, memoryDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projPath, []byte(preexisting), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := &stubSummarizer{result: map[string][]string{
+		"project": {"合并后的项目"},
+	}}
+	c := NewConsolidator(path, sum, nil)
+	if err := c.Consolidate(context.Background()); err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+
+	got, _ := os.ReadFile(projPath)
+	body := string(got)
+
+	// Prewarm markers must survive.
+	if !strings.Contains(body, "<!-- prewarm:PROJECTS -->") {
+		t.Errorf("prewarm open marker was clobbered:\n%s", body)
+	}
+	if !strings.Contains(body, "<!-- /prewarm:PROJECTS -->") {
+		t.Errorf("prewarm close marker was clobbered:\n%s", body)
+	}
+	// The consolidated bullet must also be present inside the managed block.
+	if !strings.Contains(body, "合并后的项目") {
+		t.Errorf("consolidated bullet missing:\n%s", body)
 	}
 }

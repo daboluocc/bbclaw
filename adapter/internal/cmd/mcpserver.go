@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/butler/memory"
 	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -88,6 +89,7 @@ func runMcpServer(cmd *cobra.Command, args []string) error {
 		ProjectsProvider: projectsFn,
 		Runner:           runner,
 		Log:              logger,
+		MemoryWriter:     resolveMemoryWriter(logger),
 	})
 
 	logger.Infof("mcp-server: serving on stdio (env seed: %d project(s))", len(seed))
@@ -145,4 +147,23 @@ func parseArgList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// resolveMemoryWriter returns a MemoryWriter when the butler memory pipeline is
+// enabled (BBCLAW_BUTLER_MEMORY_DISTILL=1), otherwise nil. A nil MemoryWriter
+// causes the `remember` MCP tool to return REMEMBER_UNAVAILABLE so the butler
+// gets a clear signal rather than silently dropping notes.
+func resolveMemoryWriter(log *obs.Logger) butlermcp.MemoryWriter {
+	if !memory.Enabled() {
+		return nil
+	}
+	// EnsureScaffold guarantees the MEMORY/ directory and skeleton files exist
+	// before the butler session starts writing. A failure here is non-fatal:
+	// WriteMemory will create the directory itself on first write.
+	if _, err := workspace.EnsureScaffold(); err != nil {
+		if log != nil {
+			log.Warnf("mcp-server: workspace scaffold failed (non-fatal): %v", err)
+		}
+	}
+	return butlermcp.NewWorkspaceMemoryWriter()
 }

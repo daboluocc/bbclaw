@@ -72,6 +72,7 @@ type Server struct {
 	log        Logger
 	bg         context.Context // background ctx for async workers (survives the dispatch call)
 	newID      func() string
+	memWriter  MemoryWriter // optional; nil disables the remember tool
 
 	mu    sync.Mutex
 	tasks map[string]*taskState
@@ -98,6 +99,10 @@ type Options struct {
 	Log              Logger        // nil => no-op
 	// BackgroundCtx is the parent ctx for async workers. nil => context.Background().
 	BackgroundCtx context.Context
+	// MemoryWriter, when non-nil, enables the `remember` MCP tool so the butler
+	// can write directly into MEMORY/*.md files (Layer 1 of the long-term memory
+	// pipeline, #124). nil disables the tool entirely (safe default).
+	MemoryWriter MemoryWriter
 }
 
 // New builds a Server.
@@ -123,6 +128,7 @@ func New(opts Options) *Server {
 		bg:         bg,
 		newID:      newTaskID,
 		tasks:      make(map[string]*taskState),
+		memWriter:  opts.MemoryWriter,
 	}
 }
 
@@ -248,6 +254,25 @@ func toolDefs() []map[string]any {
 			"description": "Get the result of a finished async task. Returns {result} or an error if still running.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"taskId": map[string]any{"type": "string"}}, "required": []string{"taskId"}},
 		},
+		{
+			"name":        "remember",
+			"description": "Persist a memory note into the butler's long-term memory. Use this when the user shares stable identity information, preferences, project context, or key decisions that should survive across sessions. Writes into MEMORY/<category>.md inside the butler's managed block, preserving any existing content outside it.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"category": map[string]any{
+						"type":        "string",
+						"enum":        []string{"profile", "preferences", "projects", "decisions"},
+						"description": "Memory bucket: profile=user identity/onboarding, preferences=stable habits/tastes, projects=recent work context, decisions=key choices made",
+					},
+					"text": map[string]any{
+						"type":        "string",
+						"description": "One-sentence fact or note to persist (speakable, in the user's language). Must not contain instruction-like content.",
+					},
+				},
+				"required": []string{"category", "text"},
+			},
+		},
 	}
 }
 
@@ -280,6 +305,8 @@ func (s *Server) callTool(name string, args json.RawMessage) (string, bool) {
 		return s.toolTaskStatus(args)
 	case "task_result":
 		return s.toolTaskResult(args)
+	case "remember":
+		return s.toolRemember(args)
 	default:
 		return jsonStr(map[string]any{"error": "UNKNOWN_TOOL", "detail": name}), true
 	}
@@ -444,4 +471,39 @@ func newTaskID() string {
 		return "task-" + fmt.Sprint(time.Now().UnixNano())
 	}
 	return "task-" + hex.EncodeToString(buf[:])
+}
+
+// toolRemember handles the `remember` MCP tool. It writes text into the butler's
+// long-term MEMORY/<category>.md file via the injected MemoryWriter. When no
+// MemoryWriter is configured the tool returns a clear error so the butler knows
+// the feature is not available rather than silently discarding the note.
+func (s *Server) toolRemember(args json.RawMessage) (string, bool) {
+	if s.memWriter == nil {
+		return jsonStr(map[string]any{
+			"error":  "REMEMBER_UNAVAILABLE",
+			"detail": "memory writer not configured; set BBCLAW_BUTLER_MEMORY_DISTILL=1 or wire MemoryWriter in Options",
+		}), true
+	}
+	var a struct {
+		Category string `json:"category"`
+		Text     string `json:"text"`
+	}
+	_ = json.Unmarshal(args, &a)
+	a.Category = strings.TrimSpace(a.Category)
+	a.Text = strings.TrimSpace(a.Text)
+	if a.Category == "" || a.Text == "" {
+		return jsonStr(map[string]any{"error": "INVALID_ARGS", "detail": "category and text are required"}), true
+	}
+	if _, ok := validCategories[a.Category]; !ok {
+		return jsonStr(map[string]any{
+			"error":  "UNKNOWN_CATEGORY",
+			"detail": "category must be one of: profile, preferences, projects, decisions",
+		}), true
+	}
+	if err := s.memWriter.WriteMemory(a.Category, a.Text); err != nil {
+		s.log.Warnf("butlermcp: remember failed category=%q: %v", a.Category, err)
+		return jsonStr(map[string]any{"error": "WRITE_FAILED", "detail": err.Error()}), true
+	}
+	s.log.Infof("butlermcp: remember ok category=%q", a.Category)
+	return jsonStr(map[string]any{"ok": true, "category": a.Category}), false
 }

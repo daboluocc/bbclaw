@@ -78,12 +78,12 @@ func renderExisting(existing map[string]string) string {
 	}
 	var b strings.Builder
 	for _, dim := range dimensions {
-		body := strings.TrimSpace(existing[dim])
+		body := strings.TrimSpace(existing[dim.Key])
 		if body == "" {
 			continue
 		}
 		b.WriteString("[")
-		b.WriteString(dim)
+		b.WriteString(dim.Key)
 		b.WriteString("]\n")
 		b.WriteString(body)
 		b.WriteString("\n")
