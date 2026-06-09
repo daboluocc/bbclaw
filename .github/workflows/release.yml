@@ -235,13 +235,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download firmware artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: firmware-bin
           path: release-artifacts/
 
       - name: Download adapter artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: release-artifacts/
           pattern: adapter-*
@@ -256,7 +256,7 @@ jobs:
           shasum -a 256 * > SHA256SUMS.txt
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
           name: ${{ env.RELEASE_VERSION }}
