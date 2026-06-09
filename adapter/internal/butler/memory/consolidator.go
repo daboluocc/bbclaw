@@ -12,10 +12,23 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 )
 
-// dimensions are the canonical memory buckets (ADR-021 §4 / ADR-022 §2). Each
-// becomes one MEMORY/<dim>.md profile file. Order is stable so consolidation is
-// deterministic.
-var dimensions = []string{"preference", "project", "decision"}
+// dimension describes one memory bucket: Key is the logical name used in the
+// summarizer prompt (unchanged from v1); File is the plural filename that
+// matches the workspace scaffold, persona, admin whitelist, and prewarm blocks
+// (all use preferences.md / projects.md / decisions.md — #124).
+type dimension struct {
+	Key  string // summarizer/prompt key (singular, matches ADR-022 §2 contract)
+	File string // MEMORY/<File> on disk (plural, matches workspace.MemoryDimensions)
+}
+
+// dimensions are the canonical memory buckets (ADR-021 §4 / ADR-022 §2). Order
+// is stable so consolidation is deterministic. Files use plural names to match
+// the workspace scaffold (#124 Task 2: fix orphan singular file names).
+var dimensions = []dimension{
+	{Key: "preference", File: "preferences.md"},
+	{Key: "project", File: "projects.md"},
+	{Key: "decision", File: "decisions.md"},
+}
 
 // memoryDirName is the consolidation profile directory, co-located next to the
 // workspace CLAUDE.md (ADR-022 §4: defensively self-built, decoupled from #91).
@@ -117,10 +130,9 @@ func (c *Consolidator) Consolidate(ctx context.Context) error {
 	// aborts the whole pass with the inbox intact (the next pass re-derives from
 	// the still-present inbox + whatever profiles did land — convergent).
 	for _, dim := range dimensions {
-		bullets := c.cleanAndClamp(merged[dim])
-		body := renderProfile(dim, bullets)
-		if err := atomicWrite(c.profilePath(dim), []byte(body), 0o600); err != nil {
-			return fmt.Errorf("memory: consolidate write %s: %w", dim, err)
+		bullets := c.cleanAndClamp(merged[dim.Key])
+		if err := c.writeDimProfile(dim, bullets); err != nil {
+			return fmt.Errorf("memory: consolidate write %s: %w", dim.Key, err)
 		}
 	}
 
@@ -136,9 +148,11 @@ func (c *Consolidator) Consolidate(ctx context.Context) error {
 	return nil
 }
 
-// readProfiles loads the existing MEMORY/<dim>.md bodies into a dimension-keyed
-// map. Missing files are simply absent (first run). Read errors other than
-// not-exist are returned so a flaky disk doesn't silently lose history.
+// readProfiles loads the existing MEMORY/<File> bodies into a dimension Key-
+// keyed map. Missing files are simply absent (first run). Read errors other
+// than not-exist are returned so a flaky disk doesn't silently lose history.
+// The returned map is keyed by dim.Key (singular) so the Summarizer prompt
+// contract is unchanged; only the on-disk filename is now plural (#124).
 func (c *Consolidator) readProfiles() (map[string]string, error) {
 	out := make(map[string]string, len(dimensions))
 	for _, dim := range dimensions {
@@ -147,9 +161,9 @@ func (c *Consolidator) readProfiles() (map[string]string, error) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("memory: read profile %s: %w", dim, err)
+			return nil, fmt.Errorf("memory: read profile %s: %w", dim.Key, err)
 		}
-		out[dim] = string(raw)
+		out[dim.Key] = string(raw)
 	}
 	return out, nil
 }
@@ -225,26 +239,46 @@ func (c *Consolidator) clearInbox(snapshot string) error {
 	return atomicWrite(c.claudeMDPath, []byte(updated), 0o600)
 }
 
-func (c *Consolidator) profilePath(dim string) string {
-	return filepath.Join(c.memoryDir, dim+".md")
+func (c *Consolidator) profilePath(dim dimension) string {
+	return filepath.Join(c.memoryDir, dim.File)
 }
 
-// renderProfile renders a dimension's bullets as a stable MEMORY/<dim>.md body.
-// Bullets are sorted so an unchanged set produces a byte-identical file
-// (idempotent re-consolidation).
-func renderProfile(dim string, bullets []string) string {
+// writeDimProfile merges bullets into the managed sub-block of dim's profile
+// file, preserving any content outside the block (prewarm markers, AI-written
+// content from the `remember` tool). On first run the file is created with a
+// minimal skeleton followed by the managed block.
+func (c *Consolidator) writeDimProfile(dim dimension, bullets []string) error {
+	path := c.profilePath(dim)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+
+	// Read existing content; start from empty string when the file doesn't exist yet.
+	var existing string
+	if raw, err := os.ReadFile(path); err == nil {
+		existing = string(raw)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	inner := renderProfileInner(bullets)
+	updated := workspace.ReplaceManagedBlock(existing, inner)
+	return atomicWrite(path, []byte(updated), 0o600)
+}
+
+// renderProfileInner renders a dimension's bullets as the inner text of the
+// managed sub-block (no surrounding markers). Bullets are sorted so an
+// unchanged set produces a byte-identical block (idempotent re-consolidation).
+func renderProfileInner(bullets []string) string {
 	sorted := append([]string(nil), bullets...)
 	sort.Strings(sorted)
 	var b strings.Builder
-	b.WriteString("# ")
-	b.WriteString(dim)
-	b.WriteString("\n\n")
 	for _, line := range sorted {
 		b.WriteString("- ")
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // parseDimensions extracts the first top-level JSON object from raw model output

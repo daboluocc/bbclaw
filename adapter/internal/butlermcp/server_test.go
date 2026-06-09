@@ -3,6 +3,7 @@ package butlermcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -80,14 +81,14 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	list := parse(t, lines[1])
 	lr, _ := list["result"].(map[string]any)
 	tools, _ := lr["tools"].([]any)
-	if len(tools) != 4 {
-		t.Fatalf("tools/list returned %d tools, want 4", len(tools))
+	if len(tools) != 5 {
+		t.Fatalf("tools/list returned %d tools, want 5", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"list_projects", "dispatch", "task_status", "task_result"} {
+	for _, want := range []string{"list_projects", "dispatch", "task_status", "task_result", "remember"} {
 		if !names[want] {
 			t.Errorf("missing tool %q", want)
 		}
@@ -214,4 +215,78 @@ func mustTool(t *testing.T, s *Server, name, args string) string {
 	t.Helper()
 	text, _ := s.callTool(name, json.RawMessage(args))
 	return text
+}
+
+// ─────────────────────────── remember tool ───────────────────────────
+
+// stubMemoryWriter records calls to WriteMemory so tests can assert on them.
+type stubMemoryWriter struct {
+	calls []struct{ category, text string }
+	err   error
+}
+
+func (m *stubMemoryWriter) WriteMemory(category, text string) error {
+	m.calls = append(m.calls, struct{ category, text string }{category, text})
+	return m.err
+}
+
+func newTestServerWithMemory(runner WorkerRunner, wait time.Duration, mw MemoryWriter) *Server {
+	return New(Options{
+		Projects:     []Project{{Name: "proj", Cwd: "/p/proj"}},
+		Runner:       runner,
+		DispatchWait: wait,
+		MemoryWriter: mw,
+	})
+}
+
+func TestRememberWritesMemory(t *testing.T) {
+	mw := &stubMemoryWriter{}
+	s := newTestServerWithMemory(&mockRunner{}, time.Second, mw)
+
+	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"profile","text":"用户叫周老板"}`))
+	if isErr {
+		t.Fatalf("remember returned isErr: %s", text)
+	}
+	m := parse(t, text)
+	if m["ok"] != true {
+		t.Fatalf("expected ok=true, got %v", m)
+	}
+	if len(mw.calls) != 1 || mw.calls[0].category != "profile" || mw.calls[0].text != "用户叫周老板" {
+		t.Errorf("unexpected calls: %+v", mw.calls)
+	}
+}
+
+func TestRememberUnknownCategory(t *testing.T) {
+	mw := &stubMemoryWriter{}
+	s := newTestServerWithMemory(&mockRunner{}, time.Second, mw)
+	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"bogus","text":"test"}`))
+	if !isErr || parse(t, text)["error"] != "UNKNOWN_CATEGORY" {
+		t.Errorf("expected UNKNOWN_CATEGORY, got %s (isErr=%v)", text, isErr)
+	}
+}
+
+func TestRememberMissingArgs(t *testing.T) {
+	mw := &stubMemoryWriter{}
+	s := newTestServerWithMemory(&mockRunner{}, time.Second, mw)
+	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"profile"}`))
+	if !isErr || parse(t, text)["error"] != "INVALID_ARGS" {
+		t.Errorf("expected INVALID_ARGS, got %s (isErr=%v)", text, isErr)
+	}
+}
+
+func TestRememberUnavailableWhenNoMemoryWriter(t *testing.T) {
+	s := newTestServer(&mockRunner{}, time.Second) // no MemoryWriter
+	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"profile","text":"test"}`))
+	if !isErr || parse(t, text)["error"] != "REMEMBER_UNAVAILABLE" {
+		t.Errorf("expected REMEMBER_UNAVAILABLE, got %s (isErr=%v)", text, isErr)
+	}
+}
+
+func TestRememberWriteError(t *testing.T) {
+	mw := &stubMemoryWriter{err: fmt.Errorf("disk full")}
+	s := newTestServerWithMemory(&mockRunner{}, time.Second, mw)
+	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"preferences","text":"喜欢简短"}`))
+	if !isErr || parse(t, text)["error"] != "WRITE_FAILED" {
+		t.Errorf("expected WRITE_FAILED, got %s (isErr=%v)", text, isErr)
+	}
 }
