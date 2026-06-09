@@ -135,10 +135,13 @@ adapter 启动后会**自动用默认浏览器打开** **`http://127.0.0.1:18080
   **名称自动从目录名生成**（同名自动加 `-2` 后缀），不用手填。
 - **只读预览管家工作区文件**——`CLAUDE.md`（人设）与 `MEMORY/*.md`（含预热写入的
   `projects.md`），直接在页面看管家当前的人设和记忆。
+- **对话记录**（独立标签页）——管家会话列表 + 消息气泡流（用户/管家）+ 派活任务卡片，
+  **按对话时间间隔自动分段**（间隔 >30 分钟插入时间分割线）。
 
-> 页面是**点阵 / Nothing-style** 视觉，与 BBClaw 固件 UI 同一套设计语言
-> （`design/UI_DESIGN_LANGUAGE.md`）；该风格已提炼成 `dot-matrix-ui` Claude 技能
-> 供官网与其它页面复用。
+> 管理页是独立 **Vue3 SPA**（源码 `adapter/web/`，构建产物 embed 进二进制 serve `/admin`，
+> 单二进制不变；改前端后跑 `make web` 重建并提交 `internal/adminui/dist`）。视觉是
+> **点阵 / Nothing-style**，与 BBClaw 固件 UI 同一套设计语言（`design/UI_DESIGN_LANGUAGE.md`），
+> 已提炼成 `dot-matrix-ui` Claude 技能供官网与其它页面复用。
 
 > 为什么是服务端目录浏览：浏览器出于安全**拿不到**你选的目录的绝对路径，而管家派活
 > 需要绝对路径。因为 `/admin` 只在 localhost、adapter 就跑在本机，索性由服务端

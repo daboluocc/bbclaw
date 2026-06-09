@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **管理页改为独立 Vue SPA（`adapter/web`）+ 对话记录页**：把原内嵌 vanilla 单页重写为
+  Vue3+Vite+TS 工程，构建产物 `internal/adminui/dist` 提交进仓库并 `go:embed` 打进
+  二进制 serve `/admin`（**单二进制不变、发布流水线零改动、不需要 Node**；`make web`
+  仅在改前端时重建）。新增**对话记录**标签页：会话列表 + 消息气泡流（user/assistant）
+  + 派活任务卡片，**按对话时间间隔自动分段**（>30min 插入时间分割线）；消息接口补
+  `timestamp` 字段（`agent.Message`，从 claude transcript 解析）。参考 agent_room 的
+  记录展示模式，沿用点阵风格。新增 localhost-only 只读会话接口 `/v1/admin/sessions[/{id}/messages]`、
+  `/v1/admin/dispatch/recent`。原 `internal/httpapi/admin.html` 退役。
 - **管理页升级：工作区文件预览 + 目录关键字搜索 + 多选批量加入 + 点阵风格**：
   `/admin` 现可**只读预览**管家工作区文件（`CLAUDE.md` 人设 + `MEMORY/{profile,
   preferences,projects,decisions}.md`，白名单防任意读，新增 `/v1/admin/workspace-file[s]`）；

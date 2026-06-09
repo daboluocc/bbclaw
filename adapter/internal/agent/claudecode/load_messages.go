@@ -166,8 +166,9 @@ func readAllMessages(path string) ([]agent.Message, error) {
 // ok=false for rows that aren't user/assistant text turns.
 func decodeMessage(line string) (agent.Message, bool) {
 	var raw struct {
-		Type    string          `json:"type"`
-		Message json.RawMessage `json:"message"`
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Message   json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return agent.Message{}, false
@@ -192,7 +193,7 @@ func decodeMessage(line string) (agent.Message, bool) {
 	if len(content) > maxContentBytes {
 		content = safeTruncateBytes(content, maxContentBytes) + "…"
 	}
-	return agent.Message{Role: role, Content: content}, true
+	return agent.Message{Role: role, Content: content, Timestamp: strings.TrimSpace(raw.Timestamp)}, true
 }
 
 // decodeContent flattens the various shapes Claude uses for `message.content`

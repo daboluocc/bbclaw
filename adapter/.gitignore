@@ -1,9 +1,16 @@
 # adapter build artifacts and runtime data — none of these belong in git
 bin/
 dist/
+# …except the embedded admin SPA bundle, committed for go:embed so the Go
+# build / release pipeline need no Node toolchain.
+!internal/adminui/dist/
+!internal/adminui/dist/**
 releases/
 tmp/
 *.tmp
+
+# Vue admin SPA dev deps
+web/node_modules/
 
 # all dotenv variants — only .env.example may be tracked
 .env

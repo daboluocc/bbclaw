@@ -1,0 +1,127 @@
+/* ── dot-matrix / Nothing-style tokens (design/UI_DESIGN_LANGUAGE.md) ── */
+:root{
+  --bg:#070b0e; --lit:#dfeaec; --ghost:#152128; --dim:#6e8a93;
+  --wordmark:#4f6f67; --accent:#2ec4a0; --ok:#4cd964; --err:#e66f6f;
+  --pitch:9px;
+}
+*{box-sizing:border-box}
+html,body,#app{margin:0;min-height:100vh}
+body{
+  font:13px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  color:var(--lit); background:var(--bg);
+  background-image:radial-gradient(var(--ghost) 1px, transparent 1px);
+  background-size:var(--pitch) var(--pitch);
+}
+a{color:var(--accent)}
+
+/* layout */
+.hdr{padding:16px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:baseline;gap:14px;
+  background:rgba(7,11,14,.85);backdrop-filter:blur(2px);position:sticky;top:0;z-index:3}
+.wordmark{font-weight:700;font-size:15px;letter-spacing:.42em;color:var(--lit);
+  border-bottom:2px dotted var(--accent);padding-bottom:3px}
+.hdr .sub{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
+.tabs{display:flex;gap:6px;margin-left:auto}
+.tab{font:inherit;cursor:pointer;background:transparent;border:1px solid var(--ghost);color:var(--dim);
+  border-radius:7px;padding:6px 14px;letter-spacing:.05em}
+.tab.on{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
+main{max-width:940px;margin:0 auto;padding:22px}
+
+/* cards */
+.card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+.card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 14px;display:flex;align-items:center}
+.card h2::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);
+  box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost);margin-right:18px;display:inline-block}
+
+/* status */
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.status-grid .item{border:1px solid var(--ghost);border-radius:7px;padding:9px 11px;background:rgba(7,11,14,.5)}
+.status-grid .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+.status-grid .v{font-size:13px;color:var(--lit);word-break:break-all}
+.status-grid .v.on{color:var(--accent)}
+
+/* table */
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--ghost);vertical-align:top}
+th{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;font-weight:500}
+td .path{color:var(--dim);font-size:11px;word-break:break-all}
+tr.fresh{animation:flash 1.2s ease-out}
+@keyframes flash{0%{background:rgba(46,196,160,.22)}100%{background:transparent}}
+.tag{font-size:10px;border-radius:3px;padding:1px 6px;border:1px solid var(--ghost);color:var(--dim);letter-spacing:.05em}
+.tag.admin{border-color:#1f4d47;color:var(--accent)}
+
+/* buttons */
+button{font:inherit;cursor:pointer;border-radius:7px;padding:8px 15px;border:1px solid var(--accent);
+  background:var(--accent);color:#04110f;font-weight:600;letter-spacing:.03em}
+button:disabled{opacity:.45;cursor:default}
+button.ghost{background:transparent;color:var(--dim);border-color:var(--ghost)}
+button.ghost:hover:not(:disabled){color:var(--lit);border-color:var(--dim)}
+button.del{background:transparent;color:var(--err);border-color:#3a2422;padding:4px 10px;font-size:11px;font-weight:500}
+button.small{padding:6px 11px;font-size:12px}
+
+/* chips / files */
+.files{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.chip{font:inherit;font-size:12px;padding:6px 11px;border:1px solid var(--ghost);border-radius:99px;background:transparent;color:var(--dim);cursor:pointer}
+.chip:hover{color:var(--lit);border-color:var(--dim)}
+.chip.active{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
+.chip .sz{opacity:.6;margin-left:6px;font-size:10px}
+.chip.missing{opacity:.45}
+pre.preview{margin:0;padding:14px;border:1px solid var(--ghost);border-radius:8px;background:#05090c;color:var(--lit);
+  font-size:12px;line-height:1.5;max-height:440px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.ph{color:var(--dim)}
+
+/* messages / hints */
+.hint{color:var(--dim);font-size:11px;margin:8px 0 0}
+.msg{font-size:12px;margin-top:12px;min-height:17px}
+.msg.err{color:var(--err)} .msg.ok{color:var(--accent)}
+.empty{color:var(--dim);padding:13px 8px;font-size:12px}
+
+/* modal */
+.overlay{position:fixed;inset:0;background:rgba(3,6,8,.7);display:flex;align-items:center;justify-content:center;padding:20px;z-index:5}
+.modal{background:var(--bg);border:1px solid var(--ghost);border-radius:11px;width:620px;max-width:100%;padding:18px 20px;
+  box-shadow:0 0 0 1px rgba(46,196,160,.08),0 20px 60px rgba(0,0,0,.5)}
+.modal h3{margin:0 0 12px;font-size:13px;letter-spacing:.08em;color:var(--lit)}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.toolbar .crumbs{font-size:11px;color:var(--dim);word-break:break-all;flex:1;min-width:160px}
+input[type=text]{font:inherit;background:#05090c;border:1px solid var(--ghost);border-radius:7px;color:var(--lit);padding:7px 10px}
+input[type=text]:focus{outline:none;border-color:var(--accent)}
+.browser{border:1px solid var(--ghost);border-radius:8px;background:#05090c;max-height:300px;overflow:auto}
+.brow{display:flex;align-items:center;gap:9px;padding:7px 11px;border-bottom:1px solid var(--ghost);cursor:pointer}
+.brow:last-child{border-bottom:0}
+.brow:hover{background:rgba(46,196,160,.06)}
+.brow.sel{background:rgba(46,196,160,.10);box-shadow:inset 3px 0 0 var(--accent)}
+.brow input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+.brow .ic{color:var(--accent);width:14px;text-align:center;font-size:12px}
+.brow .nm{flex:1}
+.brow .fp{font-size:10px;color:var(--dim);word-break:break-all}
+.actions{display:flex;justify-content:space-between;gap:10px;margin-top:14px;align-items:center}
+.actions .right{display:flex;gap:8px}
+.selcount{font-size:11px;color:var(--dim)}
+
+/* conversation record mode */
+.convo{display:grid;grid-template-columns:240px 1fr;gap:16px}
+.sesslist{border:1px solid var(--ghost);border-radius:9px;background:rgba(7,11,14,.5);max-height:560px;overflow:auto}
+.sess{padding:10px 12px;border-bottom:1px solid var(--ghost);cursor:pointer}
+.sess:last-child{border-bottom:0}
+.sess:hover{background:rgba(46,196,160,.06)}
+.sess.on{background:rgba(46,196,160,.10);box-shadow:inset 3px 0 0 var(--accent)}
+.sess .t{color:var(--lit);font-size:12px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .m{color:var(--dim);font-size:10px;display:flex;gap:8px}
+.stream{border:1px solid var(--ghost);border-radius:9px;background:#05090c;padding:14px;max-height:560px;overflow:auto}
+.bub{margin:0 0 12px;max-width:84%;padding:9px 12px;border-radius:9px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.bub.user{margin-left:auto;background:rgba(46,196,160,.16);color:var(--lit)}
+.bub.assistant{margin-right:auto;background:var(--ghost);color:var(--lit)}
+.bub .who{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:4px;display:flex;gap:8px;align-items:baseline}
+.bub .who .ts{text-transform:none;letter-spacing:0;opacity:.7}
+/* time-segment divider: dotted rule + centered timestamp */
+.seg-div{display:flex;align-items:center;gap:10px;margin:6px 0 12px;color:var(--dim);font-size:10px;letter-spacing:.08em}
+.seg-div::before,.seg-div::after{content:"";flex:1;border-top:1px dotted var(--ghost)}
+.seg-div span{white-space:nowrap}
+.dcard{margin:0 auto 12px;border:1px solid var(--ghost);border-left:3px solid var(--accent);border-radius:7px;
+  padding:8px 11px;background:rgba(7,11,14,.6);font-size:11px;color:var(--dim)}
+.dcard .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.dcard .ti{color:var(--lit);font-size:12px}
+.dstat{font-size:10px;border-radius:3px;padding:1px 6px;border:1px solid var(--ghost)}
+.dstat.done{color:var(--ok);border-color:#1f3d28}
+.dstat.error{color:var(--err);border-color:#3a2422}
+.dstat.running,.dstat.started,.dstat.async{color:var(--accent);border-color:#1f4d47}
+@media (max-width:720px){ .convo{grid-template-columns:1fr} }

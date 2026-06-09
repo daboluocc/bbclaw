@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	_ "embed"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -15,13 +14,6 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 )
-
-// adminHTML is the single-file, zero-dependency local management page. It shows
-// read-only runtime status and lets the operator add/remove project directories
-// the butler may dispatch into. Vanilla JS so the binary stays self-contained.
-//
-//go:embed admin.html
-var adminHTML []byte
 
 // adminLocalOnly restricts a handler to loopback callers. Adding a project to the
 // allow-list grants the butler authority to run agentic tasks — including command
@@ -53,21 +45,6 @@ func isLoopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// handleAdminPage serves the embedded admin HTML.
-func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
-	if s.projects == nil {
-		writeJSON(w, http.StatusNotImplemented, response{
-			OK:     false,
-			Error:  "ADMIN_DISABLED",
-			Detail: "project store not configured",
-		})
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(adminHTML)
 }
 
 // adminProject is the wire shape for a project row (the admin page is local, so

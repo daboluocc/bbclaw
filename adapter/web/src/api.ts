@@ -1,0 +1,79 @@
+// Typed wrappers over the adapter's localhost admin + read APIs. The SPA is
+// served under /admin and talks to the same origin. Most endpoints use the
+// {ok,data} envelope; dispatch/recent returns a bare array.
+
+export interface Project { name: string; path: string; source: string; editable: boolean }
+export interface FsEntry { name: string; path: string }
+export interface WorkspaceFileMeta { name: string; exists: boolean; size: number }
+export interface SessionInfo {
+  id: string; title?: string; cwd?: string; cwdName?: string;
+  driver?: string; role?: string; createdAt?: string; lastUsedAt?: string;
+}
+export interface ChatMessage { role: string; content: string; seq: number; timestamp?: string }
+export interface DispatchEntry {
+  taskId: string; cwd: string; title: string; status: string;
+  elapsedMs?: number; error?: string; startedAt: string;
+}
+
+async function envelope<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(path, init);
+  let body: any = {};
+  try { body = await r.json(); } catch { /* ignore */ }
+  if (!r.ok || body.ok === false) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
+  return (body.data ?? {}) as T;
+}
+
+/* ── status ── */
+export async function health(): Promise<any> { try { return (await (await fetch("/healthz")).json()).data ?? {}; } catch { return {}; } }
+export async function drivers(): Promise<{ name: string }[]> {
+  try { return (await envelope<{ drivers: { name: string }[] }>("/v1/agent/drivers")).drivers ?? []; } catch { return []; }
+}
+
+/* ── projects ── */
+export async function listProjects(): Promise<Project[]> {
+  return (await envelope<{ projects: Project[] }>("/v1/admin/projects")).projects ?? [];
+}
+export async function addProject(path: string): Promise<Project> {
+  return (await envelope<{ project: Project }>("/v1/admin/projects", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }),
+  })).project;
+}
+export async function removeProject(name: string): Promise<void> {
+  await envelope(`/v1/admin/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+/* ── filesystem picker ── */
+export async function browseDir(path?: string): Promise<{ path: string; parent: string; dirs: FsEntry[] }> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  return envelope(`/v1/admin/fs${q}`);
+}
+export async function searchDir(root: string, q: string): Promise<{ dirs: FsEntry[]; truncated: boolean }> {
+  return envelope(`/v1/admin/fs/search?path=${encodeURIComponent(root)}&q=${encodeURIComponent(q)}`);
+}
+
+/* ── workspace files ── */
+export async function workspaceFiles(): Promise<WorkspaceFileMeta[]> {
+  return (await envelope<{ files: WorkspaceFileMeta[] }>("/v1/admin/workspace-files")).files ?? [];
+}
+export async function workspaceFile(name: string): Promise<{ name: string; exists: boolean; content: string; truncated?: boolean }> {
+  return envelope(`/v1/admin/workspace-file?name=${encodeURIComponent(name)}`);
+}
+
+/* ── conversation records ── */
+export async function listSessions(): Promise<SessionInfo[]> {
+  // kind=logical → the butler's per-device logical sessions (the conversations).
+  return (await envelope<{ sessions: SessionInfo[] }>("/v1/admin/sessions?kind=logical")).sessions ?? [];
+}
+export async function sessionMessages(id: string, driver: string, limit = 200): Promise<{ messages: ChatMessage[]; total: number; hasMore: boolean }> {
+  const d = driver ? `&driver=${encodeURIComponent(driver)}` : "";
+  return envelope(`/v1/admin/sessions/${encodeURIComponent(id)}/messages?before=-1&limit=${limit}${d}`);
+}
+export async function dispatchRecent(limit = 30): Promise<DispatchEntry[]> {
+  // This endpoint returns a bare JSON array, not the {ok,data} envelope.
+  try {
+    const r = await fetch(`/v1/admin/dispatch/recent?limit=${limit}`);
+    if (!r.ok) return [];
+    const arr = await r.json();
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}

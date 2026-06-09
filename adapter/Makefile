@@ -26,7 +26,7 @@ LOG_FILE ?= $(LOG_DIR)/adapter-runtime.log
 ENV_FILE ?= $(CURDIR)/.env
 ADAPTER_RUN_MATCH ?= go run .*./cmd/bbclaw-adapter|/bbclaw-adapter($$| )
 
-.PHONY: help build test clean-run-procs run dev log sync-env sync-env-reset
+.PHONY: help build web test clean-run-procs run dev log sync-env sync-env-reset
 
 help:
 	@echo "BBClaw adapter"
@@ -38,6 +38,7 @@ help:
 	@echo "  make run            # 运行 bbclaw-adapter，配置: $(ENV_FILE)"
 	@echo "  make log            # tail -f 运行日志"
 	@echo "  make build          # 构建到 $(BIN_DIR)/bbclaw-adapter"
+	@echo "  make web            # 构建 Vue 管理页 SPA → internal/adminui/dist（提交进仓库）"
 	@echo "  make test           # go test ./..."
 	@echo ""
 	@echo "覆盖配置文件: make run ENV_FILE=/path/to/x.env"
@@ -54,6 +55,11 @@ sync-env-reset:
 build:
 	@mkdir -p "$(BIN_DIR)"
 	cd "$(CURDIR)" && $(GO) build -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/bbclaw-adapter" ./cmd/bbclaw-adapter
+
+# Rebuild the embedded Vue admin SPA. dist/ is committed so plain `make build`
+# (and the release pipeline) need no Node — run this only when web/ changes.
+web:
+	cd "$(CURDIR)/web" && npm install --no-audit --no-fund && npm run build
 
 test:
 	cd "$(CURDIR)" && $(GO) test ./...

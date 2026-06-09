@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/adminui"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
@@ -208,7 +209,10 @@ func (s *Server) Handler() http.Handler {
 	// tasks (with command/file execution) in that directory, so these routes are
 	// gated to loopback callers only via adminLocalOnly — never exposed to the
 	// LAN or cloud, regardless of the auth token.
-	mux.HandleFunc("GET /admin", s.adminLocalOnly(s.handleAdminPage))
+	// Embedded Vue SPA (adapter/web → internal/adminui/dist). Both /admin and the
+	// /admin/ subtree (assets) serve from the bundle; localhost-only.
+	mux.HandleFunc("GET /admin", s.adminLocalOnly(adminui.ServeHTTP))
+	mux.HandleFunc("GET /admin/", s.adminLocalOnly(adminui.ServeHTTP))
 	mux.HandleFunc("GET /v1/admin/projects", s.adminLocalOnly(s.handleAdminProjectsList))
 	mux.HandleFunc("POST /v1/admin/projects", s.adminLocalOnly(s.handleAdminProjectsAdd))
 	mux.HandleFunc("DELETE /v1/admin/projects/{name}", s.adminLocalOnly(s.handleAdminProjectsDelete))
@@ -216,6 +220,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/fs/search", s.adminLocalOnly(s.handleAdminFSSearch))
 	mux.HandleFunc("GET /v1/admin/workspace-files", s.adminLocalOnly(s.handleAdminWorkspaceFiles))
 	mux.HandleFunc("GET /v1/admin/workspace-file", s.adminLocalOnly(s.handleAdminWorkspaceFile))
+	// Read-only conversation surface for the admin SPA — same handlers as the
+	// device-facing routes but behind the localhost gate (no device token needed).
+	mux.HandleFunc("GET /v1/admin/sessions", s.adminLocalOnly(s.handleAgentSessions))
+	mux.HandleFunc("GET /v1/admin/sessions/{id}/messages", s.adminLocalOnly(s.handleAgentSessionMessages))
+	mux.HandleFunc("GET /v1/admin/dispatch/recent", s.adminLocalOnly(s.handleButlerDispatchRecent))
 	return withCORS(mux)
 }
 

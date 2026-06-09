@@ -28,14 +28,14 @@ const (
 type EventType string
 
 const (
-	EvText            EventType = "text"            // assistant text fragment
-	EvToolCall        EventType = "tool_call"       // permission request (Capabilities.ToolApproval)
-	EvStatus          EventType = "status"          // running/waiting/idle/offline
-	EvTokens          EventType = "tokens"          // usage stats
-	EvError           EventType = "error"           // driver-level error
-	EvTurnEnd         EventType = "turn_end"        // one assistant turn finished
-	EvSessionInit     EventType = "session_init"    // CLI reported its real session id (Text field)
-	EvDispatchStatus  EventType = "dispatch_status" // MCP bbclaw tool dispatch progress (ADR-021-firmware-ui §1.2)
+	EvText           EventType = "text"            // assistant text fragment
+	EvToolCall       EventType = "tool_call"       // permission request (Capabilities.ToolApproval)
+	EvStatus         EventType = "status"          // running/waiting/idle/offline
+	EvTokens         EventType = "tokens"          // usage stats
+	EvError          EventType = "error"           // driver-level error
+	EvTurnEnd        EventType = "turn_end"        // one assistant turn finished
+	EvSessionInit    EventType = "session_init"    // CLI reported its real session id (Text field)
+	EvDispatchStatus EventType = "dispatch_status" // MCP bbclaw tool dispatch progress (ADR-021-firmware-ui §1.2)
 )
 
 // Event is the single type every driver emits on its Events channel.
@@ -157,6 +157,10 @@ type Message struct {
 	Role    string `json:"role"`    // "user" | "assistant"
 	Content string `json:"content"` // plain text; multimodal content is flattened to text
 	Seq     int    `json:"seq"`     // 0-based index into the underlying transcript (used as a pagination cursor)
+	// Timestamp is the message's wall-clock time (RFC3339), when the underlying
+	// transcript records it. Empty when the driver/transcript has none. Used by
+	// the admin conversation view to segment the stream by time gaps.
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // MessagesPage is the result of a paginated history load.
