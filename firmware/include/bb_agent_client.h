@@ -139,6 +139,10 @@ typedef struct {
   char role[16];
   char* content;
   int seq;
+  /* Unix timestamp in milliseconds parsed from the adapter's RFC3339
+   * "timestamp" field. 0 means the field was absent or could not be parsed
+   * (older adapter versions, non-claudecode drivers). */
+  int64_t timestamp_ms;
 } bb_agent_message_t;
 
 /**

@@ -34,9 +34,14 @@ void bb_chat_transcript_append_assistant_chunk(const char* delta);
 void bb_chat_transcript_append_tool_call(const char* tool, const char* hint);
 void bb_chat_transcript_append_error(const char* msg);
 
-/* History replay — does not touch the active_assistant streaming bubble. */
-void bb_chat_transcript_append_history(const char* role, const char* content);
-void bb_chat_transcript_prepend_history(const char* role, const char* content);
+/* History replay — does not touch the active_assistant streaming bubble.
+ * timestamp_ms: Unix timestamp in milliseconds (0 = unknown). When non-zero,
+ * a time-segment separator is automatically inserted before the message if
+ * the gap since the previous message exceeds BB_HISTORY_SEGMENT_GAP_MS. */
+void bb_chat_transcript_append_history(const char* role, const char* content,
+                                       int64_t timestamp_ms);
+void bb_chat_transcript_prepend_history(const char* role, const char* content,
+                                        int64_t timestamp_ms);
 
 /* Scroll helpers. `lines > 0` = scroll down; `< 0` = up.
  * ADR-017: UP latches the transcript into reading mode (auto-scroll on new

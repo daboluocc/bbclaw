@@ -581,15 +581,17 @@ static void theme_set_session(const char* sid_short) {
 }
 
 /* Phase S3 — history replay. Delegated to bb_chat_transcript. */
-static void theme_append_history_message(const char* role, const char* content) {
+static void theme_append_history_message(const char* role, const char* content,
+                                         int64_t timestamp_ms) {
   if (!s_st.built) return;
-  bb_chat_transcript_append_history(role, content);
+  bb_chat_transcript_append_history(role, content, timestamp_ms);
   s_st.active_assistant = NULL;
 }
 
-static void theme_prepend_history_message(const char* role, const char* content) {
+static void theme_prepend_history_message(const char* role, const char* content,
+                                          int64_t timestamp_ms) {
   if (!s_st.built) return;
-  bb_chat_transcript_prepend_history(role, content);
+  bb_chat_transcript_prepend_history(role, content, timestamp_ms);
 }
 
 static int theme_is_transcript_at_top(void) {

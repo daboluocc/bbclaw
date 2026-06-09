@@ -28,6 +28,11 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 #define UI_TEXT_DIM    BB_UI_TEXT_DIM
 #define UI_ME_ACCENT   BB_UI_ACCENT
 #define UI_AI_SURFACE  BB_UI_DOT_GHOST /* assistant bubble face */
+
+/* Time-segment threshold: two messages separated by more than this (30 min)
+ * get a visual divider between them.  Must match adapter's GAP_MS constant
+ * (adapter/web/src/components/Conversation.vue). */
+#define BB_HISTORY_SEGMENT_GAP_MS  (30LL * 60 * 1000)
 #define UI_TOOL_FG     BB_UI_TEXT_DIM
 #define UI_ERROR_FG    BB_UI_ERR
 
@@ -37,6 +42,10 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 
 static lv_obj_t* s_transcript;
 static lv_obj_t* s_active_assistant;  /* current streaming bubble, NULL after finalize */
+
+/* Last-seen timestamp for history replay, used to detect segment gaps.
+ * Tracks the most-recently appended message; reset to 0 on transcript clear. */
+static int64_t s_history_last_ts_ms = 0;
 
 /* ADR-017 — reading mode.
  *
@@ -230,32 +239,89 @@ void bb_chat_transcript_append_error(const char* msg) {
   follow_tail_if_active();
 }
 
-void bb_chat_transcript_append_history(const char* role, const char* content) {
+/* Render a dim centered separator line with an HH:MM time label.
+ * Used to mark session-segment boundaries in the history transcript.
+ * No background, just a short dim text label — keeps the tiny screen
+ * from getting too cluttered. */
+static void make_segment_separator(const char* label, int prepend) {
+  if (s_transcript == NULL) return;
+  lv_obj_t* sep = lv_label_create(s_transcript);
+  lv_label_set_long_mode(sep, LV_LABEL_LONG_MODE_DOTS);
+  lv_obj_set_width(sep, 320 - 2 * MSG_HMARGIN);
+  lv_obj_set_style_text_font(sep, font(), 0);
+  lv_obj_set_style_text_color(sep, lv_color_hex(UI_TEXT_DIM), 0);
+  lv_obj_set_style_text_align(sep, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_opa(sep, LV_OPA_60, 0);
+  lv_obj_set_style_pad_top(sep, 4, 0);
+  lv_obj_set_style_pad_bottom(sep, 4, 0);
+  lv_label_set_text(sep, label);
+  if (prepend) lv_obj_move_to_index(sep, 0);
+}
+
+/* Format a Unix-ms timestamp into "HH:MM" local-ish display.
+ * We skip real TZ handling on device — display as UTC offset by the
+ * adapter's reported time which is already in the user's wall-clock. */
+static void format_hhmm(int64_t ts_ms, char* out, size_t out_sz) {
+  int64_t ts_sec = ts_ms / 1000;
+  int sec_of_day = (int)(ts_sec % 86400);
+  if (sec_of_day < 0) sec_of_day += 86400;
+  int hh = sec_of_day / 3600;
+  int mm = (sec_of_day % 3600) / 60;
+  snprintf(out, out_sz, "── %02d:%02d ──", hh, mm);
+}
+
+void bb_chat_transcript_append_history(const char* role, const char* content,
+                                       int64_t timestamp_ms) {
   if (s_transcript == NULL || role == NULL || content == NULL) return;
-  int is_user = strcmp(role, "user") == 0;
-  lv_obj_t* lbl;
-  if (is_user) {
-    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
-  } else {
-    lbl = make_assistant_label();
+
+  /* Insert a segment separator when there's a meaningful time gap. */
+  if (timestamp_ms > 0) {
+    int need_sep = (s_history_last_ts_ms == 0) ||
+                   (timestamp_ms - s_history_last_ts_ms > BB_HISTORY_SEGMENT_GAP_MS);
+    if (need_sep) {
+      char label[24];
+      format_hhmm(timestamp_ms, label, sizeof(label));
+      make_segment_separator(label, /*prepend=*/0);
+    }
+    s_history_last_ts_ms = timestamp_ms;
   }
+
+  int is_user = strcmp(role, "user") == 0;
+  lv_obj_t* lbl = is_user
+      ? make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0)
+      : make_assistant_label();
   if (lbl == NULL) return;
   lv_label_set_text(lbl, content);
   s_active_assistant = NULL;
 }
 
-void bb_chat_transcript_prepend_history(const char* role, const char* content) {
+void bb_chat_transcript_prepend_history(const char* role, const char* content,
+                                        int64_t timestamp_ms) {
   if (s_transcript == NULL || role == NULL || content == NULL) return;
   int is_user = strcmp(role, "user") == 0;
-  lv_obj_t* lbl;
-  if (is_user) {
-    lbl = make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0);
-  } else {
-    lbl = make_assistant_label();
-  }
+  lv_obj_t* lbl = is_user
+      ? make_msg_label(UI_ME_ACCENT, UI_TEXT_MAIN, LV_TEXT_ALIGN_RIGHT, 0)
+      : make_assistant_label();
   if (lbl == NULL) return;
   lv_label_set_text(lbl, content);
   lv_obj_move_to_index(lbl, 0);
+
+  /* For prepended (paginate-earlier) messages, insert a separator BEFORE
+   * this message when the gap to the next-older message warrants it.
+   * We can only detect this on the caller side (which has the full ordered
+   * array); here we just check whether the caller supplied a timestamp that
+   * differs from the last-seen one enough to need a divider.
+   * Strategy: separator goes at index 0 AFTER moving the bubble to 0,
+   * then we move the separator in front of the bubble (index 0 again). */
+  if (timestamp_ms > 0 && s_history_last_ts_ms > 0 &&
+      s_history_last_ts_ms - timestamp_ms > BB_HISTORY_SEGMENT_GAP_MS) {
+    char label[24];
+    format_hhmm(s_history_last_ts_ms, label, sizeof(label));
+    make_segment_separator(label, /*prepend=*/1);
+  }
+  if (timestamp_ms > 0) {
+    s_history_last_ts_ms = timestamp_ms;
+  }
 }
 
 void bb_chat_transcript_scroll(int lines) {
@@ -297,6 +363,7 @@ void bb_chat_transcript_clear(void) {
   if (s_transcript == NULL) return;
   lv_obj_clean(s_transcript);
   s_active_assistant = NULL;
+  s_history_last_ts_ms = 0;
 }
 
 void bb_chat_transcript_finalize_assistant(void) {

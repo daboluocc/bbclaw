@@ -51,13 +51,13 @@ typedef struct bb_agent_theme {
   /* Phase S3 — history replay. Optional; NULL-check before calling.
    *   append_history_message: 在 transcript 末尾追加一条已完成消息（不影响 active_assistant，
    *                            不会被后续流式 chunk 错误地拼到一起）。用于初次进入 session 时
-   *                            按时间序填入历史。
+   *                            按时间序填入历史。timestamp_ms 为 Unix ms（0=无时间戳）。
    *   prepend_history_message: 把消息插到 transcript 顶部（lv_obj_move_to_index(0)），用于
-   *                            "上翻到顶 → 拉更早一批"的懒加载。
+   *                            "上翻到顶 → 拉更早一批"的懒加载。timestamp_ms 同上。
    *   is_transcript_at_top:    返回 1 表示用户已经滚到 transcript 顶部（用作懒加载触发条件）。
    */
-  void (*append_history_message)(const char* role, const char* content);
-  void (*prepend_history_message)(const char* role, const char* content);
+  void (*append_history_message)(const char* role, const char* content, int64_t timestamp_ms);
+  void (*prepend_history_message)(const char* role, const char* content, int64_t timestamp_ms);
   int  (*is_transcript_at_top)(void);
   /* Force scroll-to-bottom after a batch of history appends. Required because
    * lv_obj_scroll_by_bounded relies on a settled layout, but a tight append
