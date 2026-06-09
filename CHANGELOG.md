@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-06-10
+
+### Added
+- **设备端音量调节（固件 Settings）**：Settings 新增 `Volume` 行 + 调节态，UP/DOWN
+  ±5% 实时生效、点阵进度条，OK/BACK 保存返回（#112/#113）。开机应用已保存音量、云端
+  心跳不再在开机/同值时回灌覆盖本地选择（#114）。
+- **语音调节设备音量**：管家 agent 经 `bbclaw-adapter device set-volume <pct> --device <id>`
+  CLI 调云端写配置 → 下发设备;每轮 butler sysprompt 注入当前 deviceId + CLI 用法（#116/#117）。
+  *(云端 `POST /v1/devices/{id}/config` 接受 home-adapter Bearer + camelCase + 双 store 下发，
+  server-side 部署。)*
+- **OTA 升级点阵进度页**（`bb_page_ota`）：下载时屏幕显示点阵进度条 + `UPDATING NN%` +
+  目标版本，完成显 `REBOOTING`，替换原静默下载（#118）。
+- **固件历史按会话段展示**：解析 adapter 下发的 `timestamp`，设备端历史按时间分段渲染;
+  离线时提示「仅本地缓存」（#110/#111）。
+
+### Fixed
+- **设置里调音量/切 TTS 按 OK 必崩重启**：NVS 写发生在 PSRAM 栈的 stream_task 上，写
+  Flash 冻结 cache → assert 重启;改为投递到内部 RAM 栈任务持久化（#115）。
+- **自动 OTA 链路断裂（云端）**：release workflow 只传 flash-bundle（bundle store），但
+  `/v1/ota/check` 读 firmwares store，从不联动 → 永远无更新。flash-bundle 上传时同时把 app
+  镜像注册为 active OTA firmware;`ParseVersion` 容忍 `v` 前缀（server-side 部署）。
+
 ## [0.4.7] - 2026-06-09
 
 ### Added
