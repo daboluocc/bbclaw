@@ -293,15 +293,22 @@ var k_driver_registry = []driverReg{
 				ExtraArgs:          parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
 				WarmCwd:            warmCwd,
 				ButlerWorkspaceCwd: butlerCwd,
+				Env:                map[string]string{},
 			}
-			if cfg.ClaudeBaseURL != "" || cfg.ClaudeAuthToken != "" {
-				opts.Env = make(map[string]string)
-				if cfg.ClaudeBaseURL != "" {
-					opts.Env["ANTHROPIC_BASE_URL"] = cfg.ClaudeBaseURL
-				}
-				if cfg.ClaudeAuthToken != "" {
-					opts.Env["ANTHROPIC_AUTH_TOKEN"] = cfg.ClaudeAuthToken
-				}
+			// Disable Claude Code's native auto-memory (~/.claude/projects/<slug>/
+			// memory) for every adapter-spawned claude session (ADR-021 §4,
+			// 方向 B). The butler owns its long-term memory in the workspace
+			// MEMORY/*.md files (persona writes them directly; the distill +
+			// consolidate pipeline backstops them); letting the CLI's own memory
+			// fork writes into ~/.claude would split memory across two unreconciled
+			// stores and keep it off the admin page. Operator-set EXTRA_ARGS/Env
+			// can still override if ever needed.
+			opts.Env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+			if cfg.ClaudeBaseURL != "" {
+				opts.Env["ANTHROPIC_BASE_URL"] = cfg.ClaudeBaseURL
+			}
+			if cfg.ClaudeAuthToken != "" {
+				opts.Env["ANTHROPIC_AUTH_TOKEN"] = cfg.ClaudeAuthToken
 			}
 			return claudecode.New(opts, logger), nil
 		},

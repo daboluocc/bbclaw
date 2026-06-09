@@ -19,9 +19,16 @@ const (
 	envClaudeBin = "BBCLAW_BUTLER_MEMORY_CLAUDE_BIN"
 
 	// envConsolidate gates the second-layer consolidation engine (ADR-022).
-	// Default OFF (灰度): the inbox keeps its FIFO behaviour until explicitly
-	// enabled. Requires envEnable to be on as well (consolidation archives what
-	// distill appends). LOCAL-only, same as the distill pipeline.
+	// Default OFF: kept disabled until two defects are fixed (2026-06-10) —
+	// (1) the consolidator writes singular orphan files MEMORY/{preference,
+	// project,decision}.md that nothing reads (scaffold/persona/admin/prewarm all
+	// use the plural names), and (2) its full-file overwrite of the project
+	// dimension would clobber prewarm's <!-- prewarm:NAME --> blocks in
+	// projects.md. Until then the distilled inbox in CLAUDE.md's managed block
+	// (auto-reloaded by claude-code at cwd=workspace) already serves as the
+	// butler's background long-term memory, so enabling consolidation now would
+	// only DRAIN that working inbox into dead files. Requires envEnable on too.
+	// LOCAL-only, same as the distill pipeline.
 	envConsolidate          = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE"
 	envConsolidateThreshold = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_THRESHOLD"
 	envConsolidateIdle      = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_IDLE"
@@ -29,7 +36,14 @@ const (
 	envConsolidateCooldown  = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_COOLDOWN"
 	envConsolidateMaxPerDim = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_MAXPERDIM"
 
-	defaultModel = "claude-3-5-haiku-latest"
+	// defaultModel is the cheap model used by both distill and consolidate. It
+	// MUST be a model id the operator's claude auth can actually select: under a
+	// Pro/Max subscription login (OAuth, not an API key) the CLI's --model only
+	// accepts subscription-available ids, and the old "claude-3-5-haiku-latest"
+	// API alias is now rejected (3.5 Haiku retired) — every distill exited 1,
+	// leaving the inbox empty. "claude-haiku-4-5" is the current cheap Haiku and
+	// resolves under subscription auth. Override via BBCLAW_BUTLER_MEMORY_MODEL.
+	defaultModel = "claude-haiku-4-5"
 
 	// Consolidation trigger defaults (ADR-022 §1). Conservative for v1 灰度.
 	defaultThresholdRatio = 0.75
@@ -46,7 +60,8 @@ func Enabled() bool {
 }
 
 // ConsolidateEnabled reports whether the second-layer consolidation engine is
-// switched on via env. Default OFF (灰度, ADR-022 §5).
+// switched on via env. Default OFF (ADR-022 §5): see envConsolidate for the two
+// defects that must land before it can safely archive the inbox into MEMORY/*.md.
 func ConsolidateEnabled() bool {
 	return parseBoolEnv(envConsolidate, false)
 }

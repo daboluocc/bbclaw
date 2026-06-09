@@ -259,10 +259,10 @@ func TestEnsureScaffoldRebuildsMissingMemoryFile(t *testing.T) {
 }
 
 func TestDefaultPersonaCarriesMemoryIndex(t *testing.T) {
-	// The persona must advertise the on-demand memory index and still keep a
+	// The persona must advertise the read+write memory index and still keep a
 	// well-formed managed block so the memory pipeline's append anchor holds.
 	for _, want := range []string{
-		"长期记忆（按需读取）",
+		"长期记忆（按需读写）",
 		"MEMORY/preferences.md",
 		"MEMORY/projects.md",
 		"MEMORY/decisions.md",
