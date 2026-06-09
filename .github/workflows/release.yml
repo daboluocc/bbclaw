@@ -55,13 +55,15 @@ jobs:
         run: |
           source ~/esp/esp-idf/export.sh
           cd firmware
-          # `make set-target` only runs `idf.py set-target` (ignores BOARD); the
-          # actual board switch is `make set-board`, which flips
-          # CONFIG_BBCLAW_BOARD_* in sdkconfig. Without it CI built the default
-          # board (breadboard) — wrong pins/PSRAM for the bbclaw PCB, which
-          # bricked devices on OTA. Select bbclaw explicitly.
+          # Build from the known-good production config snapshot
+          # (sdkconfig.bbclaw.latest): bbclaw board, OCTAL PSRAM, cloud_saas,
+          # prod cloud URL. The committed sdkconfig.defaults is breadboard/dev
+          # (QUAD PSRAM, local_home); building from it shipped firmware that
+          # bricked the octal-PSRAM bbclaw PCB on OTA ("wrong PSRAM line mode").
+          # set-target inits the esp32s3 build dir; the cp overrides the config;
+          # make build reconfigures from it.
           make set-target
-          make set-board BOARD=bbclaw
+          cp sdkconfig.bbclaw.latest sdkconfig
           make build
 
       - name: Generate OTA data (ota_0 boot)
