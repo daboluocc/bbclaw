@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-06-10
+
+### Fixed
+- **OTA 无限重刷循环**: 固件版本(`esp_app_desc.version`)此前硬编码在
+  `CMakeLists.txt` 的 `project(... VERSION 0.4.1)`,OTA 后设备永远自报 0.4.1 <
+  云端 active → 反复重新下载同一版本。改为版本从 `version.txt`(CI 写入发布 tag)
+  / `git describe`(本地)注入。(#122)
+  *(v0.4.9 的 octal PSRAM 修复已在真机验证:能正常启动,仅版本号循环。)*
+
 ## [0.4.9] - 2026-06-10
 
 ### Fixed
