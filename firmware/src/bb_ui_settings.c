@@ -444,7 +444,7 @@ static void render_volume_adjust(void) {
   /* Hint label */
   lv_obj_t* hint = lv_label_create(s_st.rows_box);
   lv_obj_set_style_text_color(hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
-  lv_label_set_text(hint, "UP/DOWN to adjust  OK/BACK to save");
+  lv_label_set_text(hint, "UP/DOWN adjust  OK save & back");
   lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + 20);
 }
 
@@ -562,12 +562,15 @@ static void spawn_driver_fetch_task(void) {
 typedef enum {
   COMMIT_KIND_DRIVER = 0,
   COMMIT_KIND_MODEL,
+  COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
+  COMMIT_KIND_TTS,     /* int_val = 0/1 */
 } commit_kind_t;
 
 typedef struct {
   commit_kind_t kind;
   char driver_name[24];
   char model_id[40];
+  int int_val;
 } commit_payload_t;
 
 static void commit_task(void* arg) {
@@ -599,7 +602,7 @@ static void commit_task(void* arg) {
       }
     }
     ESP_LOGI(TAG, "commit driver='%s' -> %s", p->driver_name, esp_err_to_name(err));
-  } else {
+  } else if (p->kind == COMMIT_KIND_MODEL) {
     err = bb_agent_set_active_model(p->driver_name, p->model_id);
     if (err == ESP_OK) {
       /* ADR-016: push the new model into the bottom-bar slot. We pass model_id
@@ -613,6 +616,12 @@ static void commit_task(void* arg) {
     }
     ESP_LOGI(TAG, "commit driver='%s' model='%s' -> %s",
              p->driver_name, p->model_id, esp_err_to_name(err));
+  } else if (p->kind == COMMIT_KIND_VOLUME) {
+    err = bb_device_config_set_volume_pct(p->int_val);
+    ESP_LOGI(TAG, "commit volume=%d%% -> %s", p->int_val, esp_err_to_name(err));
+  } else if (p->kind == COMMIT_KIND_TTS) {
+    err = persist_tts_enabled(p->int_val);
+    ESP_LOGI(TAG, "commit tts=%d -> %s", p->int_val, esp_err_to_name(err));
   }
   free(p);
   vTaskDelete(NULL);
@@ -637,6 +646,29 @@ static void spawn_commit_task(commit_kind_t kind, const char* driver, const char
                               BB_SETTINGS_FETCH_TASK_PRIO, &t);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_commit_task: xTaskCreate failed");
+    free(p);
+  }
+}
+
+/* Persist a simple integer setting (volume / tts) on a fresh task. NVS/flash
+ * writes freeze the cache; the stream_task that drives Settings nav has its
+ * stack in PSRAM, so writing from there panics
+ * (s_task_stack_is_sane_when_cache_frozen). xTaskCreate stacks live in
+ * internal RAM, so the write is safe here. */
+static void spawn_persist_int(commit_kind_t kind, int val) {
+  commit_payload_t* p = (commit_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) {
+    ESP_LOGE(TAG, "spawn_persist_int: calloc failed");
+    return;
+  }
+  p->kind = kind;
+  p->int_val = val;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(commit_task, "set_persist",
+                              BB_SETTINGS_FETCH_TASK_STACK, p,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_persist_int: xTaskCreate failed");
     free(p);
   }
 }
@@ -817,13 +849,11 @@ int bb_ui_settings_handle_click(void) {
           rerender();
           break;
         case MAIN_ROW_TTS: {
-          /* In-place toggle (no sub-picker — binary value). */
+          /* In-place toggle (no sub-picker — binary value). Persist off the
+           * stream_task (PSRAM stack) — an NVS write there freezes the cache
+           * and panics. */
           s_st.tts_enabled = !s_st.tts_enabled;
-          esp_err_t err = persist_tts_enabled(s_st.tts_enabled);
-          if (err != ESP_OK) {
-            ESP_LOGW(TAG, "persist tts %d failed (%s)",
-                     s_st.tts_enabled, esp_err_to_name(err));
-          }
+          spawn_persist_int(COMMIT_KIND_TTS, s_st.tts_enabled);
           rerender();
           break;
         }
@@ -884,9 +914,12 @@ int bb_ui_settings_handle_click(void) {
     }
 
     case LEVEL_VOLUME_ADJUST:
-      /* OK in adjust mode: persist and return to main */
+      /* OK in adjust mode: persist and return to main. Live volume is already
+       * applied via bb_audio_set_volume_pct() on each rotate; here we only
+       * persist — off the stream_task (PSRAM stack) to avoid the cache-freeze
+       * panic on the NVS write. */
       if (s_st.volume_dirty) {
-        bb_device_config_set_volume_pct(s_st.volume_pct);
+        spawn_persist_int(COMMIT_KIND_VOLUME, s_st.volume_pct);
         s_st.volume_dirty = 0;
       }
       s_st.vol_fill = NULL;
@@ -909,9 +942,10 @@ int bb_ui_settings_handle_back(void) {
       return_to_main(MAIN_ROW_MODEL);
       return 0;
     case LEVEL_VOLUME_ADJUST:
-      /* BACK: persist then return to main (same as OK) */
+      /* BACK: persist then return to main (same as OK). Persist off the
+       * stream_task (PSRAM stack) — see handle_click for why. */
       if (s_st.volume_dirty) {
-        bb_device_config_set_volume_pct(s_st.volume_pct);
+        spawn_persist_int(COMMIT_KIND_VOLUME, s_st.volume_pct);
         s_st.volume_dirty = 0;
       }
       s_st.vol_fill = NULL;
