@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-06-09
+
 ### Added
 - **管理页改为独立 Vue SPA（`adapter/web`）+ 对话记录页**：把原内嵌 vanilla 单页重写为
   Vue3+Vite+TS 工程，构建产物 `internal/adminui/dist` 提交进仓库并 `go:embed` 打进
