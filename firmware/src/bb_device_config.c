@@ -168,3 +168,13 @@ esp_err_t bb_device_config_apply_welcome(const char* config_json) {
   ESP_LOGI(TAG, "config from welcome ignored: version %d <= current %d", new_config.version, s_config.version);
   return ESP_OK;
 }
+
+esp_err_t bb_device_config_set_volume_pct(int pct) {
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  if (s_config.volume_pct == pct) return ESP_OK;
+  s_config.volume_pct = pct;
+  s_config.version++;
+  ESP_LOGI(TAG, "volume set locally pct=%d version=%d", pct, s_config.version);
+  return persist_config();
+}
