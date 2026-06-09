@@ -317,7 +317,7 @@ func TestRunTurn_InjectsSystemPrompt(t *testing.T) {
 	})
 	sink := newFakeSink()
 	deps := baseDeps(routerWith(t, drv), sink, newFakeRegistry(), Policy{EmitTurnEndFrame: true})
-	deps.SystemPrompt = func(cwd string) string { return "PERSONA:" + cwd }
+	deps.SystemPrompt = func(cwd, deviceID string) string { return "PERSONA:" + cwd }
 	eng := NewEngine(deps)
 
 	if _, err := eng.RunTurn(context.Background(), Request{Text: "hello"}); err != nil {

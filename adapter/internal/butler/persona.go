@@ -12,10 +12,13 @@ import "strings"
 // cwd is the active project directory; when set it is surfaced as an explicit
 // hint (the CLI also runs in it, but stating it removes ambiguity).
 //
+// deviceID is the current device's ID injected per-turn. When non-empty, a
+// device-control section is appended so the butler knows how to call the
+// bbclaw-adapter device CLI to adjust volume. Empty deviceID = skip that section.
+//
 // This is the static baseline. ADR-018 P1 will append a user-needs summary and
-// project memory here once the memory store exists; the signature stays
-// (cwd) for now and widens when that lands.
-func DeviceSystemPrompt(cwd string) string {
+// project memory here once the memory store exists.
+func DeviceSystemPrompt(cwd, deviceID string) string {
 	var b strings.Builder
 	b.WriteString("你正通过 BBClaw 与用户对话——一台对讲机式的硬件语音外设" +
 		"(1.47 寸小屏、PTT 按键、语音播报),作为 AI 编码助手 CLI 的远程终端。" +
@@ -28,6 +31,14 @@ func DeviceSystemPrompt(cwd string) string {
 	b.WriteString("- 工具调用(读写文件、执行命令)会真实作用于本地项目,请谨慎、按需。\n")
 	if c := strings.TrimSpace(cwd); c != "" {
 		b.WriteString("- 当前工作目录:" + c + "\n")
+	}
+	if id := strings.TrimSpace(deviceID); id != "" {
+		b.WriteString("\n## 设备控制\n")
+		b.WriteString("当前设备 ID:`" + id + "`\n")
+		b.WriteString("如需调节本设备音量,用 Bash 工具执行:\n")
+		b.WriteString("  bbclaw-adapter device set-volume <0-100> --device " + id + "\n")
+		b.WriteString("成功后用一句话朗读结果(例如「已把音量调到 50%,马上生效」)。\n")
+		b.WriteString("如果设备 ID 未知,不要尝试音量调节。\n")
 	}
 	return b.String()
 }

@@ -20,6 +20,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(NewDoctorCmd())
 	cmd.AddCommand(NewVersionCmd())
 	cmd.AddCommand(NewMcpServerCmd())
+	cmd.AddCommand(NewDeviceCmd())
 
 	return cmd
 }
