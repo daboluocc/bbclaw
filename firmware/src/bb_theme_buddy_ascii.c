@@ -404,7 +404,9 @@ static void theme_set_unread_count(int count) {
 }
 
 /* Phase S3 — history replay. Same structure as text-only theme. */
-static void theme_append_history_message(const char* role, const char* content) {
+static void theme_append_history_message(const char* role, const char* content,
+                                         int64_t timestamp_ms) {
+  (void)timestamp_ms;
   if (!s_st.built || role == NULL || content == NULL) return;
   int is_user = strcmp(role, "user") == 0;
   lv_obj_t* lbl;
@@ -417,7 +419,9 @@ static void theme_append_history_message(const char* role, const char* content) 
   s_st.active_assistant = NULL;
 }
 
-static void theme_prepend_history_message(const char* role, const char* content) {
+static void theme_prepend_history_message(const char* role, const char* content,
+                                          int64_t timestamp_ms) {
+  (void)timestamp_ms;
   if (!s_st.built || role == NULL || content == NULL) return;
   int is_user = strcmp(role, "user") == 0;
   lv_obj_t* lbl;

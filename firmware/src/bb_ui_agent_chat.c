@@ -1250,7 +1250,7 @@ static void cache_replay_cb(char role, const char* content, void* user) {
     case BB_CHAT_CACHE_ROLE_ERROR:     role_str = "error"; break;
     default: break;
   }
-  theme->append_history_message(role_str, content);
+  theme->append_history_message(role_str, content, /*timestamp_ms=*/0);
 }
 
 static void replay_chat_cache_into_theme(const bb_agent_theme_t* theme) {
@@ -1839,6 +1839,13 @@ static void on_history_fetch_done(void* user_data) {
       bb_chat_cache_clear();
     } else {
       ESP_LOGW(TAG, "history fetch failed err=%s", esp_err_to_name(res->err));
+      /* Show a non-intrusive toast so the user knows they're seeing only the
+       * local cache snapshot, not the full adapter history. This is the P0
+       * "offline degradation hint" from issue #110. */
+      const bb_agent_theme_t* t = bb_agent_theme_get_active();
+      if (t != NULL && t->show_toast != NULL) {
+        t->show_toast("仅本地缓存，完整记录需联网");
+      }
     }
     /* Hard fail: leave transcript blank, future scrolls won't retry. */
     s_chat.history_has_more = 0;
@@ -1873,7 +1880,8 @@ static void on_history_fetch_done(void* user_data) {
     /* Chronological order — append from oldest to newest. */
     if (theme->append_history_message != NULL) {
       for (int i = 0; i < res->count; i++) {
-        theme->append_history_message(res->msgs[i].role, res->msgs[i].content);
+        theme->append_history_message(res->msgs[i].role, res->msgs[i].content,
+                                      res->msgs[i].timestamp_ms);
         /* Mirror into cache — translate role to single-byte encoding so
          * the cache buffer stays compact. */
         const char* role = res->msgs[i].role;
@@ -1910,7 +1918,8 @@ static void on_history_fetch_done(void* user_data) {
      * top after all the move_to_index(0) calls. */
     if (theme->prepend_history_message != NULL) {
       for (int i = res->count - 1; i >= 0; i--) {
-        theme->prepend_history_message(res->msgs[i].role, res->msgs[i].content);
+        theme->prepend_history_message(res->msgs[i].role, res->msgs[i].content,
+                                       res->msgs[i].timestamp_ms);
       }
     }
     s_chat.history_min_seq = res->msgs[0].seq;

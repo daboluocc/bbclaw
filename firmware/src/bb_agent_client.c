@@ -16,6 +16,50 @@
 
 static const char* TAG = "bb_agent";
 
+/* Parse a subset of RFC3339 / ISO-8601 timestamps as returned by the adapter
+ * (e.g. "2026-04-27T17:57:03Z" or "2026-04-27T17:57:03+08:00").
+ * Returns Unix timestamp in milliseconds, or 0 on parse failure.
+ * We avoid pulling in <time.h> mktime which doesn't handle TZ on ESP-IDF;
+ * instead we do a simple Gregorian calendar computation. */
+static int64_t parse_rfc3339_ms(const char* s) {
+  if (s == NULL || s[0] == '\0') return 0;
+  int year = 0, mon = 0, day = 0, hour = 0, min = 0, sec = 0;
+  /* Expect at minimum "YYYY-MM-DDTHH:MM:SS" (19 chars). */
+  if (sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d", &year, &mon, &day,
+             &hour, &min, &sec) != 6) {
+    return 0;
+  }
+  if (year < 2020 || mon < 1 || mon > 12 || day < 1 || day > 31) return 0;
+
+  /* Days per month (non-leap; Feb corrected below). */
+  static const int DOM[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  int leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 1 : 0;
+
+  /* Days since Unix epoch (1970-01-01). */
+  int64_t days = 0;
+  for (int y = 1970; y < year; y++) {
+    int ly = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+    days += 365 + ly;
+  }
+  for (int m = 1; m < mon; m++) {
+    days += DOM[m - 1] + (m == 2 ? leap : 0);
+  }
+  days += day - 1;
+
+  int64_t unix_sec = days * 86400 + hour * 3600 + min * 60 + sec;
+
+  /* Parse optional timezone offset "+HH:MM" or "-HH:MM" after the seconds. */
+  const char* tz = s + 19;
+  if (*tz == '+' || *tz == '-') {
+    int sign = (*tz == '+') ? 1 : -1;
+    int tzh = 0, tzm = 0;
+    if (sscanf(tz + 1, "%2d:%2d", &tzh, &tzm) == 2) {
+      unix_sec -= sign * (tzh * 3600 + tzm * 60);
+    }
+  }
+  return unix_sec * 1000;  /* convert to ms */
+}
+
 /*
  * Mirror bb_adapter_client.c::active_base_url(): cloud_saas profile uses
  * the cloud URL, otherwise the local adapter. Phase 4.8 wired the cloud-side
@@ -744,6 +788,7 @@ esp_err_t bb_agent_load_messages(const char* session_id,
     const cJSON* role = cJSON_GetObjectItemCaseSensitive(item, "role");
     const cJSON* content = cJSON_GetObjectItemCaseSensitive(item, "content");
     const cJSON* seq = cJSON_GetObjectItemCaseSensitive(item, "seq");
+    const cJSON* ts  = cJSON_GetObjectItemCaseSensitive(item, "timestamp");
     if (!cJSON_IsString(role) || !cJSON_IsString(content)) {
       continue;
     }
@@ -760,6 +805,7 @@ esp_err_t bb_agent_load_messages(const char* session_id,
     }
     memcpy(slot->content, content->valuestring, clen + 1);
     slot->seq = cJSON_IsNumber(seq) ? seq->valueint : i;
+    slot->timestamp_ms = cJSON_IsString(ts) ? parse_rfc3339_ms(ts->valuestring) : 0;
     written++;
   }
 
