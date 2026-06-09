@@ -64,9 +64,9 @@ export async function listSessions(): Promise<SessionInfo[]> {
   // kind=logical → the butler's per-device logical sessions (the conversations).
   return (await envelope<{ sessions: SessionInfo[] }>("/v1/admin/sessions?kind=logical")).sessions ?? [];
 }
-export async function sessionMessages(id: string, driver: string, limit = 200): Promise<{ messages: ChatMessage[]; total: number; hasMore: boolean }> {
+export async function sessionMessages(id: string, driver: string, limit = 200, before = -1): Promise<{ messages: ChatMessage[]; total: number; hasMore: boolean }> {
   const d = driver ? `&driver=${encodeURIComponent(driver)}` : "";
-  return envelope(`/v1/admin/sessions/${encodeURIComponent(id)}/messages?before=-1&limit=${limit}${d}`);
+  return envelope(`/v1/admin/sessions/${encodeURIComponent(id)}/messages?before=${before}&limit=${limit}${d}`);
 }
 export async function dispatchRecent(limit = 30): Promise<DispatchEntry[]> {
   // This endpoint returns a bare JSON array, not the {ok,data} envelope.
