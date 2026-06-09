@@ -1116,7 +1116,7 @@ func (s *Server) handleAgentDeleteSession(w http.ResponseWriter, r *http.Request
 // resolveCwdByName looks up a cwd path by name in the configured pool.
 // Returns ("", false) when the name is not found.
 func (s *Server) resolveCwdByName(name string) (string, bool) {
-	for _, entry := range s.cfg.CwdPool {
+	for _, entry := range s.effectivePool() {
 		if entry.Name == name {
 			return entry.Path, true
 		}
@@ -1136,8 +1136,9 @@ func (s *Server) handleAgentCwdPool(w http.ResponseWriter, r *http.Request) {
 	type poolItem struct {
 		Name string `json:"name"`
 	}
-	items := make([]poolItem, 0, len(s.cfg.CwdPool))
-	for _, e := range s.cfg.CwdPool {
+	pool := s.effectivePool()
+	items := make([]poolItem, 0, len(pool))
+	for _, e := range pool {
 		items = append(items, poolItem{Name: e.Name})
 	}
 	writeJSON(w, http.StatusOK, response{

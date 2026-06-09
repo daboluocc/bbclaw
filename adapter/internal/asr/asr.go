@@ -20,6 +20,11 @@ type Metadata struct {
 	Codec      string
 	SampleRate int
 	Channels   int
+	// Hotwords biases recognition toward domain terms the generic model is
+	// likely to mishear — chiefly the butler's project names (e.g. "bbclaw").
+	// Providers use it where supported: the OpenAI/Whisper provider passes it as
+	// the `prompt` form field; providers without a biasing channel ignore it.
+	Hotwords []string
 }
 
 type Segment struct {
@@ -107,6 +112,13 @@ func (p *OpenAICompatibleProvider) Transcribe(ctx context.Context, audio []byte,
 	if err := writer.WriteField("model", p.model); err != nil {
 		return Result{}, fmt.Errorf("write model field: %w", err)
 	}
+	// Whisper-style `prompt` biases the decoder toward these terms — used here to
+	// stop project names (and other domain vocab) from being mistranscribed.
+	if prompt := hotwordPrompt(meta.Hotwords); prompt != "" {
+		if err := writer.WriteField("prompt", prompt); err != nil {
+			return Result{}, fmt.Errorf("write prompt field: %w", err)
+		}
+	}
 	fileWriter, err := writer.CreateFormFile("file", "audio.wav")
 	if err != nil {
 		return Result{}, fmt.Errorf("create file field: %w", err)
@@ -160,6 +172,33 @@ func (p *OpenAICompatibleProvider) Transcribe(ctx context.Context, audio []byte,
 	}
 
 	return Result{Text: parsed.Text}, nil
+}
+
+// hotwordPrompt renders hotwords into a short biasing prompt. Empty in → "".
+// The leading label gives the decoder context that these are proper nouns; the
+// list is capped so the prompt stays well under model prompt limits.
+func hotwordPrompt(words []string) string {
+	const maxWords = 50
+	out := make([]string, 0, len(words))
+	seen := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if _, dup := seen[w]; dup {
+			continue
+		}
+		seen[w] = struct{}{}
+		out = append(out, w)
+		if len(out) >= maxWords {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "项目名称：" + strings.Join(out, "、") + "。"
 }
 
 func joinURL(base, pathPart string) (string, error) {

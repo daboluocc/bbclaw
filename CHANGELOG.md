@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **管理页升级：工作区文件预览 + 目录关键字搜索 + 多选批量加入 + 点阵风格**：
+  `/admin` 现可**只读预览**管家工作区文件（`CLAUDE.md` 人设 + `MEMORY/{profile,
+  preferences,projects,decisions}.md`，白名单防任意读，新增 `/v1/admin/workspace-file[s]`）；
+  目录选择器加**关键字搜索**（过滤当前目录 + 服务端递归搜索 `/v1/admin/fs/search`，
+  限深限量、跳过 `node_modules`/`.git` 等）与**多选批量加入**；整页重做为**点阵 /
+  Nothing-style** 视觉（对齐 `design/UI_DESIGN_LANGUAGE.md` token）。
+- **新增 Claude 技能 `dot-matrix-ui`**（`.claude/skills/dot-matrix-ui/SKILL.md`）：把点阵
+  设计语言提炼为可复用的 Web 落地版（token、CSS 变量、组件配方、do/don't），供 adapter
+  页面与 daboluo.cc 官网统一复用，与固件 `bb_ui_theme.h` 同源。
+- **启动后自动打开管理页**：本地 HTTP 起来后自动用默认浏览器打开 `/admin`（跨平台
+  open/xdg-open/start，headless 失败静默非致命，`BBCLAW_OPEN_ADMIN=0` 可关）。
+- **管理页改为目录选择器**：浏览器拿不到本地绝对路径，故新增服务端目录浏览
+  `GET /v1/admin/fs?path=`（仅 localhost）逐级浏览主机目录来选项目目录；项目**名称
+  从目录名自动派生**（去重加 `-N` 后缀），管理页不再要求手填名称（`store.AddPath`）。
+- **ASR 项目名识别准确性（两层）**：① 管家层——persona 指令让 LLM 先 `list_projects`、
+  再按读音/拼写把用户语音里的项目名模糊匹配到真实项目再 dispatch（provider 无关、
+  主防线）；② ASR 层——`asr.Metadata.Hotwords` 注入实时项目名，OpenAI/Whisper provider
+  作为 `prompt` 偏置下发（Doubao bigmodel 需预注册 boosting table，暂为文档化 no-op）。
+- **本地轻量 Web 管理页（`/admin`）+ 运行时项目目录管理（web-first）**：adapter 启动后在
+  `/admin` 提供一个零依赖单页（embed，无构建步骤），展示运行状态（健康 / 本地服务 /
+  已注册驱动，只读）并支持**增删管家可派活的项目目录**。新增 `internal/projectstore`
+  持久化项目池（`<DataDir>/projects.json` 为**唯一真相源**，原子写、mtime 变化时重读），
+  主进程与 `mcp-server` 子进程共享同一文件 → 加目录**无需重启**即对管家派活生效。
+  **`BBCLAW_CWD_POOL` 改为一次性 bootstrap 播种**：首次运行写入文件后即被忽略，之后
+  所有项目（含原 env 项目）都在 web 页可增删；旧版 `{"added":...}` 文件会在启动时
+  自动迁移为新格式并把 env 项目并入，**不丢已添加的项目**，迁移后即可从 `.env` 删掉
+  `BBCLAW_CWD_POOL`。加目录后异步轻量扫描仓库（语言栈 / README / 近期 git 提交）
+  生成摘要写进 `MEMORY/projects.md`，**预热**管家上下文（`internal/prewarm`）。
+  安全：`/admin` 与 `/v1/admin/*` **仅限 localhost**（按对端地址判定 loopback，与设备
+  auth token 解耦），因为加目录等于授予管家在该目录跑命令/文件执行的权限。
+- **管家首次激活的对话式身份初始化（onboarding）**：新增 `MEMORY/profile.md`
+  身份档案维度（怎么称呼用户 / 角色 / 职业），并在管家启动人设
+  （`workspace/CLAUDE.md`）注入初始化指令——`STATUS: uninitialized` 时管家先办
+  用户当下请求、再顺势用一两句话录入身份，写入后置 `initialized`，用户拒绝则
+  `skipped`，绝不打断紧急任务。身份档案由管家手写维护，**不进**自动蒸馏 / 整理
+  循环，避免被提炼笔记覆盖（`internal/workspace/`）。
+- **adapter 独立介绍文档** [`adapter/docs/butler.md`](adapter/docs/butler.md)：管家
+  工作空间模式说明、一键复制给 AI agent 创建并启动、参考配置示例、初始化对话流程；
+  另附官网 Adapter 页面内容草稿 `adapter/docs/website-adapter-page.md`。README 顶部
+  加入指引链接。
+
 ## [0.4.6] - 2026-06-07
 
 ### Changed

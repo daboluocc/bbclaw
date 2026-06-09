@@ -23,7 +23,7 @@ func (s *Server) cwdDisplayName(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	for _, e := range s.cfg.CwdPool {
+	for _, e := range s.effectivePool() {
 		if e.Path == cwd {
 			return e.Name
 		}
@@ -31,10 +31,11 @@ func (s *Server) cwdDisplayName(cwd string) string {
 	return filepath.Base(cwd)
 }
 
-// cwdPoolNames returns the configured cwd-pool entry names (paths stay server-side).
+// cwdPoolNames returns the live cwd-pool entry names (paths stay server-side).
 func (s *Server) cwdPoolNames() []string {
-	names := make([]string, 0, len(s.cfg.CwdPool))
-	for _, e := range s.cfg.CwdPool {
+	pool := s.effectivePool()
+	names := make([]string, 0, len(pool))
+	for _, e := range pool {
 		names = append(names, e.Name)
 	}
 	return names

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,6 +29,38 @@ func TestOpenAICompatibleProviderSuccess(t *testing.T) {
 	}
 	if res.Text != "hello" {
 		t.Fatalf("Text = %q", res.Text)
+	}
+}
+
+func TestOpenAICompatibleProviderSendsHotwordPrompt(t *testing.T) {
+	var gotPrompt string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		gotPrompt = r.FormValue("prompt")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"切到 bbclaw"}`))
+	}))
+	defer ts.Close()
+
+	p := NewOpenAICompatibleProvider(ts.URL, "key", "model", ts.Client())
+	_, err := p.Transcribe(context.Background(), []byte("abc"), Metadata{
+		Hotwords: []string{"bbclaw", "bbclaw-reference"},
+	})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if gotPrompt == "" || !strings.Contains(gotPrompt, "bbclaw") {
+		t.Fatalf("prompt field = %q, want it to carry the hotwords", gotPrompt)
+	}
+}
+
+func TestHotwordPrompt(t *testing.T) {
+	if got := hotwordPrompt(nil); got != "" {
+		t.Errorf("empty hotwords should yield empty prompt, got %q", got)
+	}
+	got := hotwordPrompt([]string{" a ", "a", "b"}) // trims + dedupes
+	if got == "" || !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+		t.Errorf("prompt = %q, want a and b present", got)
 	}
 }
 

@@ -65,12 +65,13 @@ func (nopLogger) Warnf(string, ...any) {}
 
 // Server is the stdio MCP server. Construct with New, then Serve(os.Stdin, os.Stdout).
 type Server struct {
-	projects []Project
-	runner   WorkerRunner
-	wait     time.Duration
-	log      Logger
-	bg       context.Context // background ctx for async workers (survives the dispatch call)
-	newID    func() string
+	projects   []Project        // static fallback when projectsFn is nil
+	projectsFn func() []Project // live allow-list source (re-read per tool call)
+	runner     WorkerRunner
+	wait       time.Duration
+	log        Logger
+	bg         context.Context // background ctx for async workers (survives the dispatch call)
+	newID      func() string
 
 	mu    sync.Mutex
 	tasks map[string]*taskState
@@ -86,10 +87,15 @@ type taskState struct {
 
 // Options configure a Server.
 type Options struct {
-	Projects     []Project
-	Runner       WorkerRunner
-	DispatchWait time.Duration // 0 => defaultDispatchWait
-	Log          Logger        // nil => no-op
+	Projects []Project
+	// ProjectsProvider, when non-nil, is consulted on every list_projects /
+	// dispatch instead of the static Projects slice. It lets the allow-list stay
+	// live: an admin add in the main process is picked up here (a separate
+	// subprocess) without a restart. Falls back to Projects when nil.
+	ProjectsProvider func() []Project
+	Runner           WorkerRunner
+	DispatchWait     time.Duration // 0 => defaultDispatchWait
+	Log              Logger        // nil => no-op
 	// BackgroundCtx is the parent ctx for async workers. nil => context.Background().
 	BackgroundCtx context.Context
 }
@@ -109,13 +115,14 @@ func New(opts Options) *Server {
 		bg = context.Background()
 	}
 	return &Server{
-		projects: opts.Projects,
-		runner:   opts.Runner,
-		wait:     wait,
-		log:      log,
-		bg:       bg,
-		newID:    newTaskID,
-		tasks:    make(map[string]*taskState),
+		projects:   opts.Projects,
+		projectsFn: opts.ProjectsProvider,
+		runner:     opts.Runner,
+		wait:       wait,
+		log:        log,
+		bg:         bg,
+		newID:      newTaskID,
+		tasks:      make(map[string]*taskState),
 	}
 }
 
@@ -266,7 +273,7 @@ func (s *Server) handleToolCall(req rpcRequest, write func(rpcResponse)) {
 func (s *Server) callTool(name string, args json.RawMessage) (string, bool) {
 	switch name {
 	case "list_projects":
-		return jsonStr(map[string]any{"projects": s.projects}), false
+		return jsonStr(map[string]any{"projects": s.currentProjects()}), false
 	case "dispatch":
 		return s.toolDispatch(args)
 	case "task_status":
@@ -378,8 +385,9 @@ func (s *Server) toolTaskResult(args json.RawMessage) (string, bool) {
 func (s *Server) resolveCwd(project, cwd string) (string, bool) {
 	project = strings.TrimSpace(project)
 	cwd = strings.TrimSpace(cwd)
+	projects := s.currentProjects()
 	if project != "" {
-		for _, p := range s.projects {
+		for _, p := range projects {
 			if p.Name == project {
 				return p.Cwd, true
 			}
@@ -387,7 +395,7 @@ func (s *Server) resolveCwd(project, cwd string) (string, bool) {
 		return "", false
 	}
 	if cwd != "" {
-		for _, p := range s.projects {
+		for _, p := range projects {
 			if p.Cwd == cwd {
 				return p.Cwd, true
 			}
@@ -396,10 +404,20 @@ func (s *Server) resolveCwd(project, cwd string) (string, bool) {
 	}
 	// Neither given: fall back to the single configured project if there's
 	// exactly one (common single-project setup); otherwise reject.
-	if len(s.projects) == 1 {
-		return s.projects[0].Cwd, true
+	if len(projects) == 1 {
+		return projects[0].Cwd, true
 	}
 	return "", false
+}
+
+// currentProjects returns the live allow-list: the provider's result when one is
+// wired (so runtime admin adds are honoured without a restart), else the static
+// snapshot captured at construction.
+func (s *Server) currentProjects() []Project {
+	if s.projectsFn != nil {
+		return s.projectsFn()
+	}
+	return s.projects
 }
 
 // ─────────────────────────── helpers ───────────────────────────

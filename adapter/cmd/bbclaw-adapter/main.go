@@ -35,6 +35,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/pipeline"
+	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 	"github.com/spf13/cobra"
@@ -170,6 +171,33 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		streams, asrProvider, ttsProvider, sink, logger, metrics,
 	)
 	server.SetAgentRouter(agentRouter)
+	// Project allow-list backing the local admin page (/admin). projects.json is
+	// the source of truth; BBCLAW_CWD_POOL only seeds a fresh file on first run,
+	// after which projects are managed entirely through the web page (and shared
+	// live with the mcp-server subprocess, which opens the same file).
+	if dataDir, derr := workspace.DataDir(); derr != nil {
+		logger.Warnf("project-store: resolve data dir failed, admin project mgmt disabled: %v", derr)
+	} else {
+		storePath := filepath.Join(dataDir, "projects.json")
+		seed := make([]projectstore.Project, 0, len(cfg.CwdPool))
+		for _, e := range cfg.CwdPool {
+			seed = append(seed, projectstore.Project{Name: e.Name, Path: e.Path})
+		}
+		switch status, serr := projectstore.Bootstrap(storePath, seed); {
+		case serr != nil:
+			logger.Warnf("project-store: bootstrap failed: %v", serr)
+		case status == projectstore.BootstrapSeeded:
+			logger.Infof("project-store: seeded %d project(s) from BBCLAW_CWD_POOL into %s (env is a one-time bootstrap; manage projects at /admin)", len(seed), storePath)
+		case status == projectstore.BootstrapMigrated:
+			logger.Infof("project-store: migrated %s to web-managed format and merged BBCLAW_CWD_POOL projects (you can now remove BBCLAW_CWD_POOL from .env)", storePath)
+		}
+		if store, oerr := projectstore.Open(storePath); oerr != nil {
+			logger.Warnf("project-store: open failed, admin project mgmt disabled: %v", oerr)
+		} else {
+			server.SetProjectStore(store)
+			logger.Infof("project-store: ready (%d project(s)); local admin page at /admin", len(store.List()))
+		}
+	}
 	if sessionMgr != nil {
 		server.SetSessionManager(sessionMgr)
 		// Route local agent turns to the per-device butler session (ADR-021).
@@ -550,6 +578,11 @@ func butlerMCPEnv(cfg config.Config) map[string]string {
 	if v := strings.TrimSpace(os.Getenv("BBCLAW_CWD_POOL")); v != "" {
 		env["BBCLAW_CWD_POOL"] = v
 	}
+	// Propagate the data-dir override so the mcp-server subprocess opens the same
+	// projectstore file as the main process (admin-added projects survive there).
+	if v := strings.TrimSpace(os.Getenv("BBCLAW_DATA_DIR")); v != "" {
+		env["BBCLAW_DATA_DIR"] = v
+	}
 	if cfg.DefaultCwd != "" {
 		env["BBCLAW_DEFAULT_CWD"] = cfg.DefaultCwd
 	}
@@ -702,6 +735,9 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			}
 			errCh <- nil
 		}()
+		// Pop the local admin page once the listener is up (best-effort, opt-out
+		// via BBCLAW_OPEN_ADMIN=0). Headless hosts just log and continue.
+		go maybeOpenAdminBrowser(cfg.Addr, logger)
 		go func() {
 			<-ctx.Done()
 			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)

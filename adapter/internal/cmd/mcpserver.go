@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
+	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -46,9 +49,30 @@ func runMcpServer(cmd *cobra.Command, args []string) error {
 	// Logger MUST write to stderr — stdout is the JSON-RPC channel.
 	logger := obs.NewLoggerTo(os.Stderr)
 
-	projects := cwdPoolToProjects(cfg.CwdPool)
-	if len(projects) == 0 {
-		logger.Warnf("mcp-server: no projects configured (set BBCLAW_CWD_POOL or BBCLAW_DEFAULT_CWD); dispatch will reject all calls")
+	// The allow-list is the union of the env-defined pool (seed) and the
+	// admin-added delta persisted by the main adapter process. Reading the shared
+	// projectstore file keeps this subprocess live: a project the user adds
+	// through the local admin page is honoured on the next list_projects /
+	// dispatch without restarting the butler. A store open failure degrades to
+	// the env-only pool rather than aborting dispatch.
+	var projectsFn func() []butlermcp.Project
+	if dataDir, derr := workspace.DataDir(); derr != nil {
+		logger.Warnf("mcp-server: resolve data dir failed, using env-only pool: %v", derr)
+	} else {
+		storePath := filepath.Join(dataDir, projectsFileName)
+		// Bootstrap too, in case this subprocess somehow runs before the main
+		// process has created/migrated the file; a no-op once it's current-format.
+		_, _ = projectstore.Bootstrap(storePath, cwdPoolToSeed(cfg.CwdPool))
+		if store, oerr := projectstore.Open(storePath); oerr != nil {
+			logger.Warnf("mcp-server: open project store failed, using env-only pool: %v", oerr)
+		} else {
+			projectsFn = func() []butlermcp.Project { return storeToProjects(store.List()) }
+		}
+	}
+
+	seed := cwdPoolToProjects(cfg.CwdPool)
+	if projectsFn == nil && len(seed) == 0 {
+		logger.Warnf("mcp-server: no projects configured (set BBCLAW_CWD_POOL or BBCLAW_DEFAULT_CWD, or add one in the admin page); dispatch will reject all calls")
 	}
 
 	runner := butlermcp.NewClaudeWorkerRunner(butlermcp.ClaudeRunnerOptions{
@@ -60,13 +84,36 @@ func runMcpServer(cmd *cobra.Command, args []string) error {
 	})
 
 	srv := butlermcp.New(butlermcp.Options{
-		Projects: projects,
-		Runner:   runner,
-		Log:      logger,
+		Projects:         seed, // static fallback when the store could not be opened
+		ProjectsProvider: projectsFn,
+		Runner:           runner,
+		Log:              logger,
 	})
 
-	logger.Infof("mcp-server: serving %d project(s) on stdio", len(projects))
+	logger.Infof("mcp-server: serving on stdio (env seed: %d project(s))", len(seed))
 	return srv.Serve(os.Stdin, os.Stdout)
+}
+
+// projectsFileName is the admin-managed project delta, co-located with the other
+// adapter state under the data directory. Shared with the main process.
+const projectsFileName = "projects.json"
+
+// cwdPoolToSeed maps the parsed env pool into projectstore seed entries.
+func cwdPoolToSeed(pool []config.CwdEntry) []projectstore.Project {
+	out := make([]projectstore.Project, 0, len(pool))
+	for _, e := range pool {
+		out = append(out, projectstore.Project{Name: e.Name, Path: e.Path})
+	}
+	return out
+}
+
+// storeToProjects adapts projectstore entries into butlermcp projects.
+func storeToProjects(in []projectstore.Project) []butlermcp.Project {
+	out := make([]butlermcp.Project, 0, len(in))
+	for _, p := range in {
+		out = append(out, butlermcp.Project{Name: p.Name, Cwd: p.Path})
+	}
+	return out
 }
 
 // cwdPoolToProjects maps the parsed CWD pool into butlermcp projects. The two

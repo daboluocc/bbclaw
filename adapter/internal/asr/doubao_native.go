@@ -70,6 +70,10 @@ func NewDoubaoNativeProvider(wsURL, appID, accessToken, resourceID, modelName, l
 	}
 }
 
+// Transcribe ignores Metadata.Hotwords: the Doubao bigmodel ASR biases via a
+// pre-registered boosting table (request.corpus.boosting_table_name), not inline
+// terms, so project-name hotwords can't be injected per-request here. The
+// butler's read-the-list fuzzy matching covers this provider instead.
 func (p *DoubaoNativeProvider) Transcribe(ctx context.Context, audio []byte, _ Metadata) (Result, error) {
 	headers := http.Header{
 		"X-Api-App-Key":     []string{p.appID},

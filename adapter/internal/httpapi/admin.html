@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BBClaw Adapter · 管理</title>
+<style>
+  /* ── dot-matrix / Nothing-style tokens (design/UI_DESIGN_LANGUAGE.md) ── */
+  :root{
+    --bg:#070b0e;          /* the one background           */
+    --lit:#dfeaec;         /* lit dot / primary text       */
+    --ghost:#152128;       /* ghost dot / surfaces / lines */
+    --dim:#6e8a93;         /* secondary text               */
+    --wordmark:#4f6f67;    /* dim teal-grey                */
+    --accent:#2ec4a0;      /* the single accent (teal)     */
+    --ok:#4cd964; --err:#e66f6f;
+    --pitch:9px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font:13px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--lit); background:var(--bg);
+    /* faint dot-matrix texture on the page */
+    background-image:radial-gradient(var(--ghost) 1px, transparent 1px);
+    background-size:var(--pitch) var(--pitch);
+    background-position:0 0;
+  }
+  a{color:var(--accent)}
+  /* header */
+  header{padding:18px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:baseline;gap:14px;
+    background:rgba(7,11,14,.85);backdrop-filter:blur(2px)}
+  .wordmark{font-weight:700;font-size:15px;letter-spacing:.42em;color:var(--lit);
+    border-bottom:2px dotted var(--accent);padding-bottom:3px}
+  header .sub{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
+  main{max-width:920px;margin:0 auto;padding:22px}
+  /* cards */
+  .card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+  .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 14px;
+    display:flex;align-items:center;gap:8px}
+  .card h2::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost)}
+  /* status */
+  .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .status-grid .item{border:1px solid var(--ghost);border-radius:7px;padding:9px 11px;background:rgba(7,11,14,.5)}
+  .status-grid .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+  .status-grid .v{font-size:13px;color:var(--lit);word-break:break-all}
+  .status-grid .v.on{color:var(--accent)}
+  /* table */
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--ghost);vertical-align:top}
+  th{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;font-weight:500}
+  td .path{color:var(--dim);font-size:11px;word-break:break-all}
+  tr.fresh{animation:flash 1.2s ease-out}
+  @keyframes flash{0%{background:rgba(46,196,160,.22)}100%{background:transparent}}
+  .tag{font-size:10px;border-radius:3px;padding:1px 6px;border:1px solid var(--ghost);color:var(--dim);letter-spacing:.05em}
+  .tag.admin{border-color:#1f4d47;color:var(--accent)}
+  /* buttons */
+  button{font:inherit;cursor:pointer;border-radius:7px;padding:8px 15px;border:1px solid var(--accent);
+    background:var(--accent);color:#04110f;font-weight:600;letter-spacing:.03em}
+  button:disabled{opacity:.45;cursor:default}
+  button.ghost{background:transparent;color:var(--dim);border-color:var(--ghost)}
+  button.ghost:hover:not(:disabled){color:var(--lit);border-color:var(--dim)}
+  button.del{background:transparent;color:var(--err);border-color:#3a2422;padding:4px 10px;font-size:11px;font-weight:500}
+  button.small{padding:6px 11px;font-size:12px}
+  /* file preview */
+  .files{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+  .chip{font:inherit;font-size:12px;padding:6px 11px;border:1px solid var(--ghost);border-radius:99px;
+    background:transparent;color:var(--dim);cursor:pointer}
+  .chip:hover{color:var(--lit);border-color:var(--dim)}
+  .chip.active{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
+  .chip .sz{opacity:.6;margin-left:6px;font-size:10px}
+  .chip.missing{opacity:.45}
+  pre.preview{margin:0;padding:14px;border:1px solid var(--ghost);border-radius:8px;background:#05090c;
+    color:var(--lit);font-size:12px;line-height:1.5;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  pre.preview .ph{color:var(--dim)}
+  /* messages */
+  .hint{color:var(--dim);font-size:11px;margin:8px 0 0}
+  .msg{font-size:12px;margin-top:12px;min-height:17px}
+  .msg.err{color:var(--err)} .msg.ok{color:var(--accent)}
+  .empty{color:var(--dim);padding:13px 8px;font-size:12px}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(3,6,8,.7);display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
+  .overlay.on{display:flex}
+  .modal{background:var(--bg);border:1px solid var(--ghost);border-radius:11px;width:620px;max-width:100%;padding:18px 20px;
+    box-shadow:0 0 0 1px rgba(46,196,160,.08),0 20px 60px rgba(0,0,0,.5)}
+  .modal h3{margin:0 0 12px;font-size:13px;letter-spacing:.08em;color:var(--lit)}
+  .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  .toolbar .crumbs{font-size:11px;color:var(--dim);word-break:break-all;flex:1;min-width:160px}
+  input[type=text]{font:inherit;background:#05090c;border:1px solid var(--ghost);border-radius:7px;color:var(--lit);
+    padding:7px 10px}
+  input[type=text]:focus{outline:none;border-color:var(--accent)}
+  #search{flex:1;min-width:140px}
+  .browser{border:1px solid var(--ghost);border-radius:8px;background:#05090c;max-height:300px;overflow:auto}
+  .brow{display:flex;align-items:center;gap:9px;padding:7px 11px;border-bottom:1px solid var(--ghost);cursor:pointer}
+  .brow:last-child{border-bottom:0}
+  .brow:hover{background:rgba(46,196,160,.06)}
+  .brow.sel{background:rgba(46,196,160,.10);box-shadow:inset 3px 0 0 var(--accent)}
+  .brow input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+  .brow .ic{color:var(--accent);width:14px;text-align:center;font-size:12px}
+  .brow .nm{flex:1}
+  .brow .fp{font-size:10px;color:var(--dim);word-break:break-all}
+  .modal .actions{display:flex;justify-content:space-between;gap:10px;margin-top:14px;align-items:center}
+  .modal .actions .right{display:flex;gap:8px}
+  .selcount{font-size:11px;color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">BBCLAW</span>
+  <span class="sub">Adapter · 本地管理 · localhost only</span>
+</header>
+<main>
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="status-grid" id="status"><div class="empty">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>项目目录（管家可派活的白名单）</h2>
+    <p class="hint">加入一个目录＝授予管家在其中跑编码任务（含命令/文件执行）的权限。加入后自动轻量扫描仓库、预热进管家长期记忆。名称从目录名自动生成。</p>
+    <table>
+      <thead><tr><th>名称</th><th>路径</th><th>来源</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+    </table>
+    <div style="margin-top:14px"><button id="pickBtn">＋ 选择目录添加</button></div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>管家工作区文件（只读预览）</h2>
+    <p class="hint">管家的人设（CLAUDE.md）与按需读取的长期记忆。预热扫描的项目摘要写在 MEMORY/projects.md。</p>
+    <div class="files" id="files"><span class="empty">加载中…</span></div>
+    <pre class="preview" id="preview"><span class="ph">选择上方文件查看内容。</span></pre>
+  </div>
+</main>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3>选择项目目录（可多选）</h3>
+    <div class="toolbar">
+      <button class="ghost small" id="upBtn">↑ 上级</button>
+      <input type="text" id="search" placeholder="按关键字过滤 / 回车递归搜索…" autocomplete="off" />
+      <button class="ghost small" id="searchBtn">递归搜索</button>
+    </div>
+    <div class="toolbar"><span class="crumbs" id="crumbs">—</span></div>
+    <div class="browser" id="browser"></div>
+    <div class="actions">
+      <span class="selcount" id="selcount">已选 0 个</span>
+      <div class="right">
+        <button class="ghost small" id="cancelBtn">取消</button>
+        <button class="ghost small" id="addCurBtn">添加当前目录</button>
+        <button class="small" id="addSelBtn" disabled>添加选中 (0)</button>
+      </div>
+    </div>
+    <div class="msg" id="modalMsg"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const msg = (el, text, kind) => { el.textContent = text; el.className = "msg " + (kind||""); };
+
+async function api(method, path, body){
+  const opt = { method, headers: {} };
+  if (body){ opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let data = {};
+  try { data = await r.json(); } catch(_){}
+  if (!r.ok || data.ok === false) throw new Error(data.detail || data.error || ("HTTP " + r.status));
+  return data.data || {};
+}
+
+/* ── status ── */
+function statusItem(k, v, on){ return `<div class="item"><div class="k">${k}</div><div class="v${on?" on":""}">${esc(v)}</div></div>`; }
+async function loadStatus(){
+  try{
+    const [health, drivers] = await Promise.all([
+      fetch("/healthz").then(r=>r.json()).catch(()=>({})),
+      api("GET","/v1/agent/drivers").catch(()=>({drivers:[]})),
+    ]);
+    const local = (health.data && health.data.local) || {};
+    const st = (health.data && health.data.status) || "—";
+    const dn = (drivers.drivers||[]).map(d=>d.name).join(", ") || "—";
+    $("status").innerHTML =
+      statusItem("健康", st === "ok" ? "ok" : st, st==="ok") +
+      statusItem("本地服务", local.ready ? "ready" : (local.enabled ? "starting" : "off"), local.ready) +
+      statusItem("已注册驱动", dn);
+  }catch(e){ $("status").innerHTML = statusItem("状态", "读取失败：" + e.message); }
+}
+
+/* ── projects ── */
+let freshName = null;
+async function loadProjects(){
+  const tbody = $("rows");
+  try{
+    const { projects } = await api("GET","/v1/admin/projects");
+    if (!projects || !projects.length){
+      tbody.innerHTML = `<tr><td colspan="4" class="empty">还没有项目。点下面「选择目录添加」。</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = projects.map(p => {
+      const tag = p.source === "admin" ? `<span class="tag admin">已添加</span>` : `<span class="tag">初始导入</span>`;
+      const fresh = p.name === freshName ? " class=\"fresh\"" : "";
+      return `<tr${fresh}><td>${esc(p.name)}</td><td class="path">${esc(p.path)}</td><td>${tag}</td>`
+        + `<td><button class="del" data-name="${esc(encodeURIComponent(p.name))}">删除</button></td></tr>`;
+    }).join("");
+    tbody.querySelectorAll("button.del").forEach(b => b.addEventListener("click", onDelete));
+    freshName = null;
+  }catch(e){ tbody.innerHTML = `<tr><td colspan="4" class="empty">加载失败：${esc(e.message)}</td></tr>`; }
+}
+async function onDelete(e){
+  const name = decodeURIComponent(e.target.dataset.name);
+  if (!confirm(`删除项目「${name}」？管家将不再能在该目录派活。`)) return;
+  try{ await api("DELETE", "/v1/admin/projects/" + encodeURIComponent(name)); msg($("msg"),`已删除 ${name}`,"ok"); loadProjects(); }
+  catch(err){ msg($("msg"),"删除失败：" + err.message, "err"); }
+}
+
+/* ── workspace file preview ── */
+let activeFile = null;
+async function loadFiles(){
+  try{
+    const { files } = await api("GET","/v1/admin/workspace-files");
+    $("files").innerHTML = (files||[]).map(f => {
+      const sz = f.exists ? `<span class="sz">${f.size}B</span>` : `<span class="sz">缺失</span>`;
+      return `<button class="chip${f.exists?"":" missing"}" data-name="${esc(f.name)}">${esc(f.name)}${sz}</button>`;
+    }).join("");
+    $("files").querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => openFile(c.dataset.name)));
+  }catch(e){ $("files").innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`; }
+}
+async function openFile(name){
+  activeFile = name;
+  $("files").querySelectorAll(".chip").forEach(c => c.classList.toggle("active", c.dataset.name === name));
+  $("preview").innerHTML = `<span class="ph">加载中…</span>`;
+  try{
+    const d = await api("GET","/v1/admin/workspace-file?name=" + encodeURIComponent(name));
+    if (!d.exists){ $("preview").innerHTML = `<span class="ph">（文件还不存在）</span>`; return; }
+    const tail = d.truncated ? "\n\n… (已截断)" : "";
+    $("preview").textContent = d.content + tail || "（空文件）";
+  }catch(e){ $("preview").innerHTML = `<span class="ph">读取失败：${esc(e.message)}</span>`; }
+}
+
+/* ── directory picker: navigate + filter + recursive search + multi-select ── */
+let cwd = "", parentDir = "", curDirs = [];
+const selected = new Map(); // path -> name
+
+function renderBrowser(list, asSearch){
+  if (!list.length){
+    $("browser").innerHTML = `<div class="empty">${asSearch ? "没有匹配的目录。" : "（此目录下没有子文件夹，可直接添加它）"}</div>`;
+    return;
+  }
+  $("browser").innerHTML = list.map(d => {
+    const on = selected.has(d.path);
+    const sub = asSearch ? `<span class="fp">${esc(d.path)}</span>` : "";
+    return `<div class="brow${on?" sel":""}" data-path="${esc(encodeURIComponent(d.path))}" data-name="${esc(d.name)}">`
+      + `<input type="checkbox" ${on?"checked":""} />`
+      + `<span class="ic">▸</span><span class="nm">${esc(d.name)} ${sub}</span></div>`;
+  }).join("");
+  $("browser").querySelectorAll(".brow").forEach(row => {
+    const path = decodeURIComponent(row.dataset.path), name = row.dataset.name;
+    row.querySelector("input").addEventListener("click", (e) => { e.stopPropagation(); toggleSel(path, name, row); });
+    row.addEventListener("click", () => browseTo(path)); // click row body = navigate in
+  });
+}
+function toggleSel(path, name, row){
+  if (selected.has(path)) selected.delete(path); else selected.set(path, name);
+  if (row){ row.classList.toggle("sel", selected.has(path)); const cb = row.querySelector("input"); if (cb) cb.checked = selected.has(path); }
+  updateSelCount();
+}
+function updateSelCount(){
+  const n = selected.size;
+  $("selcount").textContent = `已选 ${n} 个`;
+  $("addSelBtn").textContent = `添加选中 (${n})`;
+  $("addSelBtn").disabled = n === 0;
+}
+async function browseTo(path){
+  try{
+    const q = path ? ("?path=" + encodeURIComponent(path)) : "";
+    const data = await api("GET","/v1/admin/fs" + q);
+    cwd = data.path; parentDir = data.parent || ""; curDirs = data.dirs || [];
+    $("crumbs").textContent = cwd;
+    $("upBtn").disabled = !parentDir;
+    $("search").value = "";
+    renderBrowser(curDirs, false);
+  }catch(e){ msg($("modalMsg"),"浏览失败：" + e.message, "err"); }
+}
+function applyFilter(){
+  const q = $("search").value.trim().toLowerCase();
+  if (!q){ renderBrowser(curDirs, false); return; }
+  renderBrowser(curDirs.filter(d => d.name.toLowerCase().includes(q)), false);
+}
+async function recursiveSearch(){
+  const q = $("search").value.trim();
+  if (!q) return applyFilter();
+  msg($("modalMsg"),"递归搜索中…","");
+  try{
+    const d = await api("GET",`/v1/admin/fs/search?path=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}`);
+    renderBrowser(d.dirs || [], true);
+    msg($("modalMsg"), `找到 ${ (d.dirs||[]).length } 个${d.truncated?"（已截断）":""}，点行进入、勾选添加`, "");
+  }catch(e){ msg($("modalMsg"),"搜索失败：" + e.message, "err"); }
+}
+
+function openPicker(){ selected.clear(); updateSelCount(); msg($("modalMsg"),"",""); $("overlay").classList.add("on"); browseTo(""); }
+function closePicker(){ $("overlay").classList.remove("on"); }
+
+async function addPaths(paths){
+  let ok = 0, fail = 0, lastName = null;
+  for (const p of paths){
+    try{ const { project } = await api("POST","/v1/admin/projects",{ path: p }); ok++; lastName = project.name; }
+    catch(_){ fail++; }
+  }
+  freshName = lastName;
+  closePicker();
+  msg($("msg"), `已添加 ${ok} 个${fail?`，${fail} 个失败（重复/无效）`:""}，正在后台预热…`, fail?"err":"ok");
+  loadProjects();
+}
+
+$("pickBtn").addEventListener("click", openPicker);
+$("cancelBtn").addEventListener("click", closePicker);
+$("upBtn").addEventListener("click", () => { if (parentDir) browseTo(parentDir); });
+$("overlay").addEventListener("click", (e) => { if (e.target === $("overlay")) closePicker(); });
+$("search").addEventListener("input", applyFilter);
+$("search").addEventListener("keydown", (e) => { if (e.key === "Enter"){ e.preventDefault(); recursiveSearch(); } });
+$("searchBtn").addEventListener("click", recursiveSearch);
+$("addCurBtn").addEventListener("click", () => { if (cwd) addPaths([cwd]); });
+$("addSelBtn").addEventListener("click", () => { if (selected.size) addPaths([...selected.keys()]); });
+
+loadStatus(); loadProjects(); loadFiles();
+</script>
+</body>
+</html>

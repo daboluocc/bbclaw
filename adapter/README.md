@@ -10,6 +10,10 @@ via a unified [Agent Bus](../design/agent_bus.md).
 > Module path is unchanged: `github.com/daboluocc/bbclaw/adapter`.
 > Cloud backend and web portal stay closed.
 
+> 📖 **新读者从这里开始**：[BBClaw 管家（Butler）—— 本地的 AI 编码调度器](docs/butler.md)
+> ——一键复制给 AI agent 创建并启动、参考配置示例，以及用户首次激活时如何通过
+> 对话让管家完成身份初始化（称呼 / 角色 / 职业）。
+
 ## Quickstart — first successful run in 60 seconds
 
 This is the minimum that gets the adapter listening, lists registered

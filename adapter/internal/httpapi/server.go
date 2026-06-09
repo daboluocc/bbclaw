@@ -24,6 +24,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
+	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 )
 
@@ -121,6 +122,42 @@ type Server struct {
 	// GET /v1/butler/dispatch/recent (ADR-021-firmware-ui §1.4).
 	// Wired via SetDispatchRecorder from main.go. Optional: nil disables the endpoint.
 	dispatchRecorder *butler.DispatchRecorder
+
+	// projects is the mutable project allow-list backing the local admin page
+	// (GET /admin). Optional: when nil the cwd-pool surface falls back to the
+	// immutable cfg.CwdPool snapshot. Wired via SetProjectStore from main.go.
+	projects *projectstore.Store
+}
+
+// SetProjectStore wires the mutable project allow-list used by the local admin
+// page and the live cwd-pool surface. Pass nil to keep the legacy env-only pool.
+func (s *Server) SetProjectStore(store *projectstore.Store) {
+	s.projects = store
+}
+
+// asrHotwords returns the live project names to bias ASR toward, so a spoken
+// project reference (e.g. "bbclaw") isn't mistranscribed beyond the butler's
+// ability to match it. Providers that support biasing (Whisper `prompt`) use it;
+// others ignore it. The butler's own fuzzy matching is the provider-agnostic
+// backstop (see workspace persona).
+func (s *Server) asrHotwords() []string {
+	return s.cwdPoolNames()
+}
+
+// effectivePool returns the live project allow-list: the projectstore's merged
+// (env ∪ admin-added) view when wired, else the immutable env snapshot from
+// config. Callers that only need names/paths read through this so an admin add
+// is reflected without a restart.
+func (s *Server) effectivePool() []config.CwdEntry {
+	if s.projects != nil {
+		list := s.projects.List()
+		out := make([]config.CwdEntry, 0, len(list))
+		for _, p := range list {
+			out = append(out, config.CwdEntry{Name: p.Name, Path: p.Path})
+		}
+		return out
+	}
+	return s.cfg.CwdPool
 }
 
 func NewServer(cfg AppConfig, streams *audio.Manager, asrProvider ASRProvider, ttsProvider TTSProvider, sink OpenClawSink, logger *obs.Logger, metrics *obs.Metrics) *Server {
@@ -166,6 +203,19 @@ func (s *Server) Handler() http.Handler {
 	// UI for dogfooding agent drivers. Protect your adapter by not exposing
 	// it to the internet.
 	mux.HandleFunc("GET /playground", s.handlePlayground)
+	// Local admin page (ADR-021 §拓展): basic status + project allow-list
+	// management. Adding a project grants the butler authority to run agentic
+	// tasks (with command/file execution) in that directory, so these routes are
+	// gated to loopback callers only via adminLocalOnly — never exposed to the
+	// LAN or cloud, regardless of the auth token.
+	mux.HandleFunc("GET /admin", s.adminLocalOnly(s.handleAdminPage))
+	mux.HandleFunc("GET /v1/admin/projects", s.adminLocalOnly(s.handleAdminProjectsList))
+	mux.HandleFunc("POST /v1/admin/projects", s.adminLocalOnly(s.handleAdminProjectsAdd))
+	mux.HandleFunc("DELETE /v1/admin/projects/{name}", s.adminLocalOnly(s.handleAdminProjectsDelete))
+	mux.HandleFunc("GET /v1/admin/fs", s.adminLocalOnly(s.handleAdminFS))
+	mux.HandleFunc("GET /v1/admin/fs/search", s.adminLocalOnly(s.handleAdminFSSearch))
+	mux.HandleFunc("GET /v1/admin/workspace-files", s.adminLocalOnly(s.handleAdminWorkspaceFiles))
+	mux.HandleFunc("GET /v1/admin/workspace-file", s.adminLocalOnly(s.handleAdminWorkspaceFile))
 	return withCORS(mux)
 }
 
@@ -412,6 +462,7 @@ func (s *Server) handleFinish(w http.ResponseWriter, r *http.Request) {
 		Codec:      stream.Codec,
 		SampleRate: stream.SampleRate,
 		Channels:   stream.Channels,
+		Hotwords:   s.asrHotwords(),
 	})
 	if err != nil {
 		var apiErr *asr.APIError
@@ -544,6 +595,7 @@ func (s *Server) handleFinishStream(
 		Codec:      stream.Codec,
 		SampleRate: stream.SampleRate,
 		Channels:   stream.Channels,
+		Hotwords:   s.asrHotwords(),
 	})
 	if err != nil {
 		var apiErr *asr.APIError

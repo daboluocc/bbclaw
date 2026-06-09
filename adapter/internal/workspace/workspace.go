@@ -56,8 +56,26 @@ type MemoryDimension struct {
 }
 
 // MemoryDimensions is the canonical set of long-term memory dimension files
-// the butler maintains: user preferences, recent projects, and key decisions.
+// the butler maintains: the user's identity profile, their long-term
+// preferences, recent projects, and key decisions.
+//
+// profile.md is special: unlike the other three (which the distill/consolidate
+// pipeline may rewrite), it is hand-curated by the butler during the first-run
+// onboarding conversation (ADR-021 §4 拓展) and is NOT part of the auto
+// consolidation loop — so the identity the user dictated is never clobbered by
+// distilled bullets. Its STATUS marker (uninitialized → initialized | skipped)
+// is how the persona decides whether onboarding is still pending.
 var MemoryDimensions = []MemoryDimension{
+	{
+		File: "profile.md",
+		Skeleton: "# 用户身份档案\n\n" +
+			"<!-- 由 BBClaw 管家在初次见面时通过对话填写。修改 STATUS 标记其状态： -->\n" +
+			"<!-- uninitialized=尚未初始化 / initialized=已录入 / skipped=用户选择跳过。 -->\n" +
+			"<!-- STATUS: uninitialized -->\n\n" +
+			"- 怎么称呼：\n" +
+			"- 角色 / 职业：\n" +
+			"- 备注：\n",
+	},
 	{
 		File: "preferences.md",
 		Skeleton: "# 用户长期偏好\n\n" +
