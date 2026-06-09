@@ -214,6 +214,23 @@ fatal error: xxx.h: No such file or directory
 - 固件启动后通过 `GET /v1/ota/check` 查询更新
 - OTA 服务端 API 由 Cloud Backend 提供（不在本仓库内）
 
+### ⚠️ 发布固件构建约束（2026-06，首次真打通 OTA 才暴露的三连坑）
+OTA 只换 app 不换 bootloader，且会刷到真实 bbclaw PCB，**发布构建必须用生产配置**，
+否则 OTA 会变砖 / 死循环 / 丢配对。`release.yml` 已落地以下，改发布流程时勿回退：
+- **必须用 `firmware/sdkconfig.bbclaw.latest` 构建**（OCTAL PSRAM + bbclaw 板 +
+  cloud_saas + 生产云 URL）。`sdkconfig.defaults` 是 breadboard/dev（QUAD PSRAM），
+  刷到八线 PSRAM 的 bbclaw 会 `wrong PSRAM line mode` → boot loop。注意
+  `make set-target BOARD=bbclaw` **不切板**（set-target 忽略 BOARD），真正切板是
+  `make set-board`；Kconfig 默认板已改 bbclaw。
+- **固件版本必须从 tag 注入**：CI build 前 `printf "$RELEASE_VERSION" > firmware/version.txt`
+  （`esp_app_desc.version`）。不要在 `CMakeLists.txt` 硬编码 `project(... VERSION x)`，
+  否则每台 OTA 后自报同一版本 < 云端 active → 无限重刷。
+- **device_id 不含版本号**（`bb_identity.c` 用 `BBClaw-<MAC>`）。含版本会导致每次 OTA
+  设备身份变化 → 云端当新设备要求重新配对。
+- 设备 boot loop 时 factory 槽仍可救：`make boot-recover` 擦 otadata 回 factory；但若
+  云端 active 是坏固件，factory 起来会再 OTA 变砖——先确保云端 active 是好版本
+  （发新 tag 经「同平台单 active」自动停用旧版）。
+
 ## Adapter 日志查看
 
 ```bash
