@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-06-10
+
+### Changed
+- OTA 验证版本:相对 v0.4.11 无代码变更,仅用于在真机上走一遍修复后的完整 OTA
+  链路(下载 → 进度页 → 重启 → 自报新版本 → device_id 稳定不丢配对 → 收敛)。
+
 ## [0.4.11] - 2026-06-10
 
 ### Fixed
