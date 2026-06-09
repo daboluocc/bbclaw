@@ -18,3 +18,6 @@ managed_components/
 
 # macOS/SDL2 LVGL 预览
 simulator/build/
+
+# CI writes the release tag here for esp_app_desc.version; never commit (would pin/stale the version)
+version.txt

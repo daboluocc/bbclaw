@@ -64,6 +64,11 @@ jobs:
           # make build reconfigures from it.
           make set-target
           cp sdkconfig.bbclaw.latest sdkconfig
+          # Embed the release tag as the firmware version (esp_app_desc.version)
+          # so the OTA'd device reports e.g. v0.4.10 and stops re-downloading.
+          # Without this the version was hardcoded → device always reported the
+          # old version → infinite OTA loop.
+          printf '%s' "${RELEASE_VERSION}" > version.txt
           make build
 
       - name: Generate OTA data (ota_0 boot)
