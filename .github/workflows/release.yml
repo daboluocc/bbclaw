@@ -55,7 +55,13 @@ jobs:
         run: |
           source ~/esp/esp-idf/export.sh
           cd firmware
-          make set-target BOARD=bbclaw
+          # `make set-target` only runs `idf.py set-target` (ignores BOARD); the
+          # actual board switch is `make set-board`, which flips
+          # CONFIG_BBCLAW_BOARD_* in sdkconfig. Without it CI built the default
+          # board (breadboard) — wrong pins/PSRAM for the bbclaw PCB, which
+          # bricked devices on OTA. Select bbclaw explicitly.
+          make set-target
+          make set-board BOARD=bbclaw
           make build
 
       - name: Generate OTA data (ota_0 boot)

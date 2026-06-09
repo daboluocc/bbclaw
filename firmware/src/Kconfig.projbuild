@@ -2,7 +2,7 @@ menu "BBClaw"
 
 choice BBCLAW_BOARD_CHOICE
     prompt "Board"
-    default BBCLAW_BOARD_BREADBOARD
+    default BBCLAW_BOARD_BBCLAW
     help
         Select the target hardware board. Each board defines its own pin map,
         audio codec, display bus, and peripheral configuration.
