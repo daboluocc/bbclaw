@@ -140,6 +140,24 @@ type Server struct {
 	// GET /v1/admin/settings as restart_required, so the page can show the
 	// "restart to apply" banner. Cleared naturally on the next process start.
 	settingsRestartReq atomic.Bool
+
+	// Read-only identity/diagnostics surfaced on the admin page (ADR-025):
+	// system-generated values the user can't usefully edit. homeSiteID is the
+	// resolved device identity (env or ~/.bbclaw-adapter/identity.json), version
+	// is the build tag, and logFile is the persistent runtime log path returned
+	// by GET /v1/admin/logs. Wired via SetIdentity from main.go.
+	homeSiteID string
+	version    string
+	logFile    string
+}
+
+// SetIdentity records read-only diagnostics shown on the admin page: the
+// resolved home_site_id, the build version, and the runtime log file path.
+// Optional; unset values simply render blank.
+func (s *Server) SetIdentity(homeSiteID, version, logFile string) {
+	s.homeSiteID = homeSiteID
+	s.version = version
+	s.logFile = logFile
 }
 
 // SetProjectStore wires the mutable project allow-list used by the local admin
@@ -250,6 +268,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsGet))
 	mux.HandleFunc("PUT /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsPut))
 	mux.HandleFunc("POST /v1/admin/restart", s.adminLocalOnly(s.handleAdminRestart))
+	// Recent runtime logs for the admin 日志 page (ADR-025) — read from the
+	// logger's in-memory ring; loopback-only.
+	mux.HandleFunc("GET /v1/admin/logs", s.adminLocalOnly(s.handleAdminLogs))
 	return withCORS(mux)
 }
 
@@ -364,7 +385,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		// ASR/TTS in the cloud). Reject early instead of buffering audio we can't
 		// transcribe.
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "VOICE_NOT_CONFIGURED",
-			Detail: "local voice pipeline is disabled; enable it on the admin page (系统配置 → 本地语音)"})
+			Detail: "local voice pipeline is disabled; enable it on the admin page (设置 → 部署模式 → 本地模式)"})
 		return
 	}
 	var req startRequest

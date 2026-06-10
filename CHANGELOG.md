@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Adapter 管理页「日志」tab + 持久化日志文件（ADR-025）**：新增 `GET /v1/admin/logs`
+  （loopback-only）返回内存环形缓冲里最近 ~1000 行运行日志，管理页独立「日志」页实时
+  展示（3s 轮询、自动跟随底部、暂停/刷新），用户不必再盯着二进制 stdout。日志同时
+  **持久化到 `~/.bbclaw-adapter/adapter-runtime.log`**（即 `$BBCLAW_DATA_DIR/...`，
+  任何启动方式都写，超 16MB 滚动到 `.1`，0600），页面顶部显示该绝对路径 + 复制按钮，
+  方便 AI/CLI 直接 tail。`obs.Logger` 增加 ring buffer 与 `Tee()` 多路输出（stdout 不变）。
+- **设备身份只读展示**：`GET /v1/admin/settings` 增加 `derived` 块（解析后的
+  `home_site_id`、构建 `version`、`log_file`）。「设置」页新增只读「设备身份」卡片展示
+  这些系统生成值，不再当作可填字段。
+
+### Changed
+- **Adapter 管理页重排导航（ADR-025）**：默认落地页从「系统配置」改为
+  **「个人对话」**（打开 `/admin` 直接看聊天记录），设置相关页后置。原本独立的
+  **「系统配置」「AI 配置」两页合并为单页「设置」**（部署模式 + 设备身份 + 高级设置，
+  下接第三方端点 / 项目白名单 / ASR-TTS，顺序排在同一页），顶栏 tab 变为
+  **个人对话 / 设置 / 日志 / AI 数据文件** 四项。老书签 `/admin/system` `/admin/ai`
+  `/admin/projects` 自动落到「设置」。部署模式保存后会重挂 AI 面板，让本地/云端切换
+  即时反映到下方 ASR/TTS 区是否显示。
+- **重启开关移到右上角**：去掉原「配置已保存→立即重启」横幅，改为常驻顶栏右上角的
+  「重启」按钮；有未生效的已保存改动时按钮高亮 + 脉冲点提示「重启生效」。
+- **「设置」页收掉非用户配置项**：删掉 OpenClaw 网关配置区——OpenClaw 与
+  claude-code / codex 一样只是一个**驱动**（在「驱动」区出现），不再当默认配置；
+  删掉可编辑的 Home Site ID 输入框（改为上方只读展示）；高级设置「云端 relay」精简为
+  仅「自建云」WS 地址 + Auth Token（默认指向生产云，开箱即用）。
+
 ## [0.4.14] - 2026-06-10
 
 ### Added

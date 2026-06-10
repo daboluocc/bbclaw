@@ -233,15 +233,25 @@ OTA 只换 app 不换 bootloader，且会刷到真实 bbclaw PCB，**发布构�
 
 ## Adapter 日志查看
 
-```bash
-cd adapter
+适配器无论怎么启动（`make run`、直接跑二进制、systemd/launchd）都会把运行日志
+**持久化到数据目录下的固定文件**，并在内存里保留最近 ~1000 行供管理页「日志」tab
+和 `GET /v1/admin/logs` 读取（ADR-025）。AI/排障时直接 tail 这个文件即可，不用盯着
+二进制的 stdout。
 
-# 实时追踪运行日志
-make log
-# 等价于 tail -f tmp/adapter-runtime.log
+**始终可用的运行时日志文件**（任何启动方式）:
+```
+~/.bbclaw-adapter/adapter-runtime.log        # 即 $BBCLAW_DATA_DIR/adapter-runtime.log
+# 超过 16MB 自动滚动到 adapter-runtime.log.1（单代）
 ```
 
-日志文件位置: `adapter/tmp/adapter-runtime.log`
+**`make run` 额外的 dev tee 日志**（仅经 make 启动时）:
+```bash
+cd adapter
+make log          # 实时追踪，等价于 tail -f tmp/adapter-runtime.log
+```
+位置: `adapter/tmp/adapter-runtime.log`
+
+**Web 管理页**: `/admin` → 「日志」tab 直接看最近输出（含日志文件绝对路径 + 复制按钮）。
 
 ## Cross-Component Protocol Sync
 

@@ -72,7 +72,10 @@ export interface Settings {
   cloud: { ws_url: string; auth_token: string; home_site_id: string };
   openclaw: { ws_url: string; auth_token: string; node_id: string };
 }
-export interface SettingsState { settings: Settings; restart_required: boolean }
+// derived holds read-only, system-generated values the page displays but never
+// lets the user edit (device identity, build version, log file path).
+export interface SettingsDerived { home_site_id?: string; version?: string; log_file?: string }
+export interface SettingsState { settings: Settings; restart_required: boolean; derived?: SettingsDerived }
 
 export async function getSettings(): Promise<SettingsState> {
   return envelope<SettingsState>("/v1/admin/settings");
@@ -87,6 +90,18 @@ export async function putSettings(patch: Record<string, any>): Promise<{ restart
 }
 export async function restartAdapter(): Promise<void> {
   await envelope("/v1/admin/restart", { method: "POST" });
+}
+
+/* ── runtime logs (ADR-025) ── */
+export interface AdapterLogs { file: string; lines: string[] }
+// adapterLogs returns the recent runtime log tail (from the adapter's in-memory
+// ring) plus the on-disk log file path, so the 日志 page can show output without
+// the user watching the binary's stdout.
+export async function adapterLogs(limit = 600): Promise<AdapterLogs> {
+  try {
+    const d = await envelope<AdapterLogs>(`/v1/admin/logs?limit=${limit}`);
+    return { file: d.file ?? "", lines: d.lines ?? [] };
+  } catch { return { file: "", lines: [] }; }
 }
 
 /* ── projects ── */

@@ -74,7 +74,7 @@ onMounted(load);
     <h2>语音（ASR / TTS）</h2>
     <p v-if="!localVoice" class="hint">
       当前是<b style="color:var(--accent)">云端模式</b> —— ASR/TTS 由云端完成，本地无需配置。
-      如需设备 LAN 直连本机做语音，到「系统配置 → 部署模式」切到<b>本地模式</b>。
+      如需设备 LAN 直连本机做语音，到本页上方「部署模式」切到<b>本地模式</b>。
     </p>
 
     <template v-else>

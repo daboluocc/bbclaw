@@ -112,7 +112,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	var asrProvider asr.Provider
 	var ttsProvider tts.Provider
 	if cfg.LocalVoiceEnabled && !cfg.VoiceReady() {
-		logger.Warnf("local voice enabled but ASR/TTS incomplete (%v); voice disabled until configured at /admin (AI 配置)", cfg.VoiceConfigError())
+		logger.Warnf("local voice enabled but ASR/TTS incomplete (%v); voice disabled until configured at /admin (设置)", cfg.VoiceConfigError())
 	}
 	if cfg.VoiceReady() {
 		switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -736,7 +736,46 @@ func probeTCP(addr string, timeout time.Duration) bool {
 	return true
 }
 
+// logFileMaxBytes caps the runtime log file: on startup, if it already exceeds
+// this, it's rotated to <path>.1 (single generation) so disk use stays bounded
+// at ~2× this without a full rotation scheme.
+const logFileMaxBytes = 16 << 20 // 16 MiB
+
+// setupFileLog opens <DataDir>/adapter-runtime.log (append) and tees the logger
+// into it so runtime output is persisted at a stable, documented path. Returns
+// the path, or "" if it couldn't be set up (logging then stays stdout-only).
+// Best-effort: a failure here must never block startup.
+func setupFileLog(logger *obs.Logger) string {
+	dir, err := workspace.DataDir()
+	if err != nil {
+		logger.Warnf("logfile: resolve data dir failed, file logging disabled: %v", err)
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logger.Warnf("logfile: mkdir %s failed, file logging disabled: %v", dir, err)
+		return ""
+	}
+	path := filepath.Join(dir, "adapter-runtime.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > logFileMaxBytes {
+		_ = os.Rename(path, path+".1") // best-effort single-generation rotation
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		logger.Warnf("logfile: open %s failed, file logging disabled: %v", path, err)
+		return ""
+	}
+	// Held open for the process lifetime; the OS reclaims it on exit/re-exec.
+	logger.Tee(f)
+	logger.Infof("logfile: persisting runtime logs to %s", path)
+	return path
+}
+
 func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
+	// Persist logs to a stable file under the data dir and mirror them there in
+	// addition to stdout, so the admin 日志 page and AI/CLI can read runtime
+	// output without watching the binary's stdout (ADR-025). Best-effort.
+	logPath := setupFileLog(logger)
+
 	// Overlay web-managed settings (ADR-025) onto the env-derived cfg before
 	// anything reads it, so ASR/TTS/cloud/openclaw/Anthropic config from the
 	// admin page wins over .env. Mutates cfg in place + re-validates.
@@ -851,6 +890,16 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			logger.Errorf("%v", err)
 			os.Exit(1)
 		}
+		// Surface read-only identity/diagnostics on the admin page: the resolved
+		// device identity (env or identity.json), the build version, and the
+		// persistent log path. These are shown but never edited (ADR-025).
+		homeSiteID := strings.TrimSpace(cfg.HomeSiteID)
+		if homeSiteID == "" {
+			if id, derr := homeadapter.EnsureHomeSiteID(); derr == nil {
+				homeSiteID = id
+			}
+		}
+		agentSrv.SetIdentity(homeSiteID, buildinfo.Tag, logPath)
 		logger.Infof("starting bbclaw-adapter local_ingress=enabled addr=%s asr_provider=%s tts_provider=%s cloud_relay=%t",
 			cfg.Addr, cfg.ASRProvider, cfg.TTSProvider, cfg.EnableCloudRelay())
 		go func() {

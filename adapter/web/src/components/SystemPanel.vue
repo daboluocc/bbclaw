@@ -12,22 +12,29 @@ const noteErr = ref(false);
 const advanced = ref(false);
 
 // One choice drives the page: cloud (cloud does ASR/TTS, local needs nothing) or
-// local (device LAN-direct, you configure ASR/TTS on the AI page).
+// local (device LAN-direct, you configure ASR/TTS below).
 const mode = ref<"cloud" | "local">("cloud");
+// cloud.home_site_id is kept in state only so a save round-trips the stored
+// value (usually empty → auto-derived); it is never shown as an editable field.
+// The OpenClaw gateway is a driver-level concern (it shows up under 驱动 like
+// claude/codex), so it's no longer a config section here.
 const cloud = reactive({ ws_url: "", auth_token: "", home_site_id: "" });
-const openclaw = reactive({ ws_url: "", auth_token: "", node_id: "" });
 const audio = reactive({ save_audio: false, save_input_on_finish: true });
+// Read-only, system-generated identity surfaced for reference (not editable).
+const derived = reactive({ home_site_id: "", version: "" });
 
 function setNote(t: string, err: boolean) { note.value = t; noteErr.value = err; }
 
 async function load() {
   try {
-    const { settings } = await getSettings();
+    const state = await getSettings();
+    const { settings } = state;
     Object.assign(cloud, settings.cloud);
-    Object.assign(openclaw, settings.openclaw);
     audio.save_audio = settings.voice.save_audio;
     audio.save_input_on_finish = settings.voice.save_input_on_finish;
     mode.value = settings.topology.local_voice_enabled ? "local" : "cloud";
+    derived.home_site_id = state.derived?.home_site_id ?? "";
+    derived.version = state.derived?.version ?? "";
     loaded.value = true;
   } catch (e: any) { setNote("加载失败：" + e.message, true); }
 }
@@ -42,11 +49,10 @@ async function save() {
     const res = await putSettings({
       topology,
       cloud: { ...cloud },
-      openclaw: { ...openclaw },
       voice: { save_audio: audio.save_audio, save_input_on_finish: audio.save_input_on_finish },
     });
     if (mode.value === "local" && res.voice_incomplete)
-      setNote("已保存。但 ASR/TTS 还没填完整 → 去「AI 配置」填好后语音才可用。", true);
+      setNote("已保存。但 ASR/TTS 还没填完整 → 在本页下方「语音（ASR / TTS）」填好后语音才可用。", true);
     else
       setNote("已保存。重启适配器后生效。", false);
     emit("saved");
@@ -75,7 +81,7 @@ onMounted(load);
         <input type="radio" value="local" v-model="mode" />
         <div>
           <div class="mt">⌂ 本地模式</div>
-          <div class="md">设备 LAN 直连本机，语音在本机处理。需要在「AI 配置」填写 ASR / TTS 密钥。</div>
+          <div class="md">设备 LAN 直连本机，语音在本机处理。需要在本页下方填写 ASR / TTS 密钥。</div>
         </div>
       </label>
     </div>
@@ -83,7 +89,20 @@ onMounted(load);
     <p v-if="mode === 'cloud'" class="hint ok-hint">
       ✓ 无需本地配置。在网页端 daboluo.cc 输入配对码即可激活设备。
     </p>
-    <p v-else class="hint">下一步 → 到「AI 配置」页填写 ASR / TTS，否则语音不可用。</p>
+    <p v-else class="hint">下一步 → 在本页下方填写 ASR / TTS，否则语音不可用。</p>
+  </div>
+
+  <div class="card" v-if="derived.home_site_id || derived.version">
+    <h2>设备身份</h2>
+    <p class="hint">系统自动生成，只读。配对 / 排障时引用即可，无需手动设置。</p>
+    <div class="status-grid">
+      <div class="item" v-if="derived.home_site_id">
+        <div class="k">Home Site ID</div><div class="v" style="word-break:break-all">{{ derived.home_site_id }}</div>
+      </div>
+      <div class="item" v-if="derived.version">
+        <div class="k">适配器版本</div><div class="v">{{ derived.version }}</div>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -93,31 +112,13 @@ onMounted(load);
 
     <div v-if="advanced">
       <div class="subsec" v-if="mode === 'cloud'">
-        <div class="lbl">云端 relay</div>
+        <div class="lbl">自建云 relay</div>
+        <p class="hint" style="margin:0 0 10px">默认指向生产云，开箱即用；只有自建云端时才需要改。</p>
         <div class="form">
           <div class="field"><label>云端 WS 地址</label>
-            <input type="text" v-model="cloud.ws_url" placeholder="wss://bbclaw.daboluo.cc/ws" />
-            <div class="fh">默认指向生产云，自建云才需要改</div></div>
-          <div class="row2">
-            <div class="field"><label>Auth Token</label>
-              <input type="text" v-model="cloud.auth_token" placeholder="云端关闭匿名接入时才需要" /></div>
-            <div class="field"><label>Home Site ID</label>
-              <input type="text" v-model="cloud.home_site_id" placeholder="留空自动派生" /></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="subsec">
-        <div class="lbl">OpenClaw 网关</div>
-        <div class="form">
-          <div class="field"><label>WS 地址</label>
-            <input type="text" v-model="openclaw.ws_url" placeholder="ws://127.0.0.1:18789" /></div>
-          <div class="row2">
-            <div class="field"><label>Auth Token</label>
-              <input type="text" v-model="openclaw.auth_token" placeholder="可选" /></div>
-            <div class="field"><label>Node ID</label>
-              <input type="text" v-model="openclaw.node_id" placeholder="bbclaw-adapter" /></div>
-          </div>
+            <input type="text" v-model="cloud.ws_url" placeholder="wss://bbclaw.daboluo.cc/ws" /></div>
+          <div class="field"><label>Auth Token</label>
+            <input type="text" v-model="cloud.auth_token" placeholder="云端关闭匿名接入时才需要" /></div>
         </div>
       </div>
 

@@ -34,6 +34,14 @@ func (s *Server) handleAdminSettingsGet(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{
 		"settings":         s.settings.Snapshot(),
 		"restart_required": s.settingsRestartReq.Load(),
+		// Read-only, system-generated values the page shows but never lets the
+		// user edit (ADR-025): the resolved device identity, build version, and
+		// where logs are persisted.
+		"derived": map[string]any{
+			"home_site_id": s.homeSiteID,
+			"version":      s.version,
+			"log_file":     s.logFile,
+		},
 	}})
 }
 
