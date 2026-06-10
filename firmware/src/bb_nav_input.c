@@ -350,14 +350,30 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
   s_callback = callback;
 
 #if BBCLAW_NAV_FLIPPER_6BUTTON
-  /* Build pin_bit_mask from the (up to) 6 buttons whose GPIO macro is >= 0. */
+  /* Build pin_bit_mask from the (up to) 6 buttons whose GPIO macro is >= 0.
+   * Use preprocessor guards instead of runtime if() to avoid 1ULL<<(-1) UB
+   * (C11 6.5.7p3) when a board leaves some buttons undefined (macro == -1).
+   * A runtime if() guard is not sufficient: GCC still evaluates the constant
+   * shift expression and emits -Wshift-count-negative. */
   uint64_t pin_mask = 0;
-  if (BBCLAW_NAV_BTN_UP_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_UP_GPIO);
-  if (BBCLAW_NAV_BTN_DOWN_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_DOWN_GPIO);
-  if (BBCLAW_NAV_BTN_LEFT_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_LEFT_GPIO);
-  if (BBCLAW_NAV_BTN_RIGHT_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_RIGHT_GPIO);
-  if (BBCLAW_NAV_BTN_OK_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_OK_GPIO);
-  if (BBCLAW_NAV_BTN_BACK_GPIO >= 0) pin_mask |= (1ULL << BBCLAW_NAV_BTN_BACK_GPIO);
+#if BBCLAW_NAV_BTN_UP_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_UP_GPIO);
+#endif
+#if BBCLAW_NAV_BTN_DOWN_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_DOWN_GPIO);
+#endif
+#if BBCLAW_NAV_BTN_LEFT_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_LEFT_GPIO);
+#endif
+#if BBCLAW_NAV_BTN_RIGHT_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_RIGHT_GPIO);
+#endif
+#if BBCLAW_NAV_BTN_OK_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_OK_GPIO);
+#endif
+#if BBCLAW_NAV_BTN_BACK_GPIO >= 0
+  pin_mask |= (1ULL << BBCLAW_NAV_BTN_BACK_GPIO);
+#endif
 
   gpio_config_t io_conf = {
       .pin_bit_mask = pin_mask,
