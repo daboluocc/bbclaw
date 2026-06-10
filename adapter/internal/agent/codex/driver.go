@@ -140,6 +140,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		s.butlerArgs = a
 		s.personaFile = pf
 		s.procEnv = pe
+		s.bypassApprovals = len(opts.MCPServers) > 0
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -186,11 +187,21 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	// codex reads the prompt as a positional arg. Resume continues the prior
 	// thread; first turn starts a new one.
+	//
+	// Sandbox/approval flag: a butler session must invoke the dispatch MCP tool
+	// non-interactively, but `--full-auto` auto-CANCELS MCP tool calls (no user
+	// to approve → "user cancelled MCP tool call"). So butler sessions use
+	// --dangerously-bypass-approvals-and-sandbox; worker/plain sessions keep
+	// --full-auto (sandboxed shell auto-exec). Verified live 2026-06-10.
+	sandboxFlag := "--full-auto"
+	if s.bypassApprovals {
+		sandboxFlag = "--dangerously-bypass-approvals-and-sandbox"
+	}
 	var args []string
 	if s.resumeID != "" {
-		args = []string{"exec", "resume", s.resumeID, "--json", "--skip-git-repo-check", "--full-auto"}
+		args = []string{"exec", "resume", s.resumeID, "--json", "--skip-git-repo-check", sandboxFlag}
 	} else {
-		args = []string{"exec", "--json", "--skip-git-repo-check", "--full-auto"}
+		args = []string{"exec", "--json", "--skip-git-repo-check", sandboxFlag}
 	}
 	if s.model != "" {
 		args = append(args, "--model", s.model)
@@ -313,9 +324,10 @@ type session struct {
 	// Butler config (ADR-024): -c override args (persona + dispatch), the
 	// persona temp file to remove on Stop, and secret env routed via the codex
 	// process env (kept out of argv). All empty for non-butler sessions.
-	butlerArgs  []string
-	personaFile string
-	procEnv     map[string]string
+	butlerArgs      []string
+	personaFile     string
+	procEnv         map[string]string
+	bypassApprovals bool // butler session: bypass approvals so MCP dispatch executes
 
 	seq atomic.Uint64
 
