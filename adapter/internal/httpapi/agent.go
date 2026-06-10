@@ -132,13 +132,13 @@ func (s *Server) SetDriverState(store *driverstate.Store) { s.driverState = stor
 
 // SetButlerWorkspace enables butler routing (ADR-021 §1): when workspaceCwd is
 // non-empty, every /v1/agent/message turn is routed to the calling device's
-// butler logical session (cwd=workspaceCwd, Role=butler, driver=claude-code)
-// instead of honouring the device-requested driver/session. mcpConfig is the
-// path to the butler's --mcp-config file (ADR-021 §2); empty disables dispatch.
-// Passing an empty workspaceCwd leaves the legacy multi-session path untouched.
-func (s *Server) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
+// butler logical session (cwd=workspaceCwd, Role=butler) instead of honouring
+// the device-requested driver/session. mcpServers are the butler's dispatch MCP
+// servers (ADR-021 §2 / ADR-024 §5); nil/empty disables dispatch. Passing an
+// empty workspaceCwd leaves the legacy multi-session path untouched.
+func (s *Server) SetButlerWorkspace(workspaceCwd string, mcpServers []agent.MCPServerSpec) {
 	s.butlerWorkspace = strings.TrimSpace(workspaceCwd)
-	s.butlerMCPConfig = strings.TrimSpace(mcpConfig)
+	s.butlerMCPServers = mcpServers
 }
 
 // SetMemoryWriter attaches the butler long-term-memory write side (ADR-021 §4).
@@ -179,6 +179,22 @@ func (s *Server) resolveActiveModel(driver string) string {
 		return ""
 	}
 	return s.driverState.ActiveModel(driver)
+}
+
+// resolveButlerDriver picks the driver that backs the per-device 管家 (butler)
+// role. Since the product is butler-only (ADR-024 §1), the SINGLE active_driver
+// drives everything: the butler uses active_driver when it is registered AND
+// butler-capable (Capabilities.Butler), else it falls back to claude-code
+// (butler.ButlerDriver). There is no separate butler_driver setting anymore
+// (ADR-024 supersedes ADR-023's two-setting split).
+func (s *Server) resolveButlerDriver() string {
+	if name := s.resolveActiveDriver(); name != "" {
+		if drv, ok := s.router.Get(name); ok && drv.Capabilities().Butler {
+			return name
+		}
+		s.log.Warnf("driverstate: active_driver=%q not butler-capable, butler falls back to %q", name, butler.ButlerDriver)
+	}
+	return butler.ButlerDriver
 }
 
 // SetAgentRouter attaches a multi-driver router to the server. Pass nil to
@@ -430,6 +446,15 @@ type driverInfoExtended struct {
 	Capabilities agent.Capabilities `json:"capabilities"`
 	Models       []agent.ModelInfo  `json:"models,omitempty"`
 	ActiveModel  string             `json:"active_model,omitempty"`
+	// Installed reports whether the underlying CLI/service is actually present
+	// on the host (ADR-023): LookPath for claude/opencode/aider/codex, a TCP
+	// probe for ollama, a config file for openclaw. The page greys out rows
+	// where this is false. Pointer so it is omitted when detection is
+	// unavailable rather than misreported as false.
+	Installed *bool `json:"installed,omitempty"`
+	// ButlerCapable mirrors Capabilities.Butler, hoisted to the top level so
+	// the page can build the butler-driver picker without digging into caps.
+	ButlerCapable bool `json:"butler_capable"`
 }
 
 // handleAgentDrivers lists the drivers currently registered on the router,
@@ -460,12 +485,18 @@ func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
 	// Stable order makes the response testable and easier to eyeball.
 	sort.Slice(base, func(i, j int) bool { return base[i].Name < base[j].Name })
 
+	installed := installedByDriver()
+
 	out := make([]driverInfoExtended, 0, len(base))
 	for _, info := range base {
 		row := driverInfoExtended{
-			Name:         info.Name,
-			Capabilities: info.Capabilities,
-			ActiveModel:  s.resolveActiveModel(info.Name),
+			Name:          info.Name,
+			Capabilities:  info.Capabilities,
+			ActiveModel:   s.resolveActiveModel(info.Name),
+			ButlerCapable: info.Capabilities.Butler,
+		}
+		if present, ok := installed[info.Name]; ok {
+			row.Installed = &present
 		}
 		if drv, ok := s.router.Get(info.Name); ok {
 			if ml, isLister := drv.(agent.ModelLister); isLister {
@@ -483,6 +514,7 @@ func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
 		OK: true,
 		Data: map[string]any{
 			"active_driver": s.resolveActiveDriver(),
+			"butler_driver": s.resolveButlerDriver(),
 			"drivers":       out,
 		},
 	})
@@ -533,6 +565,7 @@ func (s *Server) handleAgentActiveDriverPut(w http.ResponseWriter, r *http.Reque
 	s.log.Infof("driverstate: active_driver set to %q", name)
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"active_driver": name}})
 }
+
 
 // handleAgentActiveModelPut persists the active model for one driver.
 //
@@ -657,7 +690,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 	// engine runs; RunTurn's ls- path then loads its cwd, and the butler role
 	// tells the engine to inject --mcp-config so dispatch works.
 	if s.butlerWorkspace != "" && s.sessions != nil {
-		if bsess, err := s.sessions.EnsureButler(deviceID, butler.ButlerDriver, s.butlerWorkspace); err != nil {
+		if bsess, err := s.sessions.EnsureButler(deviceID, s.resolveButlerDriver(), s.butlerWorkspace); err != nil {
 			s.log.Warnf("butler: ensure failed device=%q err=%v; falling back to requested driver/session", deviceID, err)
 		} else {
 			requestedDriver = bsess.Driver
@@ -702,7 +735,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		Log:                s.log,
 		ResolveActiveModel: s.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
-		ButlerMCPConfig:    s.butlerMCPConfig,
+		ButlerMCPServers:   s.butlerMCPServers,
 		Memory:             s.memoryWriter,
 		DispatchRecorder:   s.dispatchRecorder,
 		DispatchRing:       s.dispatchRing,

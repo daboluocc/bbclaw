@@ -94,9 +94,6 @@ func parseBoolEnv(key string, def bool) bool {
 // same single worker so the inbox is periodically archived into MEMORY/*.md
 // (ADR-022). Consolidation is disabled by default.
 func NewFromEnv(claudeMDPath, claudeBin string, log Logger) (*Writer, bool) {
-	if !Enabled() {
-		return nil, false
-	}
 	if bin := strings.TrimSpace(os.Getenv(envClaudeBin)); bin != "" {
 		claudeBin = bin
 	}
@@ -104,14 +101,39 @@ func NewFromEnv(claudeMDPath, claudeBin string, log Logger) (*Writer, bool) {
 	if model == "" {
 		model = defaultModel
 	}
+	return NewWithRunner(claudeMDPath, ClaudePromptRunner(claudeBin, model), log)
+}
+
+// ClaudePromptRunnerFromEnv builds the default claude `-p` memory runner with
+// the env-configured cheap model (preserving the Haiku cost optimisation). Used
+// by main.go as the claude-driver branch of the driver-aware runner.
+func ClaudePromptRunnerFromEnv(claudeBin string) PromptRunner {
+	if bin := strings.TrimSpace(os.Getenv(envClaudeBin)); bin != "" {
+		claudeBin = bin
+	}
+	model := strings.TrimSpace(os.Getenv(envModel))
+	if model == "" {
+		model = defaultModel
+	}
+	return ClaudePromptRunner(claudeBin, model)
+}
+
+// NewWithRunner builds the memory Writer using an injected PromptRunner
+// (ADR-024 §6) so the distill/consolidate step follows the active driver rather
+// than always shelling to claude. Returns (nil,false) when the pipeline is
+// disabled (the default). NewFromEnv is the claude-`-p` convenience wrapper.
+func NewWithRunner(claudeMDPath string, run PromptRunner, log Logger) (*Writer, bool) {
+	if !Enabled() {
+		return nil, false
+	}
 	store := NewStore(claudeMDPath)
-	distiller := newClaudeDistiller(claudeBin, model)
+	distiller := newRunnerDistiller(run)
 
 	w := newWriter(store, distiller, log)
 
 	if ConsolidateEnabled() {
 		maxPerDim := intEnv(envConsolidateMaxPerDim, defaultMaxPerDim)
-		summarizer := newClaudeSummarizer(claudeBin, model, maxPerDim)
+		summarizer := newRunnerSummarizer(run, maxPerDim)
 		cons := NewConsolidator(claudeMDPath, summarizer, log)
 		cons.maxPerDim = maxPerDim
 		w.consolidator = cons

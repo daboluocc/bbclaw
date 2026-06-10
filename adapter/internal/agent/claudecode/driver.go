@@ -46,6 +46,12 @@ type Driver struct {
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
+
+	// mcpFiles caches rendered --mcp-config files keyed by content hash so
+	// butler sessions sharing the same dispatch server reuse one 0600 file
+	// (ADR-024 §5). mcpMu guards it.
+	mcpMu    sync.Mutex
+	mcpFiles map[string]string
 }
 
 // Options configures the driver.
@@ -153,6 +159,10 @@ func (d *Driver) Capabilities() agent.Capabilities {
 		Resume:        true,
 		Streaming:     true,
 		MaxInputBytes: 64 * 1024,
+		// claude-code is the only butler-capable driver today: it honours
+		// --append-system-prompt (persona) and --mcp-config (dispatch). See
+		// ADR-023 §2.
+		Butler: true,
 	}
 }
 
@@ -171,6 +181,13 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 	} else {
 		sid = agent.SessionID(uuid.NewString())
 	}
+	// Render the format-neutral MCP spec into claude's own --mcp-config JSON
+	// file (ADR-024 §5). A render failure is non-fatal: the butler still runs,
+	// just without dispatch this session.
+	mcpConfig, err := d.renderMCPConfigFile(opts.MCPServers)
+	if err != nil {
+		d.log.Warnf("claudecode: render mcp-config failed: %v; session %s runs without dispatch", err, sid)
+	}
 	s := &session{
 		id:           sid,
 		events:       make(chan agent.Event, eventBufSize),
@@ -179,7 +196,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		env:          opts.Env,
 		model:        strings.TrimSpace(opts.Model),
 		systemPrompt: strings.TrimSpace(opts.SystemPrompt),
-		mcpConfig:    strings.TrimSpace(opts.MCPConfig),
+		mcpConfig:    mcpConfig,
 		rootCtx:      ctx,
 	}
 	d.mu.Lock()

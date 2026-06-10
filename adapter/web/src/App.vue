@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import StatusBar from "./components/StatusBar.vue";
+import DriversPanel from "./components/DriversPanel.vue";
 import ProjectsPanel from "./components/ProjectsPanel.vue";
 import FilesPanel from "./components/FilesPanel.vue";
 import Conversation from "./components/Conversation.vue";
@@ -44,6 +45,7 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
   <main>
     <template v-if="tab === 'manage'">
       <StatusBar />
+      <DriversPanel />
       <ProjectsPanel />
       <FilesPanel />
     </template>

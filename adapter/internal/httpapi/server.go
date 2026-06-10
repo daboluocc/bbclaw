@@ -101,9 +101,10 @@ type Server struct {
 	// the device's butler logical session instead of honouring the device's
 	// requested driver/session. Empty keeps the legacy multi-session behaviour.
 	butlerWorkspace string
-	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
-	// §2), passed to the engine so the butler session can dispatch workers.
-	butlerMCPConfig string
+	// butlerMCPServers are the butler's dispatch MCP servers (ADR-021 §2 /
+	// ADR-024 §5, format-neutral spec), passed to the engine so the butler
+	// session can dispatch workers via whichever driver backs it.
+	butlerMCPServers []agent.MCPServerSpec
 	// memoryWriter is the butler long-term-memory write side (ADR-021 §4).
 	// Optional: nil (the default) means the engine skips the memory step. Wired
 	// by main.go from memory.NewFromEnv only when the pipeline is enabled and
@@ -186,6 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
+	mux.HandleFunc("GET /v1/agent/environment", s.withAuth(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))
 	mux.HandleFunc("PUT /v1/agent/drivers/{name}/active_model", s.withAuth(s.handleAgentActiveModelPut))
 	mux.HandleFunc("GET /v1/agent/menu/{id}", s.withAuth(s.handleAgentMenu))
@@ -225,6 +227,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/sessions", s.adminLocalOnly(s.handleAgentSessions))
 	mux.HandleFunc("GET /v1/admin/sessions/{id}/messages", s.adminLocalOnly(s.handleAgentSessionMessages))
 	mux.HandleFunc("GET /v1/admin/dispatch/recent", s.adminLocalOnly(s.handleButlerDispatchRecent))
+	// Driver management for the admin SPA (ADR-024) — same handlers as the
+	// device-facing /v1/agent/* routes but behind the localhost gate, since the
+	// page has no device token. A single active_driver drives everything
+	// (butler + worker + memory); there is no separate butler_driver.
+	mux.HandleFunc("GET /v1/admin/drivers", s.adminLocalOnly(s.handleAgentDrivers))
+	mux.HandleFunc("GET /v1/admin/environment", s.adminLocalOnly(s.handleAgentEnvironment))
+	mux.HandleFunc("PUT /v1/admin/active_driver", s.adminLocalOnly(s.handleAgentActiveDriverPut))
 	return withCORS(mux)
 }
 

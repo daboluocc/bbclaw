@@ -52,11 +52,12 @@ type Deps struct {
 	//   CLOUD  = 请求 ctx
 	StartCtx context.Context
 
-	// ButlerMCPConfig 是管家会话的 --mcp-config 文件路径(ADR-021 §2)。仅当本轮解析到的
-	// logical session 的 Role 为 logicalsession.RoleButler 时,才经 StartOpts.MCPConfig
-	// 下达给 driver(claudecode → --mcp-config),让管家可派发 worker。worker 会话不带。
-	// "" = 不注入(非管家路径或未配置 mcp-server)。
-	ButlerMCPConfig string
+	// ButlerMCPServers 是管家会话要加载的派活 MCP server(ADR-021 §2 / ADR-024 §5,
+	// 格式中立 spec)。仅当本轮解析到的 logical session 的 Role 为
+	// logicalsession.RoleButler 时,才经 StartOpts.MCPServers 下达给 driver
+	// (各驱动渲染各自格式),让管家可派发 worker。worker 会话不带。
+	// nil/空 = 不注入(非管家路径或未配置 mcp-server)。
+	ButlerMCPServers []agent.MCPServerSpec
 
 	// Memory 是「管家长期记忆」写入侧(ADR-021 §4)。非 nil 且本轮为【管家会话 +
 	// turn 正常结束(errorCount==0)】时,engine 在收尾点把 {用户原话, 管家回复, cwd}
@@ -129,6 +130,25 @@ func (d Deps) buildSystemPrompt(cwd, deviceID string) string {
 		return ""
 	}
 	return d.SystemPrompt(cwd, deviceID)
+}
+
+// withWorkerDriver returns a copy of specs with BBCLAW_WORKER_DRIVER=driverName
+// added to each server's env (ADR-024 §3), so the dispatch mcp-server subprocess
+// spawns workers backed by the same CLI as the active butler. It deep-copies the
+// env map so the shared Deps.ButlerMCPServers is never mutated across devices
+// running different drivers.
+func withWorkerDriver(specs []agent.MCPServerSpec, driverName string) []agent.MCPServerSpec {
+	out := make([]agent.MCPServerSpec, len(specs))
+	for i, s := range specs {
+		env := make(map[string]string, len(s.Env)+1)
+		for k, v := range s.Env {
+			env[k] = v
+		}
+		env["BBCLAW_WORKER_DRIVER"] = driverName
+		s.Env = env
+		out[i] = s
+	}
+	return out
 }
 
 // RunTurn 跑完整个 turn 骨架(解析→主动 resume 校验→attempt 循环→收尾)。
@@ -341,10 +361,12 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			}
 			startOpts.Model = d.resolveModel(drv.Name())
 			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd, req.DeviceID)
-			// 仅管家会话(Role=butler)带 --mcp-config,让它能派发 worker(ADR-021 §2);
-			// worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
-			if logicalRole == logicalsession.RoleButler && d.ButlerMCPConfig != "" {
-				startOpts.MCPConfig = d.ButlerMCPConfig
+			// 仅管家会话(Role=butler)带派活 MCP server,让它能派发 worker(ADR-021 §2 /
+			// ADR-024 §5);worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
+			// 注入 BBCLAW_WORKER_DRIVER = 当前管家驱动名,让派活出去的 worker 用同款 CLI
+			// (ADR-024 §3:管家与 worker 同源)。
+			if logicalRole == logicalsession.RoleButler && len(d.ButlerMCPServers) > 0 {
+				startOpts.MCPServers = withWorkerDriver(d.ButlerMCPServers, drv.Name())
 			}
 			isResumeAttempt := false
 			if attempt == 0 {

@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -37,37 +36,27 @@ const consolidatePrompt = `你是一个长期记忆「整理器」。下面给�
 收件箱:
 %s`
 
-// claudeSummarizer consolidates via `claude -p` on a cheap model. Mirrors the
-// claudeDistiller invocation范式 (ADR-022 spike: same tolerant-slice parsing,
-// no --output-format json). Only ever invoked from the single background worker.
-type claudeSummarizer struct {
-	bin       string
-	model     string
+// runnerSummarizer consolidates via a PromptRunner (ADR-024 §6) — claude `-p`
+// by default, or the active driver when injected. Mirrors the distiller's
+// tolerant-slice parsing. Only ever invoked from the single background worker.
+type runnerSummarizer struct {
+	run       PromptRunner
 	maxPerDim int
 }
 
-func newClaudeSummarizer(bin, model string, maxPerDim int) *claudeSummarizer {
-	if strings.TrimSpace(bin) == "" {
-		bin = "claude"
-	}
+func newRunnerSummarizer(run PromptRunner, maxPerDim int) *runnerSummarizer {
 	if maxPerDim <= 0 {
 		maxPerDim = defaultMaxPerDim
 	}
-	return &claudeSummarizer{bin: bin, model: model, maxPerDim: maxPerDim}
+	return &runnerSummarizer{run: run, maxPerDim: maxPerDim}
 }
 
-func (c *claudeSummarizer) Summarize(ctx context.Context, inbox string, existing map[string]string) (map[string][]string, error) {
-	prompt := fmt.Sprintf(consolidatePrompt, c.maxPerDim, renderExisting(existing), inbox)
-	args := []string{"-p", prompt, "--dangerously-skip-permissions"}
-	if strings.TrimSpace(c.model) != "" {
-		args = append(args, "--model", c.model)
-	}
-	cmd := exec.CommandContext(ctx, c.bin, args...)
-	out, err := cmd.Output()
+func (c *runnerSummarizer) Summarize(ctx context.Context, inbox string, existing map[string]string) (map[string][]string, error) {
+	out, err := c.run(ctx, fmt.Sprintf(consolidatePrompt, c.maxPerDim, renderExisting(existing), inbox))
 	if err != nil {
-		return nil, fmt.Errorf("claude -p: %w", err)
+		return nil, err
 	}
-	return parseDimensions(string(out))
+	return parseDimensions(out)
 }
 
 // renderExisting flattens the dimension -> profile body map into a compact,

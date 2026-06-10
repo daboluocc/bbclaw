@@ -39,6 +39,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/menu"
 	"github.com/daboluocc/bbclaw/adapter/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter/internal/detect"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
@@ -501,10 +502,15 @@ func (a *Adapter) handleAgentDriversRequest(write func(CloudEnvelope) error, env
 				activeDriver = d.Name()
 			}
 		}
+		installed := detect.InstalledByDriver()
 		for _, info := range a.router.List() {
 			row := map[string]any{
-				"name":         info.Name,
-				"capabilities": info.Capabilities,
+				"name":           info.Name,
+				"capabilities":   info.Capabilities,
+				"butler_capable": info.Capabilities.Butler,
+			}
+			if present, ok := installed[info.Name]; ok {
+				row["installed"] = present
 			}
 			if drv, ok := a.router.Get(info.Name); ok {
 				if ml, isLister := drv.(agent.ModelLister); isLister {
@@ -525,6 +531,7 @@ func (a *Adapter) handleAgentDriversRequest(write func(CloudEnvelope) error, env
 	if activeDriver != "" {
 		payload["active_driver"] = activeDriver
 	}
+	payload["butler_driver"] = a.resolveButlerDriver()
 	return write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
@@ -572,6 +579,20 @@ func (a *Adapter) handleAgentActiveDriverSetRequest(write func(CloudEnvelope) er
 	a.router.SetDefault(name)
 	a.log.Infof("agent_proxy: active_driver set to %q", name)
 	return reply(map[string]any{"ok": true, "active_driver": name})
+}
+
+
+// resolveButlerDriver mirrors httpapi.Server.resolveButlerDriver for the cloud
+// path (ADR-024 §1): the single active_driver backs the butler when it is
+// registered and butler-capable, else the claude-code fallback.
+func (a *Adapter) resolveButlerDriver() string {
+	if name := a.resolveActiveDriver(); name != "" {
+		if drv, ok := a.router.Get(name); ok && drv.Capabilities().Butler {
+			return name
+		}
+		a.log.Warnf("agent_proxy: active_driver=%q not butler-capable, butler falls back to %q", name, butler.ButlerDriver)
+	}
+	return butler.ButlerDriver
 }
 
 // handleAgentActiveModelSetRequest persists an active model for one driver.

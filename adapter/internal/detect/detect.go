@@ -24,6 +24,7 @@ type Environment struct {
 	OpenClaw   Result
 	ClaudeCode Result
 	OpenCode   Result
+	Codex      Result
 	Aider      Result
 	Ollama     Result
 	SayTTS     Result
@@ -44,6 +45,7 @@ func DetectAll(doubaoEnvPath string) *Environment {
 		OpenClaw:   detectOpenClaw(),
 		ClaudeCode: detectClaudeCode(),
 		OpenCode:   detectOpenCode(),
+		Codex:      detectCodex(),
 		Aider:      detectAider(),
 		Ollama:     detectOllama(),
 		SayTTS:     detectSayTTS(),
@@ -126,6 +128,18 @@ func detectOpenCode() Result {
 	binPath, err := exec.LookPath("opencode")
 	if err != nil {
 		return Result{Present: false, Reason: "opencode not on PATH"}
+	}
+	return Result{
+		Present: true,
+		Data:    map[string]interface{}{"bin": binPath},
+	}
+}
+
+// detectCodex checks for the codex binary on PATH (ADR-023)
+func detectCodex() Result {
+	binPath, err := exec.LookPath("codex")
+	if err != nil {
+		return Result{Present: false, Reason: "codex not on PATH"}
 	}
 	return Result{
 		Present: true,
@@ -347,6 +361,7 @@ func (e *Environment) PickDefaultDriver() string {
 	}{
 		{"claude-code", e.ClaudeCode.Present},
 		{"opencode", e.OpenCode.Present},
+		{"codex", e.Codex.Present},
 		{"aider", e.Aider.Present},
 		{"openclaw", e.OpenClaw.Present},
 		{"ollama", e.Ollama.Present},

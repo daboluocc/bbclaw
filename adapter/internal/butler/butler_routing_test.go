@@ -35,7 +35,7 @@ func TestRunTurn_InjectsMCPConfigForButlerRole(t *testing.T) {
 	drv := newScriptedDriver(ButlerDriver, okScript()...)
 	deps := baseDeps(routerWith(t, drv), newFakeSink(), newFakeRegistry(), Policy{})
 	deps.Sessions = mgr
-	deps.ButlerMCPConfig = "/cfg/butler-mcp.json"
+	deps.ButlerMCPServers = []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}}
 	eng := NewEngine(deps)
 
 	_, err = eng.RunTurn(context.Background(), Request{
@@ -47,8 +47,8 @@ func TestRunTurn_InjectsMCPConfigForButlerRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if len(drv.mcpConfigs) != 1 || drv.mcpConfigs[0] != "/cfg/butler-mcp.json" {
-		t.Fatalf("mcpConfigs=%v want [/cfg/butler-mcp.json]", drv.mcpConfigs)
+	if len(drv.mcpConfigs) != 1 || drv.mcpConfigs[0] != "bbclaw" {
+		t.Fatalf("mcpConfigs=%v want [bbclaw]", drv.mcpConfigs)
 	}
 	if len(drv.cwds) != 1 || drv.cwds[0] != "/ws" {
 		t.Fatalf("cwds=%v want [/ws] (butler workspace)", drv.cwds)
@@ -68,7 +68,7 @@ func TestRunTurn_NoMCPConfigForNonButlerRole(t *testing.T) {
 	drv := newScriptedDriver(ButlerDriver, okScript()...)
 	deps := baseDeps(routerWith(t, drv), newFakeSink(), newFakeRegistry(), Policy{})
 	deps.Sessions = mgr
-	deps.ButlerMCPConfig = "/cfg/butler-mcp.json"
+	deps.ButlerMCPServers = []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}}
 	eng := NewEngine(deps)
 
 	_, err = eng.RunTurn(context.Background(), Request{
@@ -97,7 +97,7 @@ func TestRunTurn_NoMCPConfigWhenUnconfigured(t *testing.T) {
 	drv := newScriptedDriver(ButlerDriver, okScript()...)
 	deps := baseDeps(routerWith(t, drv), newFakeSink(), newFakeRegistry(), Policy{})
 	deps.Sessions = mgr
-	deps.ButlerMCPConfig = "" // not configured
+	deps.ButlerMCPServers = nil // not configured
 	eng := NewEngine(deps)
 
 	_, err = eng.RunTurn(context.Background(), Request{

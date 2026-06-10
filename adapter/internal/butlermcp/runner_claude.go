@@ -19,25 +19,28 @@ const defaultMaxOutputBytes = 8000
 
 const truncationMarker = "\n…[output truncated]…\n"
 
-// claudeDriver is the subset of agent.Driver the runner needs. claudecode.Driver
-// satisfies it; tests inject a fake so Run can be exercised without spawning the
-// real `claude` CLI.
-type claudeDriver interface {
+// workerDriver is the subset of agent.Driver the runner needs. claudecode,
+// codex and opencode Drivers all satisfy it; tests inject a fake so Run can be
+// exercised without spawning a real CLI.
+type workerDriver interface {
 	Start(ctx context.Context, opts agent.StartOpts) (agent.SessionID, error)
 	Send(sid agent.SessionID, text string) error
 	Events(sid agent.SessionID) <-chan agent.Event
 	Stop(sid agent.SessionID) error
 }
 
-// ClaudeWorkerRunner implements WorkerRunner by spawning a claude-code worker
-// session in the target cwd with `--permission-mode acceptEdits`, consuming its
-// stream-json event stream, and returning the accumulated assistant text.
-type ClaudeWorkerRunner struct {
-	driver         claudeDriver
+// DriverWorkerRunner implements WorkerRunner by spawning a worker session in the
+// target cwd, consuming its event stream, and returning the accumulated
+// assistant text. It is driver-agnostic (ADR-024 §3): the dispatched worker
+// uses whichever CLI backs the active butler — claude (--permission-mode
+// acceptEdits), codex (--full-auto) or opencode (--dangerously-skip-permissions),
+// each driver supplying its own unattended-edit flag.
+type DriverWorkerRunner struct {
+	driver         workerDriver
 	maxOutputBytes int
 }
 
-// ClaudeRunnerOptions configure a ClaudeWorkerRunner.
+// ClaudeRunnerOptions configure a claude-backed DriverWorkerRunner.
 type ClaudeRunnerOptions struct {
 	// Bin is the path to the `claude` binary; empty resolves "claude" on PATH.
 	Bin string
@@ -58,8 +61,8 @@ type ClaudeRunnerOptions struct {
 }
 
 // NewClaudeWorkerRunner builds a production runner backed by the claudecode
-// driver.
-func NewClaudeWorkerRunner(opts ClaudeRunnerOptions) *ClaudeWorkerRunner {
+// driver (the claude-code worker case).
+func NewClaudeWorkerRunner(opts ClaudeRunnerOptions) *DriverWorkerRunner {
 	logger := opts.Logger
 	if logger == nil {
 		logger = obs.NewLogger()
@@ -86,18 +89,26 @@ func NewClaudeWorkerRunner(opts ClaudeRunnerOptions) *ClaudeWorkerRunner {
 	return newRunnerWithDriver(d, opts.MaxOutputBytes)
 }
 
+// NewWorkerRunner builds a DriverWorkerRunner from an already-constructed agent
+// driver (ADR-024 §3) — used by the mcp-server to back workers with codex or
+// opencode (the active butler's CLI) instead of always claude. agent.Driver is
+// a superset of workerDriver, so any driver satisfies it.
+func NewWorkerRunner(d agent.Driver, maxOutputBytes int) *DriverWorkerRunner {
+	return newRunnerWithDriver(d, maxOutputBytes)
+}
+
 // newRunnerWithDriver is the testable constructor: it takes an already-built
 // driver (real or fake) so unit tests can inject a mock.
-func newRunnerWithDriver(d claudeDriver, maxOutputBytes int) *ClaudeWorkerRunner {
+func newRunnerWithDriver(d workerDriver, maxOutputBytes int) *DriverWorkerRunner {
 	if maxOutputBytes <= 0 {
 		maxOutputBytes = defaultMaxOutputBytes
 	}
-	return &ClaudeWorkerRunner{driver: d, maxOutputBytes: maxOutputBytes}
+	return &DriverWorkerRunner{driver: d, maxOutputBytes: maxOutputBytes}
 }
 
 // Run starts a worker session in cwd, sends task, and returns the worker's
 // final text once the turn ends. Honours ctx cancellation.
-func (r *ClaudeWorkerRunner) Run(ctx context.Context, cwd, task string) (string, error) {
+func (r *DriverWorkerRunner) Run(ctx context.Context, cwd, task string) (string, error) {
 	sid, err := r.driver.Start(ctx, agent.StartOpts{Cwd: cwd})
 	if err != nil {
 		return "", fmt.Errorf("butlermcp: start worker: %w", err)
