@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	"github.com/daboluocc/bbclaw/adapter/internal/prewarm"
 	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
 )
 
@@ -18,6 +19,10 @@ func newAdminServer(t *testing.T, seed []projectstore.Project) (*Server, string)
 	t.Helper()
 	dataDir := t.TempDir()
 	t.Setenv("BBCLAW_DATA_DIR", dataDir) // prewarm + store resolve here
+	// Adding a project kicks off prewarm.RecordAsync, which writes MEMORY/
+	// projects.md under dataDir. Await it before t.TempDir's RemoveAll runs
+	// (cleanups are LIFO, so registering here runs before the temp-dir removal).
+	t.Cleanup(prewarm.Wait)
 	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
 	path := filepath.Join(dataDir, "projects.json")
 	if _, err := projectstore.Bootstrap(path, seed); err != nil {

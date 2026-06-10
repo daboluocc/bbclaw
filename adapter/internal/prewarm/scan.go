@@ -21,8 +21,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// inflight tracks RecordAsync goroutines so callers (graceful shutdown, tests)
+// can await outstanding scans via Wait — otherwise an async projects.md write
+// can land after a test's temp dir is torn down ("directory not empty").
+var inflight sync.WaitGroup
+
+// Wait blocks until all in-flight RecordAsync scans have finished.
+func Wait() { inflight.Wait() }
 
 // Logger is the minimal log surface; *obs.Logger satisfies it. nil is tolerated.
 type Logger interface {
@@ -67,7 +76,9 @@ func Record(name, dir, projectsMDPath string) error {
 // RecordAsync runs Record in a goroutine, logging the outcome. This is the entry
 // point the admin handler uses so the HTTP response isn't blocked on disk/git.
 func RecordAsync(name, dir, projectsMDPath string, log Logger) {
+	inflight.Add(1)
 	go func() {
+		defer inflight.Done()
 		if err := Record(name, dir, projectsMDPath); err != nil {
 			if log != nil {
 				log.Warnf("prewarm: record %q failed (non-fatal): %v", name, err)

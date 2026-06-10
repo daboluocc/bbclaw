@@ -277,6 +277,7 @@ static lv_obj_t* s_obj_status_battery_frame;
 static lv_obj_t* s_obj_status_battery_fill;
 static lv_obj_t* s_obj_status_battery_cap;
 static lv_obj_t* s_obj_status_battery_charge_lbl; /* ⚡ overlay for charging state */
+static lv_obj_t* s_lbl_status_battery_pct;        /* numeric "NN%" left of the icon */
 
 /* Bottom bar — dot-matrix Knight-rider sweep strip */
 typedef enum {
@@ -376,7 +377,6 @@ static int wifi_signal_level(const char* status) {
 }
 
 static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* status) {
-  if (info_lbl == NULL) return;
   const int level = wifi_signal_level(status);
   lv_color_t on = lv_color_hex(UI_ME_ACCENT);
   lv_color_t off = lv_color_hex(UI_TEXT_DIM);
@@ -385,9 +385,11 @@ static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* st
     lv_obj_set_style_bg_color(bars[i], i < level ? on : off, 0);
     lv_obj_set_style_bg_opa(bars[i], i < level ? LV_OPA_COVER : LV_OPA_50, 0);
   }
-  char wifi_info[64];
-  format_wifi_info(wifi_info, sizeof(wifi_info));
-  lv_label_set_text(info_lbl, wifi_info);
+  if (info_lbl != NULL) { /* SSID label retired, but keep the path for callers that still pass one */
+    char wifi_info[64];
+    format_wifi_info(wifi_info, sizeof(wifi_info));
+    lv_label_set_text(info_lbl, wifi_info);
+  }
 }
 
 static void apply_battery_widget(void) {
@@ -408,15 +410,17 @@ static void apply_battery_widget(void) {
 
   if (!supported) {
     lv_obj_add_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
+    if (s_lbl_status_battery_pct != NULL) lv_obj_add_flag(s_lbl_status_battery_pct, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
   lv_obj_clear_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
   if (!available || percent < 0) {
-    /* No reading yet — show empty frame, hide fill */
+    /* No reading yet — show empty frame, hide fill + % */
     lv_obj_add_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
     if (s_obj_status_battery_charge_lbl != NULL)
       lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (s_lbl_status_battery_pct != NULL) lv_obj_add_flag(s_lbl_status_battery_pct, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
@@ -430,7 +434,7 @@ static void apply_battery_widget(void) {
   } else if (low) {
     fill_color = BB_UI_ERR;
   } else {
-    fill_color = UI_ME_ACCENT; /* theme green */
+    fill_color = UI_TEXT_MAIN; /* cool white — standard battery look */
   }
 
   /* Fill width: charging shows full bar regardless of percent */
@@ -454,6 +458,16 @@ static void apply_battery_widget(void) {
     } else {
       lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
     }
+  }
+
+  /* Numeric "NN%" left of the icon — dim normal, red low, green charging. */
+  if (s_lbl_status_battery_pct != NULL) {
+    char pct_buf[8];
+    snprintf(pct_buf, sizeof(pct_buf), "%d%%", percent);
+    lv_label_set_text(s_lbl_status_battery_pct, pct_buf);
+    lv_obj_set_style_text_color(s_lbl_status_battery_pct,
+                                lv_color_hex(charging ? BB_UI_OK : (low ? BB_UI_ERR : UI_TEXT_DIM)), 0);
+    lv_obj_clear_flag(s_lbl_status_battery_pct, LV_OBJ_FLAG_HIDDEN);
   }
 }
 
@@ -943,8 +957,10 @@ static void set_view_visible(lv_obj_t* obj, int visible) {
 
 /* ── WiFi bar widget creation helper ── */
 
+/* Signal-bars-only WiFi glyph. The SSID text that used to sit left of the bars
+ * was dropped (it crowded the battery off the right edge); the ascending bars
+ * already say "WiFi + strength". info_w is just the bars' footprint. */
 static lv_obj_t* create_wifi_widget(lv_obj_t* parent, int x, int y, lv_obj_t* bars[], lv_obj_t** info_lbl, int info_w) {
-  const lv_font_t* font = ui_font();
   lv_obj_t* container = lv_obj_create(parent);
   lv_obj_remove_style_all(container);
   lv_obj_set_size(container, info_w, 16);
@@ -962,15 +978,7 @@ static lv_obj_t* create_wifi_widget(lv_obj_t* parent, int x, int y, lv_obj_t* ba
     lv_obj_set_pos(bars[i], bars_x + i * (UI_WIFI_BAR_W + UI_WIFI_BAR_GAP), 12 - bar_h);
   }
 
-  *info_lbl = lv_label_create(container);
-  lv_obj_set_width(*info_lbl, info_w - bars_total_w - 6);
-  lv_obj_set_style_text_color(*info_lbl, lv_color_hex(UI_STATUS_FG), 0);
-  lv_obj_set_style_text_font(*info_lbl, font, 0);
-  lv_obj_set_style_text_align(*info_lbl, LV_TEXT_ALIGN_LEFT, 0);
-  lv_label_set_long_mode(*info_lbl, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-  lv_label_set_text(*info_lbl, "WiFi");
-  lv_obj_set_pos(*info_lbl, 0, 0);
-
+  if (info_lbl != NULL) *info_lbl = NULL; /* SSID label retired */
   return container;
 }
 
@@ -990,7 +998,7 @@ static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
   lv_obj_set_size(s_obj_status_battery_fill, UI_BATTERY_FILL_W, UI_BATTERY_FILL_H);
   lv_obj_set_pos(s_obj_status_battery_fill, 2, 2);
   lv_obj_set_style_radius(s_obj_status_battery_fill, 1, 0);
-  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(UI_ME_ACCENT), 0);
+  lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(UI_TEXT_MAIN), 0);
   lv_obj_set_style_bg_opa(s_obj_status_battery_fill, LV_OPA_COVER, 0);
 
   /* Outer frame — rounded rect, no background fill, just border */
@@ -1107,13 +1115,24 @@ static void create_ui(void) {
   lv_obj_set_pos(s_img_status, UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
 
   {
-    const int wifi_w = 72;
+    /* Right side, right→left: clock · battery icon · "NN%" · WiFi bars.
+     * SSID text dropped → WiFi is bars-only, leaving room for the % readout. */
+    const int wifi_w = UI_WIFI_BAR_COUNT * UI_WIFI_BAR_W + (UI_WIFI_BAR_COUNT - 1) * UI_WIFI_BAR_GAP + 2;
     const int battery_enabled = (BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)) ? 1 : 0;
     const int battery_w = battery_enabled ? UI_BATTERY_W : 0;
-    const int battery_gap = battery_enabled ? 4 : 0;
-    const int status_text_x = UI_SAFE_LEFT + (UI_STATUS_ICON_SZ + 4) * 2 + 4;
+    const int batpct_w = battery_enabled ? 28 : 0; /* room for "100%" */
+    const int batpct_gap = battery_enabled ? 3 : 0;
+    const int wifi_gap = 6;
     const int clock_w = 40;
-    const int status_label_w = body_w - (UI_STATUS_ICON_SZ + 4) * 2 - 4 - wifi_w - battery_w - battery_gap - clock_w - 16;
+    const int status_text_x = UI_SAFE_LEFT + (UI_STATUS_ICON_SZ + 4) * 2 + 4;
+
+    const int right = UI_SAFE_LEFT + body_w;
+    const int clock_x = right - clock_w;
+    const int batt_x = clock_x - 6 - battery_w;
+    const int batpct_x = batt_x - batpct_gap - batpct_w; /* == batt_x when battery disabled */
+    const int wifi_x = batpct_x - wifi_gap - wifi_w;
+    const int status_label_w = wifi_x - status_text_x - 8;
+    const int row_y = UI_SAFE_TOP + (status_h - lh - 2) / 2;
 
     s_lbl_status = lv_label_create(s_view_active);
     lv_obj_set_width(s_lbl_status, status_label_w);
@@ -1122,7 +1141,7 @@ static void create_ui(void) {
     lv_label_set_long_mode(s_lbl_status, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_height(s_lbl_status, lh + 2);
     lv_label_set_text(s_lbl_status, BB_STATUS_BOOT);
-    lv_obj_set_pos(s_lbl_status, status_text_x, UI_SAFE_TOP + (status_h - lh - 2) / 2);
+    lv_obj_set_pos(s_lbl_status, status_text_x, row_y);
 
     /* Clock in status bar (right side) */
     s_lbl_status_clock = lv_label_create(s_view_active);
@@ -1133,18 +1152,25 @@ static void create_ui(void) {
     lv_label_set_long_mode(s_lbl_status_clock, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_height(s_lbl_status_clock, lh + 2);
     lv_label_set_text(s_lbl_status_clock, "--:--");
-    lv_obj_set_pos(s_lbl_status_clock, UI_SAFE_LEFT + body_w - clock_w, UI_SAFE_TOP + (status_h - lh - 2) / 2);
+    lv_obj_set_pos(s_lbl_status_clock, clock_x, row_y);
 
     if (battery_enabled) {
       s_obj_status_battery = create_battery_widget(
-          s_view_active,
-          UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w,
-          UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+          s_view_active, batt_x, UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+
+      /* Numeric "NN%" just left of the icon */
+      s_lbl_status_battery_pct = lv_label_create(s_view_active);
+      lv_obj_set_width(s_lbl_status_battery_pct, batpct_w);
+      lv_obj_set_style_text_color(s_lbl_status_battery_pct, lv_color_hex(UI_TEXT_DIM), 0);
+      lv_obj_set_style_text_font(s_lbl_status_battery_pct, font, 0);
+      lv_obj_set_style_text_align(s_lbl_status_battery_pct, LV_TEXT_ALIGN_RIGHT, 0);
+      lv_obj_set_height(s_lbl_status_battery_pct, lh + 2);
+      lv_label_set_text(s_lbl_status_battery_pct, "");
+      lv_obj_set_pos(s_lbl_status_battery_pct, batpct_x, row_y);
     }
 
-    /* WiFi in status bar */
-    s_obj_status_wifi = create_wifi_widget(s_view_active,
-        UI_SAFE_LEFT + body_w - clock_w - 6 - battery_w - battery_gap - wifi_w,
+    /* WiFi in status bar — bars only */
+    s_obj_status_wifi = create_wifi_widget(s_view_active, wifi_x,
         UI_SAFE_TOP + (status_h - 16) / 2,
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }

@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **底栏点阵带按状态切 motif**：不再只有单一 sweep，改为随对话状态切换不同动画——
   处理=扫描 sweep / 聆听=声波 vu / 说话=行波 wave / 错误=红脉冲 pulse / 待机=呼吸
   breathe。与官网 daboluo.cc/style 的 `dot-matrix-anim.js` motif 库同源。
+- **状态栏精简 + 电池可读性**：顶栏去掉占地的 WiFi SSID 文字（信号格已表达"有 WiFi +
+  强度"），腾出的空间让电池重新露出；电池常态填充改冷白（更像标准电池，充电绿/低电红
+  不变），并在图标左侧加 `NN%` 数字（低电红、充电绿）。
+
+### Fixed
+- **adapter release CI 因 prewarm 测试清理竞态失败**：加目录触发的 `prewarm.RecordAsync`
+  异步写 `MEMORY/projects.md`，会在测试 `t.TempDir` 清理后落盘 → `directory not empty`
+  让 `TestAdminProjectsAddListDelete` 失败、挡住发版。给 prewarm 加 `WaitGroup` + `Wait()`，
+  测试 helper 在临时目录拆除前 await 在途扫描。
 
 ### Removed
 - **移除对话页右上角字符小人（buddy）**：agent 聊天主题 `bb_theme_buddy_anim` 过去在
