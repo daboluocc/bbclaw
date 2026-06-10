@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -28,32 +27,26 @@ const distillPrompt = `你是一个记忆蒸馏器。下面是一段「用户 �
 用户: %s
 管家: %s`
 
-// claudeDistiller distills via `claude -p` on a cheap model. It is only ever
-// invoked from the single background worker and is gated off by default.
-type claudeDistiller struct {
-	bin   string
-	model string
+// runnerDistiller distills via a PromptRunner (ADR-024 §6) — claude `-p` by
+// default, or the active driver when main.go injects a driver-aware runner. It
+// is only ever invoked from the single background worker and is gated off by
+// default.
+type runnerDistiller struct {
+	run PromptRunner
 }
 
-func newClaudeDistiller(bin, model string) *claudeDistiller {
-	if strings.TrimSpace(bin) == "" {
-		bin = "claude"
-	}
-	return &claudeDistiller{bin: bin, model: model}
+// newRunnerDistiller builds a distiller backed by a PromptRunner (claude `-p`
+// or the active driver).
+func newRunnerDistiller(run PromptRunner) *runnerDistiller {
+	return &runnerDistiller{run: run}
 }
 
-func (c *claudeDistiller) Distill(ctx context.Context, userText, replyText string) ([]Item, error) {
-	prompt := fmt.Sprintf(distillPrompt, userText, replyText)
-	args := []string{"-p", prompt, "--dangerously-skip-permissions"}
-	if strings.TrimSpace(c.model) != "" {
-		args = append(args, "--model", c.model)
-	}
-	cmd := exec.CommandContext(ctx, c.bin, args...)
-	out, err := cmd.Output()
+func (c *runnerDistiller) Distill(ctx context.Context, userText, replyText string) ([]Item, error) {
+	out, err := c.run(ctx, fmt.Sprintf(distillPrompt, userText, replyText))
 	if err != nil {
-		return nil, fmt.Errorf("claude -p: %w", err)
+		return nil, err
 	}
-	return parseItems(string(out))
+	return parseItems(out)
 }
 
 // parseItems extracts the first top-level JSON array from raw model output and

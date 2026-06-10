@@ -215,7 +215,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		if butlerWorkspace != "" {
 			if mdPath, perr := workspace.ClaudeMDPath(); perr != nil {
 				logger.Warnf("butler-memory: resolve CLAUDE.md path failed, memory disabled: %v", perr)
-			} else if w, on := memory.NewFromEnv(mdPath, os.Getenv("AGENT_CLAUDE_CODE_BIN"), logger); on {
+			} else if w, on := memory.NewWithRunner(mdPath, memoryRunner(agentRouter, logger), logger); on {
 				server.SetMemoryWriter(w)
 				logger.Infof("butler-memory: long-term memory enabled path=%s", mdPath)
 			}
@@ -409,6 +409,33 @@ var k_driver_registry = []driverReg{
 // feedback_config_minimalism).
 func buildAgentRouter(cfg config.Config, logger *obs.Logger) *agent.Router {
 	return buildAgentRouterFromRegistry(cfg, logger, k_driver_registry, os.Getenv)
+}
+
+// memoryRunner builds the driver-aware PromptRunner for the long-term memory
+// distill/consolidate step (ADR-024 §6): the memory follows the active driver.
+// claude-code keeps its cheap `claude -p --model Haiku` path; codex/opencode
+// distill through their own driver (a one-shot turn via the worker runner with
+// no cwd). The active driver is the router's current default (kept in lock-step
+// with active_driver). Falls back to the claude path when the active driver is
+// unresolved or unregistered.
+func memoryRunner(router *agent.Router, logger *obs.Logger) memory.PromptRunner {
+	claudeRun := memory.ClaudePromptRunnerFromEnv(os.Getenv("AGENT_CLAUDE_CODE_BIN"))
+	return func(ctx context.Context, prompt string) (string, error) {
+		name := ""
+		if router != nil {
+			if d := router.Default(); d != nil {
+				name = d.Name()
+			}
+		}
+		if name == "" || name == "claude-code" {
+			return claudeRun(ctx, prompt)
+		}
+		drv, ok := router.Get(name)
+		if !ok {
+			return claudeRun(ctx, prompt)
+		}
+		return butlermcp.NewWorkerRunner(drv, 0).Run(ctx, "", prompt)
+	}
 }
 
 // buildDriverState constructs the persistent driver-preference store. The
