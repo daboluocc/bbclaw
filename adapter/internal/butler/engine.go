@@ -132,6 +132,25 @@ func (d Deps) buildSystemPrompt(cwd, deviceID string) string {
 	return d.SystemPrompt(cwd, deviceID)
 }
 
+// withWorkerDriver returns a copy of specs with BBCLAW_WORKER_DRIVER=driverName
+// added to each server's env (ADR-024 §3), so the dispatch mcp-server subprocess
+// spawns workers backed by the same CLI as the active butler. It deep-copies the
+// env map so the shared Deps.ButlerMCPServers is never mutated across devices
+// running different drivers.
+func withWorkerDriver(specs []agent.MCPServerSpec, driverName string) []agent.MCPServerSpec {
+	out := make([]agent.MCPServerSpec, len(specs))
+	for i, s := range specs {
+		env := make(map[string]string, len(s.Env)+1)
+		for k, v := range s.Env {
+			env[k] = v
+		}
+		env["BBCLAW_WORKER_DRIVER"] = driverName
+		s.Env = env
+		out[i] = s
+	}
+	return out
+}
+
 // RunTurn 跑完整个 turn 骨架(解析→主动 resume 校验→attempt 循环→收尾)。
 //
 // turnCtx 是消费 events 的 ctx(差异 #9):LOCAL=r.Context();CLOUD=请求 ctx。
@@ -344,8 +363,10 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd, req.DeviceID)
 			// 仅管家会话(Role=butler)带派活 MCP server,让它能派发 worker(ADR-021 §2 /
 			// ADR-024 §5);worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
+			// 注入 BBCLAW_WORKER_DRIVER = 当前管家驱动名,让派活出去的 worker 用同款 CLI
+			// (ADR-024 §3:管家与 worker 同源)。
 			if logicalRole == logicalsession.RoleButler && len(d.ButlerMCPServers) > 0 {
-				startOpts.MCPServers = d.ButlerMCPServers
+				startOpts.MCPServers = withWorkerDriver(d.ButlerMCPServers, drv.Name())
 			}
 			isResumeAttempt := false
 			if attempt == 0 {

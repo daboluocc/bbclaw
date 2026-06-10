@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/codex"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
 	"github.com/daboluocc/bbclaw/adapter/internal/butler/memory"
 	"github.com/daboluocc/bbclaw/adapter/internal/butlermcp"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
@@ -13,6 +15,40 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 	"github.com/spf13/cobra"
 )
+
+// buildWorkerRunner constructs the dispatch worker runner backed by the CLI the
+// active butler uses (ADR-024 §3). claude-code is the default/fallback; codex
+// and opencode workers reuse their drivers' own unattended-edit flags
+// (--full-auto / --dangerously-skip-permissions are applied inside those
+// drivers' Send). For claude, NewClaudeWorkerRunner additionally injects
+// --permission-mode acceptEdits and the ANTHROPIC_* worker credentials.
+func buildWorkerRunner(driverName string, cfg config.ButlerConfig, logger *obs.Logger) butlermcp.WorkerRunner {
+	switch driverName {
+	case "codex":
+		d := codex.New(codex.Options{
+			Bin:       os.Getenv("AGENT_CODEX_BIN"),
+			ExtraArgs: parseArgList(os.Getenv("AGENT_CODEX_EXTRA_ARGS")),
+		}, logger)
+		logger.Infof("mcp-server: worker driver=codex")
+		return butlermcp.NewWorkerRunner(d, 0)
+	case "opencode":
+		d := opencode.New(opencode.Options{
+			Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
+			ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
+		}, logger)
+		logger.Infof("mcp-server: worker driver=opencode")
+		return butlermcp.NewWorkerRunner(d, 0)
+	default:
+		logger.Infof("mcp-server: worker driver=claude-code")
+		return butlermcp.NewClaudeWorkerRunner(butlermcp.ClaudeRunnerOptions{
+			Bin:       os.Getenv("AGENT_CLAUDE_CODE_BIN"),
+			BaseURL:   cfg.ClaudeBaseURL,
+			AuthToken: cfg.ClaudeAuthToken,
+			ExtraArgs: parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
+			Logger:    logger,
+		})
+	}
+}
 
 // NewMcpServerCmd creates the `mcp-server` subcommand: the stdio MCP server the
 // conversational orchestrator butler talks to (ADR-021). It is launched by the
@@ -76,13 +112,10 @@ func runMcpServer(cmd *cobra.Command, args []string) error {
 		logger.Warnf("mcp-server: no projects configured (set BBCLAW_CWD_POOL or BBCLAW_DEFAULT_CWD, or add one in the admin page); dispatch will reject all calls")
 	}
 
-	runner := butlermcp.NewClaudeWorkerRunner(butlermcp.ClaudeRunnerOptions{
-		Bin:       os.Getenv("AGENT_CLAUDE_CODE_BIN"),
-		BaseURL:   cfg.ClaudeBaseURL,
-		AuthToken: cfg.ClaudeAuthToken,
-		ExtraArgs: parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
-		Logger:    logger,
-	})
+	// The dispatched worker uses the same CLI family as the active butler
+	// (ADR-024 §3): the engine injects BBCLAW_WORKER_DRIVER into this server's
+	// env. Default claude-code keeps the legacy behaviour.
+	runner := buildWorkerRunner(strings.TrimSpace(os.Getenv("BBCLAW_WORKER_DRIVER")), cfg, logger)
 
 	srv := butlermcp.New(butlermcp.Options{
 		Projects:         seed, // static fallback when the store could not be opened
