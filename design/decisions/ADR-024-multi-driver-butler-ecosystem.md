@@ -68,7 +68,7 @@ claude/codex/opencode = `true`;openclaw = `false`(WS relay,工具服务端跑,�
 - **Phase 1** — persona 投影机制(adapter canonical persona → 各驱动原生文件托管块);worker runner 按激活驱动参数化。
 - **Phase 2** — opencode 接入(persona + 派活 + `bbclaw_dispatch` 解析),门控。
 - **Phase 3** — codex 接入(AGENTS.md/`model_instructions_file` + `-c mcp` + `--ignore-user-config`... 注意决策 4 是「不隔离」,codex 这里需权衡:派活 server 用 `-c` 叠加但保留用户全局 + stdin `/dev/null`),门控。
-- **Phase 4(后续)** — 蒸馏/记忆管线按激活驱动派发,per-driver 存储。**暂缓**:蒸馏管线(`distiller_claude`/`summarizer_claude`)是 opt-in 的(`BBCLAW_BUTLER_MEMORY_DISTILL=1`,默认关),且只是「收件箱→画像」的增强层;管家本身在任意驱动上工作、各驱动经原生文件(CLAUDE.md/AGENTS.md)读自己的记忆。所以蒸馏暂保持 claude,作为独立后续 PR 抽象。
+- **Phase 4** — 蒸馏/记忆管线按激活驱动派发(✅ 已落地):distill/consolidate 经注入的 `PromptRunner` 跟随激活驱动。claude 保留便宜的 `-p --model Haiku`;codex/opencode 经各自驱动蒸馏。仍 opt-in(`BBCLAW_BUTLER_MEMORY_DISTILL=1`,默认关)。per-driver 记忆**存储**(各驱动独立文件)留作后续——当前各驱动共写同一 workspace 收件箱,语义上够用。
 
 ## 范围外 / 已知限制
 
