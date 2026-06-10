@@ -101,6 +101,10 @@ func (d *Driver) Capabilities() agent.Capabilities {
 		Resume:        true,
 		Streaming:     true,
 		MaxInputBytes: 64 * 1024,
+		// Butler-capable when opted in (ADR-024 §7): opencode honours the persona
+		// (OPENCODE_CONFIG_CONTENT instructions) and the dispatch MCP server, but
+		// the model-emitted tool call needs an operator E2E confirmation first.
+		Butler: butlerEnabled(),
 	}
 }
 
@@ -116,6 +120,15 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		env:      opts.Env,
 		model:    strings.TrimSpace(opts.Model),
 		rootCtx:  ctx,
+	}
+	// Butler persona + dispatch (ADR-024): render the format-neutral
+	// SystemPrompt/MCPServers into an OPENCODE_CONFIG_CONTENT doc once per
+	// session. Non-fatal — a render failure just drops butler features.
+	if cc, pf, err := renderButlerConfig(strings.TrimSpace(opts.SystemPrompt), opts.MCPServers); err != nil {
+		d.log.Warnf("opencode: render butler config failed: %v; session %s runs without persona/dispatch", err, sid)
+	} else {
+		s.configContent = cc
+		s.personaFile = pf
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -176,8 +189,19 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	cmd.Dir = s.cwd
-	if len(s.env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), s.env)
+	// Merge per-session env with the butler config (ADR-024): OPENCODE_CONFIG_CONTENT
+	// carries the persona instructions + dispatch MCP server, merged by opencode
+	// on top of the user's global config (ecosystem reuse, ADR-024 §4).
+	envAdds := s.env
+	if s.configContent != "" {
+		envAdds = make(map[string]string, len(s.env)+1)
+		for k, v := range s.env {
+			envAdds[k] = v
+		}
+		envAdds["OPENCODE_CONFIG_CONTENT"] = s.configContent
+	}
+	if len(envAdds) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), envAdds)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -249,6 +273,9 @@ func (d *Driver) Stop(sid agent.SessionID) error {
 		s.cancel()
 	}
 	s.mu.Unlock()
+	if s.personaFile != "" {
+		_ = os.Remove(s.personaFile)
+	}
 	close(s.events)
 	return nil
 }
@@ -263,6 +290,12 @@ type session struct {
 	env      map[string]string
 	model    string // empty = driver/operator default
 	rootCtx  context.Context
+
+	// Butler config (ADR-024): rendered OPENCODE_CONFIG_CONTENT (persona +
+	// dispatch MCP), empty for non-butler sessions; personaFile is the temp
+	// instructions file to remove on Stop.
+	configContent string
+	personaFile   string
 
 	seq atomic.Uint64
 
