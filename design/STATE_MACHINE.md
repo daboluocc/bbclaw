@@ -220,9 +220,36 @@ display init ──▶ splash show ──▶ (硬件 init 继续) ──▶ 等�
 ```
 splash 硬切 ──▶ netconn show ──▶ esp_wifi_init/connect（页面自轮询 SSID）
    ├─ 连上 ──▶ SYNC TIME 相位 ──▶ time ready 或超时 10s ──▶ 自销毁 → 待机时钟
-   ├─ provisioning ──▶ radio app 显式 dismiss → AP info
+   ├─ provisioning ──▶ radio app 显式 dismiss → 配网页（§3.5.2）
    └─ 失败 ──▶ radio app 显式 dismiss → 错误显示
 ```
+
+### 3.5.2 配网页（APConfig Page）
+
+设备进入 SoftAP 配网模式时（首启无凭据 / 运行中 WiFi 掉线回落），过去把
+AP 的 SSID/密码/IP 塞进一个**对话气泡**（`bb_display_show_chat_turn`）显示，
+拥挤且与聊天内容混淆。现改为**独立全屏页**，与 netconn 同点阵语言：
+
+- **视觉**：左侧是**点阵 WiFi 广播图标**（复用 netconn 的基点 + 3 层同心弧，
+  自下而上向外涟漪扩散，~460ms/层，暗示"正在广播、等待加入"）；右侧是青色标题
+  `WiFi 配网` + 三步加入指引，每行 `编号(青) + 描述(暗灰) + 值(冷白)`：
+
+  ```
+       ((•))      WiFi 配网
+        弧          1  热点   BBClaw-<MAC>
+                   2  密码   <password / 开放网络>
+                   3  打开   <ap-ip>
+  ```
+
+- **数据**：show() 时一次性快照 `bb_wifi_get_ap_ssid/password/ip()`——配网会话期间
+  固定不变；密码为空时值显示"开放网络"
+- **生命周期**：本页只在用户提交凭据后由 `bb_wifi` 的 `esp_restart()` 收场，**无自销毁
+  路径**；`show()` 在页已存在时是 no-op，故运行中掉线路径每个 loop tick 调用都安全
+- **层级/内存**：挂 `lv_layer_top()`；show/dismiss 同步硬切不做 fade（同 §3.5 NO_MEM
+  教训）；对象预算 ~16 dots + 7 标签
+- **字体**：标题/描述用 `lv_font_bbclaw_cjk`（含 ASCII + 常用汉字），无 CJK 时回退
+  英文（`WiFi SETUP` / `SSID` / `PWD` / `OPEN`）
+- **文件**：`src/bb_page_apconfig.c`；预览 `sim --mode apconfig`
 
 ### 3.6 状态栏模式指示器
 

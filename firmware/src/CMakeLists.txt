@@ -16,6 +16,7 @@ set(_bb_srcs
     "bb_page_locked.c"
     "bb_page_boot.c"
     "bb_page_netconn.c"
+    "bb_page_apconfig.c"
     "bb_page_ota.c"
     "bb_chat_transcript.c"
     "bb_chat_cache.c"

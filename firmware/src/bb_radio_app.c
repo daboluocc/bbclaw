@@ -19,6 +19,7 @@
 #include "bb_motor.h"
 #include "bb_nav_input.h"
 #include "bb_ogg_opus.h"
+#include "bb_page_apconfig.h"
 #include "bb_page_boot.h"
 #include "bb_page_netconn.h"
 #include "bb_page_ota.h"
@@ -2817,14 +2818,12 @@ static void stream_task(void* arg) {
 #endif
 
     if (!streaming && !s_ptt_pressed) {
-      /* If WiFi dropped and entered provisioning, show AP info and block PTT */
+      /* If WiFi dropped and entered provisioning, show the 配网 page and
+       * block PTT. show() is a no-op once the page exists, so it is safe to
+       * call every loop tick. */
       if (bb_wifi_is_provisioning_mode()) {
         show_status_error(BB_STATUS_NO_WIFI);
-        char ap_line[64];
-        char hint_line[64];
-        snprintf(ap_line, sizeof(ap_line), "AP %s", bb_wifi_get_ap_ssid());
-        snprintf(hint_line, sizeof(hint_line), "%s PWD %s", bb_wifi_get_ap_ip(), bb_wifi_get_ap_password());
-        (void)bb_display_show_chat_turn(ap_line, hint_line);
+        bb_page_apconfig_show();
         s_transport_health_ok = 0;
         adapter_health_is_up = 0;
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -3191,16 +3190,11 @@ esp_err_t bb_radio_app_start(void) {
   }
   if (bb_wifi_is_provisioning_mode()) {
     bb_page_netconn_dismiss();
-    char ap_line[BBCLAW_DISPLAY_CHAT_LINE_LEN];
-    char hint_line[BBCLAW_DISPLAY_CHAT_LINE_LEN];
-    snprintf(ap_line, sizeof(ap_line), "AP %s", bb_wifi_get_ap_ssid());
-    if (bb_wifi_get_ap_password()[0] != '\0') {
-      snprintf(hint_line, sizeof(hint_line), "%s PWD %s", bb_wifi_get_ap_ip(), bb_wifi_get_ap_password());
-    } else {
-      snprintf(hint_line, sizeof(hint_line), "%s OPEN", bb_wifi_get_ap_ip());
-    }
+    /* Dedicated full-screen 配网 page (SSID/密码/打开 join guide) instead of
+     * cramming the AP info into a chat turn. Persists until bb_wifi
+     * esp_restart()s on credential submit. */
     show_status_processing(BB_STATUS_WIFI_AP);
-    (void)bb_display_show_chat_turn(ap_line, hint_line);
+    bb_page_apconfig_show();
     ESP_LOGW(TAG, "wifi provisioning mode active ssid=%s ip=%s", bb_wifi_get_ap_ssid(), bb_wifi_get_ap_ip());
     return ESP_OK;
   }

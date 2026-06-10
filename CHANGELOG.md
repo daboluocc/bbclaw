@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **WiFi 配网改为独立全屏页**：SoftAP 配网模式过去把 AP 的 SSID/密码/IP 塞进一个
+  对话气泡（`bb_display_show_chat_turn`）显示，拥挤且与聊天内容混淆。改为独立的点阵
+  配网页 `bb_page_apconfig`：左侧点阵 WiFi 广播图标（向外涟漪），右侧"热点/密码/打开"
+  三步加入指引（CJK 文字渲染）。首启无凭据和运行中 WiFi 掉线两条进入路径都已切换。
+  详见 design/STATE_MACHINE.md §3.5.2。
+
 ## [0.4.12] - 2026-06-10
 
 ### Changed
