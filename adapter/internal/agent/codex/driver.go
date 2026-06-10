@@ -110,7 +110,11 @@ func (d *Driver) Capabilities() agent.Capabilities {
 		Resume:        true,
 		Streaming:     true,
 		MaxInputBytes: 64 * 1024,
-		Butler:        false,
+		// Butler-capable when opted in (ADR-024 §7): codex honours the persona
+		// (-c model_instructions_file) and the dispatch MCP server
+		// (-c mcp_servers.*), gated behind AGENT_CODEX_BUTLER_VERIFIED until the
+		// operator confirms the model emits the dispatch call.
+		Butler: butlerEnabled(),
 	}
 }
 
@@ -126,6 +130,16 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		env:      opts.Env,
 		model:    strings.TrimSpace(opts.Model),
 		rootCtx:  ctx,
+	}
+	// Butler persona + dispatch (ADR-024): render the format-neutral
+	// SystemPrompt/MCPServers into codex -c overrides once per session. Non-fatal
+	// — a render failure just drops butler features.
+	if a, pf, pe, err := renderButlerArgs(strings.TrimSpace(opts.SystemPrompt), opts.MCPServers); err != nil {
+		d.log.Warnf("codex: render butler args failed: %v; session %s runs without persona/dispatch", err, sid)
+	} else {
+		s.butlerArgs = a
+		s.personaFile = pf
+		s.procEnv = pe
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -181,6 +195,9 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	if s.model != "" {
 		args = append(args, "--model", s.model)
 	}
+	// Butler persona + dispatch -c overrides (ADR-024), before driver extra args
+	// and the prompt.
+	args = append(args, s.butlerArgs...)
 	args = append(args, d.extra...)
 	args = append(args, text)
 
@@ -191,8 +208,20 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	cmd.Dir = s.cwd
-	if len(s.env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), s.env)
+	// Merge per-session env with butler secret env (kept out of argv, inherited
+	// by the spawned dispatch mcp-server).
+	procEnv := s.env
+	if len(s.procEnv) > 0 {
+		procEnv = make(map[string]string, len(s.env)+len(s.procEnv))
+		for k, v := range s.env {
+			procEnv[k] = v
+		}
+		for k, v := range s.procEnv {
+			procEnv[k] = v
+		}
+	}
+	if len(procEnv) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), procEnv)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -263,6 +292,9 @@ func (d *Driver) Stop(sid agent.SessionID) error {
 		s.cancel()
 	}
 	s.mu.Unlock()
+	if s.personaFile != "" {
+		_ = os.Remove(s.personaFile)
+	}
 	close(s.events)
 	return nil
 }
@@ -277,6 +309,13 @@ type session struct {
 	env      map[string]string
 	model    string // empty = driver/operator default
 	rootCtx  context.Context
+
+	// Butler config (ADR-024): -c override args (persona + dispatch), the
+	// persona temp file to remove on Stop, and secret env routed via the codex
+	// process env (kept out of argv). All empty for non-butler sessions.
+	butlerArgs  []string
+	personaFile string
+	procEnv     map[string]string
 
 	seq atomic.Uint64
 
