@@ -581,62 +581,16 @@ func (a *Adapter) handleAgentActiveDriverSetRequest(write func(CloudEnvelope) er
 	return reply(map[string]any{"ok": true, "active_driver": name})
 }
 
-// handleAgentButlerDriverSetRequest persists a new butler_driver selection from
-// the cloud (ADR-023). Mirrors PUT /v1/agent/butler_driver. Deliberately
-// separate from active_driver: it does NOT call router.SetDefault, and rejects
-// drivers that are not butler-capable.
-//
-//	{type:"request", kind:"agent.butler_driver.set",
-//	 payload:{"name":"claude-code"}}
-//
-// Reply kind "agent.butler_driver.set.reply" with {ok:true,butler_driver} or
-// {error,detail} (UNKNOWN_DRIVER / NOT_BUTLER_CAPABLE / ...).
-func (a *Adapter) handleAgentButlerDriverSetRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
-	reply := func(p map[string]any) error {
-		return write(CloudEnvelope{
-			Type:       "reply",
-			MessageID:  env.MessageID,
-			HomeSiteID: a.cfg.HomeSiteID,
-			Kind:       "agent.butler_driver.set.reply",
-			Payload:    p,
-		})
-	}
-	if a.router == nil {
-		return reply(map[string]any{"error": "AGENT_NOT_CONFIGURED"})
-	}
-	if a.driverState == nil {
-		return reply(map[string]any{"error": "DRIVERSTATE_NOT_CONFIGURED"})
-	}
-	name, _ := env.Payload["name"].(string)
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return reply(map[string]any{"error": "EMPTY_NAME"})
-	}
-	drv, ok := a.router.Get(name)
-	if !ok {
-		return reply(map[string]any{"error": "UNKNOWN_DRIVER", "detail": name})
-	}
-	if !drv.Capabilities().Butler {
-		return reply(map[string]any{"error": "NOT_BUTLER_CAPABLE", "detail": name})
-	}
-	if err := a.driverState.SetButlerDriver(name); err != nil {
-		return reply(map[string]any{"error": "PERSIST_FAILED", "detail": err.Error()})
-	}
-	a.log.Infof("agent_proxy: butler_driver set to %q", name)
-	return reply(map[string]any{"ok": true, "butler_driver": name})
-}
 
 // resolveButlerDriver mirrors httpapi.Server.resolveButlerDriver for the cloud
-// path (ADR-023): the persisted butler_driver when still registered and
-// butler-capable, else the claude-code fallback.
+// path (ADR-024 §1): the single active_driver backs the butler when it is
+// registered and butler-capable, else the claude-code fallback.
 func (a *Adapter) resolveButlerDriver() string {
-	if a.driverState != nil {
-		if name := a.driverState.ButlerDriver(); name != "" {
-			if drv, ok := a.router.Get(name); ok && drv.Capabilities().Butler {
-				return name
-			}
-			a.log.Warnf("agent_proxy: butler_driver=%q not registered or not butler-capable, falling back to %q", name, butler.ButlerDriver)
+	if name := a.resolveActiveDriver(); name != "" {
+		if drv, ok := a.router.Get(name); ok && drv.Capabilities().Butler {
+			return name
 		}
+		a.log.Warnf("agent_proxy: active_driver=%q not butler-capable, butler falls back to %q", name, butler.ButlerDriver)
 	}
 	return butler.ButlerDriver
 }

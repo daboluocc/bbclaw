@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
@@ -33,48 +32,37 @@ func decodeData(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	return env.Data
 }
 
-func TestHandleAgentButlerDriverPut(t *testing.T) {
+// TestResolveButlerDriverFollowsActiveDriver verifies the ADR-024 §1 collapse:
+// the single active_driver drives the butler when butler-capable, else falls
+// back to claude-code. There is no separate butler_driver setting.
+func TestResolveButlerDriverFollowsActiveDriver(t *testing.T) {
 	router := agent.NewRouter()
 	router.Register(&mockButlerDriver{mockBasicDriver{name: "claude-code"}}, obs.NewLogger())
+	router.Register(&mockButlerDriver{mockBasicDriver{name: "opencode"}}, obs.NewLogger())
 	router.Register(&mockBasicDriver{name: "ollama"}, obs.NewLogger()) // not butler-capable
 	srv := newMenuTestServer(t, router, true)
 
-	// Valid: claude-code is butler-capable.
-	req := httptest.NewRequest(http.MethodPut, "/v1/agent/butler_driver", strings.NewReader(`{"name":"claude-code"}`))
-	w := httptest.NewRecorder()
-	srv.handleAgentButlerDriverPut(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("claude-code: want 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	if got := decodeData(t, w)["butler_driver"]; got != "claude-code" {
-		t.Errorf("want butler_driver=claude-code, got %v", got)
-	}
-	if got := srv.driverState.ButlerDriver(); got != "claude-code" {
-		t.Errorf("persisted butler_driver: want claude-code, got %q", got)
+	// Default: first-registered claude-code, butler-capable → butler = claude-code.
+	if got := srv.resolveButlerDriver(); got != "claude-code" {
+		t.Errorf("default: butler want claude-code, got %q", got)
 	}
 
-	// Rejected: ollama is registered but not butler-capable.
-	req = httptest.NewRequest(http.MethodPut, "/v1/agent/butler_driver", strings.NewReader(`{"name":"ollama"}`))
-	w = httptest.NewRecorder()
-	srv.handleAgentButlerDriverPut(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("ollama: want 400, got %d", w.Code)
+	// Switch active_driver to opencode (butler-capable) → butler follows it.
+	if err := srv.driverState.SetActiveDriver("opencode"); err != nil {
+		t.Fatalf("SetActiveDriver: %v", err)
 	}
-	if !strings.Contains(w.Body.String(), "NOT_BUTLER_CAPABLE") {
-		t.Errorf("want NOT_BUTLER_CAPABLE, got %s", w.Body.String())
+	srv.router.SetDefault("opencode")
+	if got := srv.resolveButlerDriver(); got != "opencode" {
+		t.Errorf("active=opencode: butler want opencode, got %q", got)
 	}
 
-	// Unknown driver.
-	req = httptest.NewRequest(http.MethodPut, "/v1/agent/butler_driver", strings.NewReader(`{"name":"nope"}`))
-	w = httptest.NewRecorder()
-	srv.handleAgentButlerDriverPut(w, req)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "UNKNOWN_DRIVER") {
-		t.Errorf("unknown driver: want 400 UNKNOWN_DRIVER, got %d %s", w.Code, w.Body.String())
+	// Switch active_driver to ollama (NOT butler-capable) → butler falls back.
+	if err := srv.driverState.SetActiveDriver("ollama"); err != nil {
+		t.Fatalf("SetActiveDriver: %v", err)
 	}
-
-	// active_driver must be untouched by a butler_driver change.
-	if srv.driverState.ActiveDriver() != "" {
-		t.Errorf("butler_driver PUT must not set active_driver, got %q", srv.driverState.ActiveDriver())
+	srv.router.SetDefault("ollama")
+	if got := srv.resolveButlerDriver(); got != "claude-code" {
+		t.Errorf("active=ollama (not butler-capable): butler want claude-code fallback, got %q", got)
 	}
 }
 

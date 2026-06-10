@@ -33,40 +33,27 @@ func newButlerDriverTestAdapter(t *testing.T, drivers ...agent.Driver) *Adapter 
 
 // TestAgentProxyButlerDriverSet mirrors the LAN PUT /v1/agent/butler_driver:
 // the cloud relay must accept butler-capable drivers, reject the rest, and not
-// touch active_driver (ADR-023 cloud parity).
-func TestAgentProxyButlerDriverSet(t *testing.T) {
-	a := newButlerDriverTestAdapter(t, butlerCapable("claude-code"), newFakeAgentDriver("ollama"))
+// touch active_driver (ADR-024 §1 cloud parity).
+func TestAgentProxyButlerFollowsActiveDriver(t *testing.T) {
+	a := newButlerDriverTestAdapter(t, butlerCapable("claude-code"), butlerCapable("opencode"), newFakeAgentDriver("ollama"))
 
-	call := func(name string) CloudEnvelope {
-		var got []CloudEnvelope
-		write := func(env CloudEnvelope) error { got = append(got, env); return nil }
-		if err := a.handleRequest(context.Background(), write, CloudEnvelope{
-			Type: "request", MessageID: "m", Kind: "agent.butler_driver.set",
-			Payload: map[string]any{"name": name},
-		}); err != nil {
-			t.Fatalf("butler_driver.set(%s): err=%v", name, err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("want 1 reply, got %d", len(got))
-		}
-		return got[0]
+	if got := a.resolveButlerDriver(); got != "claude-code" {
+		t.Errorf("default butler want claude-code, got %q", got)
 	}
-
-	ok := call("claude-code")
-	if ok.Kind != "agent.butler_driver.set.reply" || ok.Payload["ok"] != true || ok.Payload["butler_driver"] != "claude-code" {
-		t.Fatalf("claude-code reply wrong: %+v", ok.Payload)
+	if err := a.driverState.SetActiveDriver("opencode"); err != nil {
+		t.Fatalf("SetActiveDriver: %v", err)
 	}
-	if a.driverState.ButlerDriver() != "claude-code" {
-		t.Errorf("persisted butler_driver: want claude-code, got %q", a.driverState.ButlerDriver())
+	a.router.SetDefault("opencode")
+	if got := a.resolveButlerDriver(); got != "opencode" {
+		t.Errorf("active=opencode: butler want opencode, got %q", got)
 	}
-
-	rej := call("ollama")
-	if rej.Payload["error"] != "NOT_BUTLER_CAPABLE" {
-		t.Errorf("ollama: want NOT_BUTLER_CAPABLE, got %+v", rej.Payload)
+	// Non-butler-capable active → fallback claude-code.
+	if err := a.driverState.SetActiveDriver("ollama"); err != nil {
+		t.Fatalf("SetActiveDriver: %v", err)
 	}
-
-	if a.driverState.ActiveDriver() != "" {
-		t.Errorf("butler_driver.set must not touch active_driver, got %q", a.driverState.ActiveDriver())
+	a.router.SetDefault("ollama")
+	if got := a.resolveButlerDriver(); got != "claude-code" {
+		t.Errorf("active=ollama: butler want claude-code fallback, got %q", got)
 	}
 }
 

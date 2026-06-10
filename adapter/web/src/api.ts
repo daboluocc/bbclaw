@@ -53,11 +53,6 @@ export async function setActiveDriver(name: string): Promise<void> {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
   });
 }
-export async function setButlerDriver(name: string): Promise<void> {
-  await envelope("/v1/admin/butler_driver", {
-    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
-  });
-}
 
 /* ── projects ── */
 export async function listProjects(): Promise<Project[]> {

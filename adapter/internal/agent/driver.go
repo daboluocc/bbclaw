@@ -87,10 +87,12 @@ type Capabilities struct {
 	Streaming     bool `json:"streaming"`
 	MaxInputBytes int  `json:"maxInputBytes"`
 	// Butler marks a driver as usable for the per-device 管家 (butler) role
-	// (ADR-023). The butler injects a persona via --append-system-prompt and
-	// wires dispatch via --mcp-config; only drivers that honour both can back
-	// it. PUT /v1/agent/butler_driver rejects drivers where this is false.
-	// Initially only claude-code sets it true.
+	// (ADR-024). The butler needs a persona + dispatch MCP server; a driver is
+	// butler-capable when it renders StartOpts.SystemPrompt + MCPServers into its
+	// own mechanism (claude --append-system-prompt/--mcp-config, opencode
+	// OPENCODE_CONFIG_CONTENT, codex -c overrides). When the single active_driver
+	// is not butler-capable the butler falls back to claude-code. claude-code is
+	// always true; opencode/codex are true behind their *_BUTLER_VERIFIED gate.
 	Butler bool `json:"butler"`
 }
 

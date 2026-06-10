@@ -189,7 +189,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/environment", s.withAuth(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))
-	mux.HandleFunc("PUT /v1/agent/butler_driver", s.withAuth(s.handleAgentButlerDriverPut))
 	mux.HandleFunc("PUT /v1/agent/drivers/{name}/active_model", s.withAuth(s.handleAgentActiveModelPut))
 	mux.HandleFunc("GET /v1/agent/menu/{id}", s.withAuth(s.handleAgentMenu))
 	mux.HandleFunc("POST /v1/agent/menu/action", s.withAuth(s.handleAgentMenuAction))
@@ -228,14 +227,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/sessions", s.adminLocalOnly(s.handleAgentSessions))
 	mux.HandleFunc("GET /v1/admin/sessions/{id}/messages", s.adminLocalOnly(s.handleAgentSessionMessages))
 	mux.HandleFunc("GET /v1/admin/dispatch/recent", s.adminLocalOnly(s.handleButlerDispatchRecent))
-	// Driver management for the admin SPA (ADR-023) — same handlers as the
+	// Driver management for the admin SPA (ADR-024) — same handlers as the
 	// device-facing /v1/agent/* routes but behind the localhost gate, since the
-	// page has no device token. Splitting general active_driver from the
-	// butler-only butler_driver is the whole point of these two PUTs.
+	// page has no device token. A single active_driver drives everything
+	// (butler + worker + memory); there is no separate butler_driver.
 	mux.HandleFunc("GET /v1/admin/drivers", s.adminLocalOnly(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/admin/environment", s.adminLocalOnly(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/admin/active_driver", s.adminLocalOnly(s.handleAgentActiveDriverPut))
-	mux.HandleFunc("PUT /v1/admin/butler_driver", s.adminLocalOnly(s.handleAgentButlerDriverPut))
 	return withCORS(mux)
 }
 

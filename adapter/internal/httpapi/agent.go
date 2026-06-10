@@ -182,20 +182,17 @@ func (s *Server) resolveActiveModel(driver string) string {
 }
 
 // resolveButlerDriver picks the driver that backs the per-device 管家 (butler)
-// role (ADR-023). It is deliberately INDEPENDENT of resolveActiveDriver: the
-// general driver and the butler driver are two separate settings. Priority:
-// 1) persisted driverState.ButlerDriver, but only when it is still registered
-// AND still butler-capable (Capabilities.Butler); 2) the claude-code fallback
-// (butler.ButlerDriver). A persisted-but-now-invalid selection logs a warning
-// and falls back rather than breaking the butler.
+// role. Since the product is butler-only (ADR-024 §1), the SINGLE active_driver
+// drives everything: the butler uses active_driver when it is registered AND
+// butler-capable (Capabilities.Butler), else it falls back to claude-code
+// (butler.ButlerDriver). There is no separate butler_driver setting anymore
+// (ADR-024 supersedes ADR-023's two-setting split).
 func (s *Server) resolveButlerDriver() string {
-	if s.driverState != nil {
-		if name := s.driverState.ButlerDriver(); name != "" {
-			if drv, ok := s.router.Get(name); ok && drv.Capabilities().Butler {
-				return name
-			}
-			s.log.Warnf("driverstate: butler_driver=%q not registered or not butler-capable, falling back to %q", name, butler.ButlerDriver)
+	if name := s.resolveActiveDriver(); name != "" {
+		if drv, ok := s.router.Get(name); ok && drv.Capabilities().Butler {
+			return name
 		}
+		s.log.Warnf("driverstate: active_driver=%q not butler-capable, butler falls back to %q", name, butler.ButlerDriver)
 	}
 	return butler.ButlerDriver
 }
@@ -569,56 +566,6 @@ func (s *Server) handleAgentActiveDriverPut(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"active_driver": name}})
 }
 
-// handleAgentButlerDriverPut persists the 管家 (butler) driver selection
-// (ADR-023). It is the butler-specific sibling of handleAgentActiveDriverPut
-// and is deliberately separate: the butler driver does NOT follow the general
-// active_driver and does NOT touch router.SetDefault.
-//
-//	PUT /v1/agent/butler_driver  {"name":"claude-code"}
-//	→ {"ok":true,"data":{"butler_driver":"claude-code"}}
-//
-// 400 UNKNOWN_DRIVER if name isn't registered; 400 NOT_BUTLER_CAPABLE if the
-// driver is registered but lacks Capabilities.Butler (it can't carry the
-// persona/dispatch the butler needs). 501 DRIVERSTATE_NOT_CONFIGURED when the
-// store wasn't wired. The selection takes effect on the next device turn —
-// EnsureButler is resolved fresh each turn via resolveButlerDriver.
-func (s *Server) handleAgentButlerDriverPut(w http.ResponseWriter, r *http.Request) {
-	if s.router == nil {
-		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "AGENT_NOT_CONFIGURED"})
-		return
-	}
-	if s.driverState == nil {
-		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "DRIVERSTATE_NOT_CONFIGURED"})
-		return
-	}
-	var body struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST", Detail: err.Error()})
-		return
-	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" {
-		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "EMPTY_NAME"})
-		return
-	}
-	drv, ok := s.router.Get(name)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "UNKNOWN_DRIVER", Detail: name})
-		return
-	}
-	if !drv.Capabilities().Butler {
-		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "NOT_BUTLER_CAPABLE", Detail: name})
-		return
-	}
-	if err := s.driverState.SetButlerDriver(name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "PERSIST_FAILED", Detail: err.Error()})
-		return
-	}
-	s.log.Infof("driverstate: butler_driver set to %q", name)
-	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"butler_driver": name}})
-}
 
 // handleAgentActiveModelPut persists the active model for one driver.
 //
