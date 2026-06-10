@@ -3,6 +3,7 @@ package homeadapter
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,5 +126,61 @@ func TestHandleChatTextViaAgent_LegacyWhenButlerUnconfigured(t *testing.T) {
 	// Legacy path must not create any logical session.
 	if sessions := mgr.List("dev-1", "", 0); len(sessions) != 0 {
 		t.Fatalf("legacy path created %d logical sessions, want 0", len(sessions))
+	}
+}
+
+// TestHeartbeatDuringLongButlerTurn verifies that the butler voice path emits
+// voice.reply.heartbeat envelopes when the agent driver is silent for longer
+// than the configured HeartbeatInterval.
+func TestHeartbeatDuringLongButlerTurn(t *testing.T) {
+	const interval = 20 * time.Millisecond
+
+	// slowFakeAgentDriver (defined in adapter_test.go) delays before emitting.
+	// We need a fresh channel so events don't cross test runs.
+	drv := &slowFakeAgentDriver{
+		name:   "claude-code",
+		delay:  4 * interval,
+		events: make(chan agent.Event, 4),
+	}
+	r := agent.NewRouter()
+	r.Register(drv, obs.NewLogger())
+
+	mgr, err := logicalsession.NewManager(filepath.Join(t.TempDir(), "sessions.json"), "/tmp/default", obs.NewLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	a := &Adapter{
+		cfg:     Config{HomeSiteID: "home-1", HeartbeatInterval: interval},
+		log:     obs.NewLogger(),
+		metrics: obs.NewMetrics(),
+	}
+	a.SetRouter(r)
+	a.SetSessionManager(mgr)
+	a.SetButlerWorkspace("/ws", "/cfg/butler-mcp.json")
+
+	var mu sync.Mutex
+	var got []CloudEnvelope
+	write := func(env CloudEnvelope) error {
+		mu.Lock()
+		got = append(got, env)
+		mu.Unlock()
+		return nil
+	}
+	env := CloudEnvelope{Type: "request", MessageID: "m-hb", DeviceID: "dev-hb", Kind: "voice.transcript"}
+	if err := a.handleChatTextViaAgent(context.Background(), write, env, "hello", "sk-1", "st-1", "claude-code", time.Now()); err != nil {
+		t.Fatalf("handleChatTextViaAgent (butler): %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var heartbeats int
+	for _, e := range got {
+		if e.Kind == "voice.reply.heartbeat" {
+			heartbeats++
+		}
+	}
+	if heartbeats < 2 {
+		t.Fatalf("butler path: got %d heartbeats, want ≥2 (frames: %+v)", heartbeats, got)
 	}
 }

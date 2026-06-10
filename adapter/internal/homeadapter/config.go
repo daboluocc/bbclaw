@@ -25,6 +25,14 @@ type Config struct {
 	OpenClawNodeID       string
 	OpenClawReplyWait    time.Duration
 	OpenClawIdentityPath string
+
+	// HeartbeatInterval controls how often a voice.reply.heartbeat envelope is
+	// sent to the cloud during silent stretches of a long agent turn (tool
+	// execution, long thinking, etc.). This keeps the cloud hub's idle-window
+	// timer from expiring before the turn completes. Only applied on the cloud
+	// WebSocket path; LAN-direct (local_home) never constructs CloudEnvelopes.
+	// Set via BBCLAW_HOMEADAPTER_HEARTBEAT_INTERVAL (e.g. "10s"). <= 0 disables.
+	HeartbeatInterval time.Duration
 }
 
 type identityFile struct {
@@ -98,6 +106,7 @@ func LoadFromEnv() (Config, error) {
 		OpenClawNodeID:       getEnvOrDefault("OPENCLAW_NODE_ID", "bbclaw-home-adapter"),
 		OpenClawReplyWait:    time.Duration(getEnvInt("OPENCLAW_REPLY_WAIT_SECONDS", 25)) * time.Second,
 		OpenClawIdentityPath: strings.TrimSpace(os.Getenv("OPENCLAW_DEVICE_IDENTITY_PATH")),
+		HeartbeatInterval:    getEnvDuration("BBCLAW_HOMEADAPTER_HEARTBEAT_INTERVAL", 10*time.Second),
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -183,4 +192,16 @@ func getEnvInt(name string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func getEnvDuration(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

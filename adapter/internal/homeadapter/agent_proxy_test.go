@@ -11,6 +11,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -339,5 +340,52 @@ func TestAgentProxyMessageRejectsUnknownDriver(t *testing.T) {
 	}
 	if got := err.Error(); got != "UNKNOWN_DRIVER:nope" {
 		t.Fatalf("agent.message unknown driver err=%q", got)
+	}
+}
+
+// TestHeartbeatDuringLongAgentProxyTurn verifies that the cloud agent-proxy path
+// (/v1/agent/message via cloud WS) emits agent.event heartbeat envelopes when the
+// driver is silent for longer than HeartbeatInterval.
+func TestHeartbeatDuringLongAgentProxyTurn(t *testing.T) {
+	const interval = 20 * time.Millisecond
+
+	drv := &slowFakeAgentDriver{
+		name:   "claude-code",
+		delay:  4 * interval,
+		events: make(chan agent.Event, 4),
+	}
+	a := newProxyTestAdapter(t, drv)
+	a.cfg.HeartbeatInterval = interval
+
+	var mu sync.Mutex
+	var got []CloudEnvelope
+	write := func(env CloudEnvelope) error {
+		mu.Lock()
+		got = append(got, env)
+		mu.Unlock()
+		return nil
+	}
+	env := CloudEnvelope{
+		Type: "request", MessageID: "m-hb", DeviceID: "dev-hb", Kind: "agent.message",
+		Payload: map[string]any{"text": "hi", "driver": "claude-code", "sessionId": ""},
+	}
+	if err := a.handleAgentMessageRequest(context.Background(), write, env); err != nil {
+		t.Fatalf("handleAgentMessageRequest: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var heartbeats int
+	for _, e := range got {
+		if e.Kind == "voice.reply.heartbeat" {
+			heartbeats++
+			phase, _ := e.Payload["phase"].(string)
+			if phase == "" {
+				t.Errorf("heartbeat missing phase field: %+v", e.Payload)
+			}
+		}
+	}
+	if heartbeats < 2 {
+		t.Fatalf("agent proxy path: got %d heartbeats, want ≥2 (frames: %+v)", heartbeats, got)
 	}
 }
