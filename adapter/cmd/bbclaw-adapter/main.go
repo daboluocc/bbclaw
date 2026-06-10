@@ -17,6 +17,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/aider"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/claudecode"
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/codex"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/ollama"
@@ -312,7 +313,12 @@ var k_driver_registry = []driverReg{
 			}
 			return claudecode.New(opts, logger), nil
 		},
-		autoEnable: func(cfg config.Config) bool { return true },
+		// ADR-023: only register claude-code when the CLI is actually on PATH,
+		// so the page's driver list / `installed` flag reflects reality instead
+		// of advertising a driver that fails at first call. AGENT_CLAUDE_CODE_FORCE
+		// bypasses the probe for non-PATH installs.
+		autoEnable: func(cfg config.Config) bool { _, err := exec.LookPath("claude"); return err == nil },
+		forceEnv:   "AGENT_CLAUDE_CODE_FORCE",
 	},
 	{
 		name: "opencode",
@@ -322,7 +328,9 @@ var k_driver_registry = []driverReg{
 				ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
 			}, logger), nil
 		},
-		autoEnable: func(cfg config.Config) bool { return true },
+		// ADR-023: gate on the opencode CLI being present (see claude-code above).
+		autoEnable: func(cfg config.Config) bool { _, err := exec.LookPath("opencode"); return err == nil },
+		forceEnv:   "AGENT_OPENCODE_FORCE",
 	},
 	{
 		name: "openclaw",
@@ -364,6 +372,20 @@ var k_driver_registry = []driverReg{
 			return err == nil
 		},
 		forceEnv: "AGENT_AIDER_FORCE",
+	},
+	{
+		name: "codex",
+		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
+			return codex.New(codex.Options{
+				Bin:       os.Getenv("AGENT_CODEX_BIN"),
+				ExtraArgs: parseArgList(os.Getenv("AGENT_CODEX_EXTRA_ARGS")),
+			}, logger), nil
+		},
+		autoEnable: func(cfg config.Config) bool {
+			_, err := exec.LookPath("codex")
+			return err == nil
+		},
+		forceEnv: "AGENT_CODEX_FORCE",
 	},
 }
 

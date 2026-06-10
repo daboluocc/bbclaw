@@ -16,7 +16,7 @@ onMounted(async () => {
   const local = h?.local ?? {};
   localOn.value = !!local.ready;
   localLabel.value = local.ready ? "ready" : local.enabled ? "starting" : "off";
-  driverList.value = d.map((x) => x.name).join(", ") || "—";
+  driverList.value = d.drivers.map((x) => x.name).join(", ") || "—";
 });
 </script>
 

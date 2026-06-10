@@ -25,8 +25,38 @@ async function envelope<T>(path: string, init?: RequestInit): Promise<T> {
 
 /* ── status ── */
 export async function health(): Promise<any> { try { return (await (await fetch("/healthz")).json()).data ?? {}; } catch { return {}; } }
-export async function drivers(): Promise<{ name: string }[]> {
-  try { return (await envelope<{ drivers: { name: string }[] }>("/v1/agent/drivers")).drivers ?? []; } catch { return []; }
+
+/* ── drivers (ADR-023) ── */
+export interface DriverCaps { butler?: boolean; resume?: boolean; streaming?: boolean }
+export interface DriverRow {
+  name: string;
+  capabilities?: DriverCaps;
+  installed?: boolean;        // omitted when detection has no opinion
+  butler_capable?: boolean;
+  active_model?: string;
+}
+export interface DriversState {
+  active_driver: string;
+  butler_driver: string;
+  drivers: DriverRow[];
+}
+// drivers() returns the full driver-management state. The admin SPA reaches it
+// via the loopback-gated /v1/admin/drivers (no device token needed).
+export async function drivers(): Promise<DriversState> {
+  try {
+    const d = await envelope<DriversState>("/v1/admin/drivers");
+    return { active_driver: d.active_driver ?? "", butler_driver: d.butler_driver ?? "", drivers: d.drivers ?? [] };
+  } catch { return { active_driver: "", butler_driver: "", drivers: [] }; }
+}
+export async function setActiveDriver(name: string): Promise<void> {
+  await envelope("/v1/admin/active_driver", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
+}
+export async function setButlerDriver(name: string): Promise<void> {
+  await envelope("/v1/admin/butler_driver", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
 }
 
 /* ── projects ── */

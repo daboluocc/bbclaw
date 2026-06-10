@@ -153,6 +153,10 @@ func (d *Driver) Capabilities() agent.Capabilities {
 		Resume:        true,
 		Streaming:     true,
 		MaxInputBytes: 64 * 1024,
+		// claude-code is the only butler-capable driver today: it honours
+		// --append-system-prompt (persona) and --mcp-config (dispatch). See
+		// ADR-023 §2.
+		Butler: true,
 	}
 }
 

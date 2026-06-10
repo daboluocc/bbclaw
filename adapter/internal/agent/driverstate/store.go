@@ -39,6 +39,7 @@ type Store struct {
 
 	mu           sync.RWMutex
 	activeDriver string
+	butlerDriver string            // per-device 管家 driver (ADR-023); "" => caller falls back to claude-code
 	activeModels map[string]string // driverName -> modelID
 }
 
@@ -46,6 +47,7 @@ type Store struct {
 // can evolve the file format without rewriting every caller.
 type fileShape struct {
 	ActiveDriver string            `json:"active_driver,omitempty"`
+	ButlerDriver string            `json:"butler_driver,omitempty"`
 	ActiveModels map[string]string `json:"active_models,omitempty"`
 }
 
@@ -84,12 +86,13 @@ func (s *Store) load() error {
 		return nil
 	}
 	s.activeDriver = f.ActiveDriver
+	s.butlerDriver = f.ButlerDriver
 	if f.ActiveModels != nil {
 		s.activeModels = f.ActiveModels
 	}
 	if s.log != nil {
-		s.log.Infof("driverstate: loaded path=%s active_driver=%q models=%d",
-			s.path, s.activeDriver, len(s.activeModels))
+		s.log.Infof("driverstate: loaded path=%s active_driver=%q butler_driver=%q models=%d",
+			s.path, s.activeDriver, s.butlerDriver, len(s.activeModels))
 	}
 	return nil
 }
@@ -106,6 +109,7 @@ func (s *Store) saveLocked() error {
 	}
 	body, err := json.MarshalIndent(fileShape{
 		ActiveDriver: s.activeDriver,
+		ButlerDriver: s.butlerDriver,
 		ActiveModels: s.activeModels,
 	}, "", "  ")
 	if err != nil {
@@ -140,6 +144,27 @@ func (s *Store) SetActiveDriver(driver string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeDriver = driver
+	return s.saveLocked()
+}
+
+// ButlerDriver returns the persisted 管家 (butler) driver name, or "" when
+// unset (ADR-023). "" is not a default — the caller (resolveButlerDriver)
+// layers the claude-code fallback on top. This is deliberately independent of
+// ActiveDriver: switching the general driver must not move the butler.
+func (s *Store) ButlerDriver() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.butlerDriver
+}
+
+// SetButlerDriver persists driver as the butler driver. Empty string clears it
+// (reverts to the claude-code fallback). The caller is expected to validate
+// that the driver is registered AND butler-capable — Store has no view of the
+// router or driver capabilities.
+func (s *Store) SetButlerDriver(driver string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.butlerDriver = driver
 	return s.saveLocked()
 }
 

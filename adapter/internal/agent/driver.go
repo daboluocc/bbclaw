@@ -86,6 +86,12 @@ type Capabilities struct {
 	Resume        bool `json:"resume"`
 	Streaming     bool `json:"streaming"`
 	MaxInputBytes int  `json:"maxInputBytes"`
+	// Butler marks a driver as usable for the per-device 管家 (butler) role
+	// (ADR-023). The butler injects a persona via --append-system-prompt and
+	// wires dispatch via --mcp-config; only drivers that honour both can back
+	// it. PUT /v1/agent/butler_driver rejects drivers where this is false.
+	// Initially only claude-code sets it true.
+	Butler bool `json:"butler"`
 }
 
 // StartOpts carries per-session startup parameters.

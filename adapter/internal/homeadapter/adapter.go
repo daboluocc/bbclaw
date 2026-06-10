@@ -402,6 +402,11 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// PUT /v1/agent/active_driver so the device settings UI can change
 		// the active driver in cloud_saas mode.
 		return a.handleAgentActiveDriverSetRequest(write, env)
+	case "agent.butler_driver.set":
+		// ADR-023: cloud proxies the admin/page PUT /v1/agent/butler_driver so
+		// the per-device 管家 driver can be changed in cloud_saas mode. Separate
+		// from active_driver and constrained to butler-capable drivers.
+		return a.handleAgentButlerDriverSetRequest(write, env)
 	case "agent.active_model.set":
 		// Driver/model selection (this ADR): cloud proxies firmware
 		// PUT /v1/agent/drivers/{name}/active_model.
@@ -735,9 +740,10 @@ func (a *Adapter) handleChatTextViaButler(
 		a.agentSessions = newAgentProxyRegistry()
 	}
 
-	requestedDriver := butler.ButlerDriver
+	butlerDriver := a.resolveButlerDriver()
+	requestedDriver := butlerDriver
 	requestedSession := ""
-	if bsess, err := a.sessions.EnsureButler(env.DeviceID, butler.ButlerDriver, a.butlerWorkspace); err != nil {
+	if bsess, err := a.sessions.EnsureButler(env.DeviceID, butlerDriver, a.butlerWorkspace); err != nil {
 		// Non-fatal: without a butler session the engine still runs a fresh
 		// claude-code turn in the workspace, just without session continuity.
 		a.log.Warnf("butler: ensure failed device=%q err=%v; running butler turn without logical session", env.DeviceID, err)
