@@ -86,12 +86,13 @@ func TestHandleAdminSettingsPutValidSetsRestartFlag(t *testing.T) {
 	}
 }
 
-func TestHandleAdminSettingsPutInvalidRejected(t *testing.T) {
+// Incomplete voice config is NOT a hard error: local mode saves (200) and the
+// response flags voice_incomplete so the page can nudge the user to fill ASR/TTS.
+func TestHandleAdminSettingsPutLocalVoiceIncompleteSavesWithFlag(t *testing.T) {
 	t.Setenv("ADAPTER_MODE", "auto")
-	t.Setenv("ASR_LOCAL_BIN", "") // force the env baseline to lack an ASR bin
+	t.Setenv("ASR_LOCAL_BIN", "")
 	srv := newSettingsTestServer(t)
 
-	// Local voice on, ASR provider=local but no bin → must fail validation.
 	body := settingsstore.Settings{
 		Version:  1,
 		Topology: settingsstore.TopologySettings{LocalVoiceEnabled: true},
@@ -105,12 +106,34 @@ func TestHandleAdminSettingsPutInvalidRejected(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/settings", bytes.NewReader(raw))
 	w := httptest.NewRecorder()
 	srv.handleAdminSettingsPut(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400 for invalid voice config, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (incomplete voice degrades, not rejected), got %d: %s", w.Code, w.Body.String())
 	}
-	// The bad write must NOT have set the restart flag.
+	data := decodeData(t, w)
+	if data["voice_incomplete"] != true {
+		t.Errorf("want voice_incomplete=true, got %v", data["voice_incomplete"])
+	}
+}
+
+// A genuinely structural error (malformed OpenClaw URL) is still rejected 400.
+func TestHandleAdminSettingsPutStructuralRejected(t *testing.T) {
+	t.Setenv("ADAPTER_MODE", "auto")
+	srv := newSettingsTestServer(t)
+
+	body := settingsstore.Settings{
+		Version:  1,
+		Topology: settingsstore.TopologySettings{CloudRelayEnabled: false, LocalVoiceEnabled: false},
+		OpenClaw: settingsstore.OpenClawSettings{WSURL: "not a url", NodeID: "bbclaw-adapter"},
+	}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/settings", bytes.NewReader(raw))
+	w := httptest.NewRecorder()
+	srv.handleAdminSettingsPut(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for malformed openclaw url, got %d: %s", w.Code, w.Body.String())
+	}
 	if srv.settingsRestartReq.Load() {
-		t.Error("invalid PUT must not set restart_required")
+		t.Error("rejected PUT must not set restart_required")
 	}
 }
 

@@ -88,6 +88,18 @@ pre.preview{margin:0;padding:14px;border:1px solid var(--ghost);border-radius:8p
 .subsec>.lbl{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:10px}
 .save-row{display:flex;gap:10px;align-items:center;margin-top:4px}
 
+/* mode picker (deployment mode) */
+.modes{display:grid;gap:10px;margin-top:4px}
+.mode{display:flex;gap:11px;align-items:flex-start;cursor:pointer;border:1px solid var(--ghost);
+  border-radius:9px;padding:12px 13px;background:rgba(7,11,14,.4)}
+.mode.on{border-color:var(--accent);background:rgba(46,196,160,.07)}
+.mode input[type=radio]{accent-color:var(--accent);width:16px;height:16px;margin-top:2px}
+.mode .mt{font-size:13px;color:var(--lit);font-weight:600}
+.mode .md{font-size:11px;color:var(--dim);margin-top:3px;line-height:1.5}
+.hint.ok-hint{color:var(--accent)}
+.disclose{font:inherit;cursor:pointer;background:transparent;border:0;color:var(--dim);padding:0;letter-spacing:.04em}
+.disclose:hover{color:var(--lit)}
+
 /* restart banner */
 .rbanner{position:sticky;top:54px;z-index:2;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   background:rgba(46,196,160,.08);border:1px solid #1f4d47;border-radius:9px;padding:10px 14px;margin:0 0 18px}

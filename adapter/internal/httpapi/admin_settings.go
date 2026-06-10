@@ -65,18 +65,26 @@ func (s *Server) handleAdminSettingsPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	next.ApplyTo(&cfg)
+	// Validate rejects only structural errors (bad mode/cloud/openclaw URL, …).
+	// Incomplete voice config is NOT a structural error — local mode saves fine and
+	// the pipeline degrades to 501 until ASR/TTS is filled (ADR-025 §3). The page
+	// is told via voice_incomplete so it can nudge the user to the AI page.
 	if err := cfg.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_SETTINGS", Detail: err.Error()})
 		return
 	}
+	voiceIncomplete := cfg.LocalVoiceEnabled && cfg.VoiceConfigError() != nil
 
 	if err := s.settings.Replace(next); err != nil {
 		writeJSON(w, http.StatusInternalServerError, response{OK: false, Error: "SETTINGS_WRITE_FAILED", Detail: err.Error()})
 		return
 	}
 	s.settingsRestartReq.Store(true)
-	s.log.Infof("admin: settings updated (restart required to apply)")
-	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"restart_required": true}})
+	s.log.Infof("admin: settings updated (restart required to apply; voice_incomplete=%t)", voiceIncomplete)
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{
+		"restart_required": true,
+		"voice_incomplete": voiceIncomplete,
+	}})
 }
 
 // handleAdminRestart re-executes the adapter in place so a settings change takes

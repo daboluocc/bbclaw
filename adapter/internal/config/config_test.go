@@ -123,23 +123,26 @@ func TestLoadFromEnvOpenAICompatible(t *testing.T) {
 	}
 }
 
-// TestLoadFromEnvLocalRequiresBin: with the LAN voice pipeline explicitly opted
-// in (BBCLAW_LOCAL_VOICE=1), an incomplete ASR config is still a hard error.
-func TestLoadFromEnvLocalRequiresBin(t *testing.T) {
+// TestLoadFromEnvLocalVoiceIncompleteDegrades: with the LAN pipeline opted in
+// (BBCLAW_LOCAL_VOICE=1) but ASR incomplete, the adapter still LOADS (incomplete
+// voice degrades, never a hard boot failure — ADR-025 §3). VoiceReady is false
+// and VoiceConfigError points at the missing knob.
+func TestLoadFromEnvLocalVoiceIncompleteDegrades(t *testing.T) {
 	t.Setenv("BBCLAW_LOCAL_VOICE", "1")
 	t.Setenv("ASR_PROVIDER", "local")
 	t.Setenv("OPENCLAW_RPC_URL", "https://gateway.example.com/rpc")
-	t.Setenv("TTS_WS_URL", "wss://openspeech.bytedance.com/api/v1/tts/ws_binary")
-	t.Setenv("TTS_APP_ID", "appid")
-	t.Setenv("TTS_TOKEN", "token")
-	t.Setenv("TTS_CLUSTER", "volcano_tts")
-	t.Setenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected error for missing ASR_LOCAL_BIN")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("incomplete voice should not fail boot, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "ASR_LOCAL_BIN") {
-		t.Fatalf("err = %v", err)
+	if !cfg.LocalVoiceEnabled {
+		t.Fatal("BBCLAW_LOCAL_VOICE=1 should set LocalVoiceEnabled")
+	}
+	if cfg.VoiceReady() {
+		t.Fatal("VoiceReady should be false with ASR_LOCAL_BIN missing")
+	}
+	if err := cfg.VoiceConfigError(); err == nil || !strings.Contains(err.Error(), "ASR_LOCAL_BIN") {
+		t.Fatalf("VoiceConfigError = %v, want mention of ASR_LOCAL_BIN", err)
 	}
 }
 

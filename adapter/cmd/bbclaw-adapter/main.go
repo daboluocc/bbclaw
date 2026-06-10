@@ -104,12 +104,17 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 
 func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, settingsStore *settingsstore.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
-	// ADR-025 §3: the LAN voice pipeline is opt-in. When local voice is off
-	// (cloud-default deployment — the cloud does ASR/TTS), no provider is built
-	// and the /v1/stream/* + /v1/tts/* routes degrade to 501 VOICE_NOT_CONFIGURED.
+	// ADR-025 §3: the LAN voice pipeline is opt-in AND must be fully configured.
+	// When off (cloud-default — the cloud does ASR/TTS) or enabled-but-incomplete,
+	// no provider is built and /v1/stream/* + /v1/tts/* degrade to 501. An enabled
+	// but incomplete config warns rather than crashing, so the user can switch to
+	// local mode first and fill ASR/TTS on the AI page afterwards.
 	var asrProvider asr.Provider
 	var ttsProvider tts.Provider
-	if cfg.LocalVoiceEnabled {
+	if cfg.LocalVoiceEnabled && !cfg.VoiceReady() {
+		logger.Warnf("local voice enabled but ASR/TTS incomplete (%v); voice disabled until configured at /admin (AI 配置)", cfg.VoiceConfigError())
+	}
+	if cfg.VoiceReady() {
 		switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
 		case "doubao_native":
 			asrProvider = asr.NewDoubaoNativeProvider(
@@ -144,7 +149,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 			}
 			logger.Infof("asr readiness probe ok provider=%s", cfg.ASRProvider)
 		}
-	} else {
+	} else if !cfg.LocalVoiceEnabled {
 		logger.Infof("local voice pipeline disabled (cloud does ASR/TTS); /v1/stream/* + /v1/tts/* return 501")
 	}
 

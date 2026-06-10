@@ -285,13 +285,11 @@ func (c Config) Validate() error {
 		if err := c.validateLocal(); err != nil {
 			return err
 		}
-		// Voice config is only required when the LAN ASR/TTS pipeline is on.
-		// Cloud-default deployments (LocalVoiceEnabled=false) skip it (ADR-025 §3).
-		if c.LocalVoiceEnabled {
-			if err := c.validateVoice(); err != nil {
-				return err
-			}
-		}
+		// NOTE: voice (ASR/TTS) config is intentionally NOT required here, even
+		// when LocalVoiceEnabled is set. Incomplete voice config degrades to "voice
+		// off + warning" rather than failing the boot (ADR-025 §3 / §4) — see
+		// VoiceReady. This lets the web user switch to local mode first and fill
+		// ASR/TTS afterwards on the AI page, instead of a chicken-and-egg deadlock.
 	}
 	if c.EnableCloudRelay() {
 		if err := c.validateCloud(); err != nil {
@@ -318,10 +316,22 @@ func (c Config) validateLocal() error {
 	return nil
 }
 
+// VoiceConfigError reports why the LAN voice pipeline can't run, or nil when its
+// ASR/TTS config is complete. Exported so the HTTP settings layer and main.go can
+// surface "voice wanted but not yet configured" without hard-failing the boot.
+func (c Config) VoiceConfigError() error { return c.validateVoice() }
+
+// VoiceReady reports whether the LAN voice pipeline is both enabled and fully
+// configured. main.go constructs ASR/TTS providers only when this is true;
+// otherwise voice degrades to 501 with a warning (never a boot failure), so a
+// half-configured local mode can't brick startup.
+func (c Config) VoiceReady() bool {
+	return c.LocalVoiceEnabled && c.validateVoice() == nil
+}
+
 // validateVoice checks the LAN voice pipeline config (ASR/TTS/audio/limits).
-// It is only enforced when the local ingress is up AND LocalVoiceEnabled is set
-// (ADR-025 §3) — a cloud-default deployment skips it entirely. It is also reused
-// in LoadFromEnv as the heuristic for whether to default the LAN pipeline on.
+// It is the basis for VoiceReady and the LoadFromEnv heuristic; it is NOT a hard
+// boot requirement (incomplete voice degrades rather than fails — ADR-025 §3).
 func (c Config) validateVoice() error {
 	if c.SaveAudio || c.SaveInputOnFinish {
 		if strings.TrimSpace(c.AudioInDir) == "" {

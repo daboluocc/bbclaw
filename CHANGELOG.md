@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   完成，本地空 `.env` 即可启动；关闭时 `/v1/stream/*`、`/v1/tts/*` 回 501。既有完整
   语音配置自动保留（首启按 env 是否完整自动判定）。新增 `GET/PUT /v1/admin/settings`
   （loopback-only，明文读写）。
+- **管理页按部署模式自适应简化**：系统配置页改为单选「☁ 云端 / ⌂ 本地」一个选择驱动
+  全页——云端模式本地零配置（cloud relay / OpenClaw / 音频留存收进「高级设置」折叠），
+  本地模式才在 AI 配置页显示 ASR/TTS。语音未配完整时**优雅降级**（保存 200 +
+  `voice_incomplete` 提示、启动 WARN + 语音回 501）而非报错/崩启动，避免「切本地模式
+  才出 ASR 表单、但没填 ASR 又切不过去」的死锁。
 
 ### Changed
 - **底栏扫描条改为 3×N 点阵带**：单排扫描条升级为 3 行点阵小屏（dot 4 / pitch 7 /

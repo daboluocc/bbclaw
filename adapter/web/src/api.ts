@@ -80,7 +80,7 @@ export async function getSettings(): Promise<SettingsState> {
 // putSettings accepts a partial document; the server merges it over the current
 // settings.json (present-then-modify), so each page can PUT only its own slice
 // without clobbering another page's edits.
-export async function putSettings(patch: Record<string, any>): Promise<{ restart_required: boolean }> {
+export async function putSettings(patch: Record<string, any>): Promise<{ restart_required: boolean; voice_incomplete?: boolean }> {
   return envelope("/v1/admin/settings", {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
   });

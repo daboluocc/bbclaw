@@ -39,8 +39,11 @@ async function save() {
   if (busy.value) return;
   busy.value = true;
   try {
-    await putSettings({ ai: { ...ai }, voice: { asr: { ...asr }, tts: { ...tts } } });
-    setNote("已保存。第三方端点/语音改动需重启适配器后生效。", false);
+    const res = await putSettings({ ai: { ...ai }, voice: { asr: { ...asr }, tts: { ...tts } } });
+    if (res.voice_incomplete)
+      setNote("已保存，但 ASR/TTS 还差字段，语音暂不可用 —— 补全后重启生效。", true);
+    else
+      setNote("已保存。第三方端点 / 语音改动需重启适配器后生效。", false);
     emit("saved");
   } catch (e: any) { setNote("保存失败：" + e.message, true); }
   finally { busy.value = false; }
@@ -70,8 +73,8 @@ onMounted(load);
   <div class="card">
     <h2>语音（ASR / TTS）</h2>
     <p v-if="!localVoice" class="hint">
-      本地语音管线未开启 —— 云端模式下 ASR/TTS 由云端完成，本地无需配置。
-      如需设备 LAN 直连本机做语音，请到「系统配置 → 本地语音管线」开启。
+      当前是<b style="color:var(--accent)">云端模式</b> —— ASR/TTS 由云端完成，本地无需配置。
+      如需设备 LAN 直连本机做语音，到「系统配置 → 部署模式」切到<b>本地模式</b>。
     </p>
 
     <template v-else>
