@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-06-10
+
 ### Added
 - **Adapter 配置 Web 化（ADR-025）**：把原本只能写 `.env` 的运行配置（ASR/TTS、
   第三方 Claude 端点、cloud relay、OpenClaw 网关、音频留存）搬上本地管理页，落
