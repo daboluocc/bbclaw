@@ -8,7 +8,7 @@
 //	{"type":"turn.started"}
 //	{"type":"item.started","item":{...}}
 //	{"type":"item.updated","item":{...}}
-//	{"type":"item.completed","item":{"item_type":"assistant_message","text":"…"}}
+//	{"type":"item.completed","item":{"type":"agent_message","text":"…"}}
 //	{"type":"turn.completed","usage":{"input_tokens":N,"output_tokens":M}}
 //	{"type":"turn.failed","error":{"message":"…"}}
 //	{"type":"error","message":"…"}
@@ -399,7 +399,10 @@ func mapItem(it *codexItem, s *session, log *obs.Logger) {
 		return
 	}
 	switch it.kind() {
-	case "assistant_message":
+	case "agent_message", "assistant_message":
+		// codex-cli 0.122 emits item.type:"agent_message" for the final
+		// assistant text (verified live 2026-06-10); accept the older
+		// "assistant_message" spelling too for forward/backward safety.
 		if it.Text != "" {
 			log.Infof("codex: reply sid=%s text=%q", s.id, truncate(it.Text, 200))
 			s.emit(agent.Event{Type: agent.EvText, Text: it.Text})

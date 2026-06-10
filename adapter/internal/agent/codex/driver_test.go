@@ -19,7 +19,7 @@ func TestParseStream(t *testing.T) {
 {"type":"turn.started"}
 {"type":"item.started","item":{"item_type":"reasoning"}}
 {"type":"item.completed","item":{"item_type":"command_execution","command":"ls -la"}}
-{"type":"item.completed","item":{"item_type":"assistant_message","text":"Hello world"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Hello world"}}
 {"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}
 `
 
