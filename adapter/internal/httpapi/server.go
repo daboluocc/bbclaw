@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
+	"github.com/daboluocc/bbclaw/adapter/internal/settingsstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 )
 
@@ -129,6 +131,15 @@ type Server struct {
 	// (GET /admin). Optional: when nil the cwd-pool surface falls back to the
 	// immutable cfg.CwdPool snapshot. Wired via SetProjectStore from main.go.
 	projects *projectstore.Store
+
+	// settings is the web-mutable runtime configuration store (ADR-025): ASR/TTS,
+	// Anthropic endpoint, cloud relay, OpenClaw, topology toggles. Optional: when
+	// nil the settings admin endpoints return 501. Wired via SetSettingsStore.
+	settings *settingsstore.Store
+	// settingsRestartReq is set after a successful settings PUT and reported by
+	// GET /v1/admin/settings as restart_required, so the page can show the
+	// "restart to apply" banner. Cleared naturally on the next process start.
+	settingsRestartReq atomic.Bool
 }
 
 // SetProjectStore wires the mutable project allow-list used by the local admin
@@ -234,6 +245,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/drivers", s.adminLocalOnly(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/admin/environment", s.adminLocalOnly(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/admin/active_driver", s.adminLocalOnly(s.handleAgentActiveDriverPut))
+	// Web-first runtime configuration (ADR-025): read/write settings.json and a
+	// one-click self-restart to apply. Loopback-only — these hold plaintext keys.
+	mux.HandleFunc("GET /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsGet))
+	mux.HandleFunc("PUT /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsPut))
+	mux.HandleFunc("POST /v1/admin/restart", s.adminLocalOnly(s.handleAdminRestart))
 	return withCORS(mux)
 }
 
@@ -343,6 +359,14 @@ type startRequest struct {
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	if s.asr == nil {
+		// LAN voice pipeline is disabled (ADR-025 §3: cloud-default deployments do
+		// ASR/TTS in the cloud). Reject early instead of buffering audio we can't
+		// transcribe.
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "VOICE_NOT_CONFIGURED",
+			Detail: "local voice pipeline is disabled; enable it on the admin page (系统配置 → 本地语音)"})
+		return
+	}
 	var req startRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST"})

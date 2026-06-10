@@ -54,6 +54,41 @@ export async function setActiveDriver(name: string): Promise<void> {
   });
 }
 
+/* ── settings (ADR-025) ── */
+export interface AsrSettings {
+  provider: string; base_url: string; ws_url: string; app_id: string; api_key: string;
+  resource_id: string; model: string; language: string;
+  local_bin: string; local_args: string; local_text_path: string;
+}
+export interface TtsSettings {
+  provider: string; token: string; app_id: string; cluster: string; voice: string;
+  ws_url: string; local_bin: string; local_args: string; local_output_format: string;
+}
+export interface Settings {
+  version?: number;
+  topology: { cloud_relay_enabled: boolean; local_voice_enabled: boolean };
+  ai: { anthropic_base_url: string; anthropic_auth_token: string };
+  voice: { asr: AsrSettings; tts: TtsSettings; save_audio: boolean; save_input_on_finish: boolean };
+  cloud: { ws_url: string; auth_token: string; home_site_id: string };
+  openclaw: { ws_url: string; auth_token: string; node_id: string };
+}
+export interface SettingsState { settings: Settings; restart_required: boolean }
+
+export async function getSettings(): Promise<SettingsState> {
+  return envelope<SettingsState>("/v1/admin/settings");
+}
+// putSettings accepts a partial document; the server merges it over the current
+// settings.json (present-then-modify), so each page can PUT only its own slice
+// without clobbering another page's edits.
+export async function putSettings(patch: Record<string, any>): Promise<{ restart_required: boolean }> {
+  return envelope("/v1/admin/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+  });
+}
+export async function restartAdapter(): Promise<void> {
+  await envelope("/v1/admin/restart", { method: "POST" });
+}
+
 /* ── projects ── */
 export async function listProjects(): Promise<Project[]> {
   return (await envelope<{ projects: Project[] }>("/v1/admin/projects")).projects ?? [];

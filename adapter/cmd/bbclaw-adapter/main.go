@@ -37,6 +37,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/pipeline"
 	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
+	"github.com/daboluocc/bbclaw/adapter/internal/settingsstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/tts"
 	"github.com/daboluocc/bbclaw/adapter/internal/workspace"
 	"github.com/spf13/cobra"
@@ -101,43 +102,50 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, settingsStore *settingsstore.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
+	// ADR-025 §3: the LAN voice pipeline is opt-in. When local voice is off
+	// (cloud-default deployment — the cloud does ASR/TTS), no provider is built
+	// and the /v1/stream/* + /v1/tts/* routes degrade to 501 VOICE_NOT_CONFIGURED.
 	var asrProvider asr.Provider
-	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
-	case "doubao_native":
-		asrProvider = asr.NewDoubaoNativeProvider(
-			cfg.ASRWSURL, cfg.ASRAppID, cfg.ASRAPIKey, cfg.ASRResourceID, cfg.ASRModel, cfg.ASRLanguage,
-		)
-	case "local":
-		asrProvider = asr.NewLocalCommandProvider(cfg.ASRLocalBin, cfg.ASRLocalArgs, cfg.ASRLocalTextPath)
-	default:
-		asrProvider = asr.NewOpenAICompatibleProvider(
-			cfg.ASRBaseURL, cfg.ASRAPIKey, cfg.ASRModel, &http.Client{Timeout: cfg.HTTPTimeout},
-		)
-	}
 	var ttsProvider tts.Provider
-	switch strings.ToLower(strings.TrimSpace(cfg.TTSProvider)) {
-	case "mock":
-		ttsProvider = tts.NewMockProvider()
-	case "local_command":
-		ttsProvider = tts.NewLocalCommandProvider(cfg.TTSLocalBin, cfg.TTSLocalArgs, cfg.TTSLocalOutputFormat)
-	default:
-		ttsProvider = tts.NewDoubaoNativeProvider(cfg.TTSWSURL, cfg.TTSAppID, cfg.TTSToken, cfg.TTSCluster, cfg.TTSVoice)
-	}
+	if cfg.LocalVoiceEnabled {
+		switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
+		case "doubao_native":
+			asrProvider = asr.NewDoubaoNativeProvider(
+				cfg.ASRWSURL, cfg.ASRAppID, cfg.ASRAPIKey, cfg.ASRResourceID, cfg.ASRModel, cfg.ASRLanguage,
+			)
+		case "local":
+			asrProvider = asr.NewLocalCommandProvider(cfg.ASRLocalBin, cfg.ASRLocalArgs, cfg.ASRLocalTextPath)
+		default:
+			asrProvider = asr.NewOpenAICompatibleProvider(
+				cfg.ASRBaseURL, cfg.ASRAPIKey, cfg.ASRModel, &http.Client{Timeout: cfg.HTTPTimeout},
+			)
+		}
+		switch strings.ToLower(strings.TrimSpace(cfg.TTSProvider)) {
+		case "mock":
+			ttsProvider = tts.NewMockProvider()
+		case "local_command":
+			ttsProvider = tts.NewLocalCommandProvider(cfg.TTSLocalBin, cfg.TTSLocalArgs, cfg.TTSLocalOutputFormat)
+		default:
+			ttsProvider = tts.NewDoubaoNativeProvider(cfg.TTSWSURL, cfg.TTSAppID, cfg.TTSToken, cfg.TTSCluster, cfg.TTSVoice)
+		}
 
-	if cfg.ASRReadinessProbe {
-		rp, ok := asrProvider.(asr.ReadinessProbe)
-		if !ok {
-			return nil, nil, fmt.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
+		if cfg.ASRReadinessProbe {
+			rp, ok := asrProvider.(asr.ReadinessProbe)
+			if !ok {
+				return nil, nil, fmt.Errorf("asr readiness: provider %q does not implement Ping", cfg.ASRProvider)
+			}
+			pctx, pcancel := context.WithTimeout(context.Background(), cfg.ASRReadinessTimeout)
+			err := rp.Ping(pctx)
+			pcancel()
+			if err != nil {
+				return nil, nil, fmt.Errorf("asr readiness probe failed: %w", err)
+			}
+			logger.Infof("asr readiness probe ok provider=%s", cfg.ASRProvider)
 		}
-		pctx, pcancel := context.WithTimeout(context.Background(), cfg.ASRReadinessTimeout)
-		err := rp.Ping(pctx)
-		pcancel()
-		if err != nil {
-			return nil, nil, fmt.Errorf("asr readiness probe failed: %w", err)
-		}
-		logger.Infof("asr readiness probe ok provider=%s", cfg.ASRProvider)
+	} else {
+		logger.Infof("local voice pipeline disabled (cloud does ASR/TTS); /v1/stream/* + /v1/tts/* return 501")
 	}
 
 	var cloudStatus func() map[string]any
@@ -223,6 +231,9 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	}
 	if driverStateStore != nil {
 		server.SetDriverState(driverStateStore)
+	}
+	if settingsStore != nil {
+		server.SetSettingsStore(settingsStore)
 	}
 	// Wire the process-level dispatch recorder for GET /v1/butler/dispatch/recent.
 	dispatchRecorder := butler.NewDispatchRecorder()
@@ -464,6 +475,55 @@ func buildDriverState(logger *obs.Logger) *driverstate.Store {
 	return store
 }
 
+// buildSettingsStore loads the web-mutable runtime configuration (ADR-025) and
+// overlays it onto cfg in place. settings.json lives next to driver_state.json
+// under BBCLAW_DATA_DIR. On first run it is seeded from the env-derived cfg
+// (BBCLAW_CWD_POOL-style one-time bootstrap); thereafter the file is the source
+// of truth and the page is the home for ASR/TTS/cloud/openclaw/Anthropic config.
+//
+// After overlay the effective cfg is re-validated, so an invalid persisted
+// combination is caught here (the PUT handler validates before writing, so this
+// is normally unreachable). Returns nil when the data dir is unresolvable — the
+// adapter then runs on env-only config.
+func buildSettingsStore(cfg *config.Config, logger *obs.Logger) *settingsstore.Store {
+	dataDir := strings.TrimSpace(os.Getenv("BBCLAW_DATA_DIR"))
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Warnf("settingsstore: cannot resolve home dir, web config disabled: %v", err)
+			return nil
+		}
+		dataDir = filepath.Join(home, ".bbclaw-adapter")
+	}
+	path := filepath.Join(dataDir, "settings.json")
+
+	seed := settingsstore.FromConfig(*cfg)
+	switch status, serr := settingsstore.Bootstrap(path, seed); {
+	case serr != nil:
+		logger.Warnf("settingsstore: bootstrap failed at %s: %v", path, serr)
+	case status == settingsstore.BootstrapSeeded:
+		logger.Infof("settingsstore: seeded %s from .env (env is now a one-time bootstrap; manage config at /admin)", path)
+	}
+
+	store, err := settingsstore.Open(path, settingsstore.FromConfig(*cfg))
+	if err != nil {
+		// A corrupt file degrades to the env-derived base inside Open; log and
+		// continue with whatever it returned rather than disabling web config.
+		logger.Warnf("settingsstore: open %s degraded: %v", path, err)
+	}
+	if store == nil {
+		return nil
+	}
+
+	store.Snapshot().ApplyTo(cfg)
+	if verr := cfg.Validate(); verr != nil {
+		logger.Errorf("settingsstore: effective config invalid after applying %s: %v", path, verr)
+		os.Exit(1)
+	}
+	logger.Infof("settingsstore: ready path=%s cloud_relay=%t local_voice=%t", path, cfg.EnableCloudRelay(), cfg.LocalVoiceEnabled)
+	return store
+}
+
 // applyDriverStateDefault reconciles the router's runtime default with the
 // persisted active_driver. Called once at startup after both have been
 // initialised. When the persisted name isn't a registered driver (e.g. the
@@ -672,6 +732,11 @@ func probeTCP(addr string, timeout time.Duration) bool {
 }
 
 func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
+	// Overlay web-managed settings (ADR-025) onto the env-derived cfg before
+	// anything reads it, so ASR/TTS/cloud/openclaw/Anthropic config from the
+	// admin page wins over .env. Mutates cfg in place + re-validates.
+	settingsStore := buildSettingsStore(&cfg, logger)
+
 	sink := buildSink(cfg, logger, metrics)
 	agentRouter := buildAgentRouter(cfg, logger)
 	sessionMgr := buildSessionManager(logger)
@@ -776,7 +841,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, butlerWorkspace, butlerMCPServers, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, settingsStore, butlerWorkspace, butlerMCPServers, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)

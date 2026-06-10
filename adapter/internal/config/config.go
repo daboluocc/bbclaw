@@ -22,6 +22,20 @@ type Config struct {
 	// "local" (force local only), or "cloud" (force cloud relay only).
 	AdapterMode string
 
+	// CloudRelayOverride, when non-nil, is the web-settings topology toggle
+	// (settings.json topology.cloud_relay_enabled, ADR-025). It overrides the
+	// auto-mode cloudConfigured() heuristic but is itself overridden by an
+	// explicit ADAPTER_MODE=local/cloud env escape hatch. nil = env-only.
+	CloudRelayOverride *bool
+
+	// LocalVoiceEnabled gates the LAN ASR/TTS pipeline (ADR-025 §3). When false
+	// the local HTTP ingress still serves the admin page + agent proxy, but no
+	// ASR/TTS provider is constructed and voice config is not validated — the
+	// "default cloud, no local voice setup" path. Seeded from BBCLAW_LOCAL_VOICE
+	// (default: whether the env voice config is already complete) and then owned
+	// by settings.json topology.local_voice_enabled.
+	LocalVoiceEnabled bool
+
 	Addr                 string
 	AuthToken            string
 	SaveAudio            bool
@@ -115,6 +129,9 @@ func (c Config) EnableLocalIngress() bool {
 }
 
 // EnableCloudRelay returns true when the adapter should connect to Cloud as a home adapter.
+// Precedence (ADR-025 §3): an explicit ADAPTER_MODE=local/cloud env wins; otherwise
+// the web-settings topology toggle (CloudRelayOverride) wins; otherwise the
+// auto-mode cloudConfigured() heuristic.
 func (c Config) EnableCloudRelay() bool {
 	switch c.normalizedMode() {
 	case "cloud":
@@ -122,6 +139,9 @@ func (c Config) EnableCloudRelay() bool {
 	case "local":
 		return false
 	default:
+		if c.CloudRelayOverride != nil {
+			return *c.CloudRelayOverride
+		}
 		return c.cloudConfigured()
 	}
 }
@@ -196,6 +216,12 @@ func LoadFromEnv() (Config, error) {
 		ClaudeAuthToken:      strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
 	}
 
+	// LocalVoiceEnabled (ADR-025 §3): default to whether the env already carries
+	// a complete voice config, so existing local_home setups keep working while a
+	// fresh/partial config defaults the LAN voice pipeline off (cloud does ASR/TTS).
+	// BBCLAW_LOCAL_VOICE is an explicit override. settings.json later owns this.
+	cfg.LocalVoiceEnabled = getEnvBool("BBCLAW_LOCAL_VOICE", cfg.validateVoice() == nil)
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -259,6 +285,13 @@ func (c Config) Validate() error {
 		if err := c.validateLocal(); err != nil {
 			return err
 		}
+		// Voice config is only required when the LAN ASR/TTS pipeline is on.
+		// Cloud-default deployments (LocalVoiceEnabled=false) skip it (ADR-025 §3).
+		if c.LocalVoiceEnabled {
+			if err := c.validateVoice(); err != nil {
+				return err
+			}
+		}
 	}
 	if c.EnableCloudRelay() {
 		if err := c.validateCloud(); err != nil {
@@ -282,6 +315,14 @@ func (c Config) validateLocal() error {
 	if strings.TrimSpace(c.Addr) == "" {
 		return errors.New("ADAPTER_ADDR is required")
 	}
+	return nil
+}
+
+// validateVoice checks the LAN voice pipeline config (ASR/TTS/audio/limits).
+// It is only enforced when the local ingress is up AND LocalVoiceEnabled is set
+// (ADR-025 §3) — a cloud-default deployment skips it entirely. It is also reused
+// in LoadFromEnv as the heuristic for whether to default the LAN pipeline on.
+func (c Config) validateVoice() error {
 	if c.SaveAudio || c.SaveInputOnFinish {
 		if strings.TrimSpace(c.AudioInDir) == "" {
 			return errors.New("AUDIO_IN_DIR is required when SAVE_AUDIO=true or SAVE_INPUT_ON_FINISH=true")

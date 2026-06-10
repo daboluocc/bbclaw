@@ -18,26 +18,20 @@ via a unified [Agent Bus](../design/agent_bus.md).
 
 This is the minimum that gets the adapter listening, lists registered
 drivers, and proves an end-to-end agent call. No ASR/TTS, no cloud,
-no OpenClaw — just the agent endpoints. Verified clean on 2026-04-27.
+no OpenClaw — just the agent endpoints.
+
+As of ADR-025 an **empty `.env` works**: the default deployment is cloud
+(the cloud does ASR/TTS), so no local voice config is required, and all
+runtime config now lives on the web admin page at
+`http://127.0.0.1:18080/admin` (`.env` is only a one-time seed into
+`~/.bbclaw-adapter/settings.json`).
 
 ```bash
 cd adapter
 make build                  # → bin/bbclaw-adapter (with version ldflags)
 
-cat > .env <<'EOF'
-# ADAPTER_MODE unset → "auto":
-#   local HTTP always on + cloud relay starts iff CLOUD_WS_URL is set.
-ADAPTER_ADDR=:18080
-ASR_PROVIDER=openai_compatible
-ASR_BASE_URL=http://127.0.0.1:1
-ASR_API_KEY=dummy
-ASR_MODEL=dummy
-ASR_READINESS_PROBE=0
-TTS_PROVIDER=mock
-AGENT_DEFAULT_DRIVER=claude-code
-EOF
-
-set -a && source .env && set +a && ./bin/bbclaw-adapter &
+# Empty .env is fine — ADAPTER_MODE unset → "auto" (local HTTP + cloud relay).
+./bin/bbclaw-adapter &
 sleep 1
 
 curl -sS http://127.0.0.1:18080/healthz
@@ -80,8 +74,12 @@ Which drivers register depends on your local environment:
 - `ollama` registers when `127.0.0.1:11434` is listening (or `AGENT_OLLAMA_FORCE=1`)
 - `aider` registers when `aider` CLI is on PATH (or `AGENT_AIDER_FORCE=1`)
 
-For voice (PTT) endpoints (`/v1/stream/*`) you also need real ASR and TTS
-providers — see the full env reference in `.env.example`.
+For **local** voice (PTT) endpoints (`/v1/stream/*`) — i.e. a device wired
+straight to this box over the LAN rather than via the cloud — enable the LAN
+voice pipeline (`BBCLAW_LOCAL_VOICE=1`, or the admin page → 系统配置 → 本地语音)
+and configure real ASR/TTS providers (admin page → AI 配置, or `.env.example`).
+When it's off, `/v1/stream/*` and `/v1/tts/*` return `501 VOICE_NOT_CONFIGURED`
+and the cloud handles voice instead.
 
 ## Build from source — full build/test/dev
 

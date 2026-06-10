@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Adapter 配置 Web 化（ADR-025）**：把原本只能写 `.env` 的运行配置（ASR/TTS、
+  第三方 Claude 端点、cloud relay、OpenClaw 网关、音频留存）搬上本地管理页，落
+  `~/.bbclaw-adapter/settings.json`（`.env` 退化为首启一次性 seed，之后页面是真相）。
+  管理页拆成四页：**系统配置 / AI 配置 / 个人对话 / AI 数据文件**。改动「保存即持久化 +
+  一键重启生效」（`POST /v1/admin/restart` 原地 re-exec）；驱动/模型/项目仍即时生效。
+- **默认 cloud、本地免配语音**：本地语音管线（LAN 直连 ASR/TTS）改为 opt-in
+  (`topology.local_voice_enabled` / `BBCLAW_LOCAL_VOICE`)。云端模式下 ASR/TTS 由云端
+  完成，本地空 `.env` 即可启动；关闭时 `/v1/stream/*`、`/v1/tts/*` 回 501。既有完整
+  语音配置自动保留（首启按 env 是否完整自动判定）。新增 `GET/PUT /v1/admin/settings`
+  （loopback-only，明文读写）。
+
 ### Changed
 - **底栏扫描条改为 3×N 点阵带**：单排扫描条升级为 3 行点阵小屏（dot 4 / pitch 7 /
   vpitch 5），彗星变成"整列"白头青尾的全高扫描，更像一块迷你点阵屏；颜色/速度随状态

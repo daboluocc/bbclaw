@@ -45,11 +45,44 @@ func TestLoadFromEnvDefaultsAndRequireds(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvInvalid(t *testing.T) {
+// TestLoadFromEnvEmptyIsCloudDefault: under ADR-025 a bare env is a valid
+// zero-config cloud-default deployment — local ingress (admin page) is up, the
+// cloud relay is on (CLOUD_WS_URL has a baked-in default), and the LAN voice
+// pipeline is off so no ASR/TTS config is required. (Previously this errored
+// because voice validation was unconditional.)
+func TestLoadFromEnvEmptyIsCloudDefault(t *testing.T) {
 	os.Clearenv()
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected error for missing required env")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("empty env should load as cloud-default, got error: %v", err)
+	}
+	if cfg.LocalVoiceEnabled {
+		t.Fatal("expected local voice disabled with no ASR/TTS config")
+	}
+	if !cfg.EnableLocalIngress() {
+		t.Fatal("expected local ingress (admin page) enabled by default")
+	}
+	if !cfg.EnableCloudRelay() {
+		t.Fatal("expected cloud relay enabled by default (CLOUD_WS_URL has a baked-in default)")
+	}
+}
+
+// TestLoadFromEnvLocalVoiceAutoOn: a complete env voice config auto-enables the
+// LAN pipeline (no BBCLAW_LOCAL_VOICE needed), preserving existing local_home setups.
+func TestLoadFromEnvLocalVoiceAutoOn(t *testing.T) {
+	t.Setenv("ASR_LOCAL_BIN", "/bin/echo")
+	t.Setenv("OPENCLAW_RPC_URL", "https://gateway.example.com/rpc")
+	t.Setenv("TTS_WS_URL", "wss://openspeech.bytedance.com/api/v1/tts/ws_binary")
+	t.Setenv("TTS_APP_ID", "appid")
+	t.Setenv("TTS_TOKEN", "token")
+	t.Setenv("TTS_CLUSTER", "volcano_tts")
+	t.Setenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.LocalVoiceEnabled {
+		t.Fatal("expected local voice auto-enabled when env voice config is complete")
 	}
 }
 
@@ -90,7 +123,10 @@ func TestLoadFromEnvOpenAICompatible(t *testing.T) {
 	}
 }
 
+// TestLoadFromEnvLocalRequiresBin: with the LAN voice pipeline explicitly opted
+// in (BBCLAW_LOCAL_VOICE=1), an incomplete ASR config is still a hard error.
 func TestLoadFromEnvLocalRequiresBin(t *testing.T) {
+	t.Setenv("BBCLAW_LOCAL_VOICE", "1")
 	t.Setenv("ASR_PROVIDER", "local")
 	t.Setenv("OPENCLAW_RPC_URL", "https://gateway.example.com/rpc")
 	t.Setenv("TTS_WS_URL", "wss://openspeech.bytedance.com/api/v1/tts/ws_binary")
