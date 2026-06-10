@@ -31,6 +31,12 @@ const (
 	workspaceName  = "workspace"
 	claudeMDName   = "CLAUDE.md"
 
+	// agentsMDName is the native instruction file codex and opencode read from
+	// the cwd. The scaffold points it at CLAUDE.md via a symlink (ADR-024 §2) so
+	// all three butler drivers share the SAME base knowledge + memory index:
+	// claude reads CLAUDE.md natively, codex/opencode read AGENTS.md → CLAUDE.md.
+	agentsMDName = "AGENTS.md"
+
 	// memoryDirName is the workspace sub-directory holding the butler's
 	// dimensioned long-term memory files (ADR-022 / #90). It complements the
 	// CLAUDE.md managed block: CLAUDE.md is loaded natively every turn, while
@@ -173,6 +179,7 @@ func EnsureScaffold() (string, error) {
 			return "", fmt.Errorf("write default CLAUDE.md %s: %w", path, err)
 		}
 		ensureMemoryScaffold(dir)
+		ensureAgentsSymlink(dir)
 		return dir, nil
 	case err != nil:
 		return "", fmt.Errorf("read CLAUDE.md %s: %w", path, err)
@@ -187,7 +194,35 @@ func EnsureScaffold() (string, error) {
 		}
 	}
 	ensureMemoryScaffold(dir)
+	ensureAgentsSymlink(dir)
 	return dir, nil
+}
+
+// ensureAgentsSymlink creates AGENTS.md -> CLAUDE.md (a relative symlink) in the
+// workspace so codex / opencode butlers pick up the same persona + long-term
+// memory index claude gets from CLAUDE.md natively (ADR-024 §2). It runs on
+// every startup via EnsureScaffold, so existing users self-repair without any
+// manual step. Idempotent and conservative:
+//
+//   - anything already at AGENTS.md (our symlink, or a user-authored file) is
+//     left untouched — never clobbered
+//   - missing → a relative symlink to CLAUDE.md is created
+//
+// Any failure is logged and swallowed (non-fatal, matching the scaffold
+// contract): a missing AGENTS.md only means codex/opencode don't read memory
+// natively, not that the butler breaks.
+func ensureAgentsSymlink(workspaceDir string) {
+	link := filepath.Join(workspaceDir, agentsMDName)
+	if _, err := os.Lstat(link); err == nil {
+		return // already exists (our symlink or the user's own file) — leave it
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("workspace: lstat AGENTS.md %s failed (non-fatal): %v", link, err)
+		return
+	}
+	// Relative target so the link stays valid regardless of the absolute path.
+	if err := os.Symlink(claudeMDName, link); err != nil {
+		log.Printf("workspace: create AGENTS.md symlink %s failed (non-fatal): %v", link, err)
+	}
 }
 
 // ensureMemoryScaffold creates the MEMORY/ directory and the dimension files

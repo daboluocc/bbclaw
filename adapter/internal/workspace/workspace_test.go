@@ -45,6 +45,67 @@ func TestEnsureScaffoldFirstRunWritesDefault(t *testing.T) {
 	}
 }
 
+// TestEnsureScaffoldAgentsSymlink verifies AGENTS.md is auto-created as a
+// symlink to CLAUDE.md (ADR-024 §2) so codex/opencode butlers read the same
+// base knowledge + memory — automatically, no manual fix, on first scaffold.
+func TestEnsureScaffoldAgentsSymlink(t *testing.T) {
+	redirectDataDir(t)
+
+	dir, err := EnsureScaffold()
+	if err != nil {
+		t.Fatalf("EnsureScaffold: %v", err)
+	}
+
+	agents := filepath.Join(dir, "AGENTS.md")
+	fi, err := os.Lstat(agents)
+	if err != nil {
+		t.Fatalf("AGENTS.md not created: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("AGENTS.md should be a symlink, got mode %v", fi.Mode())
+	}
+	if target, _ := os.Readlink(agents); target != "CLAUDE.md" {
+		t.Errorf("AGENTS.md should point at CLAUDE.md (relative), got %q", target)
+	}
+	// Reading AGENTS.md must yield the SAME content as CLAUDE.md.
+	a, _ := os.ReadFile(agents)
+	c, _ := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if string(a) != string(c) || len(a) == 0 {
+		t.Errorf("AGENTS.md content must equal CLAUDE.md (codex/opencode read same base knowledge)")
+	}
+
+	// Idempotent: a second scaffold must not error or change the link.
+	if _, err := EnsureScaffold(); err != nil {
+		t.Fatalf("second EnsureScaffold: %v", err)
+	}
+	if target, _ := os.Readlink(agents); target != "CLAUDE.md" {
+		t.Errorf("symlink changed on second scaffold: %q", target)
+	}
+}
+
+// TestEnsureScaffoldAgentsRespectsUserFile verifies a user-authored AGENTS.md
+// is never clobbered by the symlink scaffold.
+func TestEnsureScaffoldAgentsRespectsUserFile(t *testing.T) {
+	dir := redirectDataDir(t)
+	wsDir := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userContent := "# my own AGENTS.md\n"
+	if err := os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte(userContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := EnsureScaffold(); err != nil {
+		t.Fatalf("EnsureScaffold: %v", err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(wsDir, "AGENTS.md"))
+	if string(got) != userContent {
+		t.Errorf("user AGENTS.md was clobbered: got %q", string(got))
+	}
+}
+
 func TestEnsureScaffoldIdempotentDoesNotClobber(t *testing.T) {
 	redirectDataDir(t)
 
