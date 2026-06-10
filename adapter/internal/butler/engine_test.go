@@ -109,7 +109,13 @@ func (d *scriptedDriver) Start(_ context.Context, opts agent.StartOpts) (agent.S
 	d.startN++
 	d.resumeIDs = append(d.resumeIDs, opts.ResumeID)
 	d.systemPrompts = append(d.systemPrompts, opts.SystemPrompt)
-	d.mcpConfigs = append(d.mcpConfigs, opts.MCPConfig)
+	// Record the first injected MCP server name ("" when none) — the routing
+	// tests assert butler sessions get the dispatch server and others don't.
+	mcpName := ""
+	if len(opts.MCPServers) > 0 {
+		mcpName = opts.MCPServers[0].Name
+	}
+	d.mcpConfigs = append(d.mcpConfigs, mcpName)
 	d.cwds = append(d.cwds, opts.Cwd)
 	return agent.SessionID(d.name + "-sid"), nil
 }

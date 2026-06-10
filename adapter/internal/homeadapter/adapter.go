@@ -68,9 +68,10 @@ type Adapter struct {
 	// to the device's butler logical session via the butler engine instead of
 	// the legacy one-shot driver spawn. Empty keeps the legacy voice path.
 	butlerWorkspace string
-	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
-	// §2), passed to the engine so the butler session can dispatch workers.
-	butlerMCPConfig string
+	// butlerMCPServers are the butler's dispatch MCP servers (ADR-021 §2 /
+	// ADR-024 §5, format-neutral spec), passed to the engine so the butler
+	// session can dispatch workers via whichever driver backs it.
+	butlerMCPServers []agent.MCPServerSpec
 }
 
 type Status struct {
@@ -161,13 +162,13 @@ func (a *Adapter) defaultStartCwd() string {
 // SetButlerWorkspace enables butler routing for the cloud voice path (ADR-021
 // §1): when workspaceCwd is non-empty, the voice transcript fan-out routes
 // every turn to the calling device's butler logical session (cwd=workspaceCwd,
-// Role=butler, driver=claude-code) through the butler engine instead of the
-// legacy one-shot driver spawn. mcpConfig is the butler's --mcp-config path
-// (ADR-021 §2); empty disables dispatch. Empty workspaceCwd leaves the legacy
-// voice path untouched.
-func (a *Adapter) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
+// Role=butler) through the butler engine instead of the legacy one-shot driver
+// spawn. mcpServers are the butler's dispatch MCP servers (ADR-021 §2 /
+// ADR-024 §5); nil/empty disables dispatch. Empty workspaceCwd leaves the
+// legacy voice path untouched.
+func (a *Adapter) SetButlerWorkspace(workspaceCwd string, mcpServers []agent.MCPServerSpec) {
 	a.butlerWorkspace = strings.TrimSpace(workspaceCwd)
-	a.butlerMCPConfig = strings.TrimSpace(mcpConfig)
+	a.butlerMCPServers = mcpServers
 }
 
 // SetDriverState attaches the persistent driver-preference store, mirrored
@@ -781,7 +782,7 @@ func (a *Adapter) handleChatTextViaButler(
 		Log:                a.log,
 		ResolveActiveModel: a.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
-		ButlerMCPConfig:    a.butlerMCPConfig,
+		ButlerMCPServers:   a.butlerMCPServers,
 		StartCtx:           ctx,
 	})
 

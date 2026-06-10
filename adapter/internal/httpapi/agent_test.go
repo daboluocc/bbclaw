@@ -615,7 +615,7 @@ func TestHandleAgentMessage_ButlerRouting(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 	srv.SetSessionManager(mgr)
-	srv.SetButlerWorkspace("/ws", "/cfg/butler-mcp.json")
+	srv.SetButlerWorkspace("/ws", []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}})
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

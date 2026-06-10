@@ -52,11 +52,12 @@ type Deps struct {
 	//   CLOUD  = 请求 ctx
 	StartCtx context.Context
 
-	// ButlerMCPConfig 是管家会话的 --mcp-config 文件路径(ADR-021 §2)。仅当本轮解析到的
-	// logical session 的 Role 为 logicalsession.RoleButler 时,才经 StartOpts.MCPConfig
-	// 下达给 driver(claudecode → --mcp-config),让管家可派发 worker。worker 会话不带。
-	// "" = 不注入(非管家路径或未配置 mcp-server)。
-	ButlerMCPConfig string
+	// ButlerMCPServers 是管家会话要加载的派活 MCP server(ADR-021 §2 / ADR-024 §5,
+	// 格式中立 spec)。仅当本轮解析到的 logical session 的 Role 为
+	// logicalsession.RoleButler 时,才经 StartOpts.MCPServers 下达给 driver
+	// (各驱动渲染各自格式),让管家可派发 worker。worker 会话不带。
+	// nil/空 = 不注入(非管家路径或未配置 mcp-server)。
+	ButlerMCPServers []agent.MCPServerSpec
 
 	// Memory 是「管家长期记忆」写入侧(ADR-021 §4)。非 nil 且本轮为【管家会话 +
 	// turn 正常结束(errorCount==0)】时,engine 在收尾点把 {用户原话, 管家回复, cwd}
@@ -341,10 +342,10 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 			}
 			startOpts.Model = d.resolveModel(drv.Name())
 			startOpts.SystemPrompt = d.buildSystemPrompt(logicalCwd, req.DeviceID)
-			// 仅管家会话(Role=butler)带 --mcp-config,让它能派发 worker(ADR-021 §2);
-			// worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
-			if logicalRole == logicalsession.RoleButler && d.ButlerMCPConfig != "" {
-				startOpts.MCPConfig = d.ButlerMCPConfig
+			// 仅管家会话(Role=butler)带派活 MCP server,让它能派发 worker(ADR-021 §2 /
+			// ADR-024 §5);worker / 普通会话不带。driver 不支持 MCP 时忽略(契约同 Model)。
+			if logicalRole == logicalsession.RoleButler && len(d.ButlerMCPServers) > 0 {
+				startOpts.MCPServers = d.ButlerMCPServers
 			}
 			isResumeAttempt := false
 			if attempt == 0 {

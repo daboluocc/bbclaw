@@ -33,7 +33,7 @@ func TestHandleChatTextViaAgent_ButlerRouting(t *testing.T) {
 	}
 	a.SetRouter(r)
 	a.SetSessionManager(mgr)
-	a.SetButlerWorkspace("/ws", "/cfg/butler-mcp.json")
+	a.SetButlerWorkspace("/ws", []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}})
 
 	var got []CloudEnvelope
 	write := func(env CloudEnvelope) error {
@@ -157,7 +157,7 @@ func TestHeartbeatDuringLongButlerTurn(t *testing.T) {
 	}
 	a.SetRouter(r)
 	a.SetSessionManager(mgr)
-	a.SetButlerWorkspace("/ws", "/cfg/butler-mcp.json")
+	a.SetButlerWorkspace("/ws", []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}})
 
 	var mu sync.Mutex
 	var got []CloudEnvelope

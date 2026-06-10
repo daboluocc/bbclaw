@@ -114,13 +114,29 @@ type StartOpts struct {
 	// a system prompt just ignore it (same contract as Model).
 	SystemPrompt string
 
-	// MCPConfig, when non-empty, is the path to a Model Context Protocol config
-	// file the backend should load for this session. It is set only for the
-	// per-device "butler" session (ADR-021 §2) so the conversational butler can
+	// MCPServers, when non-empty, are the Model Context Protocol stdio servers
+	// the backend should load for this session. Set only for the per-device
+	// "butler" session (ADR-021 §2 / ADR-024) so the conversational butler can
 	// dispatch coding work to worker agents through the `mcp-server` subcommand;
-	// worker sessions never get it. claudecode passes it as --mcp-config. Drivers
-	// that can't load MCP servers just ignore it (same contract as Model).
-	MCPConfig string
+	// worker sessions never get it. It is FORMAT-NEUTRAL on purpose (ADR-024 §5):
+	// each driver renders the spec into its own config shape — claudecode writes
+	// a JSON file and passes --mcp-config, codex emits -c mcp_servers.* overrides,
+	// opencode emits an OPENCODE_CONFIG_CONTENT mcp block. Drivers that can't load
+	// MCP servers just ignore it (same contract as Model).
+	MCPServers []MCPServerSpec
+}
+
+// MCPServerSpec is a format-neutral description of one stdio MCP server the
+// butler should expose to its backend driver (ADR-024 §5). It is exactly the
+// {command, args, env} triple every CLI needs; each driver renders it into its
+// own config format. This replaces the previous claude-specific --mcp-config
+// file path so codex/opencode (which use different config shapes) can back the
+// butler too.
+type MCPServerSpec struct {
+	Name    string            // server key (e.g. "bbclaw"); tool names derive from it
+	Command string            // executable to spawn for the stdio server
+	Args    []string          // args passed to Command
+	Env     map[string]string // env injected into the server subprocess (may carry secrets — keep out of argv)
 }
 
 // Driver is the contract every per-CLI implementation must satisfy.

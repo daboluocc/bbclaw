@@ -101,9 +101,10 @@ type Server struct {
 	// the device's butler logical session instead of honouring the device's
 	// requested driver/session. Empty keeps the legacy multi-session behaviour.
 	butlerWorkspace string
-	// butlerMCPConfig is the path to the butler's --mcp-config file (ADR-021
-	// §2), passed to the engine so the butler session can dispatch workers.
-	butlerMCPConfig string
+	// butlerMCPServers are the butler's dispatch MCP servers (ADR-021 §2 /
+	// ADR-024 §5, format-neutral spec), passed to the engine so the butler
+	// session can dispatch workers via whichever driver backs it.
+	butlerMCPServers []agent.MCPServerSpec
 	// memoryWriter is the butler long-term-memory write side (ADR-021 §4).
 	// Optional: nil (the default) means the engine skips the memory step. Wired
 	// by main.go from memory.NewFromEnv only when the pipeline is enabled and

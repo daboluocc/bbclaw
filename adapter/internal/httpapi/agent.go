@@ -132,13 +132,13 @@ func (s *Server) SetDriverState(store *driverstate.Store) { s.driverState = stor
 
 // SetButlerWorkspace enables butler routing (ADR-021 §1): when workspaceCwd is
 // non-empty, every /v1/agent/message turn is routed to the calling device's
-// butler logical session (cwd=workspaceCwd, Role=butler, driver=claude-code)
-// instead of honouring the device-requested driver/session. mcpConfig is the
-// path to the butler's --mcp-config file (ADR-021 §2); empty disables dispatch.
-// Passing an empty workspaceCwd leaves the legacy multi-session path untouched.
-func (s *Server) SetButlerWorkspace(workspaceCwd, mcpConfig string) {
+// butler logical session (cwd=workspaceCwd, Role=butler) instead of honouring
+// the device-requested driver/session. mcpServers are the butler's dispatch MCP
+// servers (ADR-021 §2 / ADR-024 §5); nil/empty disables dispatch. Passing an
+// empty workspaceCwd leaves the legacy multi-session path untouched.
+func (s *Server) SetButlerWorkspace(workspaceCwd string, mcpServers []agent.MCPServerSpec) {
 	s.butlerWorkspace = strings.TrimSpace(workspaceCwd)
-	s.butlerMCPConfig = strings.TrimSpace(mcpConfig)
+	s.butlerMCPServers = mcpServers
 }
 
 // SetMemoryWriter attaches the butler long-term-memory write side (ADR-021 §4).
@@ -788,7 +788,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		Log:                s.log,
 		ResolveActiveModel: s.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
-		ButlerMCPConfig:    s.butlerMCPConfig,
+		ButlerMCPServers:   s.butlerMCPServers,
 		Memory:             s.memoryWriter,
 		DispatchRecorder:   s.dispatchRecorder,
 		DispatchRing:       s.dispatchRing,

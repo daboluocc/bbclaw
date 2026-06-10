@@ -101,7 +101,7 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, butlerWorkspace, butlerMCPConfig string, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	var asrProvider asr.Provider
 	switch strings.ToLower(strings.TrimSpace(cfg.ASRProvider)) {
@@ -202,7 +202,7 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	if sessionMgr != nil {
 		server.SetSessionManager(sessionMgr)
 		// Route local agent turns to the per-device butler session (ADR-021).
-		server.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
+		server.SetButlerWorkspace(butlerWorkspace, butlerMCPServers)
 		// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4): track dispatch
 		// task progress and serve GET /v1/butler/dispatch/recent.
 		if butlerWorkspace != "" {
@@ -663,24 +663,24 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		logger.Infof("workspace: ready dir=%s", dir)
 	}
 
-	// Write the butler's --mcp-config so its session can dispatch coding work to
-	// worker agents through the `mcp-server` subcommand (ADR-021 §2). Only the
-	// per-device butler session is spawned with this config; worker sessions
-	// don't get it. Non-fatal: degrade to a butler without dispatch.
-	butlerMCPConfig := ""
+	// Build the butler's dispatch MCP server spec so its session can dispatch
+	// coding work to worker agents through the `mcp-server` subcommand (ADR-021
+	// §2). Format-neutral (ADR-024 §5): each driver renders it into its own
+	// config shape, so codex/opencode butlers dispatch the same way claude does.
+	// Only the per-device butler session carries it; worker sessions don't.
+	// Non-fatal: degrade to a butler without dispatch.
+	var butlerMCPServers []agent.MCPServerSpec
 	if butlerWorkspace != "" {
 		if self, err := os.Executable(); err != nil {
 			logger.Warnf("butler-mcp: resolve executable failed, dispatch disabled: %v", err)
-		} else if dataDir, derr := workspace.DataDir(); derr != nil {
-			logger.Warnf("butler-mcp: resolve data dir failed, dispatch disabled: %v", derr)
 		} else {
-			cfgPath := filepath.Join(dataDir, "butler-mcp.json")
-			if p, werr := butlermcp.WriteConfig(cfgPath, self, butlerMCPEnv(cfg)); werr != nil {
-				logger.Warnf("butler-mcp: write config failed, dispatch disabled: %v", werr)
-			} else {
-				butlerMCPConfig = p
-				logger.Infof("butler-mcp: config ready path=%s", p)
-			}
+			butlerMCPServers = []agent.MCPServerSpec{{
+				Name:    butlermcp.ServerName,
+				Command: self,
+				Args:    []string{"mcp-server"},
+				Env:     butlerMCPEnv(cfg),
+			}}
+			logger.Infof("butler-mcp: dispatch server ready command=%s", self)
 		}
 	}
 
@@ -712,7 +712,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
 			// Route cloud voice turns to the per-device butler session (ADR-021).
-			cloudRelay.SetButlerWorkspace(butlerWorkspace, butlerMCPConfig)
+			cloudRelay.SetButlerWorkspace(butlerWorkspace, butlerMCPServers)
 		}
 		if driverStateStore != nil {
 			cloudRelay.SetDriverState(driverStateStore)
@@ -749,7 +749,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, butlerWorkspace, butlerMCPConfig, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, butlerWorkspace, butlerMCPServers, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)
