@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   配网页 `bb_page_apconfig`：左侧点阵 WiFi 广播图标（向外涟漪），右侧"热点/密码/打开"
   三步加入指引（CJK 文字渲染）。首启无凭据和运行中 WiFi 掉线两条进入路径都已切换。
   详见 design/STATE_MACHINE.md §3.5.2。
+- **对话页底栏改为点阵扫描条**：ACTIVE 对话页底栏过去是 `[B] cwd | mem:N+M` 文字双格，
+  现改为一条 320px 点阵"小屏幕"——白头青尾的彗星在一排 ghost 点上 L↔R 往返扫描
+  （Knight-rider），颜色与速度随状态联动：待机青慢 / 聆听青中 / 处理青快 / 错误红
+  （NO WIFI、WIFI ERR、AUTH）。cwd / mem 统计改由锁屏页 footer 承载，派发进度仍叠加
+  在顶栏状态文字；记忆/cwd 状态与 API 不变。详见 design/UI_DESIGN_LANGUAGE.md §3。
+  模拟器 headless 导出新增逐帧推进（`lv_tick_inc`），动画类预览不再停在 t=0。
 
 ## [0.4.12] - 2026-06-10
 

@@ -310,7 +310,13 @@ int main(int argc, char** argv) {
     lv_display_set_flush_cb(display, headless_flush_cb);
     lv_display_set_buffers(display, headless_buf, NULL, (uint32_t)headless_buf_size, LV_DISPLAY_RENDER_MODE_FULL);
     populate_preview_state(&state);
-    lv_timer_handler();
+    /* Pump ~0.7s of virtual time so animated surfaces (bottom-bar sweep,
+     * clock colon, record meter) settle into a representative frame instead
+     * of their t=0 initial position. */
+    for (int f = 0; f < 45; f++) {
+      lv_tick_inc(15); /* headless has no SDL tick cb — advance manually */
+      lv_timer_handler();
+    }
     lv_refr_now(display);
     int export_rc = export_headless_buffer_image(state.export_path, (const uint16_t*)headless_buf, DISP_W, DISP_H);
     free(headless_buf);

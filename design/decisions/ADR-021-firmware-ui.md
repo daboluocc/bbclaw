@@ -137,6 +137,14 @@ Response 200:
 - footer 聚合显示：`mem: 12+12`（inbox + profile 总和）或 `mem: 12·5·3·4`（分列展开）
 - **不阻塞 E**：footer 在拿不到 stats 时降级显示 `mem: ?`，API 留给 E 的 stretch goal 或独立小 issue
 
+> **2026-06-10 修订**：ACTIVE 对话页底栏的 `[B] cwd | mem:N+M` 文字双格已被
+> **点阵扫描条**（Knight-rider 彗星，颜色/速度随状态）取代——见
+> design/UI_DESIGN_LANGUAGE.md §3 与 `bb_lvgl_display.c` 的
+> `bottombar_timer_cb`。cwd / mem 统计改由**锁屏页 footer**
+> (`bb_page_locked_update_footer`) 承载，派发进度仍叠加在顶栏 `s_lbl_status`；
+> `memory/stats` 端点与 `s_butler_cwd` / `s_mem_*` 状态保持不变，仅 ACTIVE 底栏的
+> 渲染方式变化。
+
 ### 1.4 `GET /v1/butler/dispatch/recent`（→ Sub-PR C，Task List 数据源）
 
 替代 v1 的 session 列表，作为 Task List 页的数据源：

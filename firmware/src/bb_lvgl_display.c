@@ -130,8 +130,14 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_BATTERY_LG_CAP_W      4  /* positive terminal cap width */
 #define UI_BATTERY_LG_CAP_H     12  /* positive terminal cap height */
 
-/* Bottom info bar (session / cwd pool) */
+/* Bottom bar — a dot-matrix "mini screen" strip (Knight-rider sweep) that
+ * replaces the old session/cwd text cells. A bright head comet bounces L↔R
+ * across a row of resting ghost dots; color + speed track the live status. */
 #define UI_BOTTOM_BAR_H    16
+#define UI_BAR_DOT          5  /* dot diameter */
+#define UI_BAR_PITCH        7  /* dot center-to-center */
+#define UI_BAR_DOTS_MAX    48  /* array cap; actual count fits body_w */
+#define UI_BAR_UPDATE_MS   55  /* sweep frame period */
 
 /* Recording speaking view */
 #define UI_RECORD_UPDATE_MS       48
@@ -268,10 +274,21 @@ static lv_obj_t* s_obj_status_battery_fill;
 static lv_obj_t* s_obj_status_battery_cap;
 static lv_obj_t* s_obj_status_battery_charge_lbl; /* ⚡ overlay for charging state */
 
-/* Bottom info bar (session id / cwd pool name) */
+/* Bottom bar — dot-matrix Knight-rider sweep strip */
+typedef enum {
+  BAR_IDLE = 0, /* READY/RESULT — slow calm teal sweep */
+  BAR_LISTEN,   /* TX — medium teal */
+  BAR_PROCESS,  /* RX/TASK/BOOT/WIFI… — fast teal (busy) */
+  BAR_SPEAK,    /* SPEAK — medium teal */
+  BAR_ERROR,    /* ERR / NO WIFI / AUTH — red */
+} bottombar_mode_t;
 static lv_obj_t* s_obj_bottom_bar;
-static lv_obj_t* s_lbl_bottom_session;
-static lv_obj_t* s_lbl_bottom_cwd;
+static lv_obj_t* s_bar_dots[UI_BAR_DOTS_MAX];
+static int s_bar_dot_count;
+static int s_bar_head_x10; /* comet head position, dot index ×10 */
+static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
+static int s_bottombar_mode;
+static lv_timer_t* s_bar_timer;
 static lv_obj_t* s_view_speaking;
 static lv_obj_t* s_obj_record_halo_outer;
 static lv_obj_t* s_obj_record_halo_inner;
@@ -435,40 +452,81 @@ static void apply_battery_widget(void) {
   }
 }
 
-static void apply_bottom_bar(void) {
-  if (s_lbl_bottom_session == NULL || s_lbl_bottom_cwd == NULL) return;
-
-  /* ADR-021-firmware-ui §1.2: left cell — "[B] <cwd>" (butler badge + workspace) */
-  char left_buf[56];
-  char butler_cwd[48];
-  portENTER_CRITICAL(&s_state_lock);
-  strncpy(butler_cwd, s_butler_cwd, sizeof(butler_cwd) - 1);
-  butler_cwd[sizeof(butler_cwd) - 1] = '\0';
-  portEXIT_CRITICAL(&s_state_lock);
-
-  if (butler_cwd[0] != '\0') {
-    snprintf(left_buf, sizeof(left_buf), "[B] %s", butler_cwd);
-  } else {
-    snprintf(left_buf, sizeof(left_buf), "[B]");
+/* Map the live status string to a sweep mode (color + speed). The strip is
+ * the active view's persistent ambient indicator across all states. */
+static void apply_bottom_bar(const char* status, int recording) {
+  int mode = BAR_IDLE;
+  if (status != NULL && status[0] != '\0') {
+    if (strstr(status, BB_STATUS_ERR) != NULL || strstr(status, "NO WIFI") != NULL ||
+        strstr(status, BB_STATUS_AUTH) != NULL) {
+      mode = BAR_ERROR;
+    } else if (recording || strcmp(status, BB_STATUS_TX) == 0) {
+      mode = BAR_LISTEN;
+    } else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 ||
+               strcmp(status, "PROCESSING") == 0 || strcmp(status, BB_STATUS_TASK) == 0 ||
+               strcmp(status, BB_STATUS_BUSY) == 0 || strncmp(status, BB_STATUS_BOOT, 4) == 0 ||
+               strstr(status, BB_STATUS_WIFI) != NULL || strstr(status, BB_STATUS_ADAPTER) != NULL ||
+               strstr(status, BB_STATUS_PAIR) != NULL) {
+      mode = BAR_PROCESS;
+    } else if (strcmp(status, BB_STATUS_SPEAK) == 0) {
+      mode = BAR_SPEAK;
+    }
   }
-  lv_label_set_text(s_lbl_bottom_session, left_buf);
+  s_bottombar_mode = mode;
+}
 
-  /* ADR-021-firmware-ui §1.3: right cell — "mem: N+M" or "mem: ?" */
-  char right_buf[24];
-  int inbox, profile;
-  portENTER_CRITICAL(&s_state_lock);
-  inbox   = s_mem_inbox;
-  profile = s_mem_profile;
-  portEXIT_CRITICAL(&s_state_lock);
-
-  if (inbox >= 0 && profile >= 0) {
-    if (inbox > 999) inbox = 999;
-    if (profile > 999) profile = 999;
-    snprintf(right_buf, sizeof(right_buf), "mem: %d+%d", inbox, profile);
-  } else {
-    snprintf(right_buf, sizeof(right_buf), "mem: ?");
+/* Comet head step per frame (dot index ×10). Faster = busier state. */
+static int bottombar_speed_x10(int mode) {
+  switch (mode) {
+    case BAR_PROCESS: return 13;
+    case BAR_LISTEN:  return 7;
+    case BAR_SPEAK:   return 6;
+    case BAR_ERROR:   return 9;
+    default:          return 4; /* idle — slow calm drift */
   }
-  lv_label_set_text(s_lbl_bottom_cwd, right_buf);
+}
+
+static uint32_t bottombar_color(int mode) {
+  return (mode == BAR_ERROR) ? BB_UI_ERR : BB_UI_ACCENT;
+}
+
+/* Knight-rider sweep: white-hot head + fading comet tail bouncing across a
+ * row of resting ghost dots. Skips work while the active view is hidden. */
+static void bottombar_timer_cb(lv_timer_t* t) {
+  (void)t;
+  if (s_obj_bottom_bar == NULL || s_bar_dot_count == 0) return;
+  if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
+
+  const int n = s_bar_dot_count;
+  const uint32_t comet = bottombar_color(s_bottombar_mode);
+  const int max_x10 = (n - 1) * 10;
+
+  s_bar_head_x10 += s_bar_dir * bottombar_speed_x10(s_bottombar_mode);
+  if (s_bar_head_x10 >= max_x10) {
+    s_bar_head_x10 = max_x10;
+    s_bar_dir = -1;
+  } else if (s_bar_head_x10 <= 0) {
+    s_bar_head_x10 = 0;
+    s_bar_dir = 1;
+  }
+
+  const int tail_x10 = 65; /* ~6.5-dot trailing comet */
+  for (int i = 0; i < n; i++) {
+    /* rel>0 = behind the head (tail side); rel<0 = ahead (sharp leading edge) */
+    int rel = (s_bar_dir > 0) ? (s_bar_head_x10 - i * 10) : (i * 10 - s_bar_head_x10);
+    lv_obj_t* d = s_bar_dots[i];
+    if (rel >= -5 && rel <= 5) {
+      lv_obj_set_style_bg_color(d, lv_color_hex(UI_TEXT_MAIN), 0); /* white-hot head */
+      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    } else if (rel > 5 && rel < tail_x10) {
+      int b = 255 - (rel - 5) * 255 / (tail_x10 - 5); /* 255→0 along the tail */
+      lv_obj_set_style_bg_color(d, lv_color_hex(comet), 0);
+      lv_obj_set_style_bg_opa(d, (lv_opa_t)(45 + b * 210 / 255), 0);
+    } else {
+      lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0); /* resting matrix */
+      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+    }
+  }
 }
 
 /* ── Status icon ── */
@@ -1015,7 +1073,8 @@ static void create_ui(void) {
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
 
-  /* Bottom info bar — session id (left) + cwd pool name (right) */
+  /* Bottom bar — dot-matrix Knight-rider sweep strip (replaces session/cwd
+   * text; bb_page_locked still surfaces cwd/mem in its own footer). */
   {
     s_obj_bottom_bar = lv_obj_create(s_view_active);
     lv_obj_remove_style_all(s_obj_bottom_bar);
@@ -1026,32 +1085,27 @@ static void create_ui(void) {
     lv_obj_set_style_border_width(s_obj_bottom_bar, 1, LV_PART_MAIN);
     lv_obj_set_style_border_side(s_obj_bottom_bar, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
     lv_obj_set_style_border_color(s_obj_bottom_bar, lv_color_hex(UI_TEXT_DIM), LV_PART_MAIN);
-    lv_obj_set_style_border_opa(s_obj_bottom_bar, LV_OPA_30, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(s_obj_bottom_bar, LV_OPA_20, LV_PART_MAIN);
 
-    const int bottom_half = body_w / 2;
-
-    s_lbl_bottom_session = lv_label_create(s_obj_bottom_bar);
-    lv_obj_set_width(s_lbl_bottom_session, bottom_half - 4);
-    lv_obj_set_height(s_lbl_bottom_session, lh + 2);
-    lv_obj_set_style_text_color(s_lbl_bottom_session, lv_color_hex(UI_STATUS_FG), 0);
-    lv_obj_set_style_text_font(s_lbl_bottom_session, font, 0);
-    lv_obj_set_style_text_align(s_lbl_bottom_session, LV_TEXT_ALIGN_LEFT, 0);
-    /* ADR-016 polish: scroll circular instead of clip — long aliases (e.g.
-     * project paths or full sid hex) should scroll across the cell rather
-     * than get truncated. Same for the model cell below. */
-    lv_label_set_long_mode(s_lbl_bottom_session, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-    lv_label_set_text(s_lbl_bottom_session, "");
-    lv_obj_set_pos(s_lbl_bottom_session, 0, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
-
-    s_lbl_bottom_cwd = lv_label_create(s_obj_bottom_bar);
-    lv_obj_set_width(s_lbl_bottom_cwd, bottom_half - 4);
-    lv_obj_set_height(s_lbl_bottom_cwd, lh + 2);
-    lv_obj_set_style_text_color(s_lbl_bottom_cwd, lv_color_hex(UI_TEXT_MAIN), 0);
-    lv_obj_set_style_text_font(s_lbl_bottom_cwd, font, 0);
-    lv_obj_set_style_text_align(s_lbl_bottom_cwd, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_label_set_long_mode(s_lbl_bottom_cwd, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-    lv_label_set_text(s_lbl_bottom_cwd, "");
-    lv_obj_set_pos(s_lbl_bottom_cwd, bottom_half + 4, (UI_BOTTOM_BAR_H - lh - 2) / 2 + 1);
+    int n = (body_w - UI_BAR_DOT) / UI_BAR_PITCH + 1;
+    if (n > UI_BAR_DOTS_MAX) n = UI_BAR_DOTS_MAX;
+    s_bar_dot_count = n;
+    const int span = (n - 1) * UI_BAR_PITCH + UI_BAR_DOT;
+    const int x0 = (body_w - span) / 2;
+    const int y0 = (UI_BOTTOM_BAR_H - UI_BAR_DOT) / 2 + 1; /* +1 clears top border */
+    for (int i = 0; i < n; i++) {
+      lv_obj_t* d = lv_obj_create(s_obj_bottom_bar);
+      lv_obj_remove_style_all(d);
+      lv_obj_set_size(d, UI_BAR_DOT, UI_BAR_DOT);
+      lv_obj_set_pos(d, x0 + i * UI_BAR_PITCH, y0);
+      lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
+      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+      lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+      s_bar_dots[i] = d;
+    }
+    s_bar_head_x10 = 0;
+    s_bar_dir = 1;
   }
 
   /* Speaking area — shown only while TX is active */
@@ -1179,6 +1233,7 @@ static void create_ui(void) {
   s_clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
   s_auto_scroll_timer = lv_timer_create(auto_scroll_text_cb, UI_AUTO_SCROLL_PERIOD_MS, NULL);
   s_record_timer = lv_timer_create(record_timer_cb, UI_RECORD_UPDATE_MS, NULL);
+  s_bar_timer = lv_timer_create(bottombar_timer_cb, UI_BAR_UPDATE_MS, NULL);
   reset_recording_meter_visuals();
 }
 
@@ -1300,7 +1355,7 @@ static void refresh_ui(void) {
     apply_wifi_bars(s_bar_status_wifi, s_lbl_status_wifi_info, status);
     apply_battery_widget();
     lv_label_set_text(s_lbl_status_clock, hm);
-    apply_bottom_bar();
+    apply_bottom_bar(status, recording);
 
     set_view_visible(s_view_speaking, recording);
     /* chat 激活时：底层对话文本区隐藏，中间留给 overlay 的 transcript */
