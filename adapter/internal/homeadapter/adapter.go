@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -662,6 +663,16 @@ func (a *Adapter) handleChatTextViaAgent(
 	}
 
 	var replyParts []string
+
+	// Heartbeat: track last activity time and current phase so the ticker
+	// goroutine only fires during genuine silent stretches.
+	var lastActivity atomic.Int64
+	var currentPhase atomic.Value
+	currentPhase.Store("thinking")
+	lastActivity.Store(time.Now().UnixNano())
+	stopHeartbeat := a.startHeartbeat(ctx, write, env, &lastActivity, &currentPhase)
+	defer stopHeartbeat()
+
 loop:
 	for {
 		select {
@@ -675,10 +686,14 @@ loop:
 			case agent.EvText:
 				if t := strings.TrimSpace(ev.Text); t != "" {
 					replyParts = append(replyParts, ev.Text)
+					lastActivity.Store(time.Now().UnixNano())
+					currentPhase.Store("generating")
 					writeEvent("voice.reply.delta", map[string]any{"text": ev.Text})
 				}
 			case agent.EvToolCall:
 				if ev.Tool != nil {
+					lastActivity.Store(time.Now().UnixNano())
+					currentPhase.Store("tool_call")
 					writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
 				}
 			case agent.EvTurnEnd:
@@ -732,6 +747,16 @@ func (a *Adapter) handleChatTextViaButler(
 	}
 
 	sink := &voiceEventSink{a: a, write: write, env: env, streamID: streamID, sessionKey: sessionKey, routeStart: routeStart}
+
+	// Heartbeat: initialise shared activity tracking and start background ticker.
+	var lastActivity atomic.Int64
+	var currentPhase atomic.Value
+	currentPhase.Store("thinking")
+	lastActivity.Store(time.Now().UnixNano())
+	sink.lastActivity = &lastActivity
+	sink.currentPhase = &currentPhase
+	stopHeartbeat := a.startHeartbeat(ctx, write, env, &lastActivity, &currentPhase)
+	defer stopHeartbeat()
 
 	eng := butler.NewEngine(butler.Deps{
 		Router:   a.router,
@@ -804,6 +829,11 @@ type voiceEventSink struct {
 
 	parts    []string
 	deltaSeq int
+
+	// lastActivity and currentPhase are shared with the heartbeat goroutine
+	// started by handleChatTextViaButler. Atomic so the goroutine reads are safe.
+	lastActivity *atomic.Int64
+	currentPhase *atomic.Value
 }
 
 func (v *voiceEventSink) EmitSession(string, bool, string) bool { return true }
@@ -814,6 +844,10 @@ func (v *voiceEventSink) EmitEvent(ev agent.Event) bool {
 		if t := strings.TrimSpace(ev.Text); t != "" {
 			v.parts = append(v.parts, ev.Text)
 			v.deltaSeq++
+			if v.lastActivity != nil {
+				v.lastActivity.Store(time.Now().UnixNano())
+				v.currentPhase.Store("generating")
+			}
 			v.a.log.Infof("phase=reply_delta_recv device=%s session=%s stream=%s delta_seq=%d text_chars=%d elapsed_s=%.3f",
 				v.env.DeviceID, strings.TrimSpace(v.sessionKey), strings.TrimSpace(v.streamID), v.deltaSeq,
 				utf8.RuneCountInString(ev.Text), time.Since(v.routeStart).Seconds())
@@ -821,6 +855,10 @@ func (v *voiceEventSink) EmitEvent(ev agent.Event) bool {
 		}
 	case agent.EvToolCall:
 		if ev.Tool != nil {
+			if v.lastActivity != nil {
+				v.lastActivity.Store(time.Now().UnixNano())
+				v.currentPhase.Store("tool_call")
+			}
 			v.writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
 		}
 	}
@@ -866,4 +904,57 @@ func (a *Adapter) writeErrorResponse(write func(CloudEnvelope) error, env CloudE
 			"error": err.Error(),
 		},
 	})
+}
+
+// startHeartbeat launches a background goroutine that emits voice.reply.heartbeat
+// envelopes while the agent turn is silent (no EvText / EvToolCall activity).
+// It fires at most once per HeartbeatInterval, only when time since lastActivity
+// exceeds the interval. Returns a stop func that must be deferred by the caller.
+// If HeartbeatInterval <= 0 the goroutine is never started and the stop func is a no-op.
+func (a *Adapter) startHeartbeat(
+	ctx context.Context,
+	write func(CloudEnvelope) error,
+	env CloudEnvelope,
+	lastActivity *atomic.Int64,
+	phase *atomic.Value,
+) (stop func()) {
+	interval := a.cfg.HeartbeatInterval
+	if interval <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				last := lastActivity.Load()
+				if last == 0 || time.Since(time.Unix(0, last)) < interval {
+					continue
+				}
+				phaseStr := "thinking"
+				if v, ok := phase.Load().(string); ok && v != "" {
+					phaseStr = v
+				}
+				if err := write(CloudEnvelope{
+					Type:       "event",
+					MessageID:  env.MessageID,
+					DeviceID:   env.DeviceID,
+					HomeSiteID: a.cfg.HomeSiteID,
+					Kind:       "voice.reply.heartbeat",
+					Payload:    map[string]any{"phase": phaseStr},
+				}); err != nil {
+					a.log.Warnf("heartbeat write failed device=%s err=%v", env.DeviceID, err)
+				} else {
+					a.metrics.Inc("cloud_heartbeat_sent")
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }

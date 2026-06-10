@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
@@ -921,6 +922,16 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 
 	sink := &cloudEventSink{a: a, write: write, env: env}
 
+	// Heartbeat: initialise shared activity tracking and start background ticker.
+	var lastActivity atomic.Int64
+	var currentPhase atomic.Value
+	currentPhase.Store("thinking")
+	lastActivity.Store(time.Now().UnixNano())
+	sink.lastActivity = &lastActivity
+	sink.currentPhase = &currentPhase
+	stopHeartbeat := a.startHeartbeat(ctx, write, env, &lastActivity, &currentPhase)
+	defer stopHeartbeat()
+
 	eng := butler.NewEngine(butler.Deps{
 		Router:   a.router,
 		Sessions: a.sessions,
@@ -1072,6 +1083,11 @@ type cloudEventSink struct {
 	a     *Adapter
 	write func(CloudEnvelope) error
 	env   CloudEnvelope
+
+	// lastActivity and currentPhase are shared with the heartbeat goroutine
+	// started in handleAgentMessageRequest. Atomic so the goroutine reads are safe.
+	lastActivity *atomic.Int64
+	currentPhase *atomic.Value
 }
 
 func (c *cloudEventSink) emit(payload map[string]any) {
@@ -1100,6 +1116,18 @@ func (c *cloudEventSink) EmitSession(visibleID string, isNew bool, driver string
 
 func (c *cloudEventSink) EmitEvent(ev agent.Event) bool {
 	if frame := agentEventToFrame(ev); frame != nil {
+		// Update activity tracking so the heartbeat goroutine knows the turn is
+		// still making progress. EvText and EvToolCall are the meaningful
+		// milestones; other event types (tokens, etc.) also count as activity.
+		if c.lastActivity != nil {
+			c.lastActivity.Store(time.Now().UnixNano())
+			switch ev.Type {
+			case agent.EvText:
+				c.currentPhase.Store("generating")
+			case agent.EvToolCall:
+				c.currentPhase.Store("tool_call")
+			}
+		}
 		c.emit(frame)
 	}
 	return true
