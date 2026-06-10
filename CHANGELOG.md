@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-06-10
+
 ### Changed
 - **WiFi 配网改为独立全屏页**：SoftAP 配网模式过去把 AP 的 SSID/密码/IP 塞进一个
   对话气泡（`bb_display_show_chat_turn`）显示，拥挤且与聊天内容混淆。改为独立的点阵
