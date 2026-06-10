@@ -50,7 +50,7 @@
 | 待机时钟 | `bb_page_standby.c` | 5×7 点阵数字 + 青色呼吸冒号 | 无时间显示居中横杠 |
 | 锁屏 | `bb_page_locked.c` | 点阵锁形（弧形 shackle + 点阵 body + 青色 keyhole 呼吸点）| VERIFY 时 keyhole 呼吸加速；失败 body 闪红一拍 |
 | 录音遮罩 | `bb_chat_recording.c` | VU 7 列×5 行点阵柱，bottom-up 点亮，峰值点 voiced 青闪 | dot 4 / pitch 7 |
-| ACTIVE 底栏扫描条 | `bb_lvgl_display.c` | 3×N 点阵带 + 白头青尾"整列彗星"L↔R 往返扫描（Knight-rider）| dot 4 / pitch 7 / vpitch 5；颜色/速度随状态：待机青慢·聆听青中·处理青快·错误红；取代旧 `[B] cwd \| mem:N+M` 文字（仍在锁屏 footer 展示）|
+| ACTIVE 底栏点阵带 | `bb_lvgl_display.c` | 3×N 点阵小屏，**按状态切 motif**：处理=扫描sweep（整列彗星）· 聆听=声波vu · 说话=行波wave · 错误=红脉冲pulse · 待机=呼吸breathe | dot 4 / pitch 7 / vpitch 5；取代旧 `[B] cwd \| mem:N+M` 文字（仍在锁屏 footer）；与 daboluo.cc/style 的 `dot-matrix-anim.js` 同源 motif 库 |
 | 聊天气泡 | `bb_chat_transcript.c` | —（色块） | user=青 30%，assistant=ghost 面+冷白字，tool=ghost 10%+DIM，error=ERR |
 | ACTIVE 顶栏 | `bb_lvgl_display.c` | —（文字+位图图标） | 文字 DIM，活跃元素 ACCENT；底栏见上方扫描条 |
 | Settings / 任务列表 | `bb_ui_settings.c` / `bb_ui_task_list.c` | —（列表） | 选中行 = ghost 行面 + 青色左缘 3px 竖条 + LIT 文字 |

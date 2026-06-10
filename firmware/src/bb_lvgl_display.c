@@ -13,6 +13,7 @@
 #include "bb_ui_theme.h"
 
 #if defined(BBCLAW_SIMULATOR)
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +42,7 @@ static int lvgl_port_lock(int timeout_ms) {
 static void lvgl_port_unlock(void) {}
 const char *bbclaw_session_key(void) { return "sim:preview"; }
 #else
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -289,6 +291,7 @@ static lv_obj_t* s_bar_dots[UI_BAR_DOTS_MAX][UI_BAR_ROWS]; /* [col][row] */
 static int s_bar_dot_count; /* number of columns */
 static int s_bar_head_x10; /* comet head position, column index ×10 */
 static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
+static uint32_t s_bar_tick; /* frame counter — time base for non-sweep motifs */
 static int s_bottombar_mode;
 static lv_timer_t* s_bar_timer;
 static lv_obj_t* s_view_speaking;
@@ -500,39 +503,105 @@ static void bottombar_paint_col(int col, uint32_t color, lv_opa_t opa) {
   }
 }
 
-/* Knight-rider sweep on a 3×N dot-matrix band: a white-hot full-height
- * column head + fading comet tail bouncing across resting ghost columns.
- * Skips work while the active view is hidden. */
+static void bottombar_paint_dot(int col, int row, uint32_t color, lv_opa_t opa) {
+  lv_obj_set_style_bg_color(s_bar_dots[col][row], lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(s_bar_dots[col][row], opa, 0);
+}
+
+static lv_opa_t clamp_opa(int v) { return (lv_opa_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
+
+/* The bottom band shares one visual vocabulary with daboluo.cc/style's
+ * dot-matrix-anim.js. Each conversation state drives a different motif:
+ *   PROCESS→sweep · LISTEN→vu · SPEAK→wave · ERROR→pulse(红) · IDLE→breathe.
+ * See design/UI_DESIGN_LANGUAGE.md §3. */
+
+/* PROCESS — Knight-rider: white-hot full-height column head + fading tail. */
+static void motif_sweep(int n, uint32_t comet) {
+  const int max_x10 = (n - 1) * 10;
+  s_bar_head_x10 += s_bar_dir * bottombar_speed_x10(s_bottombar_mode);
+  if (s_bar_head_x10 >= max_x10) { s_bar_head_x10 = max_x10; s_bar_dir = -1; }
+  else if (s_bar_head_x10 <= 0) { s_bar_head_x10 = 0; s_bar_dir = 1; }
+
+  const int tail_x10 = 65; /* ~6.5-column trailing comet */
+  for (int i = 0; i < n; i++) {
+    int rel = (s_bar_dir > 0) ? (s_bar_head_x10 - i * 10) : (i * 10 - s_bar_head_x10);
+    if (rel >= -5 && rel <= 5) {
+      bottombar_paint_col(i, UI_TEXT_MAIN, LV_OPA_COVER); /* white-hot head */
+    } else if (rel > 5 && rel < tail_x10) {
+      int b = 255 - (rel - 5) * 255 / (tail_x10 - 5);
+      bottombar_paint_col(i, comet, clamp_opa(45 + b * 210 / 255));
+    } else {
+      bottombar_paint_col(i, BB_UI_DOT_GHOST, LV_OPA_COVER);
+    }
+  }
+}
+
+/* LISTEN — equalizer: per-column level from layered sines, lit bottom-up,
+ * peak dot accent. Echoes the mic without duplicating the big record meter. */
+static void motif_vu(int n, uint32_t accent) {
+  float t = (float)s_bar_tick;
+  for (int i = 0; i < n; i++) {
+    float lv = (sinf(t * 0.22f + i * 0.5f) * 0.5f + 0.5f) * 0.6f +
+               (sinf(t * 0.71f + i * 1.3f) * 0.5f + 0.5f) * 0.4f;
+    int lit = (int)(lv * UI_BAR_ROWS + 0.5f);
+    for (int r = 0; r < UI_BAR_ROWS; r++) { /* r=0 top */
+      int on = r >= UI_BAR_ROWS - lit;
+      int peak = r == UI_BAR_ROWS - lit;
+      bottombar_paint_dot(i, r, peak ? accent : (on ? UI_TEXT_MAIN : BB_UI_DOT_GHOST),
+                          on ? (peak ? LV_OPA_COVER : (lv_opa_t)217) : LV_OPA_COVER);
+    }
+  }
+}
+
+/* SPEAK — a single accent row glides per column on a sine. */
+static void motif_wave(int n, uint32_t accent) {
+  float t = (float)s_bar_tick;
+  for (int i = 0; i < n; i++) {
+    float rowf = (sinf(t * 0.22f + i * 0.45f) * 0.5f + 0.5f) * (UI_BAR_ROWS - 1);
+    for (int r = 0; r < UI_BAR_ROWS; r++) {
+      float d = fabsf((float)r - rowf);
+      if (d < 0.6f) bottombar_paint_dot(i, r, accent, LV_OPA_COVER);
+      else bottombar_paint_dot(i, r, BB_UI_DOT_GHOST, d < 1.6f ? (lv_opa_t)128 : LV_OPA_COVER);
+    }
+  }
+}
+
+/* ERROR — heartbeat: whole band double-pulses in red. */
+static void motif_pulse(int n, uint32_t comet) {
+  float b = fmodf((float)s_bar_tick * 0.07f, 1.0f);
+  float d0 = (b - 0.00f) / 0.06f, d1 = (b - 0.17f) / 0.06f;
+  float env = expf(-d0 * d0);
+  float e1 = expf(-d1 * d1);
+  if (e1 > env) env = e1;
+  /* Floor kept high so an error always reads clearly red; beats brighten it. */
+  lv_opa_t opa = clamp_opa((int)((0.34f + env * 0.66f) * 255.0f));
+  for (int i = 0; i < n; i++) bottombar_paint_col(i, comet, opa);
+}
+
+/* IDLE — calm whole-band breathing (rarely shown; idle resolves to standby). */
+static void motif_breathe(int n, uint32_t accent) {
+  float o = 0.18f + (sinf((float)s_bar_tick * 0.09f) * 0.5f + 0.5f) * 0.82f;
+  lv_opa_t opa = clamp_opa((int)(o * 255.0f));
+  for (int i = 0; i < n; i++) bottombar_paint_col(i, accent, opa);
+}
+
+/* Per-state dot-matrix motif on the bottom band. Skips work while hidden. */
 static void bottombar_timer_cb(lv_timer_t* t) {
   (void)t;
   if (s_obj_bottom_bar == NULL || s_bar_dot_count == 0) return;
   if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
 
+  s_bar_tick++;
   const int n = s_bar_dot_count;
-  const uint32_t comet = bottombar_color(s_bottombar_mode);
-  const int max_x10 = (n - 1) * 10;
+  const uint32_t color = bottombar_color(s_bottombar_mode);
 
-  s_bar_head_x10 += s_bar_dir * bottombar_speed_x10(s_bottombar_mode);
-  if (s_bar_head_x10 >= max_x10) {
-    s_bar_head_x10 = max_x10;
-    s_bar_dir = -1;
-  } else if (s_bar_head_x10 <= 0) {
-    s_bar_head_x10 = 0;
-    s_bar_dir = 1;
-  }
-
-  const int tail_x10 = 65; /* ~6.5-column trailing comet */
-  for (int i = 0; i < n; i++) {
-    /* rel>0 = behind the head (tail side); rel<0 = ahead (sharp leading edge) */
-    int rel = (s_bar_dir > 0) ? (s_bar_head_x10 - i * 10) : (i * 10 - s_bar_head_x10);
-    if (rel >= -5 && rel <= 5) {
-      bottombar_paint_col(i, UI_TEXT_MAIN, LV_OPA_COVER); /* white-hot head */
-    } else if (rel > 5 && rel < tail_x10) {
-      int b = 255 - (rel - 5) * 255 / (tail_x10 - 5); /* 255→0 along the tail */
-      bottombar_paint_col(i, comet, (lv_opa_t)(45 + b * 210 / 255));
-    } else {
-      bottombar_paint_col(i, BB_UI_DOT_GHOST, LV_OPA_COVER); /* resting matrix */
-    }
+  switch (s_bottombar_mode) {
+    case BAR_LISTEN:  motif_vu(n, color); break;
+    case BAR_SPEAK:   motif_wave(n, color); break;
+    case BAR_ERROR:   motif_pulse(n, color); break;
+    case BAR_IDLE:    motif_breathe(n, color); break;
+    case BAR_PROCESS:
+    default:          motif_sweep(n, color); break;
   }
 }
 

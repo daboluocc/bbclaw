@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **底栏扫描条改为 3×N 点阵带**：单排扫描条升级为 3 行点阵小屏（dot 4 / pitch 7 /
   vpitch 5），彗星变成"整列"白头青尾的全高扫描，更像一块迷你点阵屏；颜色/速度随状态
   联动不变。
+- **底栏点阵带按状态切 motif**：不再只有单一 sweep，改为随对话状态切换不同动画——
+  处理=扫描 sweep / 聆听=声波 vu / 说话=行波 wave / 错误=红脉冲 pulse / 待机=呼吸
+  breathe。与官网 daboluo.cc/style 的 `dot-matrix-anim.js` motif 库同源。
 
 ### Removed
 - **移除对话页右上角字符小人（buddy）**：agent 聊天主题 `bb_theme_buddy_anim` 过去在
