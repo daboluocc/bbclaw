@@ -134,9 +134,11 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
  * replaces the old session/cwd text cells. A bright head comet bounces L↔R
  * across a row of resting ghost dots; color + speed track the live status. */
 #define UI_BOTTOM_BAR_H    16
-#define UI_BAR_DOT          5  /* dot diameter */
-#define UI_BAR_PITCH        7  /* dot center-to-center */
-#define UI_BAR_DOTS_MAX    48  /* array cap; actual count fits body_w */
+#define UI_BAR_DOT          4  /* dot diameter */
+#define UI_BAR_PITCH        7  /* column center-to-center */
+#define UI_BAR_ROWS         3  /* 3×320 dot-matrix band */
+#define UI_BAR_VPITCH       5  /* row center-to-center */
+#define UI_BAR_DOTS_MAX    48  /* column cap; actual count fits body_w */
 #define UI_BAR_UPDATE_MS   55  /* sweep frame period */
 
 /* Recording speaking view */
@@ -283,9 +285,9 @@ typedef enum {
   BAR_ERROR,    /* ERR / NO WIFI / AUTH — red */
 } bottombar_mode_t;
 static lv_obj_t* s_obj_bottom_bar;
-static lv_obj_t* s_bar_dots[UI_BAR_DOTS_MAX];
-static int s_bar_dot_count;
-static int s_bar_head_x10; /* comet head position, dot index ×10 */
+static lv_obj_t* s_bar_dots[UI_BAR_DOTS_MAX][UI_BAR_ROWS]; /* [col][row] */
+static int s_bar_dot_count; /* number of columns */
+static int s_bar_head_x10; /* comet head position, column index ×10 */
 static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
 static int s_bottombar_mode;
 static lv_timer_t* s_bar_timer;
@@ -490,8 +492,17 @@ static uint32_t bottombar_color(int mode) {
   return (mode == BAR_ERROR) ? BB_UI_ERR : BB_UI_ACCENT;
 }
 
-/* Knight-rider sweep: white-hot head + fading comet tail bouncing across a
- * row of resting ghost dots. Skips work while the active view is hidden. */
+/* Paint a whole column (all UI_BAR_ROWS dots) one color/opacity. */
+static void bottombar_paint_col(int col, uint32_t color, lv_opa_t opa) {
+  for (int r = 0; r < UI_BAR_ROWS; r++) {
+    lv_obj_set_style_bg_color(s_bar_dots[col][r], lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(s_bar_dots[col][r], opa, 0);
+  }
+}
+
+/* Knight-rider sweep on a 3×N dot-matrix band: a white-hot full-height
+ * column head + fading comet tail bouncing across resting ghost columns.
+ * Skips work while the active view is hidden. */
 static void bottombar_timer_cb(lv_timer_t* t) {
   (void)t;
   if (s_obj_bottom_bar == NULL || s_bar_dot_count == 0) return;
@@ -510,21 +521,17 @@ static void bottombar_timer_cb(lv_timer_t* t) {
     s_bar_dir = 1;
   }
 
-  const int tail_x10 = 65; /* ~6.5-dot trailing comet */
+  const int tail_x10 = 65; /* ~6.5-column trailing comet */
   for (int i = 0; i < n; i++) {
     /* rel>0 = behind the head (tail side); rel<0 = ahead (sharp leading edge) */
     int rel = (s_bar_dir > 0) ? (s_bar_head_x10 - i * 10) : (i * 10 - s_bar_head_x10);
-    lv_obj_t* d = s_bar_dots[i];
     if (rel >= -5 && rel <= 5) {
-      lv_obj_set_style_bg_color(d, lv_color_hex(UI_TEXT_MAIN), 0); /* white-hot head */
-      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+      bottombar_paint_col(i, UI_TEXT_MAIN, LV_OPA_COVER); /* white-hot head */
     } else if (rel > 5 && rel < tail_x10) {
       int b = 255 - (rel - 5) * 255 / (tail_x10 - 5); /* 255→0 along the tail */
-      lv_obj_set_style_bg_color(d, lv_color_hex(comet), 0);
-      lv_obj_set_style_bg_opa(d, (lv_opa_t)(45 + b * 210 / 255), 0);
+      bottombar_paint_col(i, comet, (lv_opa_t)(45 + b * 210 / 255));
     } else {
-      lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0); /* resting matrix */
-      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+      bottombar_paint_col(i, BB_UI_DOT_GHOST, LV_OPA_COVER); /* resting matrix */
     }
   }
 }
@@ -1092,17 +1099,20 @@ static void create_ui(void) {
     s_bar_dot_count = n;
     const int span = (n - 1) * UI_BAR_PITCH + UI_BAR_DOT;
     const int x0 = (body_w - span) / 2;
-    const int y0 = (UI_BOTTOM_BAR_H - UI_BAR_DOT) / 2 + 1; /* +1 clears top border */
+    const int grid_h = (UI_BAR_ROWS - 1) * UI_BAR_VPITCH + UI_BAR_DOT;
+    const int y0 = (UI_BOTTOM_BAR_H - grid_h) / 2 + 1; /* +1 clears top border */
     for (int i = 0; i < n; i++) {
-      lv_obj_t* d = lv_obj_create(s_obj_bottom_bar);
-      lv_obj_remove_style_all(d);
-      lv_obj_set_size(d, UI_BAR_DOT, UI_BAR_DOT);
-      lv_obj_set_pos(d, x0 + i * UI_BAR_PITCH, y0);
-      lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
-      lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
-      lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
-      lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
-      s_bar_dots[i] = d;
+      for (int r = 0; r < UI_BAR_ROWS; r++) {
+        lv_obj_t* d = lv_obj_create(s_obj_bottom_bar);
+        lv_obj_remove_style_all(d);
+        lv_obj_set_size(d, UI_BAR_DOT, UI_BAR_DOT);
+        lv_obj_set_pos(d, x0 + i * UI_BAR_PITCH, y0 + r * UI_BAR_VPITCH);
+        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
+        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+        s_bar_dots[i][r] = d;
+      }
     }
     s_bar_head_x10 = 0;
     s_bar_dir = 1;

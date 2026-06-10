@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **底栏扫描条改为 3×N 点阵带**：单排扫描条升级为 3 行点阵小屏（dot 4 / pitch 7 /
+  vpitch 5），彗星变成"整列"白头青尾的全高扫描，更像一块迷你点阵屏；颜色/速度随状态
+  联动不变。
+
+### Removed
+- **移除对话页右上角字符小人（buddy）**：agent 聊天主题 `bb_theme_buddy_anim` 过去在
+  transcript 右上角浮一个 `(^_^)` 字符表情 + mood 小窗（九态动效）。角色状态已由顶部
+  状态栏图标 + 底栏点阵扫描条表达，右上角小人冗余且遮挡正文，故移除。transcript 聊天
+  消息流、录音遮罩、历史回放等主题功能保持不变；`set_state` 仍保留（驱动顶栏图标语义）。
+
 ## [0.4.13] - 2026-06-10
 
 ### Changed
