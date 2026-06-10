@@ -142,8 +142,9 @@ func (s *Server) SetButlerWorkspace(workspaceCwd string, mcpServers []agent.MCPS
 }
 
 // SetMemoryWriter attaches the butler long-term-memory write side (ADR-021 §4).
-// nil (the default) disables the memory step entirely. Wired by main.go only
-// when BBCLAW_BUTLER_MEMORY_DISTILL is enabled, and LOCAL-only.
+// nil disables the memory step entirely. Wired by main.go from the shared
+// butlerInfra when BBCLAW_BUTLER_MEMORY_DISTILL is enabled; the same writer is
+// also wired into the cloud-relay engine (homeadapter.SetButlerInfra).
 func (s *Server) SetMemoryWriter(w butler.MemoryWriter) { s.memoryWriter = w }
 
 // SetDispatchRing attaches the in-memory dispatch ring buffer (ADR-021-firmware-ui §1.4).

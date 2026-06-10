@@ -10,8 +10,9 @@ import (
 const (
 	// envEnable gates the whole long-term-memory write pipeline. Default ON
 	// so users get long-term memory out of the box. Set to 0/false/no/off to
-	// disable. LOCAL-only — cloud multi-tenant v1 never wires the Writer
-	// (per-user scoping lands later, ADR-021 §4).
+	// disable. Wired on BOTH the local-ingress and cloud-relay butler engines
+	// (ADR-021 §4) — one home adapter == one home, so a single Writer is correct;
+	// the multi-tenant per-user scoping concern lives in the cloud backend.
 	envEnable = "BBCLAW_BUTLER_MEMORY_DISTILL"
 	// envModel overrides the distillation model; default is the cheapest Haiku.
 	envModel = "BBCLAW_BUTLER_MEMORY_MODEL"
@@ -28,7 +29,7 @@ const (
 	// (auto-reloaded by claude-code at cwd=workspace) already serves as the
 	// butler's background long-term memory, so enabling consolidation now would
 	// only DRAIN that working inbox into dead files. Requires envEnable on too.
-	// LOCAL-only, same as the distill pipeline.
+	// Wired wherever the distill pipeline is (local + cloud-relay).
 	envConsolidate          = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE"
 	envConsolidateThreshold = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_THRESHOLD"
 	envConsolidateIdle      = "BBCLAW_BUTLER_MEMORY_CONSOLIDATE_IDLE"

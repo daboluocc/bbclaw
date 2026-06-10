@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **管家长期记忆在 cloud-relay 模式下完全不写入（ADR-021 §4）**：记忆写入侧
+  (`Memory`)、派活 ring (`DispatchRing`) 与 recorder 此前只接到**本地 ingress** 的
+  butler engine 上,**两条 cloud-relay 路径**(`homeadapter` 语音 + agent-proxy)的
+  `butler.Deps` 都没接。设备经云端中转时(远程设备的常态),每轮 turn 走的是 cloud 路径
+  → `d.Memory==nil` → `RecordTurn` 从不触发 → CLAUDE.md 的 `BBClaw-managed` 收件区
+  一直空、`MEMORY/*.md` 一直是模板,派活历史也录不进去。现在 memory/dispatch infra 在
+  `run()` 里**只建一次**并同时接到本地 + cloud-relay 两条 engine 上(单 home adapter =
+  单 home,共用一个 Writer 是对的;多租户隔离是云端后端的事,不在本仓库)。turn 本身一直
+  是成功的(errors=0),所以是纯接线遗漏,不是 turn 失败。
+  注:`MEMORY/*.md`(consolidation 产物)仍按设计默认关闭——其两个缺陷未修前,真正生效的
+  长期记忆是 CLAUDE.md 收件区;开了 `BBCLAW_BUTLER_MEMORY_CONSOLIDATE` 反而会把收件区
+  抽进没人读的单数命名死文件。
+
 ### Added
 - **Adapter 管理页「日志」tab + 持久化日志文件（ADR-025）**：新增 `GET /v1/admin/logs`
   （loopback-only）返回内存环形缓冲里最近 ~1000 行运行日志，管理页独立「日志」页实时

@@ -108,9 +108,9 @@ type Server struct {
 	// session can dispatch workers via whichever driver backs it.
 	butlerMCPServers []agent.MCPServerSpec
 	// memoryWriter is the butler long-term-memory write side (ADR-021 §4).
-	// Optional: nil (the default) means the engine skips the memory step. Wired
-	// by main.go from memory.NewFromEnv only when the pipeline is enabled and
-	// only on LOCAL (cloud multi-tenant v1 never writes).
+	// Optional: nil means the engine skips the memory step. Wired by main.go from
+	// the shared butlerInfra when the pipeline is enabled; the same writer is also
+	// wired into the cloud-relay engine so memory works regardless of ingress.
 	memoryWriter butler.MemoryWriter
 
 	// dispatchRing is the in-memory ring buffer for butler dispatch tasks

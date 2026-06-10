@@ -1026,7 +1026,12 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		Log:                a.log,
 		ResolveActiveModel: a.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
-		StartCtx:           ctx,
+		// Shared with the local path so cloud-relayed butler turns persist
+		// long-term memory + show up in dispatch history (ADR-021 §4).
+		Memory:           a.memory,
+		DispatchRing:     a.dispatchRing,
+		DispatchRecorder: a.dispatchRecorder,
+		StartCtx:         ctx,
 	})
 
 	_, runErr := eng.RunTurn(ctx, butler.Request{

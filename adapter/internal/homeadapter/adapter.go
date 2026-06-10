@@ -72,6 +72,14 @@ type Adapter struct {
 	// ADR-024 §5, format-neutral spec), passed to the engine so the butler
 	// session can dispatch workers via whichever driver backs it.
 	butlerMCPServers []agent.MCPServerSpec
+
+	// Shared butler observability + long-term memory (ADR-021 §4), wired by
+	// main.go via SetButlerInfra so cloud-relayed butler turns persist memory and
+	// record dispatches the same way the local-ingress path does. All optional:
+	// nil simply skips that feature for the turn.
+	memory           butler.MemoryWriter
+	dispatchRing     *butler.DispatchRing
+	dispatchRecorder *butler.DispatchRecorder
 }
 
 type Status struct {
@@ -169,6 +177,16 @@ func (a *Adapter) defaultStartCwd() string {
 func (a *Adapter) SetButlerWorkspace(workspaceCwd string, mcpServers []agent.MCPServerSpec) {
 	a.butlerWorkspace = strings.TrimSpace(workspaceCwd)
 	a.butlerMCPServers = mcpServers
+}
+
+// SetButlerInfra wires the shared long-term-memory writer + dispatch
+// observability (ADR-021 §4) into the cloud-relay butler engine, so a device
+// reaching this adapter through the cloud relay distills memory and records
+// dispatches exactly like a LAN-direct device. All args optional (nil skips).
+func (a *Adapter) SetButlerInfra(mem butler.MemoryWriter, ring *butler.DispatchRing, rec *butler.DispatchRecorder) {
+	a.memory = mem
+	a.dispatchRing = ring
+	a.dispatchRecorder = rec
 }
 
 // SetDriverState attaches the persistent driver-preference store, mirrored
@@ -778,7 +796,12 @@ func (a *Adapter) handleChatTextViaButler(
 		ResolveActiveModel: a.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		ButlerMCPServers:   a.butlerMCPServers,
-		StartCtx:           ctx,
+		// Shared with the local path so cloud-relayed butler turns persist
+		// long-term memory + show up in dispatch history (ADR-021 §4).
+		Memory:           a.memory,
+		DispatchRing:     a.dispatchRing,
+		DispatchRecorder: a.dispatchRecorder,
+		StartCtx:         ctx,
 	})
 
 	_, runErr := eng.RunTurn(ctx, butler.Request{

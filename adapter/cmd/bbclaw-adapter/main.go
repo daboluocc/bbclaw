@@ -102,7 +102,43 @@ func buildCloudRelay(cfg config.Config, sink pipeline.Sink, logger *obs.Logger, 
 	return homeadapter.New(homeCfg, sink, logger, metrics), nil
 }
 
-func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, settingsStore *settingsstore.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
+// butlerInfra bundles the process-shared butler observability + long-term memory
+// so BOTH the cloud-relay and the local-ingress butler engines wire the *same*
+// instances. Previously these were created inside buildLocalServer and only the
+// local path got them, so a device talking through the cloud relay never fed the
+// memory writer (managed block stayed empty, MEMORY/*.md never filled) and its
+// dispatches weren't recorded (ADR-021 §4). One home adapter == one home, so
+// sharing one memory writer is correct (the multi-tenant concern lives in the
+// cloud backend, not here).
+type butlerInfra struct {
+	memory   butler.MemoryWriter      // nil when memory pipeline is off/disabled
+	ring     *butler.DispatchRing     // nil when butler workspace is unavailable
+	recorder *butler.DispatchRecorder // always non-nil (process-level)
+}
+
+// buildButlerInfra constructs the shared butler memory + dispatch infra once.
+// The dispatch recorder is always built (process-level). The dispatch ring and
+// memory writer require a butler workspace + session manager, mirroring the
+// previous gating.
+func buildButlerInfra(butlerWorkspace string, sessionMgr *logicalsession.Manager, agentRouter *agent.Router, logger *obs.Logger) butlerInfra {
+	infra := butlerInfra{recorder: butler.NewDispatchRecorder()}
+	if sessionMgr == nil || butlerWorkspace == "" {
+		return infra
+	}
+	// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4).
+	infra.ring = butler.NewDispatchRing()
+	logger.Infof("butler-dispatch: ring buffer enabled")
+	// Butler long-term memory (ADR-021 §4); enabled by default, see memory.Enabled.
+	if mdPath, perr := workspace.ClaudeMDPath(); perr != nil {
+		logger.Warnf("butler-memory: resolve CLAUDE.md path failed, memory disabled: %v", perr)
+	} else if w, on := memory.NewWithRunner(mdPath, memoryRunner(agentRouter, logger), logger); on {
+		infra.memory = w
+		logger.Infof("butler-memory: long-term memory enabled path=%s", mdPath)
+	}
+	return infra
+}
+
+func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeadapter.Adapter, agentRouter *agent.Router, sessionMgr *logicalsession.Manager, driverStateStore *driverstate.Store, settingsStore *settingsstore.Store, butlerWorkspace string, butlerMCPServers []agent.MCPServerSpec, infra butlerInfra, logger *obs.Logger, metrics *obs.Metrics) (*http.Server, *httpapi.Server, error) {
 	streams := audio.NewManager(cfg.MaxAudioBytes, cfg.MaxStreamSeconds, cfg.MaxConcurrentStreams)
 	// ADR-025 §3: the LAN voice pipeline is opt-in AND must be fully configured.
 	// When off (cloud-default — the cloud does ASR/TTS) or enabled-but-incomplete,
@@ -216,22 +252,14 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		server.SetSessionManager(sessionMgr)
 		// Route local agent turns to the per-device butler session (ADR-021).
 		server.SetButlerWorkspace(butlerWorkspace, butlerMCPServers)
-		// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4): track dispatch
-		// task progress and serve GET /v1/butler/dispatch/recent.
-		if butlerWorkspace != "" {
-			dispatchRing := butler.NewDispatchRing()
-			server.SetDispatchRing(dispatchRing)
-			logger.Infof("butler-dispatch: ring buffer enabled")
+		// Shared butler dispatch ring + long-term memory (built once in run(),
+		// also wired into the cloud-relay engine so memory/dispatch work no matter
+		// how the device reaches this adapter).
+		if infra.ring != nil {
+			server.SetDispatchRing(infra.ring)
 		}
-		// Butler long-term memory (ADR-021 §4). LOCAL-only and gated off by
-		// default (BBCLAW_BUTLER_MEMORY_DISTILL); cloud relay never wires it.
-		if butlerWorkspace != "" {
-			if mdPath, perr := workspace.ClaudeMDPath(); perr != nil {
-				logger.Warnf("butler-memory: resolve CLAUDE.md path failed, memory disabled: %v", perr)
-			} else if w, on := memory.NewWithRunner(mdPath, memoryRunner(agentRouter, logger), logger); on {
-				server.SetMemoryWriter(w)
-				logger.Infof("butler-memory: long-term memory enabled path=%s", mdPath)
-			}
+		if infra.memory != nil {
+			server.SetMemoryWriter(infra.memory)
 		}
 	}
 	if driverStateStore != nil {
@@ -240,9 +268,8 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 	if settingsStore != nil {
 		server.SetSettingsStore(settingsStore)
 	}
-	// Wire the process-level dispatch recorder for GET /v1/butler/dispatch/recent.
-	dispatchRecorder := butler.NewDispatchRecorder()
-	server.SetDispatchRecorder(dispatchRecorder)
+	// Process-level dispatch recorder for GET /v1/butler/dispatch/recent (shared).
+	server.SetDispatchRecorder(infra.recorder)
 	return &http.Server{
 		Addr:    cfg.Addr,
 		Handler: server.Handler(),
@@ -836,6 +863,12 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		}
 	}
 
+	// Shared butler memory + dispatch infra — built once and wired into BOTH the
+	// cloud-relay and local-ingress butler engines (ADR-021 §4). Without this,
+	// cloud-relayed butler turns silently skipped memory distillation + dispatch
+	// recording, so a remote device's memory files never updated.
+	butlerDeps := buildButlerInfra(butlerWorkspace, sessionMgr, agentRouter, logger)
+
 	var cloudRelay *homeadapter.Adapter
 	var err error
 	if cfg.EnableCloudRelay() {
@@ -845,6 +878,10 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			os.Exit(1)
 		}
 		cloudRelay.SetRouter(agentRouter)
+		// Cloud-relay butler engine shares the same memory writer + dispatch
+		// observability as the local path (otherwise remote turns never persist
+		// long-term memory or show up in dispatch history).
+		cloudRelay.SetButlerInfra(butlerDeps.memory, butlerDeps.ring, butlerDeps.recorder)
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
 			// Route cloud voice turns to the per-device butler session (ADR-021).
@@ -885,7 +922,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 
 	if cfg.EnableLocalIngress() {
 		active++
-		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, settingsStore, butlerWorkspace, butlerMCPServers, logger, metrics)
+		httpSrv, agentSrv, err := buildLocalServer(cfg, sink, cloudRelay, agentRouter, sessionMgr, driverStateStore, settingsStore, butlerWorkspace, butlerMCPServers, butlerDeps, logger, metrics)
 		if err != nil {
 			logger.Errorf("%v", err)
 			os.Exit(1)
