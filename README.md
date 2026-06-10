@@ -99,7 +99,9 @@ make -C firmware monitor
 
 ### Adapter 一键安装（自动识别系统）
 
-脚本会根据 `uname` 自动选择 `darwin-arm64` / `darwin-amd64` / `linux-amd64` / `linux-arm64` 二进制，下载到 `~/bbclaw-adapter/` 并赋予执行权限。
+脚本会根据 `uname` 自动选择 `darwin-arm64` / `darwin-amd64` / `linux-amd64` / `linux-arm64` 二进制，下载到 `~/bbclaw-adapter/`，并把可执行文件**装进系统 PATH**（macOS/Linux 在 `/usr/local/bin` 或 `~/.local/bin` 建软链；Windows 把安装目录加入用户 PATH），使任意位置都能直接运行 `bbclaw-adapter`。
+
+> **为什么必须进 PATH**：设备配置功能（如语音让 AI「把音量调到 50%」）由后端 Agent 直接执行 `bbclaw-adapter device ...` 命令完成。若二进制不在 PATH 中，会因 `command not found` 失败。
 
 **macOS / Linux**
 
@@ -113,7 +115,9 @@ curl -fsSL https://raw.githubusercontent.com/daboluocc/bbclaw/main/scripts/insta
 iwr -useb https://raw.githubusercontent.com/daboluocc/bbclaw/main/scripts/install-adapter.ps1 | iex
 ```
 
-可选环境变量：`BBCLAW_INSTALL_DIR`（自定义安装目录）、`BBCLAW_VERSION`（指定版本 tag，默认 `latest`）。
+安装完成后验证 CLI 已可被找到（macOS/Linux 用 `command -v bbclaw-adapter`，Windows 用 `Get-Command bbclaw-adapter`）。若脚本提示 PATH 目录未生效，按提示把对应目录加入 PATH 后重开终端。
+
+可选环境变量：`BBCLAW_INSTALL_DIR`（程序/配置目录，`.env` 放这里）、`BBCLAW_BIN_DIR`（自定义进 PATH 的可执行目录，仅 macOS/Linux）、`BBCLAW_VERSION`（指定版本 tag，默认 `latest`）。
 
 安装后按 [Adapter 外部安装 Skill](docs/skills/bbclaw-adapter-external-install.md) 写 `.env`（`ADAPTER_AUTH_TOKEN` / `OPENCLAW_WS_URL` / ASR 相关变量）并启动。
 

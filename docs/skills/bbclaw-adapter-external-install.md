@@ -56,6 +56,18 @@ Unix：
 chmod +x bbclaw-adapter
 ```
 
+**把可执行文件放进 PATH（必做）**：设备配置功能（如语音让 AI「把音量调到 50%」）由后端 Agent 直接执行 `bbclaw-adapter device ...` 命令完成，二进制不在 PATH 中会 `command not found` 失败。建个软链到 PATH 目录：
+
+```bash
+# /usr/local/bin 可写就用它（多数系统默认在 PATH）；否则用 ~/.local/bin
+if [ -w /usr/local/bin ]; then BIN_DIR=/usr/local/bin; else BIN_DIR="$HOME/.local/bin"; fi
+mkdir -p "$BIN_DIR"
+ln -sf "$PWD/bbclaw-adapter" "$BIN_DIR/bbclaw-adapter"
+command -v bbclaw-adapter   # 验证；若为空，把 $BIN_DIR 加进 PATH 后重开终端
+```
+
+Windows：把下载目录加入用户 PATH（`Get-Command bbclaw-adapter` 验证），或直接用一键脚本 `install-adapter.ps1`（已自动加 PATH）。
+
 ---
 
 ## 3. 生成 `.env`（局域网 / `ADAPTER_MODE=local`）
@@ -105,7 +117,7 @@ ASR_LOCAL_BIN=
 ```bash
 cd ~/bbclaw-adapter
 set -a && source .env && set +a
-./bbclaw-adapter
+bbclaw-adapter        # 已软链进 PATH；未做软链时用 ./bbclaw-adapter
 ```
 
 日志中应出现类似 **`starting bbclaw-adapter mode=local addr=...`**。
