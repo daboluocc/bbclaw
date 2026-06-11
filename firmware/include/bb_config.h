@@ -668,7 +668,7 @@ const char *bbclaw_session_key(void);
 
 /* ── Idle timeout: dual-level standby → lock ── */
 #ifndef BBCLAW_CHAT_IDLE_TIMEOUT_MS
-#define BBCLAW_CHAT_IDLE_TIMEOUT_MS 30000
+#define BBCLAW_CHAT_IDLE_TIMEOUT_MS 120000        /* Issue #145: 30s→120s，对话设备读回复场景下 30s 偏短 */
 #endif
 
 #ifndef BBCLAW_STANDBY_LOCK_TIMEOUT_MS

@@ -779,6 +779,12 @@ static void on_ptt_changed(int pressed) {
 static void on_nav_event(bb_nav_event_t event) {
   if ((int)event < 0 || event >= BB_NAV_EVENT_COUNT) return;
 
+  /* Issue #145 — 任意导航键（UP/DOWN/LEFT/RIGHT/OK/BACK）都算用户活动，
+   * 统一在入口续命空闲计时器。此前仅 UP/DOWN 快速路径刷新，导致用户切
+   * driver（LEFT/RIGHT）或翻页（OK/BACK）看回复时计时器仍按上次 PTT 起算，
+   * 长回复读不完就被踢回待机。PTT 边沿与主循环 busy/speaker 续命逻辑不变。 */
+  s_last_activity_ms = bb_now_ms();
+
   /* ADR-017 v2 — fast-path for chat-overlay UP/DOWN. The stream task's
    * version-counter polling is starved during TTS playback (i2s_write
    * blocks for several seconds), so even nav events received here would
@@ -794,7 +800,6 @@ static void on_nav_event(bb_nav_event_t event) {
       s_agent_chat_active &&
       !bb_ui_task_list_visible()) {
     bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? -2 : 2);
-    s_last_activity_ms = bb_now_ms();  /* keep idle-timeout fresh */
     fast_path = 1;
   }
 
