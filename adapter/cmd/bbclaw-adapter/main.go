@@ -125,8 +125,16 @@ func buildButlerInfra(butlerWorkspace string, sessionMgr *logicalsession.Manager
 	if sessionMgr == nil || butlerWorkspace == "" {
 		return infra
 	}
-	// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4).
-	infra.ring = butler.NewDispatchRing()
+	// Butler dispatch ring buffer (ADR-021-firmware-ui §1.4). Backed by a JSON
+	// snapshot in BBCLAW_DATA_DIR so the firmware Task List / admin survive an
+	// adapter restart (issue #138 P0). Falls back to in-memory-only when the data
+	// dir cannot be resolved.
+	if dataDir, derr := workspace.DataDir(); derr != nil {
+		logger.Warnf("butler-dispatch: resolve data dir failed, ring not persisted: %v", derr)
+		infra.ring = butler.NewDispatchRing()
+	} else {
+		infra.ring = butler.NewPersistentDispatchRing(filepath.Join(dataDir, "dispatch_ring.json"), logger)
+	}
 	logger.Infof("butler-dispatch: ring buffer enabled")
 	// Butler long-term memory (ADR-021 §4); enabled by default, see memory.Enabled.
 	if mdPath, perr := workspace.ClaudeMDPath(); perr != nil {
