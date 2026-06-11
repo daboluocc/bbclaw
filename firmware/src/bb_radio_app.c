@@ -23,6 +23,7 @@
 #include "bb_page_boot.h"
 #include "bb_page_netconn.h"
 #include "bb_page_ota.h"
+#include "bb_page_ota_confirm.h"
 #include "bb_ui_theme.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
@@ -49,9 +50,40 @@
 
 static const char* TAG = "bb_radio_app";
 
+/* Pending OTA confirm state — declared here so ota_confirm_cb (below) can
+ * reference them before the main block of static variables at ~line 290. */
+static int               s_pending_ota_prompt;    /* 1 = waiting to show    */
+static ota_update_info_t s_pending_ota_info;      /* cached check result    */
+static int               s_ota_skipped_this_boot; /* 1 = skipped this boot  */
+
 /* Forwards OTA download progress to the on-screen dot-matrix progress page. */
 static void ota_ui_progress_cb(int percent) {
   bb_page_ota_set_progress(percent);
+}
+
+/* Called by bb_page_ota_confirm when the user (or 30 s timeout) decides.
+ * accept=1 → run the existing download/flash/reboot flow.
+ * accept=0 → mark skipped for this boot cycle; system resumes normally. */
+static void ota_confirm_cb(int accept) {
+  if (!accept) {
+    ESP_LOGI(TAG, "OTA confirm: user skipped version=%s", s_pending_ota_info.version);
+    s_ota_skipped_this_boot = 1;
+    s_pending_ota_prompt    = 0;
+    return;
+  }
+  ESP_LOGI(TAG, "OTA confirm: user accepted version=%s", s_pending_ota_info.version);
+  s_pending_ota_prompt = 0;
+  bb_page_ota_show(s_pending_ota_info.version);
+  esp_err_t dl_err = bb_ota_download_and_flash(&s_pending_ota_info, ota_ui_progress_cb);
+  if (dl_err == ESP_OK) {
+    ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
+    bb_page_ota_set_done();
+    (void)bb_ota_apply_update();
+    /* Never returns */
+  } else {
+    ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+    bb_page_ota_dismiss();
+  }
 }
 
 #if BBCLAW_SPK_TEST_ON_BOOT
@@ -255,6 +287,7 @@ static size_t s_voice_verify_pcm_len;
 static size_t s_voice_verify_pcm_cap;
 static int s_voice_verify_truncated;
 
+
 /* VAD 触发后首帧原经 xRingbufferSend 进环；与 LVGL/SPI 异核时易在环缓冲自旋锁上触发 INT WDT，改为先内存再 ingest */
 static volatile int s_capture_seed_pending;
 static uint8_t s_capture_seed_buf[2048];
@@ -317,6 +350,15 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
         bb_state_dispatch_simple(
           (prev == BBCLAW_STATE_LOCKED) ? BB_EVT_VOICE_VERIFY_OK
                                         : BB_EVT_REQUEST_SETTINGS_EXIT);
+        /* After unlock (LOCKED→CHAT): show OTA confirm page if pending. */
+        if (prev == BBCLAW_STATE_LOCKED && s_pending_ota_prompt &&
+            !s_ota_skipped_this_boot) {
+          s_pending_ota_prompt = 0;
+          bb_page_ota_confirm_show(bb_ota_get_current_version(),
+                                   s_pending_ota_info.version,
+                                   s_pending_ota_info.size,
+                                   ota_confirm_cb);
+        }
         break;
       case BBCLAW_STATE_SETTINGS:
         bb_state_dispatch_simple(BB_EVT_REQUEST_SETTINGS_ENTER);
@@ -1751,6 +1793,20 @@ static void stream_task(void* arg) {
         bb_nav_event_t nav = (bb_nav_event_t)event;
 
         /* ADR-012 §3 button-routing table — each page owns its dispatch. */
+
+        /* OTA confirm page intercepts OK/BACK when active (lv_layer_top).
+         * All other nav events reset the 30 s timeout (keeps it fair). */
+        if (bb_page_ota_confirm_active()) {
+          if (nav == BB_NAV_EVENT_OK) {
+            bb_page_ota_confirm_handle_nav(1);
+          } else if (nav == BB_NAV_EVENT_BACK) {
+            bb_page_ota_confirm_handle_nav(0);
+          }
+          /* Any nav key: treat as activity (do NOT reset countdown here;
+           * the countdown bar is the user's cue, no reset on input). */
+          break;
+        }
+
         switch (s_app_state) {
           case BBCLAW_STATE_LOCKED:
             /* Nav events ignored; only PTT (passphrase verify) is alive. */
@@ -3024,6 +3080,10 @@ static void stream_task(void* arg) {
     }
 
     if (!streaming) {
+      /* Poll OTA confirm timeout: timer sets the flag, main loop drains it. */
+      if (bb_page_ota_confirm_timed_out()) {
+        bb_page_ota_confirm_handle_nav(0);
+      }
       vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
@@ -3239,26 +3299,27 @@ esp_err_t bb_radio_app_start(void) {
         if (rpt != ESP_OK) {
           ESP_LOGW(TAG, "device info report failed err=%s (non-fatal)", esp_err_to_name(rpt));
         }
-        /* Silent OTA check: download and flash if update available */
-        if (bb_transport_is_cloud_saas()) {
+        /* OTA check: if update available, queue a user-confirm prompt.
+         * The confirm page is shown after unlock (or immediately if unlocked).
+         * Download/flash only happens when the user presses OK. */
+        if (bb_transport_is_cloud_saas() && !s_ota_skipped_this_boot) {
           ota_update_info_t ota_info = {0};
           esp_err_t ota_err = bb_ota_check(&ota_info);
           if (ota_err == ESP_OK && ota_info.has_update) {
-            ESP_LOGI(TAG, "OTA update available: version=%s size=%u", ota_info.version, ota_info.size);
-            /* Dot-matrix progress page on lv_layer_top, fed by the download
-             * progress callback (replaces the old silent NULL). */
-            bb_page_ota_show(ota_info.version);
-            esp_err_t dl_err = bb_ota_download_and_flash(&ota_info, ota_ui_progress_cb);
-            if (dl_err == ESP_OK) {
-              ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
-              bb_page_ota_set_done();  /* shows "REBOOTING" during apply's pre-reboot delay */
-              (void)bb_ota_apply_update();
-              /* Never returns */
-            } else {
-              ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
-              bb_page_ota_dismiss();
-            }
+            ESP_LOGI(TAG, "OTA update available: version=%s size=%u — queuing confirm",
+                     ota_info.version, ota_info.size);
+            s_pending_ota_info   = ota_info;
+            s_pending_ota_prompt = 1;
           }
+        }
+        /* If device is not locked, show the confirm page immediately.
+         * If locked, s_pending_ota_prompt will be consumed on unlock. */
+        if (s_pending_ota_prompt && !radio_app_is_locked()) {
+          s_pending_ota_prompt = 0;
+          bb_page_ota_confirm_show(bb_ota_get_current_version(),
+                                   s_pending_ota_info.version,
+                                   s_pending_ota_info.size,
+                                   ota_confirm_cb);
         }
       } else {
         ESP_LOGI(TAG, "cloud pairing requested and pending approval status=%d detail=%s", health_status,

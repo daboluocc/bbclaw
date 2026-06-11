@@ -18,6 +18,7 @@ set(_bb_srcs
     "bb_page_netconn.c"
     "bb_page_apconfig.c"
     "bb_page_ota.c"
+    "bb_page_ota_confirm.c"
     "bb_chat_transcript.c"
     "bb_chat_cache.c"
     "bb_chat_recording.c"
