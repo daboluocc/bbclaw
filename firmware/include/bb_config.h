@@ -1026,7 +1026,10 @@ const char *bbclaw_session_key(void);
 #endif
 
 #ifndef BBCLAW_ST7789_SWAP_BYTES
-#define BBCLAW_ST7789_SWAP_BYTES 1
+/* Default 0: byte-swapping is delegated to esp_lvgl_port via flags.swap_bytes.
+ * Set to 1 only if the board's panel io layer must also swap (would double-swap
+ * when used together with flags.swap_bytes — avoid unless intentional). */
+#define BBCLAW_ST7789_SWAP_BYTES 0
 #endif
 
 /**
