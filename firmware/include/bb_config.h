@@ -58,6 +58,30 @@
 #define BBCLAW_WIFI_STA_MAX_RETRY 2
 #endif
 
+/* ── 运行期自动重连（issue #170）──────────────────────────────────────────
+ * 设备在 STA 已连接状态下掉线后，先做 BBCLAW_WIFI_STA_MAX_RETRY 次快速重试
+ * （在事件回调里直接调 esp_wifi_connect()），耗尽后进入指数退避 backoff timer：
+ *   5s → 10s → 30s → 60s → 300s（封顶），持续重试直到 IP 取到为止。
+ * 只在运行期掉线时激活；首次启动失败后走原有逻辑（遍历 SSID → 进 AP 配网）。 */
+
+/* 退避起始间隔（毫秒） */
+#ifndef BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS
+#ifdef CONFIG_BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS
+#define BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS CONFIG_BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS
+#else
+#define BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS 5000U
+#endif
+#endif
+
+/* 退避上限（毫秒） */
+#ifndef BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS
+#ifdef CONFIG_BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS
+#define BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS CONFIG_BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS
+#else
+#define BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS 300000U
+#endif
+#endif
+
 #ifndef BBCLAW_WIFI_STA_CONNECT_TIMEOUT_MS
 #define BBCLAW_WIFI_STA_CONNECT_TIMEOUT_MS 30000
 #endif

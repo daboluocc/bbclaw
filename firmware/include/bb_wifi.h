@@ -6,6 +6,7 @@ typedef enum {
   BB_WIFI_MODE_NONE = 0,
   BB_WIFI_MODE_STA_CONNECTED = 1,
   BB_WIFI_MODE_AP_PROVISIONING = 2,
+  BB_WIFI_MODE_STA_RECONNECTING = 3, /**< 运行期掉线，指数退避自动重连中 */
 } bb_wifi_mode_t;
 
 esp_err_t bb_wifi_init_and_connect(void);

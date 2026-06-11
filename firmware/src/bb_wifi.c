@@ -15,10 +15,12 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
@@ -44,6 +46,12 @@ static char s_active_ssid[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
 static char s_ap_ssid[sizeof(((wifi_ap_config_t*)0)->ssid)] = {0};
 static char s_ap_password[sizeof(((wifi_ap_config_t*)0)->password)] = BBCLAW_WIFI_AP_PASSWORD;
 static char s_ap_ip[16] = "192.168.4.1";
+
+/* ── 运行期自动重连状态（issue #170）── */
+static TimerHandle_t s_reconnect_timer;
+static uint32_t s_reconnect_backoff_ms;
+static int s_reconnect_attempt;   /* 自动重连累计尝试次数（快速重试 + backoff 合计） */
+static int64_t s_reconnect_start_ms; /* 开始自动重连的时间戳（esp_timer_get_time() / 1000） */
 
 static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 
@@ -299,6 +307,70 @@ static esp_err_t save_sta_credentials(const char* ssid, const char* password) {
     return ESP_ERR_NO_MEM; /* all slots full */
   }
   return save_wifi_slot(slot, ssid, password);
+}
+
+/* ── 运行期自动重连辅助函数（issue #170）──────────────────────────────── */
+
+/* 计算下一档退避值（当前值 ×3，封顶 MAX）。
+ * 自然序列（从 MIN=5000ms 开始）：5s→15s→45s→135s→300s（封顶）。 */
+static uint32_t reconnect_next_backoff(uint32_t cur_ms) {
+  if (cur_ms == 0U) {
+    return BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS;
+  }
+  uint32_t next = cur_ms * 3U;
+  if (next > BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS || next < cur_ms /* overflow */) {
+    next = BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS;
+  }
+  return next;
+}
+
+/* FreeRTOS timer 回调：backoff 超时后调一次 esp_wifi_connect()。
+ * 运行在 timer daemon task，不可阻塞。 */
+static void reconnect_timer_cb(TimerHandle_t timer) {
+  (void)timer;
+  s_reconnect_attempt++;
+  ESP_LOGW(TAG, "wifi auto-reconnect attempt=%d backoff_ms=%u ssid=%s",
+           s_reconnect_attempt, (unsigned)s_reconnect_backoff_ms, s_active_ssid);
+  (void)esp_wifi_connect();
+}
+
+/* 启动（或重启）backoff timer。在事件回调中调用，不可阻塞。 */
+static void reconnect_timer_start(void) {
+  if (s_reconnect_timer == NULL) {
+    s_reconnect_timer = xTimerCreate(
+        "wifi_reconnect",
+        pdMS_TO_TICKS(BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS),
+        pdFALSE /* one-shot */, NULL, reconnect_timer_cb);
+  }
+  if (s_reconnect_timer == NULL) {
+    /* 极低概率：内存不足，降级直接重试 */
+    ESP_LOGE(TAG, "wifi reconnect timer create failed, retrying immediately");
+    s_reconnect_attempt++;
+    (void)esp_wifi_connect();
+    return;
+  }
+  s_reconnect_backoff_ms = reconnect_next_backoff(s_reconnect_backoff_ms);
+  (void)xTimerChangePeriod(s_reconnect_timer,
+                           pdMS_TO_TICKS(s_reconnect_backoff_ms), 0);
+  (void)xTimerStart(s_reconnect_timer, 0);
+  ESP_LOGW(TAG, "wifi reconnect backoff scheduled backoff_ms=%u ssid=%s",
+           (unsigned)s_reconnect_backoff_ms, s_active_ssid);
+}
+
+/* 停止 backoff timer 并重置所有重连状态。在 IP_EVENT_STA_GOT_IP 时调用。 */
+static void reconnect_timer_stop_and_reset(void) {
+  if (s_reconnect_timer != NULL) {
+    (void)xTimerStop(s_reconnect_timer, 0);
+  }
+  if (s_reconnect_attempt > 0) {
+    int64_t now_ms = (int64_t)(esp_timer_get_time() / 1000LL);
+    int64_t elapsed_ms = now_ms - s_reconnect_start_ms;
+    ESP_LOGI(TAG, "wifi recovered after %d attempts in %lld ms ssid=%s",
+             s_reconnect_attempt, (long long)elapsed_ms, s_active_ssid);
+  }
+  s_reconnect_backoff_ms = 0U;
+  s_reconnect_attempt = 0;
+  s_reconnect_start_ms = 0;
 }
 
 static void restart_task(void* arg) {
@@ -761,6 +833,8 @@ static esp_err_t ensure_wifi_stack_ready(void) {
 static esp_err_t start_sta_connection(const char* ssid, const char* password) {
   s_connected = 0;
   s_retry_num = 0;
+  /* 确保首次启动阶段不会触发运行期 backoff 逻辑 */
+  reconnect_timer_stop_and_reset();
   xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
   copy_string(s_active_ssid, sizeof(s_active_ssid), ssid);
 
@@ -856,20 +930,47 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
     if (s_mode == BB_WIFI_MODE_AP_PROVISIONING) {
       return;
     }
+
+    /* 首次启动阶段（bb_wifi_init_and_connect 还在等待 event group）：
+     * 走原有快速重试逻辑，耗尽后置 WIFI_FAIL_BIT 让启动流程决策。 */
+    if (s_mode != BB_WIFI_MODE_STA_CONNECTED && s_mode != BB_WIFI_MODE_STA_RECONNECTING) {
+      if (s_retry_num < BBCLAW_WIFI_STA_MAX_RETRY) {
+        s_retry_num++;
+        ESP_LOGW(TAG, "wifi reconnect attempt=%d", s_retry_num);
+        (void)esp_wifi_connect();
+      } else {
+        ESP_LOGW(TAG, "wifi retries exhausted for current ssid=%s", s_active_ssid);
+        xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+      }
+      return;
+    }
+
+    /* 运行期掉线（曾经已连接）：先用快速重试，耗尽后转 backoff timer。 */
     if (s_retry_num < BBCLAW_WIFI_STA_MAX_RETRY) {
       s_retry_num++;
-      ESP_LOGW(TAG, "wifi reconnect attempt=%d", s_retry_num);
+      ESP_LOGW(TAG, "wifi runtime disconnect fast-retry=%d ssid=%s",
+               s_retry_num, s_active_ssid);
       (void)esp_wifi_connect();
-    } else {
-      ESP_LOGW(TAG, "wifi retries exhausted for current ssid=%s", s_active_ssid);
-      xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+      return;
     }
+
+    /* 快速重试耗尽，切到 backoff 自动重连模式 */
+    if (s_mode != BB_WIFI_MODE_STA_RECONNECTING) {
+      s_mode = BB_WIFI_MODE_STA_RECONNECTING;
+      s_reconnect_backoff_ms = 0U;
+      s_reconnect_attempt = 0;
+      s_reconnect_start_ms = (int64_t)(esp_timer_get_time() / 1000LL);
+      ESP_LOGW(TAG, "wifi entering backoff reconnect mode ssid=%s", s_active_ssid);
+    }
+    reconnect_timer_start();
     return;
   }
   if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     const ip_event_got_ip_t* event = (const ip_event_got_ip_t*)event_data;
     s_retry_num = 0;
     s_connected = 1;
+    reconnect_timer_stop_and_reset();
+    s_mode = BB_WIFI_MODE_STA_CONNECTED;
     ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     /* 记住本次成功的 SSID 及时间戳，下次启动按时间倒序优先尝试 */
