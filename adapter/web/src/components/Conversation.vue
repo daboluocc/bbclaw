@@ -11,6 +11,7 @@ const activeId = ref<string | null>(null);
 const activeSession = ref<SessionInfo | null>(null);
 const messages = ref<ChatMessage[]>([]);
 const dispatches = ref<DispatchEntry[]>([]);
+const selectedTaskId = ref<string | null>(null);
 const loadingMsgs = ref(false);
 const pollingMsgs = ref(false);
 const streamEl = ref<HTMLElement | null>(null);
@@ -283,7 +284,29 @@ async function select(s: SessionInfo, reset = true) {
   activeSession.value = s; activeId.value = s.id; selectedContext.value = "";
   await loadMessages(s, reset);
 }
-async function loadDispatch() { dispatches.value = await dispatchRecent(30); }
+async function loadDispatch() {
+  dispatches.value = await dispatchRecent(30);
+  // 若当前选中的 task 已被 ring 淘汰，自动取消选中。
+  if (selectedTaskId.value && !dispatches.value.some((d) => d.taskId === selectedTaskId.value)) {
+    selectedTaskId.value = null;
+  }
+}
+
+const selectedDispatch = computed(() =>
+  selectedTaskId.value ? dispatches.value.find((d) => d.taskId === selectedTaskId.value) ?? null : null,
+);
+
+function selectDispatch(d: DispatchEntry) {
+  selectedTaskId.value = selectedTaskId.value === d.taskId ? null : d.taskId;
+}
+
+function elapsedLabel(d: DispatchEntry) {
+  if (d.elapsedMs && d.elapsedMs > 0) {
+    const s = d.elapsedMs / 1000;
+    return s >= 60 ? `${(s / 60).toFixed(1)}min` : `${s.toFixed(1)}s`;
+  }
+  return clock(d.startedAt);
+}
 
 async function refresh() {
   await Promise.all([loadSessions(), loadDispatch()]);
@@ -364,22 +387,59 @@ onUnmounted(() => { if (timer) clearInterval(timer); });
           </section>
         </div>
       </div>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>最近派活任务</h2>
-    <div v-if="!dispatches.length" class="empty">还没有派活记录。管家把编码任务派给 worker 后会出现在这里。</div>
-    <div v-for="d in dispatches" :key="d.taskId" class="dcard">
-      <div class="row">
-        <span class="ti">{{ d.title || '(无标题任务)' }}</span>
-        <span class="dstat" :class="d.status">{{ d.status }}</span>
-      </div>
-      <div class="row" style="margin-top:4px">
-        <span>{{ d.cwd }}</span>
-        <span>{{ d.elapsedMs ? (d.elapsedMs / 1000).toFixed(1) + 's' : clock(d.startedAt) }}</span>
-      </div>
-      <div v-if="d.error" class="msg err" style="margin-top:4px">{{ d.error }}</div>
+      <aside class="dispatch-rail">
+        <div class="rail-head">
+          <span>派活任务</span>
+          <em>{{ dispatches.length }}</em>
+        </div>
+        <div v-if="selectedDispatch" class="dispatch-detail">
+          <div class="dd-row">
+            <span class="dd-k">任务</span>
+            <span class="dd-v">{{ selectedDispatch.title || '(无标题任务)' }}</span>
+          </div>
+          <div class="dd-row">
+            <span class="dd-k">状态</span>
+            <span class="dstat" :class="selectedDispatch.status">{{ selectedDispatch.status }}</span>
+            <span v-if="selectedDispatch.elapsedMs" class="dd-elapsed">{{ elapsedLabel(selectedDispatch) }}</span>
+          </div>
+          <div class="dd-row">
+            <span class="dd-k">起始</span>
+            <span class="dd-v">{{ clock(selectedDispatch.startedAt) }}</span>
+          </div>
+          <div class="dd-row">
+            <span class="dd-k">CWD</span>
+            <span class="dd-v dd-mono" :title="selectedDispatch.cwd">{{ selectedDispatch.cwd || '—' }}</span>
+          </div>
+          <div class="dd-row">
+            <span class="dd-k">TaskID</span>
+            <span class="dd-v dd-mono" :title="selectedDispatch.taskId">{{ selectedDispatch.taskId }}</span>
+          </div>
+          <div v-if="selectedDispatch.error" class="msg err dd-err">{{ selectedDispatch.error }}</div>
+          <button class="ghost small dd-close" @click="selectedTaskId = null">收起详情</button>
+        </div>
+        <div v-else class="dispatch-hint">点击下方任务可查看 cwd / taskId / 耗时等详情。</div>
+        <div class="dispatch-list">
+          <div v-if="!dispatches.length" class="empty">还没有派活记录。</div>
+          <button
+            v-for="d in dispatches"
+            :key="d.taskId"
+            class="dcard"
+            :class="{ on: d.taskId === selectedTaskId }"
+            type="button"
+            @click="selectDispatch(d)"
+          >
+            <div class="row">
+              <span class="ti">{{ d.title || '(无标题任务)' }}</span>
+              <span class="dstat" :class="d.status">{{ d.status }}</span>
+            </div>
+            <div class="row dcard-meta">
+              <span class="dcard-cwd" :title="d.cwd">{{ d.cwd || '—' }}</span>
+              <span>{{ elapsedLabel(d) }}</span>
+            </div>
+          </button>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
