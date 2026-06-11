@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-06-11
+
 ### Changed
 - **管家 persona 优化对讲机首句即时反馈（issue #140 Phase 1）**：手持对讲机是
   「按下说话、松手等回复」的交互形态，提问后到首句语音之间那段不可预期的静默会割裂
