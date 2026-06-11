@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-06-11
+
+### Changed
+- **渲染性能 Phase 2（issue #149，代码级）**：在 v0.4.17 配置五连之上做完代码侧优化——
+  底栏点阵 + 录音 VU 改 `lv_canvas`，消灭数百个 dot 对象矩阵（#152）；transcript
+  auto-scroll 改 `lv_anim` 插值、去掉 tick 内 `update_layout`；`flush_cb` 改用
+  esp_lvgl_port 内置字节交换、删除软件 swap（#153）；timer 周期对齐刷新周期、
+  `clock_timer` 改局部刷新消除每秒掉帧尖峰（#151/#155）。
+- **消除 core1 上语音管线对 LVGL 渲染任务的抢占（issue #149「不跟手」）**：
+  `tts_stream_task` 钉 core 0（与 capture/stream 同核），LVGL `task_priority` 4→6
+  （高于 stream/tts/ws 的 5、低于 capture 的 7）——渲染任务持锁时不再被抢占，
+  PTT/UI 事件等锁超时丢弃大幅减少。
+- **OTA 升级改为用户确认制（issue #150）**：开机检测到新版本弹提醒页，OK 升级 /
+  BACK 或超时跳过，不再静默强制。
+
+### Fixed
+- **线上 OTA 快照一直跑 160MHz**：`sdkconfig.bbclaw.latest`（release.yml 出 OTA 用）
+  与 `sdkconfig.defaults.bread` 仍是 Phase 0 老配置，导致 v0.4.17 的 240MHz/-O2/
+  1000Hz/16ms 五连从未到达真实用户。两份快照对齐到 Phase 1。
+- **TTS 长回复内存暴涨（issue #149/#96）**：流式队列深 128 + 入队超时 0（满即丢），
+  长回复（实测 157 块）峰值 queue_depth=88 吃掉 2.67MB PSRAM。改为深度 24 +
+  500ms 阻塞背压（满时 WS 接收任务阻塞 → TCP 回压云端放慢发送），长回复语音不再
+  被截断、PSRAM 不再被挤爆。
+- **chat_cache 持久化在内部 RAM 紧张时丢缓存（issue #96/#146）**：早期每次持久化都
+  `calloc` + `xTaskCreate` 内部栈任务，长回复把内部 RAM 挤到 `internal_largest=3840`
+  时建任务失败、`s_dirty` 已清 → 缓存永久丢失。改为静态长驻任务（init 预留内部栈，
+  运行时零分配、notify 唤醒），永不 OOM。
+- **cloud_saas 密语关闭时协调器卡 page=LOCKED（issue #149）**：`s_app_state` 初值
+  CHAT 而 bb_state 协调器 boot 默认 LOCKED，开机 `set_radio_app_state(CHAT)` 被
+  「状态相同」守卫短路成 no-op → 同步用的 `VOICE_VERIFY_OK` 永不派发 → 每轮语音都
+  撞 `INV_2/INV_3` 不变量刷屏。改为密语关闭时显式补一次解锁同步。
+- **时钟长时间 `--:--` + 启动慢（issue #149）**：NTP 服务器换国内优先
+  （ntp.aliyun.com / ntp.tencent.com / pool.ntp.org），替掉被墙不通的
+  time.google.com —— SNTP 首同步从实测 232s → ~19s；`BBCLAW_WIFI_STA_MAX_RETRY`
+  3→2，过期已存 SSID 回退快 ~3s。
+- **WiFi 多 SSID 接入无优先级（issue #163）**：按最近一次成功连接的时间戳动态排序，
+  优先连最近用过的网络。
+- **butlermcp 任务状态丢失致 UNKNOWN_TASK（issue #162）**：task 状态持久化到磁盘，
+  修复 mcp-server 重启后查不到已派任务。
+
 ## [0.4.17] - 2026-06-11
 
 ### Changed
