@@ -41,8 +41,13 @@ void bb_sntp_start(void) {
   tzset();
 
   esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
-  esp_sntp_setservername(1, "time.google.com");
+  /* 国内优先（issue #149）。设备多在国内（CST-8），time.google.com 被墙不通、
+   * pool.ntp.org 也常又慢又丢包 —— 实测 SNTP 首同步拖到 232s，时钟一直 "--:--"。
+   * 阿里/腾讯 NTP 在国内秒级响应；pool.ntp.org 留作海外兜底。
+   * 服务器数上限 CONFIG_LWIP_SNTP_MAX_SERVERS=3。 */
+  esp_sntp_setservername(0, "ntp.aliyun.com");
+  esp_sntp_setservername(1, "ntp.tencent.com");
+  esp_sntp_setservername(2, "pool.ntp.org");
   esp_sntp_set_time_sync_notification_cb(sntp_sync_cb);
   esp_sntp_init();
   ESP_LOGI(TAG, "SNTP started (TZ=CST-8)");

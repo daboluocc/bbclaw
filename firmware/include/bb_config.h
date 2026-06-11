@@ -51,8 +51,11 @@
 #endif
 #endif
 
+/* 每个 SSID 失败回退前的重试次数（issue #149）。过期的已存网络（如换过的旧
+ * SSID）每次开机会白白重试满这个次数（每次 ~2.5s）才回退到下一个 —— 3 次≈10s
+ * 拖慢启动。降到 2：对真实网络仍留一次重试容错，又能更快越过失效的已存网络。 */
 #ifndef BBCLAW_WIFI_STA_MAX_RETRY
-#define BBCLAW_WIFI_STA_MAX_RETRY 3
+#define BBCLAW_WIFI_STA_MAX_RETRY 2
 #endif
 
 #ifndef BBCLAW_WIFI_STA_CONNECT_TIMEOUT_MS
