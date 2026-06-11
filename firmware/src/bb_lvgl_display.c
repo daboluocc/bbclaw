@@ -1785,6 +1785,11 @@ esp_err_t bb_display_init(void) {
 #if CONFIG_SOC_CPU_CORES_NUM > 1
   lvgl_cfg.task_affinity = 1;
 #endif
+  /* 默认优先级 4 低于语音管线（capture 7 / stream 5 / tts 5 / ws 5）——LVGL 持锁
+   * 渲染时被抢占，锁挂着几百毫秒，等锁的 PTT dispatch(200ms)/agent_chat_enter(500ms)
+   * 超时丢事件 → "不跟手"。提到 6：高于 stream/tts/ws(5)，低于 capture(7) 保音频不卡。
+   * LVGL 每帧渲染后 sleep（LV_DEF_REFR_PERIOD=16），不是常驻 hog，不会饿死 ws。见 #149。 */
+  lvgl_cfg.task_priority = 6;
   ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "lvgl_port_init failed");
 
   const lvgl_port_display_cfg_t disp_cfg = {

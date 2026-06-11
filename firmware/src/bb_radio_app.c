@@ -1124,7 +1124,15 @@ static esp_err_t tts_stream_ui_init(bb_reply_stream_ui_ctx_t* ui) {
   if (ui->tts_queue == NULL) {
     return ESP_ERR_NO_MEM;
   }
+  /* 与 capture/stream 同钉 core 0：TTS 播放期 UI 正在刷 transcript，若本任务
+   * 落到 core 1 会抢占 LVGL 渲染任务（持锁中途被抢 → PTT/UI 事件等锁超时被丢，
+   * 即"不跟手"）。把音频管线全部赶出 core 1，core 1 专留给 LVGL。见 issue #149。 */
+#ifdef CONFIG_FREERTOS_UNICORE
   if (xTaskCreate(tts_stream_task, "bb_tts_stream", BB_TTS_STREAM_TASK_STACK, ui, 5, &ui->tts_task) != pdPASS) {
+#else
+  if (xTaskCreatePinnedToCore(tts_stream_task, "bb_tts_stream", BB_TTS_STREAM_TASK_STACK, ui, 5, &ui->tts_task, 0) !=
+      pdPASS) {
+#endif
     vQueueDelete(ui->tts_queue);
     ui->tts_queue = NULL;
     return ESP_FAIL;
