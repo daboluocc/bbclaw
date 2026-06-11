@@ -1300,8 +1300,9 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
   if (strcmp(type, "asr.final") == 0) {
     char text[sizeof(accum->result->transcript)] = {0};
     (void)json_extract_string(line, "text", text, sizeof(text));
-    strncpy(accum->result->transcript, text, sizeof(accum->result->transcript) - 1);
-    accum->result->transcript[sizeof(accum->result->transcript) - 1] = '\0';
+    /* snprintf 而非 strncpy：必空终止、绝不触发新 toolchain 的 stringop-truncation
+     * （text 与目标同尺寸，strncpy(...,size-1) 在 GCC14 被当 error）。 */
+    snprintf(accum->result->transcript, sizeof(accum->result->transcript), "%s", text);
     if (accum->on_event != NULL) {
       emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_ASR_FINAL, NULL, text, NULL, 0);
     }
@@ -1311,8 +1312,7 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
   if (strcmp(type, "reply.delta") == 0) {
     char text[sizeof(accum->result->reply_text)] = {0};
     (void)json_extract_string(line, "text", text, sizeof(text));
-    strncpy(accum->result->reply_text, text, sizeof(accum->result->reply_text) - 1);
-    accum->result->reply_text[sizeof(accum->result->reply_text) - 1] = '\0';
+    snprintf(accum->result->reply_text, sizeof(accum->result->reply_text), "%s", text);
     if (accum->on_event != NULL) {
       emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_REPLY_DELTA, NULL, text, NULL,
                                0);

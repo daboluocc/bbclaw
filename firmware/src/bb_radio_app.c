@@ -2479,8 +2479,8 @@ static void stream_task(void* arg) {
              * openclaw chat turn surface. Skip TTS playback; the agent reply
              * will arrive as text frames on the chat overlay. */
             char trimmed[sizeof(finish->transcript)];
-            strncpy(trimmed, finish->transcript, sizeof(trimmed) - 1);
-            trimmed[sizeof(trimmed) - 1] = '\0';
+            /* snprintf：必空终止、不触发新 toolchain 的 stringop-truncation。 */
+            snprintf(trimmed, sizeof(trimmed), "%s", finish->transcript);
             char* t = trim_ascii_inplace(trimmed);
             if (t == NULL || t[0] == '\0') {
               ESP_LOGW(TAG, "agent_chat: empty transcript, no send");
