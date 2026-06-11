@@ -21,3 +21,6 @@ simulator/build/
 
 # CI writes the release tag here for esp_app_desc.version; never commit (would pin/stale the version)
 version.txt
+
+# 本地发版 stage 目录（scripts/release_local.sh 产出）
+release-stage/

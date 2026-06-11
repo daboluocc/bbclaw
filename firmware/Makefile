@@ -30,7 +30,7 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
+.PHONY: help idf-env init set-target reconfigure build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -92,6 +92,14 @@ build:
 		fi; \
 	fi
 	@$(IDF_SOURCE) idf.py build
+
+# 本地发版：本机构建固件 + 生成 OTA bundle + 推到 OTA 服务器，跳过 GitHub Actions
+# 慢 round-trip。需先 get_idf 加载 ESP-IDF，并 export OTA_ADMIN_KEY（见脚本 --help）。
+#   make release-local VERSION=v0.4.19
+#   make release-local VERSION=v0.4.19 RELEASE_ARGS=--skip-build   # 复用已构建产物
+#   make release-local VERSION=v0.4.19 RELEASE_ARGS=--gh-release   # 顺带传 GitHub Release
+release-local:
+	@scripts/release_local.sh $(VERSION) $(RELEASE_ARGS)
 
 # Flash via the IDF default path: bootloader + partition table + ota_data_initial
 # (all-0xFF, bootloader picks factory) + firmware → factory.

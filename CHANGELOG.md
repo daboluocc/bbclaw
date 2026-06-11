@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-12
+
+里程碑：**一轮完整的固件性能 / 稳定性优化定版**（汇总 0.4.16–0.4.18 的优化，并补齐本地发版工具）。
+
+### 本轮优化总览
+- **渲染「不跟手」**：编译 -O2、CPU 240MHz、SPI 40MHz、FreeRTOS 1000Hz、LVGL 刷新
+  16ms；Phase 2 代码级（点阵/VU canvas 化、lv_anim 滚动、内置 swap、timer 对齐）；
+  消除 core1 上语音管线对 LVGL 渲染任务的抢占。
+- **内存**：TTS 流式队列上限 24 + 阻塞背压（长回复不再吃爆 PSRAM、不截断）；
+  chat_cache 持久化改静态长驻任务，抗内部 RAM OOM（不再丢对话缓存）。
+- **长回复不断连**：home adapter 在 agent 执行期每 15s 补发 reply 流事件，重置云端
+  回复空闲计时器；cloud `ReplyIdleWait` 默认 30s→120s 作冗余。修 `HOME_ADAPTER_TIMEOUT`。
+- **启动与时钟**：NTP 国内优先（首同步实测 232s→~19s，时钟不再长时间 `--:--`）；
+  WiFi 多 SSID 按最近成功时间戳排序；失败重试 3→2，过期 SSID 回退更快。
+- **OTA 用户确认制**：开机检测到新版本弹提醒页，OK 升级 / BACK 或超时跳过，不强制。
+
+### Added
+- **本地发版脚本** `firmware/scripts/release_local.sh` + `make release-local`：本机构建
+  固件 + 生成 OTA bundle + 直接推到 OTA 服务器，跳过 GitHub Actions 慢 round-trip
+  （也避免本机/CI toolchain 差异卡发版）。复刻 release.yml 的 build→otadata→stage→
+  POST /v1/ota/flash-bundle。
+
+### Fixed
+- **新 ESP-IDF toolchain（GCC14）下固件编译失败**：`strncpy(dst, samesizebuf, sizeof-1)`
+  被 `-Werror=stringop-truncation` 拦下（本地旧 toolchain 不报、CI 红）。3 处改 snprintf，
+  并给 src 组件加 `-Wno-error=stringop-truncation` 兜底全部同类点。
+
 ## [0.4.18] - 2026-06-11
 
 ### Fixed
