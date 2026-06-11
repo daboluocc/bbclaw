@@ -3162,6 +3162,15 @@ esp_err_t bb_radio_app_start(void) {
   if (passphrase_unlock_enabled()) {
     set_radio_app_state(BBCLAW_STATE_LOCKED);
   } else {
+    /* 密语关闭。仅 set_radio_app_state(CHAT) 不足以同步 bb_state 协调器：s_app_state
+     * 初值已是 CHAT，转换被 set_radio_app_state 的 "状态相同" 守卫短路成 no-op，于是
+     * 把协调器从 boot 默认的 LOCKED 推到 CHAT 的 VOICE_VERIFY_OK 永不派发 → cloud_saas
+     * 下协调器永远卡在 page=LOCKED，每轮语音都撞 INV_2_locked_agent /
+     * INV_3_listening_not_chat 不变量刷屏（issue #149）。故对 cloud_saas 显式补一次
+     * 解锁同步；local_home 协调器 boot 即 CHAT，该事件无匹配转换 → 安全 no-op。 */
+    if (bb_transport_is_cloud_saas()) {
+      bb_state_dispatch_simple(BB_EVT_VOICE_VERIFY_OK);
+    }
     set_radio_app_state(BBCLAW_STATE_CHAT);
     /* STANDBY view shows BBClaw logo + clock; PTT activates agent chat */
   }
