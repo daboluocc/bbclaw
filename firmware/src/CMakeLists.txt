@@ -105,6 +105,13 @@ idf_component_register(
         esp_tinyusb
 )
 
+# 新 ESP-IDF toolchain（GCC14）把 strncpy(dst, samesizebuf, sizeof-1) 以及有意截断
+# 当 -Werror=stringop-truncation 拦下（本地旧 toolchain 不报，故本地绿/CI 红）。本
+# 组件多处是「strncpy + 下一行手动补 \0」的安全截断（拷不下就截断），逐个改 snprintf
+# 易漏。组件级把它降回告警（不改行为），与根 CMakeLists 对 opus 的 stringop-overflow
+# 同策。见 v0.4.18 发布。
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=stringop-truncation)
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")
   target_compile_definitions(${COMPONENT_LIB} PRIVATE BBCLAW_HAVE_CJK_FONT=1)
 endif()
