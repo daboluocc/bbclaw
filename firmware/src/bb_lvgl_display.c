@@ -99,8 +99,9 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_STATUS_ICON_SZ 16
 
 /* Auto-scroll */
-#define UI_AUTO_SCROLL_PERIOD_MS       96  /* aligned to LV_DEF_REFR_PERIOD=16ms: 6×16, see #149 #155 */
-#define UI_AUTO_SCROLL_STEP_PX         1
+#define UI_AUTO_SCROLL_PERIOD_MS       96   /* timer interval: re-evaluate anim need, see #149 #155 */
+#define UI_AUTO_SCROLL_ANIM_MS         800  /* lv_anim duration for scroll-to-bottom */
+#define UI_AUTO_SCROLL_STEP_PX         1    /* threshold only (not a stepping value) */
 #define UI_AUTO_SCROLL_TOP_HOLD_TICKS  12
 #define UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS 14
 #define UI_MANUAL_SCROLL_STEP_LINES    2
@@ -749,6 +750,9 @@ static void format_clock(char* out, size_t out_size, int64_t now_ms) {
 
 /* ── Auto-scroll ── */
 
+/* Forward declaration — defined below, needed by auto_scroll_ctx_note_manual */
+static void _scroll_anim_exec_cb(void* obj, int32_t val);
+
 static void scroll_cont_reset_top(lv_obj_t* cont) {
   if (cont != NULL) lv_obj_scroll_to_y(cont, 0, LV_ANIM_OFF);
 }
@@ -769,7 +773,8 @@ static void auto_scroll_ctx_reset(ui_auto_scroll_ctx_t* ctx) {
 
 static void auto_scroll_ctx_note_manual(ui_auto_scroll_ctx_t* ctx) {
   if (ctx == NULL || ctx->cont == NULL) return;
-  lv_obj_update_layout(ctx->cont);
+  /* Stop any running scroll animation so it doesn't override the user's position */
+  lv_anim_delete(ctx->cont, _scroll_anim_exec_cb);
   int32_t y = lv_obj_get_scroll_y(ctx->cont);
   int32_t max_y = lv_obj_get_scroll_bottom(ctx->cont);
   if (max_y <= UI_AUTO_SCROLL_STEP_PX || y <= 0) {
@@ -937,9 +942,37 @@ static void refresh_recording_meter(void) {
   }
 }
 
+/* anim exec callback: wraps lv_obj_scroll_to_y to match lv_anim_exec_xcb_t signature */
+static void _scroll_anim_exec_cb(void* obj, int32_t val) {
+  lv_obj_scroll_to_y((lv_obj_t*)obj, val, LV_ANIM_OFF);
+}
+
+/* ready callback: fires when the scroll animation completes */
+static void _scroll_anim_ready_cb(lv_anim_t* a) {
+  ui_auto_scroll_ctx_t* ctx = (ui_auto_scroll_ctx_t*)lv_anim_get_user_data(a);
+  if (ctx == NULL) return;
+  if (ctx->phase == UI_AUTO_SCROLL_RUNNING) {
+    ctx->phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
+    ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+  }
+}
+
+/* Start a smooth lv_anim scroll from current y to max_y. */
+static void auto_scroll_start_anim(ui_auto_scroll_ctx_t* ctx, int32_t from_y, int32_t to_y) {
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, ctx->cont);
+  lv_anim_set_exec_cb(&a, _scroll_anim_exec_cb);
+  lv_anim_set_values(&a, from_y, to_y);
+  lv_anim_set_duration(&a, UI_AUTO_SCROLL_ANIM_MS);
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+  lv_anim_set_completed_cb(&a, _scroll_anim_ready_cb);
+  lv_anim_set_user_data(&a, ctx);
+  lv_anim_start(&a);
+}
+
 static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
   if (ctx == NULL || ctx->cont == NULL || !scroll_cont_chain_visible(ctx->cont)) return;
-  lv_obj_update_layout(ctx->cont);
   int32_t max_y = lv_obj_get_scroll_bottom(ctx->cont);
   if (max_y <= UI_AUTO_SCROLL_STEP_PX) {
     auto_scroll_ctx_reset(ctx);
@@ -949,30 +982,43 @@ static void auto_scroll_step_ctx(ui_auto_scroll_ctx_t* ctx) {
   switch (ctx->phase) {
     case UI_AUTO_SCROLL_HOLD_TOP:
       if (y != 0) lv_obj_scroll_to_y(ctx->cont, 0, LV_ANIM_OFF);
-      if (ctx->wait_ticks > 0) ctx->wait_ticks--;
-      else ctx->phase = UI_AUTO_SCROLL_RUNNING;
+      if (ctx->wait_ticks > 0) {
+        ctx->wait_ticks--;
+      } else {
+        ctx->phase = UI_AUTO_SCROLL_RUNNING;
+        /* Kick off the smooth animation toward the bottom */
+        if (lv_anim_get(ctx->cont, _scroll_anim_exec_cb) == NULL) {
+          auto_scroll_start_anim(ctx, y, max_y);
+        }
+      }
       break;
     case UI_AUTO_SCROLL_HOLD_BOTTOM:
       if (y < max_y) lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
-      if (ctx->wait_ticks > 0) ctx->wait_ticks--;
-      else if (s_tts_playing) ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
-      else {
-        // TTS 结束，切换到 IDLE 状态，不再自动滚动
+      if (ctx->wait_ticks > 0) {
+        ctx->wait_ticks--;
+      } else if (s_tts_playing) {
+        ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
+      } else {
+        /* TTS 结束，切换到 IDLE 状态，不再自动滚动 */
         ctx->phase = UI_AUTO_SCROLL_IDLE;
       }
       break;
     case UI_AUTO_SCROLL_IDLE:
-      // 停在底部，等待用户手动滚动或新内容到达后通过 auto_scroll_ctx_reset 重置
+      /* 停在底部，等待用户手动滚动或新内容到达后通过 auto_scroll_ctx_reset 重置 */
       if (y < max_y) lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
       break;
     case UI_AUTO_SCROLL_RUNNING:
     default:
+      /* Each timer tick: delete any running anim and restart toward current max_y.
+       * This handles new-content arrival (max_y grows) gracefully — the new anim
+       * picks up from the current scroll position so there is no visible jump. */
+      lv_anim_delete(ctx->cont, _scroll_anim_exec_cb);
       if (y >= max_y - UI_AUTO_SCROLL_STEP_PX) {
         lv_obj_scroll_to_y(ctx->cont, max_y, LV_ANIM_OFF);
         ctx->phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
         ctx->wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
       } else {
-        lv_obj_scroll_to_y(ctx->cont, y + UI_AUTO_SCROLL_STEP_PX, LV_ANIM_OFF);
+        auto_scroll_start_anim(ctx, y, max_y);
       }
       break;
   }
@@ -1898,7 +1944,6 @@ esp_err_t bb_display_chat_scroll_down(void) {
 
   if (s_ready && lvgl_port_lock(200)) {
     if (s_scroll_text != NULL) {
-      lv_obj_update_layout(s_scroll_text);
       lv_obj_scroll_by_bounded(s_scroll_text, 0, step, LV_ANIM_OFF);
       auto_scroll_ctx_note_manual(&s_auto_scroll_text);
       s_auto_scroll_pause_until_ms = now_ms + UI_MANUAL_SCROLL_PAUSE_MS;
@@ -1919,7 +1964,6 @@ esp_err_t bb_display_chat_scroll_up(void) {
 
   if (s_ready && lvgl_port_lock(200)) {
     if (s_scroll_text != NULL) {
-      lv_obj_update_layout(s_scroll_text);
       lv_obj_scroll_by_bounded(s_scroll_text, 0, -step, LV_ANIM_OFF);
       auto_scroll_ctx_note_manual(&s_auto_scroll_text);
       s_auto_scroll_pause_until_ms = now_ms + UI_MANUAL_SCROLL_PAUSE_MS;
