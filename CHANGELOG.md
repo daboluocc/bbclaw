@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   抽进没人读的单数命名死文件。
 
 ### Added
+- **派活/长任务 ring buffer 持久化（issue #138 P0 基础）**：`DispatchRing` 此前是
+  纯内存的 50 条环形缓冲，adapter 一重启历史就清零——固件 Task List 和 `/admin`
+  的「最近派活任务」都变空。现在主进程的 ring 由 `BBCLAW_DATA_DIR/dispatch_ring.json`
+  快照支撑（新增 `NewPersistentDispatchRing`）：启动时加载、每次 `Record` 后用
+  temp+rename 原子重写（复用 `driverstate.Store` 的落盘范式），缺失/损坏/空文件都
+  降级为空 ring 而非启动失败。`GET /v1/butler/dispatch/recent` 的返回 shape
+  (`DispatchEntry`) 与 newest-first 顺序保持不变，固件无需改动即向后兼容。这是
+  issue #138 的可持久化基础切片；完整 TaskRunStore（per-task `meta.json` +
+  append-only `events.jsonl` + Admin 详情页 + 子进程 `task_status`/`task_result`
+  接入）按 issue 的开放问题（store 写入方 = 子进程 vs 主进程）拍板后再做。
 - **Adapter 管理页「日志」tab + 持久化日志文件（ADR-025）**：新增 `GET /v1/admin/logs`
   （loopback-only）返回内存环形缓冲里最近 ~1000 行运行日志，管理页独立「日志」页实时
   展示（3s 轮询、自动跟随底部、暂停/刷新），用户不必再盯着二进制 stdout。日志同时

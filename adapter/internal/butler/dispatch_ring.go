@@ -1,11 +1,16 @@
 package butler
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 )
 
 // dispatchRingCapacity is the maximum number of dispatch entries held in memory.
@@ -25,16 +30,110 @@ type DispatchEntry struct {
 	StartedAt time.Time `json:"startedAt"`
 }
 
-// DispatchRing is a thread-safe in-memory ring buffer for dispatch events.
+// DispatchRing is a thread-safe ring buffer for dispatch events.
 // butler.Engine subscribes EvDispatchStatus events and calls Record to update it;
 // GET /v1/butler/dispatch/recent reads from it.
+//
+// When constructed with NewPersistentDispatchRing the buffer is backed by a JSON
+// snapshot file in BBCLAW_DATA_DIR (default ~/.bbclaw-adapter/dispatch_ring.json):
+// entries are loaded on startup and the snapshot is rewritten atomically after
+// every Record. This is the P0 persistence foundation for issue #138 — the firmware
+// Task List and /admin survive an adapter restart instead of resetting to empty.
+// NewDispatchRing keeps the legacy in-memory-only behaviour for tests and callers
+// without a data dir (path == "" disables all disk I/O).
 type DispatchRing struct {
 	mu      sync.Mutex
 	entries []DispatchEntry // ordered oldest→newest, capped at dispatchRingCapacity
+
+	path string      // "" => in-memory only, no persistence
+	log  *obs.Logger // optional
 }
 
-// NewDispatchRing returns an empty ring buffer.
+// NewDispatchRing returns an empty in-memory-only ring buffer (no persistence).
 func NewDispatchRing() *DispatchRing { return &DispatchRing{} }
+
+// NewPersistentDispatchRing returns a ring buffer backed by the JSON snapshot at
+// path. Existing entries are loaded on construction; a missing, empty or corrupt
+// file degrades to an empty ring rather than failing — the next Record overwrites
+// it. Pass an empty path to get an in-memory-only ring (equivalent to
+// NewDispatchRing).
+func NewPersistentDispatchRing(path string, log *obs.Logger) *DispatchRing {
+	r := &DispatchRing{path: path, log: log}
+	r.load()
+	return r
+}
+
+// load reads the snapshot file into r.entries. Called once from the constructor
+// before the ring is shared, so it does not take the lock. Missing/corrupt files
+// degrade to an empty ring (mirrors driverstate.Store.load).
+func (r *DispatchRing) load() {
+	if r.path == "" {
+		return
+	}
+	data, err := os.ReadFile(r.path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && r.log != nil {
+			r.log.Warnf("dispatch-ring: read %s failed (%v), starting empty", r.path, err)
+		}
+		return
+	}
+	var entries []DispatchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		if r.log != nil {
+			r.log.Warnf("dispatch-ring: corrupt snapshot at %s (%v), starting empty", r.path, err)
+		}
+		return
+	}
+	// Drop malformed entries (no TaskID) and enforce capacity defensively.
+	cleaned := entries[:0]
+	for _, e := range entries {
+		if e.TaskID != "" {
+			cleaned = append(cleaned, e)
+		}
+	}
+	if len(cleaned) > dispatchRingCapacity {
+		cleaned = cleaned[len(cleaned)-dispatchRingCapacity:]
+	}
+	r.entries = cleaned
+	if r.log != nil {
+		r.log.Infof("dispatch-ring: loaded %d entry(ies) from %s", len(r.entries), r.path)
+	}
+}
+
+// saveLocked writes the current entries to the snapshot file atomically
+// (temp + rename). Caller must hold r.mu. No-op when persistence is disabled.
+// Best-effort: a write error is logged but never propagated, so dispatch
+// recording never fails because of a full/read-only disk.
+func (r *DispatchRing) saveLocked() {
+	if r.path == "" {
+		return
+	}
+	body, err := json.MarshalIndent(r.entries, "", "  ")
+	if err != nil {
+		if r.log != nil {
+			r.log.Warnf("dispatch-ring: marshal snapshot failed: %v", err)
+		}
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
+		if r.log != nil {
+			r.log.Warnf("dispatch-ring: mkdir for %s failed: %v", r.path, err)
+		}
+		return
+	}
+	tmp := r.path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		if r.log != nil {
+			r.log.Warnf("dispatch-ring: write %s failed: %v", tmp, err)
+		}
+		return
+	}
+	if err := os.Rename(tmp, r.path); err != nil {
+		if r.log != nil {
+			r.log.Warnf("dispatch-ring: rename %s -> %s failed: %v", tmp, r.path, err)
+		}
+	}
+}
 
 // Record upserts a DispatchStatus into the ring.
 // On phase="started" a new entry is created (or the existing entry for TaskID
@@ -63,6 +162,7 @@ func (r *DispatchRing) Record(ds *agent.DispatchStatus) {
 			if ds.Title != "" {
 				r.entries[i].Title = ds.Title
 			}
+			r.saveLocked()
 			return
 		}
 	}
@@ -83,6 +183,7 @@ func (r *DispatchRing) Record(ds *agent.DispatchStatus) {
 	if len(r.entries) > dispatchRingCapacity {
 		r.entries = r.entries[len(r.entries)-dispatchRingCapacity:]
 	}
+	r.saveLocked()
 }
 
 // Recent returns up to n entries in reverse-chronological order (newest first).
