@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-06-11
+
 ### Fixed
+- **CHAT 空闲息屏太快（issue #145）**：CHAT 页空闲超时 30s 偏短，且活动计时器只在
+  PTT 与 UP/DOWN 按键时重置——LEFT/RIGHT（切 driver）、OK、BACK 都不续命，用户读
+  一段长回复就被踢回待机。修复：`BBCLAW_CHAT_IDLE_TIMEOUT_MS` 30s→120s；
+  `on_nav_event` 入口统一刷新 `s_last_activity_ms`，六键全部续命。busy/TTS 播放期间
+  持续刷新的既有行为不变（倒计时仍从真正 idle 起算）。
 - **cloud 纯语音链路丢失 sessionId，息屏重进 CHAT 后对话记录空白（issue #146）**：
   `cloud_saas` 模式下纯语音对话（管家）后，CHAT 空闲退回待机再重进时 transcript 空白——
   缓存重放（ADR-017）、历史分页（Phase S3）、时间分段全部不触发。根因：重进 CHAT 重放
@@ -20,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bb_radio_app.c` 的 `on_finish_stream_event_tts_only` 经新入口
   `bb_ui_agent_chat_post_session(sid, driver)` 复刻 SESSION 帧持久化逻辑（写 NVS +
   绑定 chat cache + 更新 display），对同一会话内重复 sid 做幂等保护避免清空累积缓存。
-  cloud（bbclaw-reference）为信封透传，预期零改动。`local_home` 的 SESSION 帧路径不受影响。
+  注意：cloud relay 实为 switch-case 重新封包而非透传，需在 bbclaw-reference 补
+  `voice.session` 转发（bbclaw-reference#21）并部署后，cloud_saas 模式才端到端生效；
+  `local_home` 的 SESSION 帧路径不受影响。
 
 ## [0.4.15] - 2026-06-11
 
