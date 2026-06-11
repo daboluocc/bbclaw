@@ -170,6 +170,10 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define DISP_SWAP_XY        BBCLAW_ST7789_SWAP_XY
 #define DISP_MIRROR_X       BBCLAW_ST7789_MIRROR_X
 #define DISP_MIRROR_Y       BBCLAW_ST7789_MIRROR_Y
+/* DISP_SWAP_BYTES is no longer consumed in flush_cb (software swap removed).
+ * Byte-swapping is now delegated to esp_lvgl_port via disp_cfg.flags.swap_bytes.
+ * BBCLAW_ST7789_SWAP_BYTES on board_config.h controls whether the panel io layer
+ * does a hardware swap; set to 0 to avoid double-swap. */
 #define DISP_SWAP_BYTES     BBCLAW_ST7789_SWAP_BYTES
 #define DISP_INVERT_COLOR   BBCLAW_ST7789_INVERT_COLOR
 #if BBCLAW_ST7789_RGB_ORDER_BGR
@@ -1095,20 +1099,10 @@ static esp_err_t init_panel(void) {
   return bb_panel_init(&s_panel_io, &s_panel);
 }
 
-static void lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* color_map) {
-  if (disp == NULL || area == NULL || color_map == NULL) {
-    if (disp != NULL) lvgl_port_flush_ready(disp);
-    return;
-  }
-#if DISP_SWAP_BYTES
-  lv_draw_sw_rgb565_swap(color_map, lv_area_get_size(area));
-#endif
-  esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
-  if (e != ESP_OK) {
-    ESP_LOGW(TAG, "draw failed: %s", esp_err_to_name(e));
-    lvgl_port_flush_ready(disp);
-  }
-}
+/* lvgl_flush_cb removed: esp_lvgl_port's internal flush callback (registered by
+ * lvgl_port_add_disp) handles draw_bitmap and byte-swapping via flags.swap_bytes.
+ * The application no longer overrides lv_display_set_flush_cb, so the port-owned
+ * callback runs directly — eliminating the per-frame CPU swap scan that was here. */
 #endif /* !BBCLAW_SIMULATOR */
 
 /* ── create_ui ── */
@@ -1737,7 +1731,11 @@ esp_err_t bb_display_init(void) {
     ESP_LOGE(TAG, "lvgl_port_add_disp failed");
     return ESP_FAIL;
   }
-  lv_display_set_flush_cb(disp, lvgl_flush_cb);
+  /* NOTE: do NOT override lv_display_set_flush_cb here.
+   * esp_lvgl_port registers its own flush callback (lvgl_port_flush_callback)
+   * which handles esp_lcd_panel_draw_bitmap and, when flags.swap_bytes is set,
+   * calls lv_draw_sw_rgb565_swap internally.  Overriding it would bypass that
+   * logic and force the application to duplicate it (the old approach). */
 
   if (!lvgl_port_lock(2000)) return ESP_ERR_TIMEOUT;
   create_ui();

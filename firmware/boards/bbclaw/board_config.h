@@ -125,7 +125,9 @@
  * 若出现花屏/撕裂回退 20MHz —— 见 issue #149 Round 1。 */
 #define BBCLAW_ST7789_PCLK_HZ      (40 * 1000 * 1000)
 #define BBCLAW_ST7789_SWAP_XY       1
-#define BBCLAW_ST7789_SWAP_BYTES    1
+/* Byte-swapping is now handled by esp_lvgl_port (flags.swap_bytes=1 in disp_cfg).
+ * panel io layer must NOT also swap, or bytes would be double-swapped (issue #153). */
+#define BBCLAW_ST7789_SWAP_BYTES    0
 
 #if BBCLAW_ST7789_147_VARIANT == 2
 #define BBCLAW_ST7789_INVERT_COLOR  1
