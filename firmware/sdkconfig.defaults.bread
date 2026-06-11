@@ -2,6 +2,24 @@
 # Automatically generated file. DO NOT EDIT.
 # Espressif IoT Development Framework (ESP-IDF) 5.5.2 Project Configuration
 #
+# ─────────────────────────────────────────────────────────────────────────────
+# 【注意】本文件是某次 menuconfig 落盘的完整 sdkconfig 快照，性质与
+# sdkconfig.bbclaw.latest 相同，供历史 diff 参考。
+#
+# 构建系统（CMakeLists.txt / Makefile）并 **不** 加载本文件——breadboard board
+# 构建实际读取的是 firmware/sdkconfig.defaults（已含 Phase 1 性能配置）：
+#   CONFIG_COMPILER_OPTIMIZATION_PERF=y   (-O2)
+#   CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y (240 MHz)
+#   CONFIG_FREERTOS_HZ=1000               (1 ms 调度粒度)
+#   CONFIG_LV_DEF_REFR_PERIOD=16          (60fps 上限)
+#
+# 因此 breadboard board 已自动继承 Phase 1 决策（issue #149 Round 1），
+# 无需在此文件中单独对齐。
+#
+# 若需要 breadboard-only 的 KConfig override（如回退到 -Og 调试基线），
+# 请在 firmware/boards/breadboard/sdkconfig.board 中添加（已创建空骨架），
+# 并通过 SDKCONFIG_DEFAULTS 环境变量或 CMakeLists.txt 显式加载。
+# ─────────────────────────────────────────────────────────────────────────────
 CONFIG_SOC_ADC_SUPPORTED=y
 CONFIG_SOC_UART_SUPPORTED=y
 CONFIG_SOC_PCNT_SUPPORTED=y

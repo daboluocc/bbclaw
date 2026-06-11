@@ -123,8 +123,10 @@
 
 #define BBCLAW_ST7789_X_GAP         0
 #define BBCLAW_ST7789_Y_GAP        34
-/* 40MHz: 全屏 RGB565 传输 ~22ms（20MHz 时 ~44ms 是全屏动画的硬上限）。
- * 面包板杜邦线信号质量差，若花屏优先回退此处 —— 见 issue #149 Round 1。 */
+/* SPI PCLK = 40 MHz：与 BBClaw PCB 对齐，是 issue #149 Round 1 的跟进值。
+ * 全屏 RGB565 传输 ~22ms（20 MHz 时 ~44 ms，是全屏动画的硬上限）。
+ * 面包板杜邦线信号完整性处于边缘——当前实测未发现花屏回归；
+ * 若出现花屏，优先在此处回退至 20 MHz（`20 * 1000 * 1000`）。 */
 #define BBCLAW_ST7789_PCLK_HZ      (40 * 1000 * 1000)
 #define BBCLAW_ST7789_SWAP_XY       1
 #define BBCLAW_ST7789_SWAP_BYTES    1
