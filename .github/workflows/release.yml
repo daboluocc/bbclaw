@@ -106,7 +106,7 @@ jobs:
              "release-stage/firmware/bbclaw-firmware-${RELEASE_VERSION}-esp32s3.bin"
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: firmware-bin
           path: release-stage/firmware/
@@ -215,7 +215,7 @@ jobs:
           ./scripts/release_build.sh "$RELEASE_VERSION" >/dev/null
 
       - name: Upload adapter artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: adapter-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -235,13 +235,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download firmware artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: firmware-bin
           path: release-artifacts/
 
       - name: Download adapter artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: release-artifacts/
           pattern: adapter-*
