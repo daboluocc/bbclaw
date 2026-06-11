@@ -99,7 +99,7 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_STATUS_ICON_SZ 16
 
 /* Auto-scroll */
-#define UI_AUTO_SCROLL_PERIOD_MS       96
+#define UI_AUTO_SCROLL_PERIOD_MS       96  /* aligned to LV_DEF_REFR_PERIOD=16ms: 6×16, see #149 #155 */
 #define UI_AUTO_SCROLL_STEP_PX         1
 #define UI_AUTO_SCROLL_TOP_HOLD_TICKS  12
 #define UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS 14
@@ -141,10 +141,12 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_BAR_ROWS         3  /* 3×320 dot-matrix band */
 #define UI_BAR_VPITCH       5  /* row center-to-center */
 #define UI_BAR_DOTS_MAX    48  /* column cap; actual count fits body_w */
-#define UI_BAR_UPDATE_MS   55  /* sweep frame period */
+#define UI_BAR_UPDATE_MS   48  /* aligned to LV_DEF_REFR_PERIOD=16ms: 3×16, see #149 #155
+                                * (was 55ms — adjusted down to nearest 16ms multiple;
+                                *  visual sweep speed change is imperceptible at ~13%) */
 
 /* Recording speaking view */
-#define UI_RECORD_UPDATE_MS       48
+#define UI_RECORD_UPDATE_MS       48  /* aligned to LV_DEF_REFR_PERIOD=16ms: 3×16, see #149 #155 */
 /* Speaking-view VU — dot-matrix columns (design/UI_DESIGN_LANGUAGE.md):
  * 10 columns × 5 rows, lit bottom-up with level, peak dot teal while
  * voiced. Smoothing still runs in virtual px (MIN_H..MAX_H) and maps to
@@ -942,9 +944,46 @@ static void record_timer_cb(lv_timer_t* t) {
   lvgl_port_unlock();
 }
 
+/* Partial clock refresh — only updates clock-related labels instead of calling
+ * refresh_ui() in full, eliminating the per-second CPU spike caused by a full
+ * lv_scr_act() invalidation on every tick. See #149 Phase 2 / #155.
+ *
+ * All other UI state (battery, status text, etc.) is updated reactively via
+ * the explicit refresh_ui() calls in the public API functions (bb_display_set_*),
+ * so skipping them here causes no stale-state issues.
+ *
+ * s_clock_timer fires at 1000ms — this is semantic (whole-second tick) and is
+ * intentionally NOT aligned to LV_DEF_REFR_PERIOD; phase drift is acceptable
+ * because only a cheap lv_label_set_text is performed, not a full redraw. */
+static void refresh_clock_only(void) {
+  const int64_t now_ms = bb_now_ms();
+  char hm[8];
+  format_clock(hm, sizeof(hm), now_ms);
+
+  int locked = 0;
+  char status[sizeof(s_status)];
+  int turn_den = 0;
+  portENTER_CRITICAL(&s_state_lock);
+  memcpy(status, s_status, sizeof(status));
+  locked = s_locked;
+  turn_den = s_history_count;
+  portEXIT_CRITICAL(&s_state_lock);
+
+  ui_view_mode_t mode = resolve_view_mode(status, locked, turn_den);
+
+  if (!lvgl_port_lock(0)) return;
+  if (mode == UI_VIEW_STANDBY) {
+    bb_page_standby_refresh_clock(hm);
+  } else if (mode == UI_VIEW_ACTIVE) {
+    lv_label_set_text(s_lbl_status_clock, hm);
+  }
+  /* UI_VIEW_LOCKED does not display a clock widget — no action needed */
+  lvgl_port_unlock();
+}
+
 static void clock_timer_cb(lv_timer_t* t) {
   (void)t;
-  if (s_ready) refresh_ui();
+  if (s_ready) refresh_clock_only();
 }
 
 /* ── View visibility ── */
@@ -1335,9 +1374,15 @@ static void create_ui(void) {
   set_view_visible(s_view_speaking, 0);
 
   auto_scroll_ctx_attach(&s_auto_scroll_text, s_scroll_text);
+  /* 1000ms: semantic whole-second tick — not aligned to LV_DEF_REFR_PERIOD;
+   * phase drift is acceptable because clock_timer_cb only does a cheap
+   * lv_label_set_text (no full redraw). See #155. */
   s_clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
+  /* UI_AUTO_SCROLL_PERIOD_MS=96ms = 6×16 — aligned to LV_DEF_REFR_PERIOD=16ms */
   s_auto_scroll_timer = lv_timer_create(auto_scroll_text_cb, UI_AUTO_SCROLL_PERIOD_MS, NULL);
+  /* UI_RECORD_UPDATE_MS=48ms = 3×16 — aligned to LV_DEF_REFR_PERIOD=16ms */
   s_record_timer = lv_timer_create(record_timer_cb, UI_RECORD_UPDATE_MS, NULL);
+  /* UI_BAR_UPDATE_MS=48ms = 3×16 — aligned to LV_DEF_REFR_PERIOD=16ms */
   s_bar_timer = lv_timer_create(bottombar_timer_cb, UI_BAR_UPDATE_MS, NULL);
   reset_recording_meter_visuals();
 }
@@ -2060,7 +2105,9 @@ void bb_display_set_dispatch_status(const char* phase, const char* cwd,
 
   if (s_ready) refresh_ui();
 
-  /* done/async/error: schedule auto-revert after 4 seconds */
+  /* done/async/error: schedule auto-revert after 4 seconds
+   * 4000ms: semantic display timeout — not aligned to LV_DEF_REFR_PERIOD;
+   * this is a one-shot UX timer, phase drift is irrelevant. See #155. */
   if (s_dispatch.phase != DISPATCH_PHASE_STARTED) {
     if (lvgl_port_lock(50)) {
       s_dispatch.revert_timer = lv_timer_create(dispatch_revert_timer_cb, 4000, NULL);
