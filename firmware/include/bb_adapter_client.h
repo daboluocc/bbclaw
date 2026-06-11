@@ -103,7 +103,7 @@ esp_err_t bb_adapter_stream_finish(const bb_stream_ctx_t* ctx, bb_finish_result_
 esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result,
                                           bb_finish_stream_event_cb_t on_event, void* user_ctx);
 esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result);
-esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio);
+esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio, int seg_idx);
 void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);
 void bb_adapter_tts_chunks_free(bb_tts_chunk_t* head);
 esp_err_t bb_adapter_display_pull(bb_display_task_t* out_task);

@@ -119,6 +119,11 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 #define BB_CHAT_AGENT_TASK_STACK 6144
 #define BB_CHAT_AGENT_TASK_PRIO  5
 #define BB_CHAT_HEART_THRESHOLD_MS 5000
+/* Issue #169 — how long (ms) to keep the last subtitle segment visible after
+ * TTS playback finishes before fading/hiding the subtitle bar.
+ * 2 seconds gives the user time to read the last segment without it
+ * disappearing the instant the audio ends. */
+#define BB_CHAT_SUBTITLE_HOLD_MS   2000
 
 /*
  * 屏幕静态状态。所有 LVGL 操作都必须在 LVGL 任务里完成；
@@ -303,6 +308,8 @@ typedef enum {
   BB_ASYNC_APPEND_ERROR,
   BB_ASYNC_SET_DRIVER,
   BB_ASYNC_SET_SESSION,
+  BB_ASYNC_SET_SUBTITLE,   /* Issue #169: push TTS segment to subtitle bar */
+  BB_ASYNC_CLEAR_SUBTITLE, /* Issue #169: hide subtitle bar after TTS done */
 } bb_async_kind_t;
 
 typedef struct {
@@ -403,6 +410,14 @@ static void on_lvgl_dispatch(void* user_data) {
       break;
     case BB_ASYNC_SET_SESSION:
       if (theme->set_session != NULL) theme->set_session(p->s1 != NULL ? p->s1 : "");
+      break;
+    case BB_ASYNC_SET_SUBTITLE:
+      /* Issue #169: update subtitle bar with current TTS segment text. */
+      bb_chat_transcript_set_subtitle(p->s1 != NULL ? p->s1 : "");
+      break;
+    case BB_ASYNC_CLEAR_SUBTITLE:
+      /* Issue #169: hide subtitle bar after TTS playback ends. */
+      bb_chat_transcript_clear_subtitle();
       break;
   }
   free(p->s1);
@@ -515,6 +530,22 @@ static void post_session(const char* sid_short) {
   bb_async_payload_t* p = async_alloc(BB_ASYNC_SET_SESSION);
   if (p == NULL) return;
   p->s1 = dup_str(sid_short);
+  async_post(p);
+}
+
+/* Issue #169 — TTS subtitle helpers.
+ * post_subtitle: push current segment text to the subtitle bar (LVGL task).
+ * post_clear_subtitle: hide the bar (called after TTS done + hold delay). */
+static void post_subtitle(const char* text) {
+  bb_async_payload_t* p = async_alloc(BB_ASYNC_SET_SUBTITLE);
+  if (p == NULL) return;
+  p->s1 = dup_str(text);
+  async_post(p);
+}
+
+static void post_clear_subtitle(void) {
+  bb_async_payload_t* p = async_alloc(BB_ASYNC_CLEAR_SUBTITLE);
+  if (p == NULL) return;
   async_post(p);
 }
 
@@ -1065,11 +1096,11 @@ static int tts_should_abort(void) {
 /* Synth + play a single chunk. Returns ESP_OK on a clean play, otherwise the
  * caller should treat as "skip and continue" (typically an interrupt or
  * synth failure — neither is fatal to the loop). */
-static esp_err_t tts_synth_and_play(const char* text) {
+static esp_err_t tts_synth_and_play(const char* text, int seg_idx) {
   if (text == NULL || text[0] == '\0') return ESP_OK;
-  ESP_LOGI(TAG, "tts: synth start len=%u", (unsigned)strlen(text));
+  ESP_LOGI(TAG, "tts: synth start len=%u seg_idx=%d", (unsigned)strlen(text), seg_idx);
   bb_tts_audio_t audio = {0};
-  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(text, &audio);
+  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(text, &audio, seg_idx);
   if (syn != ESP_OK || audio.pcm_data == NULL || audio.pcm_len == 0U) {
     ESP_LOGW(TAG, "tts: synth failed err=%s pcm=%p len=%u", esp_err_to_name(syn),
              (void*)audio.pcm_data, (unsigned)audio.pcm_len);
@@ -1117,6 +1148,8 @@ static void tts_playback_task(void* arg) {
    * have posted milliseconds earlier). */
   post_state(BB_AGENT_STATE_SPEAKING);
 
+  int seg_idx = 0;  /* Issue #169: subtitle segment counter for logging */
+
   /* Outer loop: drain reply_buf one sentence at a time. */
   while (!tts_should_abort()) {
     int turn_done = s_chat.reply_turn_complete ? 1 : 0;
@@ -1132,8 +1165,16 @@ static void tts_playback_task(void* arg) {
       vTaskDelay(pdMS_TO_TICKS(80));
       continue;
     }
-    esp_err_t err = tts_synth_and_play(chunk);
+    /* Issue #169: push subtitle before synthesis so the screen updates
+     * immediately when this segment starts, not after the blocking synth
+     * call returns. safe_lv_async_call has a 200 ms lock timeout; the
+     * segment text is heap-dup'd inside post_subtitle. */
+    post_subtitle(chunk);
+    ESP_LOGI(TAG, "tts_subtitle: seg_idx=%d text_len=%u wall_ms=%lld",
+             seg_idx, (unsigned)strlen(chunk), (long long)bb_now_ms());
+    esp_err_t err = tts_synth_and_play(chunk, seg_idx);
     free(chunk);
+    seg_idx++;
     if (err == ESP_ERR_INVALID_STATE) {
       /* Aborted mid-flight. Don't try the next sentence. */
       break;
@@ -1141,6 +1182,15 @@ static void tts_playback_task(void* arg) {
     /* ESP_FAIL / synth-fail: drop this sentence, keep going (next sentence
      * may still be useful). */
   }
+  /* Issue #169: subtitle hold — keep the last segment visible for
+   * BB_CHAT_SUBTITLE_HOLD_MS after TTS finishes, then clear.
+   * Skip the hold when cancelled (user interrupted) so the subtitle
+   * doesn't linger over the IDLE/HEART state that follows immediately. */
+  if (!s_chat.tts_cancel_requested && seg_idx > 0) {
+    vTaskDelay(pdMS_TO_TICKS(BB_CHAT_SUBTITLE_HOLD_MS));
+  }
+  post_clear_subtitle();
+
   /* Phase 4.8.x: TTS done — transition out of SPEAKING. Pick HEART if the
    * end-to-end turn was fast (< BB_CHAT_HEART_THRESHOLD_MS), otherwise
    * IDLE. We can't tell from inside the TTS task whether EvTurnEnd already
@@ -1158,9 +1208,10 @@ static void tts_playback_task(void* arg) {
   /* Phase 4.9: 通知 bb_state TTS 已完成或被取消，清掉 tts_in_flight */
   bb_state_dispatch_simple(s_chat.tts_cancel_requested ? BB_EVT_TTS_CANCELLED
                                                        : BB_EVT_TTS_DONE);
-  ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d) → IDLE/HEART",
+  ESP_LOGI(TAG, "tts: streaming task done (cancel=%d turn=%d segs=%d) → IDLE/HEART",
            s_chat.tts_cancel_requested ? 1 : 0,
-           s_chat.reply_turn_complete ? 1 : 0);
+           s_chat.reply_turn_complete ? 1 : 0,
+           seg_idx);
   s_chat.tts_task = NULL;
   vTaskDelete(NULL);
 }
@@ -1203,6 +1254,9 @@ static void tts_cancel_in_flight(void) {
   if (s_chat.tts_task != NULL) {
     ESP_LOGW(TAG, "tts: cancel timeout, in-flight task still alive (will exit lazily)");
   }
+  /* Issue #169: on cancel, clear subtitle immediately so it doesn't linger
+   * while the new turn's BUSY/LISTENING state is displayed. */
+  post_clear_subtitle();
 }
 
 /* Phase 4.9: bb_state subscriber — buddy 主题的 SSoT 驱动入口。

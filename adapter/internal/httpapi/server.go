@@ -766,6 +766,9 @@ type ttsSynthesizeRequest struct {
 	Codec      string `json:"codec,omitempty"`
 	SampleRate int    `json:"sampleRate,omitempty"`
 	Channels   int    `json:"channels,omitempty"`
+	// Issue #169: optional segment index sent by firmware tts_playback_task so
+	// adapter logs can correlate each synth call with its subtitle cutover time.
+	SegIdx int `json:"segIdx,omitempty"`
 }
 
 func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
@@ -791,6 +794,11 @@ func (s *Server) handleTTSSynthesize(w http.ResponseWriter, r *http.Request) {
 	tTTS := time.Now()
 	textChars := utf8.RuneCountInString(cleanText)
 	s.log.Infof("phase=tts_start elapsed_s=0 text_chars=%d raw_chars=%d", textChars, rawChars)
+	// Issue #169: structured per-segment log so adapter logs can be correlated
+	// with firmware subtitle cutover timestamps (firmware logs tts_subtitle:
+	// seg_idx=N wall_ms=M just before posting to the subtitle bar).
+	s.log.Infof("phase=tts_synth_seg seg_idx=%d text_len=%d wall_ms=%d",
+		req.SegIdx, textChars, time.Now().UnixMilli())
 	audioBytes, err := s.tts.Synthesize(r.Context(), cleanText)
 	if err != nil {
 		s.metrics.Inc("tts_failed")

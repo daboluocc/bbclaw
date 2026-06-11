@@ -70,3 +70,20 @@ void bb_chat_transcript_clear(void);
  * `lines` follows bb_chat_transcript_scroll: <0 = up, >0 = down. */
 void bb_chat_scroll_worker_init(void);
 void bb_chat_scroll_request(int lines);
+
+/* Issue #169 — TTS subtitle bar.
+ *
+ * A fixed-height label overlaid on the transcript area that shows the
+ * current TTS segment being spoken.  Independent of the scrollable bubble
+ * history — the history stays intact while the subtitle reflects the live
+ * playback position.
+ *
+ * set_subtitle: replace the subtitle text with `text` and make it visible.
+ *               `text` is copied; caller may free/reuse after the call.
+ * clear_subtitle: hide the subtitle bar (called when TTS finishes or is
+ *               cancelled, after the N-second hold timeout).
+ *
+ * Both functions must be called from the LVGL task (via lv_async_call from
+ * worker tasks). */
+void bb_chat_transcript_set_subtitle(const char* text);
+void bb_chat_transcript_clear_subtitle(void);

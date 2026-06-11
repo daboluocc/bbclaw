@@ -2124,7 +2124,7 @@ static char* tts_sanitize_alloc(const char* in) {
   return out;
 }
 
-esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio) {
+esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio, int seg_idx) {
   if (text == NULL || out_audio == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -2151,9 +2151,11 @@ esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_
     free(escaped);
     return ESP_ERR_NO_MEM;
   }
+  /* Issue #169: include segIdx so adapter logs can correlate each synth
+   * call with the firmware subtitle cutover timestamp. */
   snprintf(body, body_cap,
-           "{\"text\":\"%s\",\"codec\":\"pcm16\",\"sampleRate\":%d,\"channels\":%d,\"deviceId\":\"%s\"}",
-           escaped, BBCLAW_TTS_SAMPLE_RATE, BBCLAW_TTS_CHANNELS, BBCLAW_DEVICE_ID);
+           "{\"text\":\"%s\",\"codec\":\"pcm16\",\"sampleRate\":%d,\"channels\":%d,\"deviceId\":\"%s\",\"segIdx\":%d}",
+           escaped, BBCLAW_TTS_SAMPLE_RATE, BBCLAW_TTS_CHANNELS, BBCLAW_DEVICE_ID, seg_idx);
   free(escaped);
 
   bb_http_dyn_resp_t resp = {0};
