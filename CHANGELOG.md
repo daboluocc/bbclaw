@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OTA 用户确认制**：开机检测到新版本弹提醒页，OK 升级 / BACK 或超时跳过，不强制。
 
 ### Added
+- **设备 LED 三色状态灯（issue #166）**：PWM 状态灯用红 / 绿 / 蓝三色展示对话状态。
 - **本地发版脚本** `firmware/scripts/release_local.sh` + `make release-local`：本机构建
   固件 + 生成 OTA bundle + 直接推到 OTA 服务器，跳过 GitHub Actions 慢 round-trip
   （也避免本机/CI toolchain 差异卡发版）。复刻 release.yml 的 build→otadata→stage→
