@@ -294,8 +294,17 @@ typedef enum {
   BAR_ERROR,    /* ERR / NO WIFI / AUTH — red */
 } bottombar_mode_t;
 static lv_obj_t* s_obj_bottom_bar;
-static lv_obj_t* s_bar_dots[UI_BAR_DOTS_MAX][UI_BAR_ROWS]; /* [col][row] */
+/* Canvas replaces s_bar_dots[48][3] object matrix — single lv_canvas + static
+ * RGB565 buffer. Width sized to max (UI_BAR_DOTS_MAX * UI_BAR_PITCH) so we
+ * never need to reallocate; actual active columns tracked by s_bar_dot_count. */
+#define UI_BAR_CANVAS_W  (UI_BAR_DOTS_MAX * UI_BAR_PITCH)
+#define UI_BAR_CANVAS_H  UI_BOTTOM_BAR_H
+static lv_color_t s_bar_canvas_buf[UI_BAR_CANVAS_W * UI_BAR_CANVAS_H];
+static lv_draw_buf_t s_bar_draw_buf;
+static lv_obj_t* s_obj_bar_canvas;
 static int s_bar_dot_count; /* number of columns */
+static int s_bar_x0;        /* x offset of first dot column in canvas */
+static int s_bar_y0;        /* y offset of top dot row in canvas */
 static int s_bar_head_x10; /* comet head position, column index ×10 */
 static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
 static uint32_t s_bar_tick; /* frame counter — time base for non-sweep motifs */
@@ -310,7 +319,10 @@ static lv_obj_t* s_lbl_record_title;
 static lv_obj_t* s_lbl_record_state;
 static lv_obj_t* s_lbl_record_hint;
 static lv_obj_t* s_obj_record_meter;
-static lv_obj_t* s_obj_record_dot[UI_RECORD_BAR_COUNT][UI_RECORD_DOT_ROWS]; /* [col][row], row 0 = top */
+/* Canvas replaces s_obj_record_dot[10][5] object matrix. */
+static lv_color_t s_vu_canvas_buf[UI_RECORD_METER_W * UI_RECORD_METER_H];
+static lv_draw_buf_t s_vu_draw_buf;
+static lv_obj_t* s_obj_vu_canvas;
 static lv_obj_t* s_scroll_text;
 static lv_obj_t* s_lbl_text;
 
@@ -515,17 +527,30 @@ static uint32_t bottombar_color(int mode) {
   return (mode == BAR_ERROR) ? BB_UI_ERR : BB_UI_ACCENT;
 }
 
+/* Paint a single dot onto the bar canvas buffer.
+ * cx/cy: top-left pixel of the UI_BAR_DOT×UI_BAR_DOT square.
+ * Uses lv_canvas_set_px which handles the draw-buf directly in LVGL 9. */
+static void bar_fill_dot(int col, int row, lv_color_t c, lv_opa_t opa) {
+  if (s_obj_bar_canvas == NULL) return;
+  const int x = s_bar_x0 + col * UI_BAR_PITCH;
+  const int y = s_bar_y0 + row * UI_BAR_VPITCH;
+  for (int dy = 0; dy < UI_BAR_DOT; dy++) {
+    for (int dx = 0; dx < UI_BAR_DOT; dx++) {
+      lv_canvas_set_px(s_obj_bar_canvas, x + dx, y + dy, c, opa);
+    }
+  }
+}
+
 /* Paint a whole column (all UI_BAR_ROWS dots) one color/opacity. */
 static void bottombar_paint_col(int col, uint32_t color, lv_opa_t opa) {
+  lv_color_t c = lv_color_hex(color);
   for (int r = 0; r < UI_BAR_ROWS; r++) {
-    lv_obj_set_style_bg_color(s_bar_dots[col][r], lv_color_hex(color), 0);
-    lv_obj_set_style_bg_opa(s_bar_dots[col][r], opa, 0);
+    bar_fill_dot(col, r, c, opa);
   }
 }
 
 static void bottombar_paint_dot(int col, int row, uint32_t color, lv_opa_t opa) {
-  lv_obj_set_style_bg_color(s_bar_dots[col][row], lv_color_hex(color), 0);
-  lv_obj_set_style_bg_opa(s_bar_dots[col][row], opa, 0);
+  bar_fill_dot(col, row, lv_color_hex(color), opa);
 }
 
 static lv_opa_t clamp_opa(int v) { return (lv_opa_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
@@ -608,8 +633,11 @@ static void motif_breathe(int n, uint32_t accent) {
 /* Per-state dot-matrix motif on the bottom band. Skips work while hidden. */
 static void bottombar_timer_cb(lv_timer_t* t) {
   (void)t;
-  if (s_obj_bottom_bar == NULL || s_bar_dot_count == 0) return;
+  if (s_obj_bar_canvas == NULL || s_bar_dot_count == 0) return;
   if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
+
+  /* Clear canvas to background before painting dots */
+  lv_canvas_fill_bg(s_obj_bar_canvas, lv_color_hex(0x000000), LV_OPA_COVER);
 
   s_bar_tick++;
   const int n = s_bar_dot_count;
@@ -623,6 +651,9 @@ static void bottombar_timer_cb(lv_timer_t* t) {
     case BAR_PROCESS:
     default:          motif_sweep(n, color); break;
   }
+
+  /* Single invalidate triggers one redraw of the whole canvas */
+  lv_obj_invalidate(s_obj_bar_canvas);
 }
 
 /* ── Status icon ── */
@@ -763,8 +794,10 @@ static int scroll_cont_chain_visible(const lv_obj_t* cont) {
 }
 
 /* Map one column's smoothed virtual height to lit dots, bottom-up. Lit dots
- * are cool white; the peak dot is teal while voiced. */
+ * are cool white; the peak dot is teal while voiced.
+ * Paints directly into the VU canvas buffer via lv_canvas_set_px. */
 static void set_record_column(int col, int height, int voiced) {
+  if (s_obj_vu_canvas == NULL) return;
   if (height < UI_RECORD_BAR_MIN_H) {
     height = UI_RECORD_BAR_MIN_H;
   } else if (height > UI_RECORD_BAR_MAX_H) {
@@ -774,8 +807,6 @@ static void set_record_column(int col, int height, int voiced) {
                       (UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H) / 2) /
                          (UI_RECORD_BAR_MAX_H - UI_RECORD_BAR_MIN_H);
   for (int r = 0; r < UI_RECORD_DOT_ROWS; ++r) {
-    lv_obj_t* d = s_obj_record_dot[col][r];
-    if (d == NULL) continue;
     int from_bottom = UI_RECORD_DOT_ROWS - r;
     uint32_t color;
     if (from_bottom > rows_lit) {
@@ -785,7 +816,14 @@ static void set_record_column(int col, int height, int voiced) {
     } else {
       color = UI_TEXT_MAIN;
     }
-    lv_obj_set_style_bg_color(d, lv_color_hex(color), 0);
+    lv_color_t c = lv_color_hex(color);
+    int px = col * UI_RECORD_DOT_PITCH;
+    int py = r * UI_RECORD_DOT_PITCH;
+    for (int dy = 0; dy < UI_RECORD_DOT; dy++) {
+      for (int dx = 0; dx < UI_RECORD_DOT; dx++) {
+        lv_canvas_set_px(s_obj_vu_canvas, px + dx, py + dy, c, LV_OPA_COVER);
+      }
+    }
   }
 }
 
@@ -814,6 +852,9 @@ static void reset_recording_meter_visuals(void) {
   }
   if (s_lbl_record_state != NULL) {
     lv_label_set_text(s_lbl_record_state, "请靠近麦克风说话");
+  }
+  if (s_obj_vu_canvas != NULL) {
+    lv_obj_invalidate(s_obj_vu_canvas);
   }
 }
 
@@ -889,6 +930,10 @@ static void refresh_recording_meter(void) {
   }
   if (s_lbl_record_state != NULL) {
     lv_label_set_text(s_lbl_record_state, voiced ? "已检测到声音" : "请靠近麦克风说话");
+  }
+  /* Single invalidate for the VU canvas — replaces per-dot set_style calls */
+  if (s_obj_vu_canvas != NULL) {
+    lv_obj_invalidate(s_obj_vu_canvas);
   }
 }
 
@@ -1226,22 +1271,20 @@ static void create_ui(void) {
     if (n > UI_BAR_DOTS_MAX) n = UI_BAR_DOTS_MAX;
     s_bar_dot_count = n;
     const int span = (n - 1) * UI_BAR_PITCH + UI_BAR_DOT;
-    const int x0 = (body_w - span) / 2;
+    s_bar_x0 = (body_w - span) / 2;
     const int grid_h = (UI_BAR_ROWS - 1) * UI_BAR_VPITCH + UI_BAR_DOT;
-    const int y0 = (UI_BOTTOM_BAR_H - grid_h) / 2 + 1; /* +1 clears top border */
-    for (int i = 0; i < n; i++) {
-      for (int r = 0; r < UI_BAR_ROWS; r++) {
-        lv_obj_t* d = lv_obj_create(s_obj_bottom_bar);
-        lv_obj_remove_style_all(d);
-        lv_obj_set_size(d, UI_BAR_DOT, UI_BAR_DOT);
-        lv_obj_set_pos(d, x0 + i * UI_BAR_PITCH, y0 + r * UI_BAR_VPITCH);
-        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
-        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
-        s_bar_dots[i][r] = d;
-      }
-    }
+    s_bar_y0 = (UI_BOTTOM_BAR_H - grid_h) / 2 + 1; /* +1 clears top border */
+
+    /* Create canvas spanning the full bottom bar area */
+    lv_draw_buf_init(&s_bar_draw_buf, body_w, UI_BAR_CANVAS_H,
+                     LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO,
+                     s_bar_canvas_buf, sizeof(s_bar_canvas_buf));
+    s_obj_bar_canvas = lv_canvas_create(s_obj_bottom_bar);
+    lv_canvas_set_draw_buf(s_obj_bar_canvas, &s_bar_draw_buf);
+    lv_obj_set_pos(s_obj_bar_canvas, 0, 0);
+    lv_obj_set_size(s_obj_bar_canvas, body_w, UI_BAR_CANVAS_H);
+    lv_canvas_fill_bg(s_obj_bar_canvas, lv_color_hex(0x000000), LV_OPA_COVER);
+
     s_bar_head_x10 = 0;
     s_bar_dir = 1;
   }
@@ -1325,20 +1368,19 @@ static void create_ui(void) {
                    content_h - UI_RECORD_METER_H - 26);
     lv_obj_clear_flag(s_obj_record_meter, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* VU canvas replaces the 10×5 dot object matrix */
+    lv_draw_buf_init(&s_vu_draw_buf, UI_RECORD_METER_W, UI_RECORD_METER_H,
+                     LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO,
+                     s_vu_canvas_buf, sizeof(s_vu_canvas_buf));
+    s_obj_vu_canvas = lv_canvas_create(s_obj_record_meter);
+    lv_canvas_set_draw_buf(s_obj_vu_canvas, &s_vu_draw_buf);
+    lv_obj_set_pos(s_obj_vu_canvas, 0, 0);
+    lv_obj_set_size(s_obj_vu_canvas, UI_RECORD_METER_W, UI_RECORD_METER_H);
+    lv_canvas_fill_bg(s_obj_vu_canvas, lv_color_hex(0x000000), LV_OPA_COVER);
     for (int i = 0; i < UI_RECORD_BAR_COUNT; ++i) {
-      for (int r = 0; r < UI_RECORD_DOT_ROWS; ++r) {
-        lv_obj_t* d = lv_obj_create(s_obj_record_meter);
-        lv_obj_remove_style_all(d);
-        lv_obj_set_size(d, UI_RECORD_DOT, UI_RECORD_DOT);
-        lv_obj_set_pos(d, i * UI_RECORD_DOT_PITCH, r * UI_RECORD_DOT_PITCH);
-        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(d, lv_color_hex(BB_UI_DOT_GHOST), 0);
-        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
-        lv_obj_clear_flag(d, LV_OBJ_FLAG_SCROLLABLE);
-        s_obj_record_dot[i][r] = d;
-      }
       set_record_column(i, UI_RECORD_BAR_MIN_H, 0);
     }
+    lv_obj_invalidate(s_obj_vu_canvas);
   }
 
   /* Text area — full remaining space, pure text only */
