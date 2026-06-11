@@ -856,7 +856,22 @@ static void ws_handle_text_message(const char* msg) {
     return;
   }
 
-  if (strcmp(kind, "voice.reply.status") == 0) {
+  if (strcmp(kind, "voice.session") == 0) {
+    /* Issue #146: cloud voice (butler) path now forwards the resolved session
+     * id + driver so the device can persist it (NVS + chat cache bind) and
+     * replay history on CHAT re-entry. Payload is nested under "payload". */
+    char sid[80] = {0};
+    char drv[24] = {0};
+    const char* payload_start = strstr(msg, "\"payload\"");
+    const char* src = (payload_start != NULL) ? strchr(payload_start, '{') : NULL;
+    if (src == NULL) src = msg;
+    (void)json_extract_string(src, "sessionId", sid, sizeof(sid));
+    (void)json_extract_string(src, "driver", drv, sizeof(drv));
+    if (s_ws.finish_on_event != NULL && sid[0] != '\0') {
+      emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_SESSION, drv, sid,
+                               NULL, 0);
+    }
+  } else if (strcmp(kind, "voice.reply.status") == 0) {
     (void)json_extract_string(msg, "phase", phase, sizeof(phase));
     if (s_ws.finish_on_event != NULL) {
       emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_STATUS, phase, NULL,

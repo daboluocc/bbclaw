@@ -90,6 +90,75 @@ func TestHandleChatTextViaAgent_ButlerRouting(t *testing.T) {
 	}
 }
 
+// Issue #146: the cloud voice (butler) path must forward the resolved session
+// id + driver to the device. Historically session frames were flattened away,
+// so a pure-voice device never learned its session id and replayed nothing on
+// re-entry. We now emit a dedicated voice.session event mid-turn AND redundantly
+// carry {sessionId, driver} on the final voice.reply envelope.
+func TestHandleChatTextViaButler_EmitsVoiceSession(t *testing.T) {
+	drv := newFakeAgentDriver("claude-code") // butler.ButlerDriver
+	r := agent.NewRouter()
+	r.Register(drv, obs.NewLogger())
+
+	mgr, err := logicalsession.NewManager(filepath.Join(t.TempDir(), "sessions.json"), "/tmp/default", obs.NewLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	a := &Adapter{
+		cfg:     Config{HomeSiteID: "home-1"},
+		log:     obs.NewLogger(),
+		metrics: obs.NewMetrics(),
+	}
+	a.SetRouter(r)
+	a.SetSessionManager(mgr)
+	a.SetButlerWorkspace("/ws", []agent.MCPServerSpec{{Name: "bbclaw", Command: "x", Args: []string{"mcp-server"}}})
+
+	var got []CloudEnvelope
+	write := func(env CloudEnvelope) error {
+		got = append(got, env)
+		return nil
+	}
+	env := CloudEnvelope{Type: "request", MessageID: "m-1", DeviceID: "dev-1", Kind: "voice.transcript"}
+	if err := a.handleChatTextViaAgent(context.Background(), write, env, "hello", "sk-1", "st-1", "claude-code", time.Now()); err != nil {
+		t.Fatalf("handleChatTextViaAgent: %v", err)
+	}
+
+	// A voice.session event must appear with a non-empty sessionId + driver.
+	var sessionEvt *CloudEnvelope
+	var final *CloudEnvelope
+	for i := range got {
+		e := got[i]
+		if e.Type == "event" && e.Kind == "voice.session" {
+			sessionEvt = &got[i]
+		}
+		if e.Type == "reply" && e.Kind == "voice.reply" {
+			final = &got[i]
+		}
+	}
+	if sessionEvt == nil {
+		t.Fatalf("missing voice.session event: %+v", got)
+	}
+	sid, _ := sessionEvt.Payload["sessionId"].(string)
+	if sid == "" {
+		t.Fatalf("voice.session missing sessionId: %v", sessionEvt.Payload)
+	}
+	if sessionEvt.Payload["driver"] != "claude-code" {
+		t.Fatalf("voice.session driver=%v want claude-code", sessionEvt.Payload["driver"])
+	}
+
+	// The final voice.reply must redundantly carry the same sessionId + driver.
+	if final == nil {
+		t.Fatalf("missing final voice.reply: %+v", got)
+	}
+	if final.Payload["sessionId"] != sid {
+		t.Fatalf("final voice.reply sessionId=%v want %q", final.Payload["sessionId"], sid)
+	}
+	if final.Payload["driver"] != "claude-code" {
+		t.Fatalf("final voice.reply driver=%v want claude-code", final.Payload["driver"])
+	}
+}
+
 // Without a configured butler workspace the legacy one-shot voice path is used
 // unchanged (the requested driver runs directly, no butler session is created).
 func TestHandleChatTextViaAgent_LegacyWhenButlerUnconfigured(t *testing.T) {

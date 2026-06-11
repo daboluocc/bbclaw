@@ -178,6 +178,21 @@ void bb_ui_agent_chat_post_user_text(const char* text);
 void bb_ui_agent_chat_post_reply_delta(const char* text);
 
 /**
+ * Issue #146 — persist a session id + driver learned from the cloud voice
+ * (butler) path so cache replay + history work on CHAT re-entry.
+ *
+ * The HTTP agent stream learns its session id via the SESSION frame; the cloud
+ * pure-voice path historically dropped it, leaving the device without a sid and
+ * the re-entry replay guard skipped (blank transcript). The adapter now emits a
+ * voice.session event carrying {sessionId, driver}; this entry replicates the
+ * SESSION-frame persistence (NVS save + chat cache bind + display update).
+ *
+ * No-op when the sid is unchanged (re-binding the same sid would clear the
+ * accumulating chat cache). Safe to call from any task.
+ */
+void bb_ui_agent_chat_post_session(const char* sid, const char* driver);
+
+/**
  * Returns the current driver name from the last adapter SESSION frame.
  * Used by Settings to fetch sessions for the active driver.
  * Returns "claude-code" if no driver has been set yet.
