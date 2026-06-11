@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **cloud 纯语音链路丢失 sessionId，息屏重进 CHAT 后对话记录空白（issue #146）**：
+  `cloud_saas` 模式下纯语音对话（管家）后，CHAT 空闲退回待机再重进时 transcript 空白——
+  缓存重放（ADR-017）、历史分页（Phase S3）、时间分段全部不触发。根因：重进 CHAT 重放
+  缓存 + 拉历史的唯一入口被 `s_chat.session_id` 非空守卫，而 cloud 语音链路刻意 flatten
+  掉 session 帧，固件语音事件枚举也无 SESSION 类型 → 设备永远拿不到 sid → 不写 NVS、
+  `bb_chat_cache` 未绑定 → 重进守卫为假 → 空白。修复：**adapter** 语音（butler）回复路径
+  在 turn 起始发新事件 `voice.session`（payload: `sessionId`/`driver`），并在最终
+  `voice.reply` 信封冗余携带二者（数据源 butler `EmitSession` 回调）；**固件** 新增
+  `BB_FINISH_STREAM_EVENT_SESSION` 事件，`bb_adapter_client.c` WS 分发解析 `voice.session`，
+  `bb_radio_app.c` 的 `on_finish_stream_event_tts_only` 经新入口
+  `bb_ui_agent_chat_post_session(sid, driver)` 复刻 SESSION 帧持久化逻辑（写 NVS +
+  绑定 chat cache + 更新 display），对同一会话内重复 sid 做幂等保护避免清空累积缓存。
+  cloud（bbclaw-reference）为信封透传，预期零改动。`local_home` 的 SESSION 帧路径不受影响。
+
 ## [0.4.15] - 2026-06-11
 
 ### Changed

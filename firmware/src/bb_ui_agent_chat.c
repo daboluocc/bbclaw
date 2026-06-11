@@ -2133,6 +2133,59 @@ void bb_ui_agent_chat_post_reply_delta(const char* text) {
   post_assistant_chunk(text);
 }
 
+/* Issue #146 — persist a session id + driver learned from the cloud voice
+ * (butler) path. The HTTP agent stream learns its sid via the SESSION frame
+ * (see on_agent_event BB_AGENT_EVENT_SESSION) which writes NVS + binds the
+ * chat cache. Pure-voice cloud turns historically dropped that frame, so the
+ * device never knew its sid and the CHAT re-entry replay guard skipped → blank
+ * transcript. This entry replicates that persistence path. Safe to call from
+ * any task (visual updates go through lv_async_call).
+ *
+ * Guarded on sid change: the adapter re-emits voice.session every turn within
+ * one session, but bb_chat_cache_bind() clears the in-memory tail buffer, so
+ * re-binding the SAME sid mid-conversation would wipe the cache we're trying to
+ * accumulate. Only (re)bind when the session id actually changes. */
+void bb_ui_agent_chat_post_session(const char* sid, const char* driver) {
+  if (!s_chat.active || sid == NULL || sid[0] == '\0') return;
+  if (strcmp(s_chat.session_id, sid) == 0) return; /* already bound — no-op */
+
+  strncpy(s_chat.session_id, sid, sizeof(s_chat.session_id) - 1);
+  s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+
+  char shortbuf[16] = {0};
+  session_id_short(sid, shortbuf, sizeof(shortbuf));
+  post_session(shortbuf);
+  bb_display_set_session_id(sid);
+
+  /* Persist to NVS + rebind chat cache for the effective driver, mirroring
+   * on_agent_event's SESSION-frame handling. */
+  const char* eff_driver = NULL;
+  if (driver != NULL && driver[0] != '\0') {
+    bb_session_store_save(driver, sid);
+    eff_driver = driver;
+  } else if (s_chat.driver_name[0] != '\0') {
+    bb_session_store_save(s_chat.driver_name, sid);
+    eff_driver = s_chat.driver_name;
+  }
+  if (eff_driver != NULL) {
+    bb_chat_cache_bind(eff_driver, sid);
+  }
+
+  if (driver != NULL && driver[0] != '\0') {
+    strncpy(s_chat.driver_name, driver, sizeof(s_chat.driver_name) - 1);
+    s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
+    post_driver(driver);
+    bb_event_payload_t drv_evt = (bb_event_payload_t){ .type = BB_EVT_DRIVER_NAME_UPDATE };
+    strncpy(drv_evt.text, driver, sizeof(drv_evt.text) - 1);
+    bb_state_dispatch(drv_evt);
+  }
+
+  /* SSoT: let the coordinator update session_id / agent_in_flight. */
+  bb_event_payload_t sess_evt = (bb_event_payload_t){ .type = BB_EVT_AGENT_SESSION };
+  strncpy(sess_evt.text, sid, sizeof(sess_evt.text) - 1);
+  bb_state_dispatch(sess_evt);
+}
+
 esp_err_t bb_ui_agent_chat_cycle_driver(int delta) {
   /* Phase 5 — LEFT/RIGHT quick driver switch from picker mode.
    *

@@ -49,6 +49,10 @@ typedef enum {
   BB_FINISH_STREAM_EVENT_TOOL_CALL,
   /* ADR-021-firmware-ui §1.2: butler dispatch progress (started/done/async/error) */
   BB_FINISH_STREAM_EVENT_DISPATCH_STATUS,
+  /* Issue #146: cloud voice (butler) session frame — carries the resolved
+   * session id (in event->text) + driver (in event->phase) so the device can
+   * persist the session for cache replay + history on CHAT re-entry. */
+  BB_FINISH_STREAM_EVENT_SESSION,
 } bb_finish_stream_event_type_t;
 
 /* Dispatch status payload — carried in bb_finish_stream_event_t.dispatch when

@@ -1233,6 +1233,17 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
     return;
   }
 
+  /* Issue #146: cloud voice (butler) session frame — persist the resolved
+   * session id + driver into the agent chat so cache replay + history work on
+   * CHAT re-entry. Without this a pure-voice device never learns its sid and
+   * the re-entry guard (s_chat.session_id != '\0') skips replay → blank. */
+  if (event->type == BB_FINISH_STREAM_EVENT_SESSION && event->text != NULL && event->text[0] != '\0') {
+    ESP_LOGI(TAG, "phase=voice_session sid=%s driver=%s", event->text,
+             (event->phase != NULL) ? event->phase : "");
+    bb_ui_agent_chat_post_session(event->text, event->phase);
+    return;
+  }
+
   if (event->type == BB_FINISH_STREAM_EVENT_ASR_FINAL) {
     const char* text = (event->text != NULL && event->text[0] != '\0') ? event->text : NULL;
     if (text != NULL) {

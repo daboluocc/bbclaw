@@ -827,12 +827,20 @@ func (a *Adapter) handleChatTextViaButler(
 	replyText := sink.replyText()
 	a.log.Infof("phase=chat_text_request_done driver=%s session=%s elapsed_s=%.3f reply_chars=%d butler=true",
 		requestedDriver, sessionKey, time.Since(routeStart).Seconds(), utf8.RuneCountInString(replyText))
+	replyPayload := map[string]any{"ok": true, "text": replyText}
+	// Issue #146: redundantly carry the resolved session id + driver on the final
+	// voice.reply envelope so the firmware can persist them even if the in-turn
+	// voice.session event was dropped. Source: the butler EmitSession callback.
+	if sink.sid != "" {
+		replyPayload["sessionId"] = sink.sid
+		replyPayload["driver"] = sink.driver
+	}
 	return write(CloudEnvelope{
 		Type:       "reply",
 		MessageID:  env.MessageID,
 		HomeSiteID: a.cfg.HomeSiteID,
 		Kind:       "voice.reply",
-		Payload:    map[string]any{"ok": true, "text": replyText},
+		Payload:    replyPayload,
 	})
 }
 
@@ -852,6 +860,12 @@ type voiceEventSink struct {
 	sessionKey string
 	routeStart time.Time
 
+	// sid/driver are captured from the butler EmitSession callback (issue #146)
+	// so handleChatTextViaButler can redundantly attach them to the final
+	// voice.reply envelope.
+	sid    string
+	driver string
+
 	parts    []string
 	deltaSeq int
 
@@ -861,7 +875,35 @@ type voiceEventSink struct {
 	currentPhase *atomic.Value
 }
 
-func (v *voiceEventSink) EmitSession(string, bool, string) bool { return true }
+// EmitSession forwards the resolved session id + driver to the device as a
+// dedicated voice.session event (issue #146). The cloud voice path historically
+// flattened session frames away, so a device doing pure-voice (butler) turns
+// never learned its session id — it couldn't write NVS, couldn't bind the chat
+// cache, and therefore replayed nothing on re-entry (blank transcript). Carrying
+// {sessionId, driver} here lets the firmware persist the session exactly like
+// the HTTP agent SESSION frame does. The values are also stashed on the sink so
+// handleChatTextViaButler can redundantly attach them to the final voice.reply.
+func (v *voiceEventSink) EmitSession(visibleID string, isNew bool, driver string) bool {
+	visibleID = strings.TrimSpace(visibleID)
+	driver = strings.TrimSpace(driver)
+	if visibleID != "" {
+		v.sid = visibleID
+	}
+	if driver != "" {
+		v.driver = driver
+	}
+	if v.sid == "" {
+		return true
+	}
+	v.a.log.Infof("phase=voice_session device=%s session=%s sid=%s driver=%s is_new=%t",
+		v.env.DeviceID, strings.TrimSpace(v.sessionKey), v.sid, v.driver, isNew)
+	v.writeEvent("voice.session", map[string]any{
+		"sessionId": v.sid,
+		"driver":    v.driver,
+		"isNew":     isNew,
+	})
+	return true
+}
 
 func (v *voiceEventSink) EmitEvent(ev agent.Event) bool {
 	switch ev.Type {
