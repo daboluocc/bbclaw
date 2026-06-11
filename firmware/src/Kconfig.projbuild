@@ -103,6 +103,23 @@ config BBCLAW_WIFI_PASSWORD
         Optional compile-time fallback Wi-Fi password paired with Default
         Wi-Fi SSID.
 
+config BBCLAW_WIFI_RECONNECT_BACKOFF_MIN_MS
+    int "Auto-reconnect initial backoff interval (ms)"
+    default 5000
+    range 1000 60000
+    help
+        When the device loses Wi-Fi during runtime, it will attempt to
+        reconnect using an exponential backoff timer. This sets the first
+        retry interval in milliseconds (default: 5000 ms = 5 s).
+
+config BBCLAW_WIFI_RECONNECT_BACKOFF_MAX_MS
+    int "Auto-reconnect maximum backoff interval (ms)"
+    default 300000
+    range 10000 3600000
+    help
+        Maximum backoff interval for the exponential backoff reconnect
+        timer in milliseconds (default: 300000 ms = 5 min).
+
 endmenu
 
 endmenu

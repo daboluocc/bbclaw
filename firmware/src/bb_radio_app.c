@@ -2953,6 +2953,16 @@ static void stream_task(void* arg) {
         continue;
       }
 
+      /* 运行期 Wi-Fi 自动重连中（issue #170）：显示 RECONNECTING 状态，
+       * 暂停 transport heartbeat，等待 IP 恢复后由 BB_EVT_NET_UP 路径接管。 */
+      if (bb_wifi_get_mode() == BB_WIFI_MODE_STA_RECONNECTING) {
+        show_status_error("RECONNECTING");
+        s_transport_health_ok = 0;
+        adapter_health_is_up = 0;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        continue;
+      }
+
       int64_t now_ms = bb_now_ms();
       if (now_ms - last_adapter_heartbeat_ms >= adapter_heartbeat_interval_ms) {
         int health_status = 0;
