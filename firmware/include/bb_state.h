@@ -121,6 +121,11 @@ typedef enum {
   BB_EVT_FORCE_AGENT_STATE,
   BB_EVT_FORCE_PTT_PHASE,        /* payload.error_code = (int)bb_ptt_phase_t */
 
+  /* Worker 长任务状态 */
+  BB_EVT_WORKER_BUSY_SET,        /* dispatch_status phase=started：进入 worker_busy */
+  BB_EVT_WORKER_BUSY_CLEAR,      /* dispatch_status phase=done/async/error / 超时：退出 */
+  BB_EVT_WORKER_BUSY_TIMEOUT,    /* 超时兜底：worker_busy_until_ms 到期 */
+
   /* 自检 / 内部 */
   BB_EVT_LVGL_LOCK_TIMEOUT,      /* subscriber 报告 LVGL 锁超时 */
   BB_EVT_DIZZY_TIMEOUT,          /* DIZZY one-shot 超时：自动恢复到 IDLE */
@@ -164,6 +169,12 @@ typedef struct {
   bool     tts_in_flight;
   bool     agent_in_flight;
   bool     adapter_offline;           /* adapter 端 502 标志（local_home 探测） */
+
+  /* Worker 长任务派发中：dispatch_status phase=started 时置位，
+   * phase=done/async/error 时清除。LED 显示红色，PTT 按下被忽略。
+   * worker_busy_until_ms 为超时兜底（ms）；0 = 无超时。 */
+  bool     worker_busy;
+  uint64_t worker_busy_until_ms;
 
   uint32_t lvgl_lock_failures;        /* 累计计数，便于诊断 */
   uint32_t dropped_events;            /* 累计 DROPPED 事件数 */
