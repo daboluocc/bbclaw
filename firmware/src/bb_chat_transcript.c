@@ -42,6 +42,15 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 
 static lv_obj_t* s_transcript;
 static lv_obj_t* s_active_assistant;  /* current streaming bubble, NULL after finalize */
+/* Issue #169 — TTS subtitle bar. Overlay label sitting just above (or over)
+ * the transcript area; created lazily on first set_subtitle call.
+ * Positioned at the bottom of the transcript zone so it doesn't obscure
+ * ongoing history while still being prominent during playback. */
+static lv_obj_t* s_subtitle_label;    /* NULL until first set_subtitle */
+/* Transcript geometry captured at create time for subtitle positioning. */
+static lv_obj_t* s_transcript_parent;
+static int       s_transcript_y;
+static int       s_transcript_h;
 
 /* Last-seen timestamp for history replay, used to detect segment gaps.
  * Tracks the most-recently appended message; reset to 0 on transcript clear. */
@@ -142,6 +151,10 @@ static void follow_tail_if_active(void) {
 lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
                                     int y_offset) {
   if (parent == NULL || s_transcript != NULL) return s_transcript;
+  /* Capture geometry for lazy subtitle creation (Issue #169). */
+  s_transcript_parent = parent;
+  s_transcript_y      = y_offset;
+  s_transcript_h      = height_px;
 
   s_transcript = lv_obj_create(parent);
   lv_obj_remove_style_all(s_transcript);
@@ -160,6 +173,7 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   lv_obj_set_scrollbar_mode(s_transcript, LV_SCROLLBAR_MODE_AUTO);
 
   s_active_assistant = NULL;
+  s_subtitle_label = NULL;
   /* Fresh transcript starts in follow mode. */
   s_follow_tail = 1;
   return s_transcript;
@@ -170,6 +184,10 @@ void bb_chat_transcript_destroy(void) {
    * so do NOT lv_obj_del(s_transcript) here — it would double-free. */
   s_transcript = NULL;
   s_active_assistant = NULL;
+  s_subtitle_label = NULL;
+  s_transcript_parent = NULL;
+  s_transcript_y = 0;
+  s_transcript_h = 0;
   s_follow_tail = 1;
 }
 
@@ -369,4 +387,62 @@ void bb_chat_transcript_clear(void) {
 void bb_chat_transcript_finalize_assistant(void) {
   s_active_assistant = NULL;
   bb_chat_cache_finalize_assistant();
+}
+
+/* ── Issue #169 — TTS subtitle bar ─────────────────────────────────────────
+ *
+ * The subtitle label is a child of the transcript's *parent* (the same
+ * parent passed to bb_chat_transcript_create), not a child of the scrollable
+ * transcript container.  That way it floats at a fixed position regardless of
+ * scroll state and does not participate in the flex-column layout that causes
+ * lv_label_ins_text / scroll-to-view to reflow the whole bubble list.
+ *
+ * Visual design (1.47" 172×320):
+ *   - bottom of the transcript zone = y_offset + transcript_h − subtitle_h
+ *   - full width minus the standard horizontal margin
+ *   - semi-transparent ghost surface background (same token as assistant
+ *     bubbles) so it reads as a card floating over the history
+ *   - single-line DOT mode to avoid reflow hang (same rule as bubble labels)
+ *   - hidden by default; bb_chat_transcript_set_subtitle shows it
+ *
+ * s_transcript_parent / s_transcript_y / s_transcript_h are declared at the
+ * top of the file alongside the other statics. */
+
+#define SUBTITLE_H       20   /* px — one line of text + MSG_PAD*2 */
+#define SUBTITLE_Y_ABOVE 0    /* offset above transcript bottom edge */
+
+static void ensure_subtitle_created(void) {
+  if (s_subtitle_label != NULL) return;
+  if (s_transcript_parent == NULL) return;
+
+  s_subtitle_label = lv_label_create(s_transcript_parent);
+  lv_label_set_long_mode(s_subtitle_label, LV_LABEL_LONG_MODE_DOTS);
+  lv_obj_set_size(s_subtitle_label, 320 - 2 * MSG_HMARGIN, SUBTITLE_H);
+  /* Anchor to bottom of transcript zone */
+  int y = s_transcript_y + s_transcript_h - SUBTITLE_H - SUBTITLE_Y_ABOVE;
+  lv_obj_set_pos(s_subtitle_label, MSG_HMARGIN, y);
+  lv_obj_set_style_text_font(s_subtitle_label, font(), 0);
+  lv_obj_set_style_text_color(s_subtitle_label, lv_color_hex(UI_TEXT_MAIN), 0);
+  lv_obj_set_style_text_align(s_subtitle_label, LV_TEXT_ALIGN_LEFT, 0);
+  lv_obj_set_style_bg_color(s_subtitle_label, lv_color_hex(UI_AI_SURFACE), 0);
+  lv_obj_set_style_bg_opa(s_subtitle_label, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(s_subtitle_label, MSG_RADIUS, 0);
+  lv_obj_set_style_pad_all(s_subtitle_label, MSG_PAD, 0);
+  /* Start hidden */
+  lv_obj_add_flag(s_subtitle_label, LV_OBJ_FLAG_HIDDEN);
+  /* Float above the transcript scrollable area */
+  lv_obj_move_foreground(s_subtitle_label);
+}
+
+void bb_chat_transcript_set_subtitle(const char* text) {
+  ensure_subtitle_created();
+  if (s_subtitle_label == NULL) return;
+  lv_label_set_text(s_subtitle_label, text != NULL ? text : "");
+  lv_obj_clear_flag(s_subtitle_label, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(s_subtitle_label);
+}
+
+void bb_chat_transcript_clear_subtitle(void) {
+  if (s_subtitle_label == NULL) return;
+  lv_obj_add_flag(s_subtitle_label, LV_OBJ_FLAG_HIDDEN);
 }
