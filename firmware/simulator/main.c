@@ -34,7 +34,36 @@ typedef enum {
   APP_MODE_LOCKED = 5,
   APP_MODE_APCONFIG = 6,
   APP_MODE_OTA_CONFIRM = 7,
+  /* LED preview modes (issue #168): maps to v2 LED states */
+  APP_MODE_LED_IDLE = 8,      /* 空闲：绿常亮 */
+  APP_MODE_LED_LISTENING = 9, /* 倾听：蓝常亮 */
+  APP_MODE_LED_THINKING = 10, /* AI 思考：蓝慢闪 */
+  APP_MODE_LED_WORKER = 11,   /* Worker 长任务：红慢闪 */
+  APP_MODE_LED_ERROR = 12,    /* 错误/失联：红快闪 */
 } app_mode_t;
+
+/* LED 状态描述，用于 stdout 打印和色块预览 */
+typedef struct {
+  uint8_t  r, g, b;
+  const char* anim;   /* "SOLID" / "SLOW_BLINK" / "FAST_BLINK" */
+  uint32_t period_ms;
+} led_state_t;
+
+static led_state_t led_state_for_mode(app_mode_t mode) {
+  switch (mode) {
+    case APP_MODE_LED_ERROR:
+      return (led_state_t){255, 0, 0, "FAST_BLINK", 333};
+    case APP_MODE_LED_WORKER:
+      return (led_state_t){255, 0, 0, "SLOW_BLINK", 1000};
+    case APP_MODE_LED_THINKING:
+      return (led_state_t){0, 0, 255, "SLOW_BLINK", 1000};
+    case APP_MODE_LED_LISTENING:
+      return (led_state_t){0, 0, 255, "SOLID", 0};
+    case APP_MODE_LED_IDLE:
+    default:
+      return (led_state_t){0, 255, 0, "SOLID", 0};
+  }
+}
 
 typedef struct {
   app_mode_t mode;
@@ -104,6 +133,14 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_APCONFIG;
       } else if (strcmp(argv[i], "ota_confirm") == 0) {
         state->mode = APP_MODE_OTA_CONFIRM;
+      } else if (strcmp(argv[i], "error") == 0) {
+        state->mode = APP_MODE_LED_ERROR;
+      } else if (strcmp(argv[i], "worker") == 0) {
+        state->mode = APP_MODE_LED_WORKER;
+      } else if (strcmp(argv[i], "thinking") == 0) {
+        state->mode = APP_MODE_LED_THINKING;
+      } else if (strcmp(argv[i], "listening") == 0) {
+        state->mode = APP_MODE_LED_LISTENING;
       } else {
         state->mode = APP_MODE_AUTO;
       }
@@ -139,6 +176,12 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
       printf("bbclaw_lvgl_sim [--mode auto|standby|notification|speaking|netconn|locked|apconfig|ota_confirm] [--status READY|TASK|TX|RX|SPEAK]\n");
       printf("               [--you TEXT] [--reply TEXT] [--turn-num N] [--turn-den N]\n");
       printf("               [--zoom 3.0] [--timeout-ms 0] [--export PATH]\n");
+      printf("\nLED preview modes (v2, issue #168):\n");
+      printf("  --mode idle       绿常亮   (空闲/待机)\n");
+      printf("  --mode listening  蓝常亮   (倾听中，PTT 按下)\n");
+      printf("  --mode thinking   蓝慢闪   (AI 思考/生成中)\n");
+      printf("  --mode worker     红慢闪   (Worker 长任务)\n");
+      printf("  --mode error      红快闪   (错误/失联)\n");
       exit(0);
     }
   }
@@ -222,7 +265,13 @@ static void headless_flush_cb(lv_display_t* display, const lv_area_t* area, uint
 }
 
 static void populate_preview_state(const app_state_t* state) {
-  bb_wall_time_set_unix(1711283400);
+  /* LED-only preview modes (issue #168): print LED state to stdout, skip LVGL */
+  if (state->mode >= APP_MODE_LED_IDLE) {
+    led_state_t ls = led_state_for_mode(state->mode);
+    printf("LED color=#%02X%02X%02X anim=%s period_ms=%u\n",
+           ls.r, ls.g, ls.b, ls.anim, (unsigned)ls.period_ms);
+    return;
+  }
   (void)bb_display_init();
 
   if (state->mode == APP_MODE_IDLE) {
@@ -301,6 +350,12 @@ int main(int argc, char** argv) {
 
   init_default_state(&state);
   parse_args(&state, argc, argv);
+
+  /* LED-only modes don't need LVGL or SDL — print and exit */
+  if (state.mode >= APP_MODE_LED_IDLE) {
+    populate_preview_state(&state);
+    return 0;
+  }
 
   lv_init();
 

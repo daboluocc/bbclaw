@@ -1,13 +1,17 @@
 /**
- * bb_led.c — state-driven 状态灯实现
+ * bb_led.c — state-driven 状态灯实现（v2：三色三波形）
  *
- * 见 design/firmware_status_led.md。不再暴露 bb_led_set_status；LED 任务
- * 订阅 bb_state 并按优先级表自己合成效果。业务层只在需要"瞬时提示"时
- * 调 bb_led_pulse()。
+ * 见 design/firmware_status_led.md。LED 任务订阅 bb_state 并按优先级表
+ * 自己合成效果。业务层只在需要"瞬时提示"时调 bb_led_pulse()。
+ *
+ * v2 变更（issue #168）：
+ *   - 颜色仅用 红 / 绿 / 蓝（或灭）
+ *   - 动画仅用 SOLID / SLOW_BLINK(~1Hz) / FAST_BLINK(~3Hz)
+ *   - 移除所有 BREATHE / PULSE / SINGLE_FLASH / TRIPLE_BLINK
+ *   - 状态切换瞬时，无渐变
  */
 #include "bb_led.h"
 
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -46,13 +50,9 @@ typedef struct {
 } rgb_t;
 
 typedef enum {
-  ANIM_SOLID = 0,      /* 常亮 */
-  ANIM_BREATHE,        /* sinusoidal 呼吸 0.05..1.0 */
-  ANIM_PULSE,          /* sinusoidal 脉动 0.3..1.0 */
-  ANIM_BLINK,          /* 方波 50% 占空比 */
-  ANIM_BLINK_FAST,     /* 同上，仅语义区分（period 更短） */
-  ANIM_SINGLE_FLASH,   /* 每周期前 100ms 亮 */
-  ANIM_TRIPLE_BLINK,   /* 600ms 内三次 100ms 快闪 */
+  ANIM_SOLID = 0,       /* 常亮 */
+  ANIM_SLOW_BLINK,      /* 慢闪 ~1Hz，period=1000ms，50% 方波 */
+  ANIM_FAST_BLINK,      /* 快闪 ~3Hz，period=333ms，50% 方波 */
 } anim_mode_t;
 
 typedef struct {
@@ -271,100 +271,88 @@ static bool take_pulse(pulse_state_t* out, int64_t now_ms) {
 
 /* ================ 状态 → 效果合成 ================ */
 
+/* v2 状态→效果映射（issue #168）
+ *
+ * 优先级从高到低（第一个满足的条件胜出）：
+ *   P1  错误/失联  → 红快闪（FAST_BLINK ~3Hz）
+ *   P2  Worker 长任务 → 红慢闪（SLOW_BLINK ~1Hz）
+ *   P3  AI 思考/生成  → 蓝慢闪（SLOW_BLINK ~1Hz）
+ *   P4  倾听中       → 蓝常亮（SOLID）
+ *   P5  空闲/默认    → 绿常亮（SOLID）
+ *
+ * 注：RYG 三线板（BBCLAW_STATUS_LED_KIND_RGB_MODULE==0）蓝色在 output_rgb
+ * 中退化为绿，因此该硬件上 P3/P4 与 P5 外观相同，属已知限制。
+ */
 static effect_t compose_from_state(const bb_state_t* st, const bb_power_state_t* bp) {
-  effect_t e = { .color = {0, 180, 90}, .mode = ANIM_BREATHE, .period_ms = 4000 };
+  (void)bp; /* 低电量不占常态，只通过 pulse overlay 提示 */
+  effect_t e = { .color = {0, 255, 0}, .mode = ANIM_SOLID, .period_ms = 0 };
 
-  if (st->agent == BB_AGENT_STATE_DIZZY) {
-    e.color = (rgb_t){255, 0, 0};
-    e.mode = ANIM_BLINK;
+  /* P1: 错误 / 失联 — 红快闪 */
+  if (st->agent == BB_AGENT_STATE_DIZZY ||
+      st->net == BB_NET_OFFLINE || st->adapter_offline ||
+      st->net == BB_NET_DEGRADED) {
+    e.color     = (rgb_t){255, 0, 0};
+    e.mode      = ANIM_FAST_BLINK;
+    e.period_ms = 333;
+    return e;
+  }
+
+  /* P2: Worker 长任务派发中 — 红慢闪 */
+  if (st->worker_busy) {
+    e.color     = (rgb_t){255, 0, 0};
+    e.mode      = ANIM_SLOW_BLINK;
     e.period_ms = 1000;
     return e;
   }
-  if (st->net == BB_NET_OFFLINE || st->adapter_offline) {
-    e.color = (rgb_t){180, 70, 0};
-    e.mode = ANIM_BREATHE;
-    e.period_ms = 2000;
-    return e;
-  }
-  if (st->net == BB_NET_DEGRADED) {
-    e.color = (rgb_t){200, 0, 255};
-    e.mode = ANIM_BREATHE;
+
+  /* P3: AI 思考 / 生成中（含 ATTENTION、BUSY、SPEAKING、TTS 播放）— 蓝慢闪 */
+  if (st->agent == BB_AGENT_STATE_ATTENTION ||
+      st->agent == BB_AGENT_STATE_BUSY      ||
+      st->agent == BB_AGENT_STATE_SPEAKING  ||
+      st->ptt   == BB_PTT_RELEASED_WAIT     ||
+      st->tts_in_flight) {
+    e.color     = (rgb_t){0, 0, 255};
+    e.mode      = ANIM_SLOW_BLINK;
     e.period_ms = 1000;
     return e;
   }
+
+  /* P4: 倾听中（PTT 按下 / agent LISTENING）— 蓝常亮 */
   if (st->ptt == BB_PTT_ARMED || st->ptt == BB_PTT_STREAMING ||
       st->agent == BB_AGENT_STATE_LISTENING) {
-    e.color = (rgb_t){0, 100, 255};
-    e.mode = ANIM_SOLID;
+    e.color     = (rgb_t){0, 0, 255};
+    e.mode      = ANIM_SOLID;
     e.period_ms = 0;
     return e;
   }
-  /* worker_busy: 红色呼吸，优先级高于 BUSY 青色脉动。
-   * 用户从颜色即可知道「长任务运行中，PTT 不可用」。 */
-  if (st->worker_busy) {
-    e.color = (rgb_t){220, 20, 0};
-    e.mode = ANIM_BREATHE;
-    e.period_ms = 1500;
-    return e;
-  }
-  if (st->agent == BB_AGENT_STATE_ATTENTION) {
-    e.color = (rgb_t){255, 200, 0};
-    e.mode = ANIM_BLINK_FAST;
-    e.period_ms = 400;
-    return e;
-  }
-  if (st->agent == BB_AGENT_STATE_BUSY || st->ptt == BB_PTT_RELEASED_WAIT) {
-    e.color = (rgb_t){0, 255, 255};
-    e.mode = ANIM_PULSE;
-    e.period_ms = 500;
-    return e;
-  }
-  if (st->agent == BB_AGENT_STATE_SPEAKING || st->tts_in_flight) {
-    e.color = (rgb_t){0, 200, 160};
-    e.mode = ANIM_BREATHE;
-    e.period_ms = 2000;
-    return e;
-  }
-  if (st->agent == BB_AGENT_STATE_CELEBRATE || st->agent == BB_AGENT_STATE_HEART) {
-    e.color = (rgb_t){255, 80, 180};
-    e.mode = ANIM_BREATHE;
-    e.period_ms = 1500;
-    return e;
-  }
-  if (bp && bp->available && bp->low && bp->percent >= 0) {
-    e.color = (rgb_t){255, 120, 0};
-    e.mode = ANIM_SINGLE_FLASH;
-    e.period_ms = 5000;
-    return e;
-  }
-  if (st->page == BB_PAGE_LOCKED) {
-    e.color = (rgb_t){120, 0, 200};
-    e.mode = ANIM_BREATHE;
-    e.period_ms = 3000;
-    return e;
-  }
+
+  /* P5: 空闲 / 待机 — 绿常亮（默认） */
   return e;
 }
 
+/* v2 pulse overlay（issue #168）：颜色收敛到红/绿/蓝，动画收敛到三波形 */
 static effect_t compose_pulse(bb_led_pulse_t kind) {
-  effect_t e = { .color = {255, 255, 255}, .mode = ANIM_SOLID, .period_ms = 0 };
+  effect_t e = { .color = {0, 255, 0}, .mode = ANIM_SOLID, .period_ms = 0 };
   switch (kind) {
     case BB_LED_PULSE_SUCCESS:
+      /* 绿常亮 200ms：操作成功 */
       e.color = (rgb_t){0, 255, 0};
       e.mode = ANIM_SOLID;
       break;
     case BB_LED_PULSE_ERROR:
-      e.color = (rgb_t){255, 0, 0};
-      e.mode = ANIM_TRIPLE_BLINK;
-      e.period_ms = 600;
+      /* 红快闪 600ms：事件级错误 */
+      e.color     = (rgb_t){255, 0, 0};
+      e.mode      = ANIM_FAST_BLINK;
+      e.period_ms = 333;
       break;
     case BB_LED_PULSE_CELEBRATE:
-      e.color = (rgb_t){255, 80, 180};
-      e.mode = ANIM_BREATHE;
-      e.period_ms = 1000;
+      /* 绿常亮 1000ms：快速响应庆祝（退化为 SUCCESS，符合"只用三色"原则） */
+      e.color = (rgb_t){0, 255, 0};
+      e.mode = ANIM_SOLID;
       break;
     case BB_LED_PULSE_NOTIFY:
-      e.color = (rgb_t){255, 255, 255};
+      /* 蓝常亮 400ms：新通知 */
+      e.color = (rgb_t){0, 0, 255};
       e.mode = ANIM_SOLID;
       break;
     default:
@@ -375,34 +363,15 @@ static effect_t compose_pulse(bb_led_pulse_t kind) {
 
 /* ================ 动画 → 亮度因子 ================ */
 
+/* v2 动画因子（issue #168）：仅三种波形，无 sinusoidal 运算 */
 static float anim_factor(const effect_t* e, uint32_t elapsed_ms) {
   switch (e->mode) {
     case ANIM_SOLID:
       return 1.0f;
-    case ANIM_BREATHE: {
-      if (e->period_ms == 0) return 1.0f;
-      float phase = (float)(elapsed_ms % e->period_ms) / (float)e->period_ms;
-      float s = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * phase);
-      return 0.05f + 0.95f * s;
-    }
-    case ANIM_PULSE: {
-      if (e->period_ms == 0) return 1.0f;
-      float phase = (float)(elapsed_ms % e->period_ms) / (float)e->period_ms;
-      float s = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * phase);
-      return 0.3f + 0.7f * s;
-    }
-    case ANIM_BLINK:
-    case ANIM_BLINK_FAST:
+    case ANIM_SLOW_BLINK:
+    case ANIM_FAST_BLINK:
       if (e->period_ms == 0) return 1.0f;
       return ((elapsed_ms % e->period_ms) < (e->period_ms / 2U)) ? 1.0f : 0.0f;
-    case ANIM_SINGLE_FLASH:
-      if (e->period_ms == 0) return 1.0f;
-      return ((elapsed_ms % e->period_ms) < 100U) ? 1.0f : 0.0f;
-    case ANIM_TRIPLE_BLINK: {
-      if (elapsed_ms >= 600U) return 0.0f;
-      uint32_t slot = elapsed_ms / 100U;
-      return (slot % 2U == 0U) ? 1.0f : 0.0f;
-    }
   }
   return 0.0f;
 }

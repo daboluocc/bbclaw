@@ -1,7 +1,7 @@
 # BBClaw 状态灯（PWM/WS2812）统一设计
 
 > 状态：草案（Draft）
-> 日期：2026-05-09
+> 日期：2026-06-12（v2 重做，issue #168）
 > 相关文档：[STATE_MACHINE.md](STATE_MACHINE.md)、[AGENT_STATE_MACHINE.md](AGENT_STATE_MACHINE.md)
 > 相关代码：`firmware/src/bb_led.c`、`firmware/include/bb_led.h`、`firmware/src/bb_state.c`、`firmware/src/bb_power.c`
 
@@ -54,10 +54,10 @@ LED 模块保留一个 overlay 入口：
 
 ```c
 typedef enum {
-  BB_LED_PULSE_SUCCESS,    /* 绿色 200ms 实心闪一下 */
-  BB_LED_PULSE_ERROR,      /* 红色 3 快闪，共 600ms */
-  BB_LED_PULSE_CELEBRATE,  /* 粉色 1s 脉冲 */
-  BB_LED_PULSE_NOTIFY,     /* 白色 400ms 闪一下 */
+  BB_LED_PULSE_SUCCESS,    /* 绿色 200ms 常亮：操作成功 */
+  BB_LED_PULSE_ERROR,      /* 红色快闪 600ms：事件级错误 */
+  BB_LED_PULSE_CELEBRATE,  /* 绿色 1s 常亮：快速响应（退化为 SUCCESS 色） */
+  BB_LED_PULSE_NOTIFY,     /* 蓝色 400ms 常亮：新通知 */
 } bb_led_pulse_t;
 
 esp_err_t bb_led_pulse(bb_led_pulse_t kind);
@@ -78,28 +78,35 @@ pulse 记录一个 `{ kind, start_ms, duration_ms }`，task 渲染时若 overlay
 - `bb_state_get()` 是 sequence lock，任意线程读安全；LED 任务无需持有 LVGL 锁。
 - `bb_led_pulse()` 通过 `portENTER_CRITICAL` 改 overlay 记录，在任意上下文（含 ISR 外的 callback）调用安全。
 
-## 4. 状态 → 效果映射表（优先级从高到低）
+## 4. 状态 → 效果映射表（v2，issue #168）
 
-WS2812 用 (R, G, B) 8-bit，亮度在 `render()` 内按 `BBCLAW_STATUS_LED_BRIGHTNESS_PCT` 线性缩放。
+**设计原则**：颜色仅用红/绿/蓝三色，动画仅用常亮/慢闪/快闪，无呼吸/脉动，状态切换瞬时。
 
-| # | 触发条件 | 颜色 RGB | 动画 | 周期/时长 | 语义 |
+| # | 触发条件 | 颜色 | 动画 | 周期 | 语义 |
 |---|---|---|---|---|---|
-| P0 | `pulse` overlay 活跃 | 按 pulse 定义 | 见 3.2 | 200–1000ms | 瞬时提示 |
-| P1 | `agent == DIZZY` | (255, 0, 0) 红 | 慢闪 | 500ms on / 500ms off | Agent/ASR 出错，未恢复 |
-| P2 | `net == OFFLINE` or `adapter_offline` | (180, 70, 0) 暗橙 | 呼吸 | 2000ms | 没网 / adapter 不可达 |
-| P3 | `net == DEGRADED` | (200, 0, 255) 紫 | 呼吸 | 1000ms | 网络抖动 / 探测中 |
-| P4 | `ptt ∈ {ARMED, STREAMING}` or `agent == LISTENING` | (0, 100, 255) 蓝 | 常亮（STREAMING 时可选亮度随 VAD 振幅） | — | 正在听用户说话 |
-| P5 | `agent == ATTENTION` | (255, 200, 0) 黄 | 快闪 | 200ms on / 200ms off | 等待用户审批 tool_call |
-| P6 | `agent == BUSY` or `ptt == RELEASED_WAIT` | (0, 255, 255) 青 | 脉动（sinusoidal） | 500ms | Agent 正在思考 / 流式输出 |
-| P7 | `agent == SPEAKING`（`tts_in_flight`） | (0, 200, 160) 青绿 | 慢呼吸 | 2000ms | Agent 正在说（TTS 播放） |
-| P8 | `agent == CELEBRATE` or `HEART` | (255, 80, 180) 粉 | 呼吸 | 1500ms | 完成 / 快速回复的持续态 |
-| P9 | `battery.low && battery.percent >= 0` | (255, 120, 0) 橙 | 单闪 | 100ms on / 4900ms off | 电量低提示（不打扰） |
-| P10 | `page == LOCKED` | (120, 0, 200) 紫 | 慢呼吸 | 3000ms | 等密语解锁 |
-| P11 | 默认 (`agent ∈ {IDLE, SLEEP}` 且 net OK) | (0, 180, 90) 暖绿 | 微呼吸 | 4000ms | 待命 |
+| P1 | `agent==DIZZY` \| `net==OFFLINE\|DEGRADED` \| `adapter_offline` | 红 (255,0,0) | 快闪 ~3Hz | 333ms | 错误/失联 |
+| P2 | `worker_busy` | 红 (255,0,0) | 慢闪 ~1Hz | 1000ms | Worker 长任务，PTT 软忽略 |
+| P3 | `agent∈{ATTENTION,BUSY,SPEAKING}` \| `ptt==RELEASED_WAIT` \| `tts_in_flight` | 蓝 (0,0,255) | 慢闪 ~1Hz | 1000ms | AI 思考/生成中 |
+| P4 | `ptt∈{ARMED,STREAMING}` \| `agent==LISTENING` | 蓝 (0,0,255) | 常亮 | — | 倾听中 |
+| P5 | 默认 | 绿 (0,255,0) | 常亮 | — | 空闲/待机 |
 
-**优先级裁决**：从 P0 往下扫，第一个条件满足的就是当前效果。这保证：
-- 出错、PTT 按下、网络异常这类"需要用户立即看到"的状态总是压住 agent 状态；
-- 低电量提示只在空闲时出现，不会盖掉"正在听/正在说"的关键反馈。
+**优先级裁决**：从 P1 往下扫，第一个满足条件的胜出。
+
+### v2 设计依据（issue #168）
+
+PR #167（issue #166）引入的"红呼吸=worker 长任务"在 1.47 寸小屏 + 远距离下
+难以与"红快闪=错误"区分，用户反馈容易混淆。v2 改为：
+
+- **颜色只用红/绿/蓝**（去掉橙、黄、青、紫、粉等中间色）
+- **动画只用常亮/慢闪(~1Hz)/快闪(~3Hz)**（去掉所有 sinusoidal 呼吸/脉动）
+- **worker 长任务**改为红慢闪，与红快闪（错误）靠频率区分，远距离可辨
+
+### 注意事项
+
+- 低电量（`battery.low`）不占常态槽位，仅通过 `BB_LED_PULSE_NOTIFY`（蓝常亮 400ms）提示
+- `page==LOCKED`、`agent∈{CELEBRATE,HEART}` 回落到 P3/P5 自然槽位，不单独占色
+- RYG 三线板（`BBCLAW_STATUS_LED_KIND_RGB_MODULE==0`）蓝色在 `output_rgb` 中退化为绿，
+  因此 P3/P4 与 P5 外观相同，属硬件限制，文档注明即可
 
 ### 4.1 Boot marquee（保留）
 
