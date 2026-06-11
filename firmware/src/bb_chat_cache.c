@@ -70,8 +70,7 @@ static size_t s_buf_used;
 static char* s_pending;
 static size_t s_pending_len;
 static int s_dirty;
-static int s_persist_inflight;
-static SemaphoreHandle_t s_persist_mutex;  /* serializes persist tasks */
+static volatile int s_persist_inflight;
 
 /* ─── helpers ─── */
 
@@ -141,6 +140,18 @@ typedef struct {
   size_t blob_len;
 } persist_payload_t;
 
+/* 抗 OOM（issue #96）：早期每次持久化都 calloc payload + xTaskCreate 一个内部栈
+ * 任务，长回复把内部 RAM 挤到 largest=3840 时 xTaskCreate 失败 → s_dirty 已清 →
+ * 缓存永久丢失（重进 CHAT transcript 空白，#146）。改为静态长驻任务：init 时在
+ * 内部 RAM 预留栈，运行时零分配、靠 notify 唤醒，永不 OOM。NVS 写会禁 flash
+ * cache，故栈必须留在内部 RAM（不能挪 PSRAM）。快照仍在 LVGL 任务侧做（写
+ * s_persist_buf），persist 任务只读它写 NVS；s_persist_inflight 在快照与落盘之间
+ * 守住缓冲不被覆盖，故无需 mutex。 */
+static persist_payload_t s_persist_buf;
+static StaticTask_t s_persist_tcb;
+static StackType_t s_persist_stack[BB_CACHE_PERSIST_STACK / sizeof(StackType_t)];
+static TaskHandle_t s_persist_task;
+
 static size_t serialize(persist_payload_t* p) {
   size_t off = 0;
   uint32_t magic = BB_CACHE_MAGIC;
@@ -188,59 +199,48 @@ static int deserialize(const uint8_t* data, size_t len,
   return 0;
 }
 
+/* 长驻：notify 唤醒一次 → 把 s_persist_buf（LVGL 任务侧已快照好）落盘一次。 */
 static void persist_task(void* arg) {
-  persist_payload_t* p = (persist_payload_t*)arg;
-  if (p == NULL) { vTaskDelete(NULL); return; }
-  if (s_persist_mutex != NULL) xSemaphoreTake(s_persist_mutex, portMAX_DELAY);
-
-  const char* key = driver_to_key(p->driver);
-  if (key == NULL) {
-    ESP_LOGW(TAG, "persist: unknown driver '%s'", p->driver);
-    goto done;
+  (void)arg;
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    persist_payload_t* p = &s_persist_buf;
+    const char* key = driver_to_key(p->driver);
+    if (key != NULL) {
+      nvs_handle_t h;
+      esp_err_t err = nvs_open(BB_CACHE_NVS_NS, NVS_READWRITE, &h);
+      if (err == ESP_OK) {
+        err = nvs_set_blob(h, key, p->blob, p->blob_len);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+        if (err != ESP_OK) {
+          ESP_LOGW(TAG, "persist: write failed (%s)", esp_err_to_name(err));
+        } else {
+          ESP_LOGD(TAG, "persist: '%s' %u bytes (sid='%s')", key, (unsigned)p->blob_len, p->sid);
+        }
+      } else {
+        ESP_LOGW(TAG, "persist: nvs_open failed (%s)", esp_err_to_name(err));
+      }
+    } else {
+      ESP_LOGW(TAG, "persist: unknown driver '%s'", p->driver);
+    }
+    s_persist_inflight = 0;  /* 释放快照缓冲，schedule_persist 可再次快照 */
   }
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_CACHE_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "persist: nvs_open failed (%s)", esp_err_to_name(err));
-    goto done;
-  }
-  err = nvs_set_blob(h, key, p->blob, p->blob_len);
-  if (err == ESP_OK) err = nvs_commit(h);
-  nvs_close(h);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "persist: write failed (%s)", esp_err_to_name(err));
-  } else {
-    ESP_LOGD(TAG, "persist: '%s' %u bytes (sid='%s')", key,
-             (unsigned)p->blob_len, p->sid);
-  }
-done:
-  s_persist_inflight = 0;
-  if (s_persist_mutex != NULL) xSemaphoreGive(s_persist_mutex);
-  free(p);
-  vTaskDelete(NULL);
 }
 
 static void schedule_persist(void) {
   if (!s_dirty || s_driver[0] == '\0') return;
-  if (s_persist_inflight) return;  /* coalesce — task will pick up latest state */
-  persist_payload_t* p = (persist_payload_t*)calloc(1, sizeof(*p));
-  if (p == NULL) {
-    ESP_LOGW(TAG, "schedule_persist: oom");
-    return;
-  }
-  strncpy(p->driver, s_driver, sizeof(p->driver) - 1);
-  strncpy(p->sid, s_sid, sizeof(p->sid) - 1);
-  p->blob_len = serialize(p);
+  if (s_persist_task == NULL) return;         /* 未 init */
+  if (s_persist_inflight) return;             /* coalesce — 缓冲被占，等本次落盘完 */
+  /* 快照（LVGL 任务侧）：拷进静态缓冲，标记 inflight 后通知 persist 任务落盘。 */
+  strncpy(s_persist_buf.driver, s_driver, sizeof(s_persist_buf.driver) - 1);
+  s_persist_buf.driver[sizeof(s_persist_buf.driver) - 1] = '\0';
+  strncpy(s_persist_buf.sid, s_sid, sizeof(s_persist_buf.sid) - 1);
+  s_persist_buf.sid[sizeof(s_persist_buf.sid) - 1] = '\0';
+  s_persist_buf.blob_len = serialize(&s_persist_buf);
   s_dirty = 0;
   s_persist_inflight = 1;
-  BaseType_t ok = xTaskCreate(persist_task, "chat_cache_w",
-                              BB_CACHE_PERSIST_STACK, p,
-                              BB_CACHE_PERSIST_PRIO, NULL);
-  if (ok != pdPASS) {
-    ESP_LOGW(TAG, "schedule_persist: xTaskCreate failed");
-    s_persist_inflight = 0;
-    free(p);
-  }
+  xTaskNotifyGive(s_persist_task);
 }
 
 /* Read NVS blob for `driver` into s_buf. On success, sets sid_out to the
@@ -270,8 +270,11 @@ static int load_blob(const char* driver, char* sid_out, size_t sid_cap) {
 /* ─── public API ─── */
 
 void bb_chat_cache_init(void) {
-  if (s_persist_mutex == NULL) {
-    s_persist_mutex = xSemaphoreCreateMutex();
+  if (s_persist_task == NULL) {
+    /* 静态栈在内部 RAM（BSS），init 时就预留 —— 之后落盘永不因内部 RAM 紧张失败。 */
+    s_persist_task = xTaskCreateStatic(persist_task, "chat_cache_w",
+                                       BB_CACHE_PERSIST_STACK / sizeof(StackType_t), NULL,
+                                       BB_CACHE_PERSIST_PRIO, s_persist_stack, &s_persist_tcb);
   }
 }
 
