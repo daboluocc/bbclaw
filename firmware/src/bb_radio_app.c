@@ -93,7 +93,16 @@ extern const uint8_t _binary_bbclaw_wav_end[] asm("_binary_bbclaw_wav_end");
 
 /** ESP_LOG 单行缓冲有限，长 UTF-8 回复分多条打印 */
 #define BB_LOG_TEXT_CHUNK 400
-#define BB_TTS_STREAM_QUEUE_DEPTH 128
+/* TTS 流式队列深度 + 背压（issue #149）。队列里放的是指向 PSRAM 解码 PCM 的
+ * 指针，每块 ~10KB；播放是实时的（~300ms/块），网络收得快、播得慢，块就堆在
+ * PSRAM。深度 128 + 入队超时 0（满即丢）会先堆满 ~128 块 ≈ 1.3MB+ 才开始丢——
+ * 长回复（实测 157 块）峰值 queue_depth=88 吃掉 2.67MB PSRAM、把内部 RAM 挤到
+ * 3840 字节险些 i2s OOM。改为浅队列 24（~7s 缓冲）+ 入队阻塞背压：满时生产者
+ * （WS 接收任务）阻塞，停读 socket → TCP 窗口回压 → 云端放慢发送。消费者每
+ * ~300ms 腾一槽，500ms 超时足以避免正常慢播时误丢，又够短不伤 WS keepalive；
+ * 真超时才回退到原有的丢弃安全阀。 */
+#define BB_TTS_STREAM_QUEUE_DEPTH 24
+#define BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS 500
 #define BB_TTS_STREAM_TASK_STACK 6144
 /* Stream task uses PSRAM stack (40KB) for deep call paths. NVS operations
  * that disable cache are isolated in separate tasks with internal RAM stacks
@@ -1247,7 +1256,8 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
           .type = BB_TTS_QUEUE_EVT_CHUNK,
           .chunk = event->tts_chunk,
       };
-      if (xQueueSend(ui->tts_queue, &evt, 0) == pdTRUE) {
+      /* 阻塞背压：满时等消费者腾槽（停读 socket → TCP 回压云端），超时才丢。 */
+      if (xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS)) == pdTRUE) {
 #if BBCLAW_DEBUG_TTS_LOG
         ESP_LOGI(TAG, "phase=tts_chunk_enqueue seq=%d queue_depth=%u", seq, (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
 #endif
@@ -1267,7 +1277,8 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
       bb_tts_queue_evt_t evt = {
           .type = BB_TTS_QUEUE_EVT_DONE,
       };
-      (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(20));
+      /* DONE 是结束信号，队列变浅后更易撞满——给足背压超时，丢了消费者收不到结束。 */
+      (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS));
     }
     return;
   }
@@ -1334,7 +1345,8 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
           .type = BB_TTS_QUEUE_EVT_CHUNK,
           .chunk = event->tts_chunk,
       };
-      if (xQueueSend(ui->tts_queue, &evt, 0) == pdTRUE) {
+      /* 阻塞背压：满时等消费者腾槽（停读 socket → TCP 回压云端），超时才丢。 */
+      if (xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS)) == pdTRUE) {
 #if BBCLAW_DEBUG_TTS_LOG
         ESP_LOGI(TAG, "phase=tts_chunk_enqueue_agent seq=%d queue_depth=%u", seq,
                  (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
@@ -1355,7 +1367,8 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
       bb_tts_queue_evt_t evt = {
           .type = BB_TTS_QUEUE_EVT_DONE,
       };
-      (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(20));
+      /* DONE 是结束信号，队列变浅后更易撞满——给足背压超时，丢了消费者收不到结束。 */
+      (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS));
     }
     return;
   }
