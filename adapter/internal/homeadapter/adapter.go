@@ -495,6 +495,27 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnv
 	}
 
 	deltaSeq := 0
+	// Keepalive: while the agent runs, re-emit a reply-stream event every 15s so
+	// the cloud's 30s reply-idle timer (ReplyIdleWait) keeps resetting. Without it
+	// a long silent agent turn (claude-code running a tool / thinking with no output)
+	// trips HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the
+	// reply. The 25s connection-level "ping" does NOT reset the per-request idle
+	// timer — only reply-stream events do. Same phase is deduped cloud→device, so
+	// this doesn't churn the device UI. write() is writeMu-locked, so concurrent
+	// emits from here and the callback are safe.
+	kaStop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-t.C:
+				writeEvent("voice.reply.status", map[string]any{"phase": "processing"})
+			}
+		}
+	}()
 	delivery, err := a.sink.SendVoiceTranscriptStream(ctx, openclaw.VoiceTranscriptEvent{
 		Text:       text,
 		SessionKey: strings.TrimSpace(sessionKey),
@@ -517,6 +538,7 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnv
 			writeEvent("tool_call", map[string]any{"name": evt.Text})
 		}
 	})
+	close(kaStop)
 	if err != nil {
 		a.log.Warnf("phase=chat_text_request_failed session=%s elapsed_s=%.3f err=%v",
 			strings.TrimSpace(sessionKey), time.Since(routeStart).Seconds(), err)
@@ -577,6 +599,27 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 	a.log.Infof("phase=openclaw_request_start device=%s session=%s stream=%s elapsed_s=0.000 text_chars=%d",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 	deltaSeq := 0
+	// Keepalive: while the agent runs, re-emit a reply-stream event every 15s so
+	// the cloud's 30s reply-idle timer (ReplyIdleWait) keeps resetting. Without it
+	// a long silent agent turn (claude-code running a tool / thinking with no output)
+	// trips HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the
+	// reply. The 25s connection-level "ping" does NOT reset the per-request idle
+	// timer — only reply-stream events do. Same phase is deduped cloud→device, so
+	// this doesn't churn the device UI. write() is writeMu-locked, so concurrent
+	// emits from here and the callback are safe.
+	kaStop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-kaStop:
+				return
+			case <-t.C:
+				writeEvent("voice.reply.status", map[string]any{"phase": "processing"})
+			}
+		}
+	}()
 	delivery, err := a.sink.SendVoiceTranscriptStream(ctx, openclaw.VoiceTranscriptEvent{
 		Text:       text,
 		SessionKey: strings.TrimSpace(sessionKey),
@@ -605,6 +648,7 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 			writeEvent("tool_call", map[string]any{"name": evt.Text})
 		}
 	})
+	close(kaStop)
 	if err != nil {
 		a.log.Warnf("phase=openclaw_request_failed device=%s session=%s stream=%s elapsed_s=%.3f err=%v",
 			env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), time.Since(routeStart).Seconds(), err)
