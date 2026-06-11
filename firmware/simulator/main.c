@@ -11,6 +11,7 @@
 #include "bb_display.h"
 #include "bb_page_apconfig.h"
 #include "bb_page_netconn.h"
+#include "bb_page_ota_confirm.h"
 #include "bb_time.h"
 #include "lvgl.h"
 #include "src/drivers/sdl/lv_sdl_keyboard.h"
@@ -32,6 +33,7 @@ typedef enum {
   APP_MODE_NETCONN = 4,
   APP_MODE_LOCKED = 5,
   APP_MODE_APCONFIG = 6,
+  APP_MODE_OTA_CONFIRM = 7,
 } app_mode_t;
 
 typedef struct {
@@ -100,6 +102,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_LOCKED;
       } else if (strcmp(argv[i], "apconfig") == 0) {
         state->mode = APP_MODE_APCONFIG;
+      } else if (strcmp(argv[i], "ota_confirm") == 0) {
+        state->mode = APP_MODE_OTA_CONFIRM;
       } else {
         state->mode = APP_MODE_AUTO;
       }
@@ -132,7 +136,7 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
       strncpy(state->export_path, argv[i], sizeof(state->export_path) - 1);
       state->export_path[sizeof(state->export_path) - 1] = '\0';
     } else if (strcmp(argv[i], "--help") == 0) {
-      printf("bbclaw_lvgl_sim [--mode auto|standby|notification|speaking|netconn|locked|apconfig] [--status READY|TASK|TX|RX|SPEAK]\n");
+      printf("bbclaw_lvgl_sim [--mode auto|standby|notification|speaking|netconn|locked|apconfig|ota_confirm] [--status READY|TASK|TX|RX|SPEAK]\n");
       printf("               [--you TEXT] [--reply TEXT] [--turn-num N] [--turn-den N]\n");
       printf("               [--zoom 3.0] [--timeout-ms 0] [--export PATH]\n");
       exit(0);
@@ -250,6 +254,14 @@ static void populate_preview_state(const app_state_t* state) {
     bb_display_set_battery(1, 1, 82, 0, 0);
     (void)bb_display_show_status("WIFI AP");
     bb_page_apconfig_show();
+    return;
+  }
+
+  if (state->mode == APP_MODE_OTA_CONFIRM) {
+    /* OTA user-confirm page: shows version prompt + 30 s countdown bar. */
+    bb_display_set_battery(1, 1, 82, 0, 0);
+    (void)bb_display_show_status("READY");
+    bb_page_ota_confirm_show("v0.4.17", "v0.4.18", 1024 * 1024 + 256 * 1024, NULL);
     return;
   }
 
