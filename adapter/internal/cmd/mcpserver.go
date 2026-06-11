@@ -123,6 +123,7 @@ func runMcpServer(cmd *cobra.Command, args []string) error {
 		Runner:           runner,
 		Log:              logger,
 		MemoryWriter:     resolveMemoryWriter(logger),
+		DataDir:          resolveDataDir(logger),
 	})
 
 	logger.Infof("mcp-server: serving on stdio (env seed: %d project(s))", len(seed))
@@ -180,6 +181,19 @@ func parseArgList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// resolveDataDir returns the adapter data directory for persistent state.
+// Logs a warning and returns "" (memory-only mode) on failure.
+func resolveDataDir(log *obs.Logger) string {
+	dataDir, err := workspace.DataDir()
+	if err != nil {
+		if log != nil {
+			log.Warnf("mcp-server: resolve data dir for task store failed (memory-only): %v", err)
+		}
+		return ""
+	}
+	return dataDir
 }
 
 // resolveMemoryWriter returns a MemoryWriter when the butler memory pipeline is

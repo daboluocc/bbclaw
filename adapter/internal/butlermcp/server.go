@@ -27,6 +27,7 @@ import (
 	"time"
 )
 
+
 // protocolVersion is the MCP protocol revision we advertise; echoed from the
 // client's initialize when present.
 const defaultProtocolVersion = "2024-11-05"
@@ -73,17 +74,7 @@ type Server struct {
 	bg         context.Context // background ctx for async workers (survives the dispatch call)
 	newID      func() string
 	memWriter  MemoryWriter // optional; nil disables the remember tool
-
-	mu    sync.Mutex
-	tasks map[string]*taskState
-}
-
-type taskState struct {
-	ID      string
-	Status  string // "running" | "done" | "error"
-	Result  string
-	Err     string
-	Started time.Time
+	store      *TaskStore   // persistent task state (survives mcp-server restarts)
 }
 
 // Options configure a Server.
@@ -103,6 +94,10 @@ type Options struct {
 	// can write directly into MEMORY/*.md files (Layer 1 of the long-term memory
 	// pipeline, #124). nil disables the tool entirely (safe default).
 	MemoryWriter MemoryWriter
+	// DataDir, when non-empty, enables persistent task state under
+	// <DataDir>/task-runs/. Tasks survive mcp-server restarts (fix #162).
+	// Empty string disables persistence (memory-only; used in tests).
+	DataDir string
 }
 
 // New builds a Server.
@@ -127,7 +122,7 @@ func New(opts Options) *Server {
 		log:        log,
 		bg:         bg,
 		newID:      newTaskID,
-		tasks:      make(map[string]*taskState),
+		store:      NewTaskStore(opts.DataDir),
 		memWriter:  opts.MemoryWriter,
 	}
 }
@@ -338,38 +333,39 @@ func (s *Server) toolDispatch(args json.RawMessage) (string, bool) {
 	}
 
 	id := s.newID()
-	st := &taskState{ID: id, Status: "running", Started: time.Now()}
-	s.mu.Lock()
-	s.tasks[id] = st
-	s.mu.Unlock()
+	if err := s.store.Create(id, cwd, task); err != nil {
+		s.log.Warnf("butlermcp: store.Create failed task=%s: %v", id, err)
+	}
 
 	done := make(chan struct{})
 	go func() {
 		ctx, cancel := context.WithTimeout(s.bg, workerMaxRuntime)
 		defer cancel()
 		res, err := s.runner.Run(ctx, cwd, task)
-		s.mu.Lock()
 		if err != nil {
-			st.Status, st.Err = "error", err.Error()
+			if werr := s.store.MarkError(id, err.Error()); werr != nil {
+				s.log.Warnf("butlermcp: store.MarkError task=%s: %v", id, werr)
+			}
 		} else {
-			st.Status, st.Result = "done", res
+			if werr := s.store.MarkDone(id, res); werr != nil {
+				s.log.Warnf("butlermcp: store.MarkDone task=%s: %v", id, werr)
+			}
 		}
-		s.mu.Unlock()
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if st.Status == "error" {
-			return jsonStr(map[string]any{"status": "error", "taskId": id, "error": st.Err}), true
+		run, found := s.store.Get(id)
+		if !found {
+			return jsonStr(map[string]any{"error": "INTERNAL", "detail": "task vanished after completion"}), true
 		}
-		// finished inline — drop the registry entry, the butler has the result.
-		delete(s.tasks, id)
-		return jsonStr(map[string]any{"status": "done", "result": st.Result}), false
+		if run.Status == TaskStatusError {
+			return jsonStr(map[string]any{"status": "error", "taskId": id, "error": run.Error}), true
+		}
+		return jsonStr(map[string]any{"status": "done", "result": run.Result}), false
 	case <-time.After(wait):
-		// degraded to async — keep running in the background; butler polls.
+		// degraded to async — worker keeps running; butler polls task_status.
 		s.log.Infof("butlermcp: dispatch degraded to async task=%s cwd=%q", id, cwd)
 		return jsonStr(map[string]any{"status": "running", "taskId": id}), false
 	}
@@ -377,32 +373,26 @@ func (s *Server) toolDispatch(args json.RawMessage) (string, bool) {
 
 func (s *Server) toolTaskStatus(args json.RawMessage) (string, bool) {
 	id := taskIDArg(args)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.tasks[id]
+	run, ok := s.store.Get(id)
 	if !ok {
 		return jsonStr(map[string]any{"error": "UNKNOWN_TASK", "detail": id}), true
 	}
-	return jsonStr(map[string]any{"status": st.Status}), false
+	return jsonStr(map[string]any{"status": run.Status}), false
 }
 
 func (s *Server) toolTaskResult(args json.RawMessage) (string, bool) {
 	id := taskIDArg(args)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.tasks[id]
+	run, ok := s.store.Get(id)
 	if !ok {
 		return jsonStr(map[string]any{"error": "UNKNOWN_TASK", "detail": id}), true
 	}
-	switch st.Status {
-	case "running":
+	switch run.Status {
+	case TaskStatusRunning:
 		return jsonStr(map[string]any{"status": "running"}), false
-	case "error":
-		return jsonStr(map[string]any{"status": "error", "error": st.Err}), true
+	case TaskStatusError:
+		return jsonStr(map[string]any{"status": "error", "error": run.Error}), true
 	default:
-		res := st.Result
-		delete(s.tasks, id) // consumed
-		return jsonStr(map[string]any{"status": "done", "result": res}), false
+		return jsonStr(map[string]any{"status": "done", "result": run.Result}), false
 	}
 }
 

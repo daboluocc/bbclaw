@@ -205,9 +205,10 @@ func TestDispatchAsyncDegradeAndPoll(t *testing.T) {
 	if rr["status"] != "done" || rr["result"] != "async result" {
 		t.Fatalf("task_result=%v", rr)
 	}
-	// after consuming, the task is gone.
-	if text, isErr := s.callTool("task_status", json.RawMessage(`{"taskId":"`+taskID+`"}`)); !isErr || parse(t, text)["error"] != "UNKNOWN_TASK" {
-		t.Errorf("consumed task should be unknown: %s", text)
+	// result still accessible after first read (no longer consumed/deleted).
+	rr2 := parse(t, mustTool(t, s, "task_result", `{"taskId":"`+taskID+`"}`))
+	if rr2["status"] != "done" {
+		t.Errorf("task_result second call: expected done, got %v", rr2)
 	}
 }
 
@@ -288,5 +289,92 @@ func TestRememberWriteError(t *testing.T) {
 	text, isErr := s.callTool("remember", json.RawMessage(`{"category":"preferences","text":"喜欢简短"}`))
 	if !isErr || parse(t, text)["error"] != "WRITE_FAILED" {
 		t.Errorf("expected WRITE_FAILED, got %s (isErr=%v)", text, isErr)
+	}
+}
+
+// ─────────────────────────── cross-instance persistence (#162) ───────────────
+
+// newTestServerWithDataDir creates a Server backed by a file-based TaskStore.
+func newTestServerWithDataDir(runner WorkerRunner, wait time.Duration, dataDir string) *Server {
+	return New(Options{
+		Projects:     []Project{{Name: "proj", Cwd: "/p/proj"}},
+		Runner:       runner,
+		DispatchWait: wait,
+		DataDir:      dataDir,
+	})
+}
+
+// TestDispatchPersistsAcrossServerRestart verifies that after an async task is
+// dispatched and the mcp-server "restarts" (a new Server is created from the
+// same DataDir), task_status and task_result return the correct state rather
+// than UNKNOWN_TASK. This is the core regression test for issue #162.
+func TestDispatchPersistsAcrossServerRestart(t *testing.T) {
+	dir := t.TempDir()
+
+	gate := make(chan struct{})
+	runner := &mockRunner{result: "persisted result", gate: gate}
+
+	// Server A: dispatch an async task.
+	sA := newTestServerWithDataDir(runner, 20*time.Millisecond, dir)
+	text, isErr := sA.callTool("dispatch", json.RawMessage(`{"project":"proj","task":"long task"}`))
+	if isErr {
+		t.Fatalf("dispatch isErr: %s", text)
+	}
+	m := parse(t, text)
+	if m["status"] != "running" {
+		t.Fatalf("expected running, got %v", m)
+	}
+	taskID, _ := m["taskId"].(string)
+	if taskID == "" {
+		t.Fatal("no taskId")
+	}
+
+	// Simulate mcp-server restart: Server B reads from the same DataDir.
+	// The task was written to disk by Server A, so Server B can find it.
+	sB := newTestServerWithDataDir(runner, 20*time.Millisecond, dir)
+
+	// task_status on Server B must NOT return UNKNOWN_TASK.
+	st := parse(t, mustTool(t, sB, "task_status", `{"taskId":"`+taskID+`"}`))
+	if st["error"] == "UNKNOWN_TASK" {
+		t.Fatalf("UNKNOWN_TASK after restart — task state was not persisted (issue #162)")
+	}
+	if st["status"] != "running" {
+		t.Fatalf("expected running, got %v", st)
+	}
+
+	// Let the worker finish (it runs in Server A's goroutine).
+	close(gate)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st := parse(t, mustTool(t, sA, "task_status", `{"taskId":"`+taskID+`"}`))
+		if st["status"] == "done" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task never done: %v", st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Server C (another restart) can read the completed result.
+	sC := newTestServerWithDataDir(runner, 20*time.Millisecond, dir)
+	rr := parse(t, mustTool(t, sC, "task_result", `{"taskId":"`+taskID+`"}`))
+	if rr["status"] != "done" || rr["result"] != "persisted result" {
+		t.Fatalf("task_result after second restart: %v", rr)
+	}
+}
+
+// TestDispatchSyncWithDataDir ensures that even with a DataDir, sync dispatch
+// still returns the result inline without UNKNOWN_TASK.
+func TestDispatchSyncWithDataDir(t *testing.T) {
+	dir := t.TempDir()
+	s := newTestServerWithDataDir(&mockRunner{result: "inline done"}, time.Second, dir)
+	text, isErr := s.callTool("dispatch", json.RawMessage(`{"project":"proj","task":"quick"}`))
+	if isErr {
+		t.Fatalf("isErr: %s", text)
+	}
+	m := parse(t, text)
+	if m["status"] != "done" || m["result"] != "inline done" {
+		t.Fatalf("sync dispatch result: %v", m)
 	}
 }
