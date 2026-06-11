@@ -299,6 +299,14 @@ static effect_t compose_from_state(const bb_state_t* st, const bb_power_state_t*
     e.period_ms = 0;
     return e;
   }
+  /* worker_busy: 红色呼吸，优先级高于 BUSY 青色脉动。
+   * 用户从颜色即可知道「长任务运行中，PTT 不可用」。 */
+  if (st->worker_busy) {
+    e.color = (rgb_t){220, 20, 0};
+    e.mode = ANIM_BREATHE;
+    e.period_ms = 1500;
+    return e;
+  }
   if (st->agent == BB_AGENT_STATE_ATTENTION) {
     e.color = (rgb_t){255, 200, 0};
     e.mode = ANIM_BLINK_FAST;

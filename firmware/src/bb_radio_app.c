@@ -1218,6 +1218,18 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
     if (strcmp(ds->phase, "started") == 0 && ds->cwd[0] != '\0') {
       bb_display_set_butler_cwd(ds->cwd);
     }
+    /* Issue #166: worker_busy LED 状态切换
+     * phase=started → 红色呼吸 + PTT 门控
+     * phase=done/async/error → 清除红态，恢复正常状态灯 */
+    if (strcmp(ds->phase, "started") == 0) {
+      ESP_LOGI(TAG, "phase=worker_busy_set taskId=%s", ds->task_id);
+      bb_state_dispatch_simple(BB_EVT_WORKER_BUSY_SET);
+    } else if (strcmp(ds->phase, "done") == 0 ||
+               strcmp(ds->phase, "async") == 0 ||
+               strcmp(ds->phase, "error") == 0) {
+      ESP_LOGI(TAG, "phase=worker_busy_clear taskId=%s reason=%s", ds->task_id, ds->phase);
+      bb_state_dispatch_simple(BB_EVT_WORKER_BUSY_CLEAR);
+    }
     return;
   }
 
@@ -1369,6 +1381,24 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
       };
       /* DONE 是结束信号，队列变浅后更易撞满——给足背压超时，丢了消费者收不到结束。 */
       (void)xQueueSend(ui->tts_queue, &evt, pdMS_TO_TICKS(BB_TTS_STREAM_ENQUEUE_TIMEOUT_MS));
+    }
+    return;
+  }
+
+  /* Issue #166: cloud_saas 路径的 dispatch_status → worker_busy LED */
+  if (event->type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS && event->dispatch != NULL) {
+    const bb_dispatch_status_t* ds = event->dispatch;
+    ESP_LOGI(TAG, "phase=dispatch_status(agent) phase=%s taskId=%s", ds->phase, ds->task_id);
+    bb_display_set_dispatch_status(ds->phase, ds->cwd, ds->task_id, ds->elapsed_ms);
+    if (strcmp(ds->phase, "started") == 0 && ds->cwd[0] != '\0') {
+      bb_display_set_butler_cwd(ds->cwd);
+    }
+    if (strcmp(ds->phase, "started") == 0) {
+      bb_state_dispatch_simple(BB_EVT_WORKER_BUSY_SET);
+    } else if (strcmp(ds->phase, "done") == 0 ||
+               strcmp(ds->phase, "async") == 0 ||
+               strcmp(ds->phase, "error") == 0) {
+      bb_state_dispatch_simple(BB_EVT_WORKER_BUSY_CLEAR);
     }
     return;
   }

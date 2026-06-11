@@ -101,6 +101,9 @@ static const char* k_event_names[BB_EVT__COUNT] = {
   [BB_EVT_DRIVER_NAME_UPDATE]     = "DRV_NAME",
   [BB_EVT_FORCE_AGENT_STATE]      = "FORCE_AGENT",
   [BB_EVT_FORCE_PTT_PHASE]        = "FORCE_PTT",
+  [BB_EVT_WORKER_BUSY_SET]        = "WORKER_BUSY_SET",
+  [BB_EVT_WORKER_BUSY_CLEAR]      = "WORKER_BUSY_CLR",
+  [BB_EVT_WORKER_BUSY_TIMEOUT]    = "WORKER_BUSY_TO",
   [BB_EVT_LVGL_LOCK_TIMEOUT]      = "LVGL_TO",
   [BB_EVT_DIZZY_TIMEOUT]          = "DIZZY_TO",
 };
@@ -146,9 +149,17 @@ static bb_state_listener_t s_listeners[BB_STATE_LISTENER_MAX];
 static int s_listener_count = 0;
 
 static esp_timer_handle_t s_dizzy_timer = NULL;
+static esp_timer_handle_t s_worker_busy_timer = NULL;
+
+/* Worker busy 超时兜底：超过此时间未收到 clear 事件则自动清除 */
+#define BB_WORKER_BUSY_TIMEOUT_MS 120000
 
 static void dizzy_timer_cb(void* arg) {
   bb_state_dispatch_simple(BB_EVT_DIZZY_TIMEOUT);
+}
+
+static void worker_busy_timer_cb(void* arg) {
+  bb_state_dispatch_simple(BB_EVT_WORKER_BUSY_TIMEOUT);
 }
 
 /* ================ 不变量检查 ================ */
@@ -453,6 +464,23 @@ static void apply_side_effects(bb_state_t* st, const bb_event_payload_t* evt) {
       st->lvgl_lock_failures++;
       break;
 
+    case BB_EVT_WORKER_BUSY_SET:
+      st->worker_busy = true;
+      /* 超时兜底：120s 未收到 clear 则自动清除 */
+      st->worker_busy_until_ms = (uint64_t)bb_now_ms() + BB_WORKER_BUSY_TIMEOUT_MS;
+      ESP_LOGI(TAG, "worker_busy=1 until_ms=%" PRIu64, st->worker_busy_until_ms);
+      break;
+
+    case BB_EVT_WORKER_BUSY_CLEAR:
+    case BB_EVT_WORKER_BUSY_TIMEOUT:
+      if (st->worker_busy) {
+        ESP_LOGI(TAG, "worker_busy=0 reason=%s",
+                 evt->type == BB_EVT_WORKER_BUSY_TIMEOUT ? "timeout" : "clear");
+      }
+      st->worker_busy = false;
+      st->worker_busy_until_ms = 0;
+      break;
+
     case BB_EVT_ASR_RESULT:
       /* PTT 流结束 + ASR 完成；agent_in_flight 已在 send_message 时置位 */
       break;
@@ -469,6 +497,10 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
   /* PTT_DOWN 在 SETTINGS 页：永远丢弃 */
   if (evt->type == BB_EVT_PTT_DOWN && st->page == BB_PAGE_SETTINGS) {
     return "page_settings";
+  }
+  /* PTT_DOWN 在 worker_busy 红态：忽略，避免抢话 */
+  if (evt->type == BB_EVT_PTT_DOWN && st->worker_busy) {
+    return "worker_busy";
   }
   /* PTT_DOWN 在 CHAT 但 net offline：丢弃 */
   if (evt->type == BB_EVT_PTT_DOWN && st->page == BB_PAGE_CHAT &&
@@ -501,6 +533,11 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
    * 的 race）则丢弃。 */
   if (evt->type == BB_EVT_DIZZY_TIMEOUT && st->agent != BB_AGENT_STATE_DIZZY) {
     return "dizzy_timeout_stale";
+  }
+
+  /* WORKER_BUSY_TIMEOUT：只在 worker_busy=true 时有意义；若已 clear 则丢弃 */
+  if (evt->type == BB_EVT_WORKER_BUSY_TIMEOUT && !st->worker_busy) {
+    return "worker_busy_timeout_stale";
   }
 
   return NULL;
@@ -565,6 +602,18 @@ static void dispatch_on_lvgl(void* user_data) {
                            (uint64_t)BB_DIZZY_TIMEOUT_MS * 1000);
     } else if (was_dizzy) {
       esp_timer_stop(s_dizzy_timer);
+    }
+  }
+
+  /* 3d) worker_busy 进入/离开时启停超时兜底 timer */
+  if (s_worker_busy_timer != NULL) {
+    bool was_busy = prev.worker_busy;
+    bool is_busy  = next.worker_busy;
+    if (is_busy && !was_busy) {
+      esp_timer_start_once(s_worker_busy_timer,
+                           (uint64_t)BB_WORKER_BUSY_TIMEOUT_MS * 1000);
+    } else if (!is_busy && was_busy) {
+      esp_timer_stop(s_worker_busy_timer);
     }
   }
 
@@ -679,6 +728,8 @@ void bb_state_init(void) {
   s_state.tts_in_flight = false;
   s_state.agent_in_flight = false;
   s_state.adapter_offline = false;
+  s_state.worker_busy = false;
+  s_state.worker_busy_until_ms = 0;
   s_state.lvgl_lock_failures = 0;
   s_state.dropped_events = 0;
 
@@ -695,6 +746,18 @@ void bb_state_init(void) {
   if (esp_timer_create(&dizzy_args, &s_dizzy_timer) != ESP_OK) {
     ESP_LOGE(TAG, "init: failed to create dizzy timer");
     s_dizzy_timer = NULL;
+  }
+
+  /* Worker busy 超时兜底 timer */
+  esp_timer_create_args_t worker_busy_args = {
+    .callback = worker_busy_timer_cb,
+    .arg = NULL,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name = "bb_state_worker_busy",
+  };
+  if (esp_timer_create(&worker_busy_args, &s_worker_busy_timer) != ESP_OK) {
+    ESP_LOGE(TAG, "init: failed to create worker_busy timer");
+    s_worker_busy_timer = NULL;
   }
 
   ESP_LOGI(TAG, "init: page=%s agent=%s net=%s transport=%s",
