@@ -1,6 +1,8 @@
 #include "bb_wifi.h"
 
 #include <ctype.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,11 +220,14 @@ static esp_err_t delete_wifi_slot(int index) {
   (void)nvs_erase_key(handle, key);
   nvs_slot_key(key, sizeof(key), BBCLAW_WIFI_NVS_KEY_PASSWORD, index);
   (void)nvs_erase_key(handle, key);
-  /* compact: shift higher slots down */
+  nvs_slot_key(key, sizeof(key), BBCLAW_WIFI_NVS_KEY_LAST_TS, index);
+  (void)nvs_erase_key(handle, key);
+  /* compact: shift higher slots down (ssid, password, and ts together) */
+  int last_moved = index;
   for (int i = index; i < BBCLAW_WIFI_MAX_SAVED - 1; i++) {
     char s[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
     char p[sizeof(((wifi_sta_config_t*)0)->password)] = {0};
-    char sk[16], pk[16];
+    char sk[16], pk[16], tsk[16], tdk[16];
     nvs_slot_key(sk, sizeof(sk), BBCLAW_WIFI_NVS_KEY_SSID, i + 1);
     size_t req = sizeof(s);
     if (nvs_get_str(handle, sk, s, &req) == ESP_OK && is_nonempty(s)) {
@@ -236,9 +241,25 @@ static esp_err_t delete_wifi_slot(int index) {
       nvs_set_str(handle, dpk, p);
       (void)nvs_erase_key(handle, sk);
       (void)nvs_erase_key(handle, pk);
+      /* migrate timestamp */
+      nvs_slot_key(tsk, sizeof(tsk), BBCLAW_WIFI_NVS_KEY_LAST_TS, i + 1);
+      nvs_slot_key(tdk, sizeof(tdk), BBCLAW_WIFI_NVS_KEY_LAST_TS, i);
+      uint64_t ts = 0;
+      if (nvs_get_u64(handle, tsk, &ts) == ESP_OK) {
+        nvs_set_u64(handle, tdk, ts);
+      } else {
+        (void)nvs_erase_key(handle, tdk);
+      }
+      (void)nvs_erase_key(handle, tsk);
+      last_moved = i + 1;
     } else {
       break;
     }
+  }
+  /* erase stale ts at the tail slot left after compaction */
+  if (last_moved > index) {
+    nvs_slot_key(key, sizeof(key), BBCLAW_WIFI_NVS_KEY_LAST_TS, last_moved);
+    (void)nvs_erase_key(handle, key);
   }
   nvs_commit(handle);
   nvs_close(handle);
@@ -851,11 +872,31 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
     s_connected = 1;
     ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    /* 记住本次成功的 SSID，下次启动优先尝试 */
+    /* 记住本次成功的 SSID 及时间戳，下次启动按时间倒序优先尝试 */
     if (is_nonempty(s_active_ssid)) {
       nvs_handle_t h;
       if (nvs_open(BBCLAW_WIFI_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        /* 保留旧的 last_ok 字段以向后兼容 */
         nvs_set_str(h, "last_ok", s_active_ssid);
+        /* 读取并递增全局连接序号 */
+        uint64_t seq = 0;
+        (void)nvs_get_u64(h, BBCLAW_WIFI_NVS_KEY_CONN_SEQ, &seq);
+        seq++;
+        nvs_set_u64(h, BBCLAW_WIFI_NVS_KEY_CONN_SEQ, seq);
+        /* 找到当前 SSID 对应的 slot，写入序号作为时间戳 */
+        for (int _i = 0; _i < BBCLAW_WIFI_MAX_SAVED; _i++) {
+          char _sk[16];
+          nvs_slot_key(_sk, sizeof(_sk), BBCLAW_WIFI_NVS_KEY_SSID, _i);
+          char _tmp[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
+          size_t _req = sizeof(_tmp);
+          if (nvs_get_str(h, _sk, _tmp, &_req) == ESP_OK && strcmp(_tmp, s_active_ssid) == 0) {
+            char _tk[16];
+            nvs_slot_key(_tk, sizeof(_tk), BBCLAW_WIFI_NVS_KEY_LAST_TS, _i);
+            nvs_set_u64(h, _tk, seq);
+            ESP_LOGI(TAG, "wifi ts updated slot=%d ssid=%s seq=%llu", _i, s_active_ssid, (unsigned long long)seq);
+            break;
+          }
+        }
         nvs_commit(h);
         nvs_close(h);
       }
@@ -864,49 +905,68 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
 }
 
 esp_err_t bb_wifi_init_and_connect(void) {
-  char ssid[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
-  char password[sizeof(((wifi_sta_config_t*)0)->password)] = {0};
-
   s_mode = BB_WIFI_MODE_NONE;
   ESP_RETURN_ON_ERROR(ensure_wifi_stack_ready(), TAG, "wifi stack init failed");
 
-  /* 读取上次成功连接的 SSID，优先尝试 */
-  char last_ssid[sizeof(ssid)] = {0};
+  /* --- 按最近成功连接时间戳倒序排序所有已保存 SSID --- */
+  typedef struct {
+    int slot;
+    uint64_t ts;
+    char ssid[sizeof(((wifi_sta_config_t*)0)->ssid)];
+    char password[sizeof(((wifi_sta_config_t*)0)->password)];
+  } wifi_candidate_t;
+
+  wifi_candidate_t candidates[BBCLAW_WIFI_MAX_SAVED];
+  int n_candidates = 0;
+
   {
     nvs_handle_t h;
-    if (nvs_open(BBCLAW_WIFI_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-      (void)load_nvs_string(h, "last_ok", last_ssid, sizeof(last_ssid));
+    bool ts_handle_ok = (nvs_open(BBCLAW_WIFI_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK);
+    for (int i = 0; i < BBCLAW_WIFI_MAX_SAVED; i++) {
+      wifi_candidate_t* c = &candidates[n_candidates];
+      if (load_saved_wifi_slot(i, c->ssid, sizeof(c->ssid), c->password, sizeof(c->password)) != ESP_OK ||
+          !is_nonempty(c->ssid)) {
+        continue;
+      }
+      c->slot = i;
+      c->ts = 0;
+      if (ts_handle_ok) {
+        char tk[16];
+        nvs_slot_key(tk, sizeof(tk), BBCLAW_WIFI_NVS_KEY_LAST_TS, i);
+        (void)nvs_get_u64(h, tk, &c->ts);
+      }
+      n_candidates++;
+    }
+    if (ts_handle_ok) {
       nvs_close(h);
     }
   }
 
-  /* 如果有 last_ok，在 saved slots 里找到它优先尝试 */
-  if (is_nonempty(last_ssid)) {
-    for (int i = 0; i < BBCLAW_WIFI_MAX_SAVED; i++) {
-      if (load_saved_wifi_slot(i, ssid, sizeof(ssid), password, sizeof(password)) == ESP_OK &&
-          strcmp(ssid, last_ssid) == 0) {
-        ESP_LOGI(TAG, "trying last-ok wifi slot=%d ssid=%s", i, ssid);
-        if (start_sta_connection(ssid, password) == ESP_OK) {
-          return ESP_OK;
-        }
-        ESP_LOGW(TAG, "last-ok wifi failed ssid=%s, trying others", ssid);
-        break;
+  /* 按时间戳降序排列（ts=0 表示从未连过，排末尾） */
+  for (int i = 0; i < n_candidates - 1; i++) {
+    for (int j = i + 1; j < n_candidates; j++) {
+      if (candidates[j].ts > candidates[i].ts) {
+        wifi_candidate_t tmp = candidates[i];
+        candidates[i] = candidates[j];
+        candidates[j] = tmp;
       }
     }
   }
 
-  /* Try each saved slot (skip already-tried last_ok) */
-  for (int i = 0; i < BBCLAW_WIFI_MAX_SAVED; i++) {
-    if (load_saved_wifi_slot(i, ssid, sizeof(ssid), password, sizeof(password)) == ESP_OK && is_nonempty(ssid)) {
-      if (is_nonempty(last_ssid) && strcmp(ssid, last_ssid) == 0) {
-        continue; /* already tried above */
-      }
-      ESP_LOGI(TAG, "trying saved wifi slot=%d ssid=%s", i, ssid);
-      if (start_sta_connection(ssid, password) == ESP_OK) {
-        return ESP_OK;
-      }
-      ESP_LOGW(TAG, "wifi slot=%d failed ssid=%s", i, ssid);
+  /* 按排序依次尝试 */
+  for (int i = 0; i < n_candidates; i++) {
+    wifi_candidate_t* c = &candidates[i];
+    if (c->ts > 0) {
+      ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=%llu (previously connected)",
+               c->ssid, i, (unsigned long long)c->ts);
+    } else {
+      ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=0 (never connected)",
+               c->ssid, i);
     }
+    if (start_sta_connection(c->ssid, c->password) == ESP_OK) {
+      return ESP_OK;
+    }
+    ESP_LOGW(TAG, "wifi ssid=%s rank=%d failed, trying next", c->ssid, i);
   }
 
   /* Fallback: compile-time default */

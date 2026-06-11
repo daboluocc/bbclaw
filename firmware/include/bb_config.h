@@ -74,6 +74,19 @@
 #define BBCLAW_WIFI_NVS_KEY_PASSWORD "sta_pass"
 #endif
 
+/* Per-slot last-connected sequence counter key prefix.
+ * Keys are generated as "sta_ts_0" .. "sta_ts_3" via nvs_slot_key().
+ * Stored as uint64_t; higher value = more recently connected.
+ * Value 0 means "never connected via this slot". */
+#ifndef BBCLAW_WIFI_NVS_KEY_LAST_TS
+#define BBCLAW_WIFI_NVS_KEY_LAST_TS "sta_ts"
+#endif
+
+/* Global monotonic connection counter key (uint64_t). */
+#ifndef BBCLAW_WIFI_NVS_KEY_CONN_SEQ
+#define BBCLAW_WIFI_NVS_KEY_CONN_SEQ "conn_seq"
+#endif
+
 #ifndef BBCLAW_WIFI_MAX_SAVED
 #define BBCLAW_WIFI_MAX_SAVED 4
 #endif
