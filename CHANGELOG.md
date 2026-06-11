@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.18] - 2026-06-11
 
+### Fixed
+- **长 agent 回复被 `HOME_ADAPTER_TIMEOUT` 断连、回复丢失**：cloud_saas 语音链路里
+  agent（claude-code）跑长工具调用/思考、>30s 无输出时，云端的回复空闲超时
+  （`ReplyIdleWait`，滑动窗口）触发 → FIN 断连。25s 连接级 ping 是连接保活、不重置
+  per-request 空闲计时器。修复：home adapter 在 agent 执行期每 15s 补发一条
+  `voice.reply.status`（reply 流事件，持续重置该计时器；同 phase 云端去重不刷设备
+  UI）。配套 cloud 侧默认 `ReplyIdleWait` 30s→120s 作冗余（bbclaw-reference）。
+- **新 ESP-IDF toolchain 下固件编译失败**：`strncpy(dst, samesizebuf, sizeof-1)`
+  被 GCC14 当 `-Werror=stringop-truncation` 拦下，3 处改 `snprintf`（必空终止）。
+
 ### Changed
 - **渲染性能 Phase 2（issue #149，代码级）**：在 v0.4.17 配置五连之上做完代码侧优化——
   底栏点阵 + 录音 VU 改 `lv_canvas`，消灭数百个 dot 对象矩阵（#152）；transcript
