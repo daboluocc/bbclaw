@@ -117,7 +117,8 @@ static void tl_format_row(const bb_agent_dispatch_entry_t* e, char* buf, int buf
   else if (strcmp(e->status, "error")   == 0) emoji = "❌";
   else if (strcmp(e->status, "async")   == 0) emoji = "⏰";
 
-  char time_buf[12] = {0};
+  /* 20: %lld 最坏 16 位数字 + 单位后缀 + NUL（-O2 format-truncation） */
+  char time_buf[20] = {0};
   if (strcmp(e->status, "done") == 0 || strcmp(e->status, "error") == 0) {
     tl_format_elapsed(e->elapsed_ms, time_buf, sizeof(time_buf));
   } else {

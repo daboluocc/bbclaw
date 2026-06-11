@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-06-11
+
+### Changed
+- **固件渲染性能 Round 1（issue #149 Phase 1，配置五连）**：LVGL 动画不流畅的主因
+  是配置层瓶颈，本版全部拉满：编译优化 Debug(-Og)→PERF(-O2)（LVGL 软渲染快
+  30–50%）；CPU 160→240MHz；ST7789 SPI 像素时钟 20→40MHz（320×172 全屏 RGB565
+  传输 ~44ms→~22ms，全屏动画硬上限 ~20fps→~40fps）；`FREERTOS_HZ` 100→1000
+  （消除 10ms 调度粒度造成的帧间抖动）；`LV_DEF_REFR_PERIOD` 33→16ms（刷新上限
+  30→60fps）。注意：SPI 40MHz 在面包板杜邦线环境若出现花屏，回退
+  `boards/*/board_config.h` 的 `BBCLAW_ST7789_PCLK_HZ` 即可，其余四项保留。
+  诊断、调优准则与实测记录见 issue #149。
+
+### Fixed
+- **`bb_ui_task_list.c` 相对时间缓冲可能截断**：`time_buf[12]` 对 `%lld` 格式最坏
+  需 18 字节（-O2 的 format-truncation 分析暴露），扩至 20 字节。
+- **-O2 下第三方组件 `78__esp-opus-encoder` 编译失败**：GCC 14 在
+  `std::vector::insert` 内联展开里误报 stringop-overflow 且被 -Werror 升级为错误；
+  根 CMakeLists 对该组件单独 `-Wno-error=stringop-overflow`（不改 managed_components）。
+
 ## [0.4.16] - 2026-06-11
 
 ### Fixed
