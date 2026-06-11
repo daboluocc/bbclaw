@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **管家 persona 优化对讲机首句即时反馈（issue #140 Phase 1）**：手持对讲机是
+  「按下说话、松手等回复」的交互形态，提问后到首句语音之间那段不可预期的静默会割裂
+  体验。本期纯 prompt 调优（唯一改动 `adapter/internal/workspace/persona.go` 的
+  `DefaultClaudeMD`，零新代码路径 / 零新事件类型，cloud relay 与固件 WS 协议不动）：
+  ① 「设备约束」段强化——**第一句必须是一句可立即朗读的简短确认或结论**，不含代码块、
+  路径、表格、长列表，展开放到后续句子，让现成的句级流式 TTS 尽早 flush 出声；
+  ② 「工作方式」段新增——决定 `dispatch` 长任务**前先用一句话口头确认**（如「好的，我去
+  X 项目跑这个任务」），覆盖派发进 running 前的等待。Phase 2 的 filler 占位音旁路
+  （仅 dispatch 进 running 时触发）推迟另议。persona 是 adapter 编译常量，随 adapter
+  发版生效。
+
 ### Fixed
 - **管家长期记忆在 cloud-relay 模式下完全不写入（ADR-021 §4）**：记忆写入侧
   (`Memory`)、派活 ring (`DispatchRing`) 与 recorder 此前只接到**本地 ingress** 的
