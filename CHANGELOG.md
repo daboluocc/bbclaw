@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-06-13
+
+### Added
+- **PTT 全状态打断（barge-in，ADR-028 M1+M2）**：PTT 在任何状态按下都生效——立即停止本地
+  TTS 播放，并向 adapter 发 `turn.cancel`（local: `POST /v1/agent/cancel`；cloud: WS kind
+  `turn.cancel`，云 hub 通用路由直接透传，云端零改动），adapter 杀掉 in-flight `claude -p`
+  子进程（SIGTERM→2s 宽限→KILL，连带其中的工具执行一并终止）但**保留 session/resumeID**。
+  废除 cloud_wait 期间吞 PTT：取消使 NDJSON/WS 流即刻收尾，设备最长 90s 的阻塞死等自动解除。
+- **打断对 `--resume` 可见**：设备随 cancel 上报实际播到的最后一句（playedText，chat 路取
+  字幕、voice 路取 chunk tts_text），adapter 记录打断备注并注入下一回合 prompt——恢复后的
+  模型明确知道用户听到了多少、执行截断在哪；被打断回合不进长期记忆，auto-title 用原话不受
+  注入段污染。
+- adapter：`agent.Interrupter` 可选驱动能力 + `butler.InflightRegistry`（进程级 in-flight
+  turn 登记，LOCAL/CLOUD 两条链路共用）；被打断回合向设备发 `turn_cancelled` 帧（旧固件
+  安全忽略，向后兼容）。
+
+### Fixed
+- **TTS 逐 chunk/逐句 I2S 重配卡顿（ADR-028 M2）**：`bb_audio_set_playback_sample_rate`
+  增加幂等保护——目标速率与当前一致时跳过 disable→reconfig→enable 周期（每次 ~50-100ms
+  可闻断口）。此前 24kHz TTS 流每个 chunk 都重配一次；agent chat 路更是每句播完回切 16k、
+  下句再切 24k，每句两次重配。现在每个 turn 至多一次，回切移到 turn 结束统一做。
+
 ## [0.5.5] - 2026-06-13
 
 ### Fixed

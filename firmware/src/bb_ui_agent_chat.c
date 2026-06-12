@@ -533,10 +533,34 @@ static void post_session(const char* sid_short) {
   async_post(p);
 }
 
+/* ADR-028 §2.5.1 — last sentence that actually started playing this turn.
+ * Written by the TTS task (single writer), snapshotted under a spinlock so
+ * the PTT edge handler can attach it to turn.cancel as playedText. */
+static char s_last_played_text[192];
+static portMUX_TYPE s_last_played_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void last_played_set(const char* text) {
+  taskENTER_CRITICAL(&s_last_played_mux);
+  if (text == NULL) {
+    s_last_played_text[0] = '\0';
+  } else {
+    strlcpy(s_last_played_text, text, sizeof(s_last_played_text));
+  }
+  taskEXIT_CRITICAL(&s_last_played_mux);
+}
+
+void bb_ui_agent_chat_copy_last_played(char* dst, size_t dst_size) {
+  if (dst == NULL || dst_size == 0U) return;
+  taskENTER_CRITICAL(&s_last_played_mux);
+  strlcpy(dst, s_last_played_text, dst_size);
+  taskEXIT_CRITICAL(&s_last_played_mux);
+}
+
 /* Issue #169 — TTS subtitle helpers.
  * post_subtitle: push current segment text to the subtitle bar (LVGL task).
  * post_clear_subtitle: hide the bar (called after TTS done + hold delay). */
 static void post_subtitle(const char* text) {
+  last_played_set(text);
   bb_async_payload_t* p = async_alloc(BB_ASYNC_SET_SUBTITLE);
   if (p == NULL) return;
   p->s1 = dup_str(text);
@@ -741,6 +765,8 @@ static void agent_task(void* arg) {
   tts_cancel_in_flight();
   /* Phase 4.5.1 — fresh per-turn accumulator; reused buffer if already alloc. */
   reply_buf_reset();
+  /* ADR-028 §2.5.1: fresh turn → no "last played sentence" yet. */
+  last_played_set(NULL);
 
   /* Push BUSY immediately so the user gets visible feedback that the click
    * was accepted, even before HTTP connect lands. Without this the topbar
@@ -1119,7 +1145,8 @@ static esp_err_t tts_synth_and_play(const char* text, int seg_idx) {
     bb_adapter_tts_audio_free(&audio);
     return tx;
   }
-  if (audio.sample_rate > 0 && audio.sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
+  if (audio.sample_rate > 0) {
+    /* Idempotent since ADR-028 M2 — no reconfig when already at this rate. */
     (void)bb_audio_set_playback_sample_rate(audio.sample_rate);
   }
   ESP_LOGI(TAG, "tts: play pcm_bytes=%u rate=%d ch=%d", (unsigned)audio.pcm_len,
@@ -1129,7 +1156,9 @@ static esp_err_t tts_synth_and_play(const char* text, int seg_idx) {
     ESP_LOGW(TAG, "tts: play_pcm failed (likely interrupted)");
   }
   (void)bb_audio_stop_playback();
-  (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
+  /* ADR-028 M2: keep the TTS sample rate across sentences — consecutive
+   * sentences share one rate, and resetting to the capture default here cost
+   * two I2S reconfig glitches per sentence. The task end restores it once. */
   bb_audio_clear_playback_interrupt();
   bb_adapter_tts_audio_free(&audio);
   return play_err;
@@ -1190,6 +1219,9 @@ static void tts_playback_task(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(BB_CHAT_SUBTITLE_HOLD_MS));
   }
   post_clear_subtitle();
+  /* ADR-028 M2: restore the capture-default sample rate once per turn (the
+   * per-sentence reset was removed from tts_synth_and_play). Idempotent. */
+  (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
 
   /* Phase 4.8.x: TTS done — transition out of SPEAKING. Pick HEART if the
    * end-to-end turn was fast (< BB_CHAT_HEART_THRESHOLD_MS), otherwise
@@ -2076,8 +2108,34 @@ void bb_ui_agent_chat_cancel(void) {
   if (s_chat.agent_cancel_requested) return;  /* already cancelled */
   s_chat.agent_cancel_requested = 1;
   tts_cancel_in_flight();
+  /* ADR-028 §2.5.1: also abort server-side — kill the CLI subprocess and
+   * record the interruption for the next --resume turn. Fire-and-forget. */
+  {
+    char played[sizeof(s_last_played_text)];
+    bb_ui_agent_chat_copy_last_played(played, sizeof(played));
+    (void)bb_adapter_request_turn_cancel(played);
+  }
   post_state(BB_AGENT_STATE_IDLE);
   ESP_LOGI(TAG, "cancel: user cancelled in-flight turn");
+}
+
+void bb_ui_agent_chat_request_cancel(void) {
+  /* Non-blocking variant for the PTT edge (esp_timer context): set the
+   * flags and interrupt audio, never wait for the TTS task to exit and
+   * never post UI state (PTT_DOWN dispatch already drives LISTENING). */
+  int any = 0;
+  if (s_chat.tts_task != NULL) {
+    s_chat.tts_cancel_requested = 1;
+    bb_audio_request_playback_interrupt();
+    any = 1;
+  }
+  if (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) {
+    s_chat.agent_cancel_requested = 1;
+    any = 1;
+  }
+  if (any) {
+    ESP_LOGI(TAG, "cancel: barge-in flags set (ptt edge)");
+  }
 }
 
 void bb_ui_agent_chat_scroll(int lines) {

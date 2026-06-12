@@ -684,6 +684,60 @@ esp_err_t bb_adapter_client_send_text(const char* payload) {
   return ws_send_text_message(payload);
 }
 
+/* ── ADR-028 §2.5.1 barge-in: fire-and-forget turn cancel ─────────────────
+ * PTT 在任何状态按下都可能触发取消；调用点可能在 esp_timer 回调里，所以
+ * 网络 IO 必须挪到一次性后台任务。同一时刻只允许一个 cancel 在飞。 */
+
+static volatile int s_turn_cancel_inflight;
+
+static void turn_cancel_task(void* arg) {
+  char* played_text = (char*)arg; /* heap copy, may be NULL */
+  char* escaped = json_escape_alloc(played_text != NULL ? played_text : "");
+  char body[512];
+  esp_err_t err;
+  if (bb_transport_is_cloud_saas()) {
+    snprintf(body, sizeof(body),
+             "{\"type\":\"request\",\"kind\":\"turn.cancel\",\"messageId\":\"cancel-%lld\","
+             "\"deviceId\":\"%s\",\"payload\":{\"playedText\":\"%s\"}}",
+             (long long)bb_now_ms(), BBCLAW_DEVICE_ID, escaped != NULL ? escaped : "");
+    err = ws_client_ensure_connected();
+    if (err == ESP_OK) {
+      err = ws_send_text_message(body);
+    }
+  } else {
+    snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"playedText\":\"%s\"}", BBCLAW_DEVICE_ID,
+             escaped != NULL ? escaped : "");
+    bb_http_resp_t resp;
+    err = http_post_json("/v1/agent/cancel", body, &resp);
+    if (err == ESP_OK && resp.status_code >= 400) {
+      err = ESP_FAIL;
+    }
+  }
+  ESP_LOGI(TAG, "phase=turn_cancel_sent err=%s played_chars=%u", esp_err_to_name(err),
+           (unsigned)(played_text != NULL ? strlen(played_text) : 0U));
+  free(escaped);
+  free(played_text);
+  s_turn_cancel_inflight = 0;
+  vTaskDelete(NULL);
+}
+
+esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
+  if (s_turn_cancel_inflight) {
+    return ESP_OK; /* one in-flight cancel is enough — adapter keys by device */
+  }
+  s_turn_cancel_inflight = 1;
+  char* copy = NULL;
+  if (played_text != NULL && played_text[0] != '\0') {
+    copy = strdup(played_text);
+  }
+  if (xTaskCreate(turn_cancel_task, "bb_turn_cancel", 8192, copy, 5, NULL) != pdPASS) {
+    free(copy);
+    s_turn_cancel_inflight = 0;
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
+}
+
 static esp_err_t ws_send_binary_message(const uint8_t* data, size_t len) {
   if (data == NULL || len == 0U) {
     return ESP_ERR_INVALID_ARG;

@@ -121,6 +121,18 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
 
+/* ADR-028 §2.5.1 barge-in — fire-and-forget turn cancel.
+ *
+ * Tells the adapter to abort the device's in-flight agent turn (kills the
+ * CLI subprocess server-side, keeps the session resumable) and records an
+ * interruption note that is injected into the next turn's prompt.
+ *
+ * played_text is the last TTS sentence the user actually heard (may be NULL
+ * or ""). The network IO runs on a short-lived background task, so this is
+ * safe to call from timer callbacks / the PTT edge handler; it never blocks.
+ * Duplicate requests while one is still in flight are coalesced. */
+esp_err_t bb_adapter_request_turn_cancel(const char* played_text);
+
 /* ADR-027 — device-side Home Adapter switching (cloud_saas only). Both calls
  * are synchronous: they send a cloud-terminated WS control frame and block on
  * the matching reply (or error / timeout). Call from a background task, not the

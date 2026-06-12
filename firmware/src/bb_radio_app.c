@@ -271,6 +271,30 @@ static volatile int s_transport_display_ready;
 static volatile int s_transport_adapter_connected;
 static volatile int s_tts_playback_active;
 static volatile int s_tts_interrupt_requested;
+
+/* ADR-028 §2.5.1 — last sentence the voice-path TTS stream actually started
+ * playing (mirrors bb_display_set_tts_sentence). Attached to turn.cancel as
+ * playedText so the adapter can tell the next --resume turn where the user
+ * stopped listening. Single writer (tts_stream_task), spinlock snapshot. */
+static char s_voice_last_sentence[192];
+static portMUX_TYPE s_voice_last_sentence_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void voice_last_sentence_set(const char* text) {
+  taskENTER_CRITICAL(&s_voice_last_sentence_mux);
+  if (text == NULL) {
+    s_voice_last_sentence[0] = '\0';
+  } else {
+    strlcpy(s_voice_last_sentence, text, sizeof(s_voice_last_sentence));
+  }
+  taskEXIT_CRITICAL(&s_voice_last_sentence_mux);
+}
+
+static void voice_last_sentence_copy(char* dst, size_t dst_size) {
+  if (dst == NULL || dst_size == 0U) return;
+  taskENTER_CRITICAL(&s_voice_last_sentence_mux);
+  strlcpy(dst, s_voice_last_sentence, dst_size);
+  taskEXIT_CRITICAL(&s_voice_last_sentence_mux);
+}
 /* Set while the main loop is synchronously blocked in
  * bb_adapter_stream_finish_stream (cloud_wait). PTT callback runs in
  * esp_timer task and uses this to give the user haptic + log feedback so
@@ -836,16 +860,27 @@ static void on_ptt_changed(int pressed) {
   }
   s_ptt_pressed = new_pressed;
   s_last_activity_ms = bb_now_ms();
-  if (s_ptt_pressed && !s_cloud_wait_busy) {
+  if (s_ptt_pressed) {
+    /* ADR-028 §2.5.1 barge-in: PTT down is valid in EVERY state. Stop local
+     * playback immediately and, when a turn is in flight anywhere in the
+     * chain (cloud_wait / agent busy / TTS speaking), fire a turn.cancel so
+     * the adapter kills the CLI subprocess and the blocked finish stream
+     * tears down. All non-blocking — this runs in the esp_timer task. */
     s_tts_interrupt_requested = 1;
     bb_audio_request_playback_interrupt();
-  }
-  if (s_ptt_pressed && s_cloud_wait_busy) {
-    /* Main loop is blocked in stream_finish_stream; PTT version will be
-     * consumed only after cloud returns. Give immediate physical feedback
-     * so the user knows the press registered but is being held. */
-    ESP_LOGW(TAG, "ptt press during cloud_wait: ignored, waiting for cloud reply");
-    (void)bb_motor_trigger(BB_MOTOR_PATTERN_ERROR_ALERT);
+    int agent_busy = bb_ui_agent_chat_is_busy();
+    int speaking = s_tts_playback_active || bb_ui_agent_chat_tts_speaking();
+    if (s_cloud_wait_busy || agent_busy || speaking) {
+      char played[192] = {0};
+      bb_ui_agent_chat_copy_last_played(played, sizeof(played));
+      if (played[0] == '\0') {
+        voice_last_sentence_copy(played, sizeof(played));
+      }
+      (void)bb_adapter_request_turn_cancel(played);
+      bb_ui_agent_chat_request_cancel();
+      ESP_LOGI(TAG, "ptt barge-in: cancel requested (cloud_wait=%d busy=%d speaking=%d)",
+               s_cloud_wait_busy ? 1 : 0, agent_busy, speaking);
+    }
   }
   s_ptt_change_version++;
 }
@@ -1096,9 +1131,9 @@ static void tts_stream_task(void* arg) {
     }
 
     playback_sample_rate = chunk->sample_rate > 0 ? chunk->sample_rate : BBCLAW_AUDIO_SAMPLE_RATE;
-    if (playback_sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
-      (void)bb_audio_set_playback_sample_rate(playback_sample_rate);
-    }
+    /* Idempotent since ADR-028 M2 — only the first chunk (or an actual rate
+     * change) pays the I2S reconfig; same-rate chunks are a no-op. */
+    (void)bb_audio_set_playback_sample_rate(playback_sample_rate);
     int expected_ms = playback_sample_rate > 0 ? (int)(chunk->pcm_len / 2 * 1000 / playback_sample_rate) : 0;
     int seq = chunk->seq > 0 ? chunk->seq : (ui->tts_chunk_played + 1);
     int64_t chunk_start_ms = bb_now_ms();
@@ -1110,6 +1145,7 @@ static void tts_stream_task(void* arg) {
       strncpy(last_sentence, chunk->tts_text, sizeof(last_sentence) - 1);
       last_sentence[sizeof(last_sentence) - 1] = '\0';
       bb_display_set_tts_sentence(last_sentence);
+      voice_last_sentence_set(last_sentence); /* ADR-028: barge-in playedText */
     }
     if (bb_audio_play_pcm_blocking(chunk->pcm_data, chunk->pcm_len) != ESP_OK) {
       if (tts_interrupt_requested()) {
@@ -1152,6 +1188,7 @@ static esp_err_t tts_stream_ui_init(bb_reply_stream_ui_ctx_t* ui) {
   if (ui == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+  voice_last_sentence_set(NULL); /* ADR-028: fresh turn, nothing played yet */
   ui->tts_queue = xQueueCreate(BB_TTS_STREAM_QUEUE_DEPTH, sizeof(bb_tts_queue_evt_t));
   if (ui->tts_queue == NULL) {
     return ESP_ERR_NO_MEM;

@@ -846,6 +846,13 @@ esp_err_t bb_audio_set_playback_sample_rate(int sample_rate) {
   }
   ESP_RETURN_ON_FALSE(s_tx_chan != NULL, ESP_ERR_INVALID_STATE, TAG, "tx channel unavailable");
   uint32_t effective_rate = effective_tx_sample_rate((uint32_t)sample_rate);
+  /* ADR-028 M2: idempotent — skip the disable→reconfig→enable cycle when the
+   * clock is already at the target rate. Streaming TTS callers pass the
+   * chunk's rate on every chunk/sentence; without this guard each call cost
+   * an audible ~50-100 ms gap. */
+  if ((int)effective_rate == s_tx_effective_sample_rate) {
+    return ESP_OK;
+  }
   /* Must disable channel before reconfiguring clock. */
   bool was_active = s_tx_active != 0;
   if (was_active) {

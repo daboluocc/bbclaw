@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 #include "esp_err.h"
 #include "lvgl.h"
 
@@ -160,6 +162,24 @@ void bb_ui_agent_chat_retry_adapter(void);
  * No-op if no turn is in flight.
  */
 void bb_ui_agent_chat_cancel(void);
+
+/**
+ * ADR-028 §2.5.1 — non-blocking barge-in cancel for timer/PTT-edge contexts.
+ *
+ * Sets the cancel flags (agent events discarded, TTS abort requested, audio
+ * playback interrupted) and returns immediately: unlike
+ * bb_ui_agent_chat_cancel() it never waits for the TTS task to exit and never
+ * posts UI state (the PTT_DOWN dispatch already drives LISTENING).
+ * Safe to call from esp_timer callbacks. No-op when nothing is in flight.
+ */
+void bb_ui_agent_chat_request_cancel(void);
+
+/**
+ * ADR-028 §2.5.1 — copy the last TTS sentence that actually started playing
+ * (the current subtitle) into dst. Empty string when nothing played this
+ * turn. Safe to call from any task.
+ */
+void bb_ui_agent_chat_copy_last_played(char* dst, size_t dst_size);
 
 /**
  * Post a user transcript line into the agent chat overlay.
