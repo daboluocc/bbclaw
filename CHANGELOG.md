@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-06-13
+
 ### Fixed
+- **OTA 升级死循环真根因修复（issue #179）**：设备 cloud_saas OTA 升级曾在按 OK 后 panic
+  重启 → 死循环。两处修复缺一不可：(1) **PSRAM cache-freeze** —— OTA 下载烧录原在
+  `stream_task`（栈在 PSRAM）同步执行，写 flash 冻结 cache 时触发
+  `s_task_stack_is_sane_when_cache_frozen()` assert；改为 `xTaskCreate` 专用 internal-RAM
+  栈任务（`ota_apply_task`）。(2) **internal RAM 不足** —— HTTPS 握手 mbedtls IN record
+  （16KB）在 internal 导致 `mbedtls_ssl_setup` 返回 `-0x7F00`，且 16KB 任务栈超过 internal
+  最大连续块（~15KB）→ xTaskCreate 失败；改 `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`（mbedtls
+  堆走 PSRAM）+ OTA 任务栈 16384→12288。真机 v0.5.3→v0.5.4 OTA 升级全链路验证通过。
 - **OTA 升级死循环兜底护栏（issue #179）**：cloud_saas 开机 OTA check 新增「重刷循环」
   退避逻辑。设备在切分区重启前把目标版本写入 NVS（`ota/last_try`）；下次开机 check 时
   若 cloud 给的目标版本 == 上次已烧录尝试过的版本，且当前运行版本仍未变成该目标版本，
