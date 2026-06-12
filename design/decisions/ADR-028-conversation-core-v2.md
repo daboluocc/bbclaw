@@ -1,6 +1,8 @@
 # ADR-028: Conversation Core v2 — 跟手交互架构（Turn 模型 / 打断 / 状态 / 语音对齐）
 
-- 状态：Proposed（2026-06-13）
+- 状态：已接受，实施中（2026-06-13）。M1（turn.cancel 协议 + Interrupt(sid) + 打断备注注入）
+  与 M2 的采样率幂等已落地（adapter `7825589` + firmware `9e52610`，v0.5.6）；
+  M3（conv_core）/M4（全 WS）/M5（UI 瘦身）待排期。
 - 取代/收编：ADR-009（agent 状态机，转移表保留、装饰态降级）、`design/STATE_MACHINE.md` 与 `design/AGENT_STATE_MACHINE.md` 中与本文冲突的部分
 - 关联：ADR-002（会话生命周期）、ADR-012（固定页菜单，保留）、ADR-017（TTS reading mode，字幕机制升级）、ADR-021-firmware-ui（保留 Task List）、ADR-027（messageId echo 先例）
 
