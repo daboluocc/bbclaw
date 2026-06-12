@@ -96,6 +96,18 @@ typedef struct {
   int saw_error;
 } bb_finish_stream_accum_t;
 
+/* ADR-027: in-flight state for a synchronous sites.list / sites.activate WS
+ * request. Filled by ws_handle_text_message on the matching reply/error. */
+typedef struct {
+  int kind;              /* 0 = sites.list, 1 = sites.activate */
+  bb_site_info_t* sites; /* caller buffer (list only) */
+  int max;
+  int count;             /* out: parsed site count */
+  char active_id[40];    /* out: activate's activeHomeSiteId */
+  char err_code[32];     /* out: error code, empty on success */
+  int ok;                /* out: 1 = success */
+} bb_sites_req_t;
+
 typedef struct {
   esp_websocket_client_handle_t client;
   SemaphoreHandle_t lock;
@@ -112,6 +124,9 @@ typedef struct {
   bb_voice_verify_result_t* verify_result;
   int verify_waiting;
   char verify_message_id[64];
+  bb_sites_req_t* sites_req;
+  int sites_waiting;
+  char sites_message_id[64];
   uint8_t* text_buf;
   size_t text_len;
   size_t text_cap;
@@ -129,6 +144,7 @@ static bb_ws_state_t s_ws;
 #define BB_WS_EVENT_ERROR BIT2
 #define BB_WS_EVENT_DISCONNECTED BIT3
 #define BB_WS_EVENT_VERIFY_DONE BIT4
+#define BB_WS_EVENT_SITES_DONE BIT5
 
 static int body_contains_ok_true(const char* body);
 static int json_extract_string(const char* body, const char* key, char* out, size_t out_len);
@@ -141,6 +157,8 @@ static void parse_voice_verify_result(const char* body, bb_voice_verify_result_t
 static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t* accum);
 static void ws_finish_reset_locked(void);
 static void ws_verify_reset_locked(void);
+static void ws_sites_reset_locked(void);
+static int parse_sites_array(const char* body, bb_site_info_t* out, int max);
 static void ws_reset_client_locked(void);
 static esp_err_t ws_client_ensure_connected(void);
 static esp_err_t ws_send_text_message(const char* payload);
@@ -564,6 +582,12 @@ static void ws_verify_reset_locked(void) {
   s_ws.verify_message_id[0] = '\0';
 }
 
+static void ws_sites_reset_locked(void) {
+  s_ws.sites_req = NULL;
+  s_ws.sites_waiting = 0;
+  s_ws.sites_message_id[0] = '\0';
+}
+
 static void ws_reset_client_locked(void) {
   if (s_ws.client != NULL) {
     esp_websocket_client_destroy(s_ws.client);
@@ -789,6 +813,28 @@ static void ws_handle_text_message(const char* msg) {
     return;
   }
   if (strcmp(type, "error") == 0) {
+    /* ADR-027: sites.* failures arrive as type:"error" with a stable top-level
+     * `error` code (mirrored in payload.error.code). Route to the in-flight
+     * sites request before the generic finish/verify error handling. */
+    char ekind[48] = {0};
+    (void)json_extract_string(msg, "kind", ekind, sizeof(ekind));
+    if (strncmp(ekind, "sites.", 6) == 0) {
+      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+      if (s_ws.sites_req != NULL) {
+        s_ws.sites_req->ok = 0;
+        if (!json_extract_string(msg, "error", s_ws.sites_req->err_code,
+                                 sizeof(s_ws.sites_req->err_code)) ||
+            s_ws.sites_req->err_code[0] == '\0') {
+          (void)json_extract_string(msg, "code", s_ws.sites_req->err_code,
+                                    sizeof(s_ws.sites_req->err_code));
+        }
+        s_ws.sites_waiting = 0;
+        xSemaphoreGive(s_ws.lock);
+        xEventGroupSetBits(s_ws.events, BB_WS_EVENT_SITES_DONE);
+        return;
+      }
+      xSemaphoreGive(s_ws.lock);
+    }
     xSemaphoreTake(s_ws.lock, portMAX_DELAY);
     if (s_ws.finish_result != NULL) {
       (void)json_extract_string(msg, "error", s_ws.finish_result->error_code, sizeof(s_ws.finish_result->error_code));
@@ -806,6 +852,43 @@ static void ws_handle_text_message(const char* msg) {
     }
     xSemaphoreGive(s_ws.lock);
     xEventGroupSetBits(s_ws.events, BB_WS_EVENT_ERROR);
+    return;
+  }
+  /* ADR-027: cloud-terminated sites.list / sites.activate success replies. */
+  if (strcmp(type, "reply") == 0) {
+    char rkind[48] = {0};
+    (void)json_extract_string(msg, "kind", rkind, sizeof(rkind));
+    if (strncmp(rkind, "sites.", 6) != 0) {
+      return;
+    }
+    char mid[64] = {0};
+    (void)json_extract_string(msg, "messageId", mid, sizeof(mid));
+    xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+    /* Match on messageId; tolerate a missing echo (kind already scoped to the
+     * in-flight sites request) so a non-echoing cloud build still resolves. */
+    if (s_ws.sites_req != NULL &&
+        (mid[0] == '\0' || s_ws.sites_message_id[0] == '\0' ||
+         strcmp(mid, s_ws.sites_message_id) == 0)) {
+      if (strcmp(rkind, "sites.list") == 0) {
+        s_ws.sites_req->count = parse_sites_array(msg, s_ws.sites_req->sites, s_ws.sites_req->max);
+        s_ws.sites_req->ok = 1;
+      } else { /* sites.activate */
+        char res[16] = {0};
+        (void)json_extract_string(msg, "result", res, sizeof(res));
+        (void)json_extract_string(msg, "activeHomeSiteId", s_ws.sites_req->active_id,
+                                  sizeof(s_ws.sites_req->active_id));
+        s_ws.sites_req->ok = (strcmp(res, "ok") == 0) ? 1 : 0;
+        if (!s_ws.sites_req->ok) {
+          (void)json_extract_string(msg, "error", s_ws.sites_req->err_code,
+                                    sizeof(s_ws.sites_req->err_code));
+        }
+      }
+      s_ws.sites_waiting = 0;
+      xSemaphoreGive(s_ws.lock);
+      xEventGroupSetBits(s_ws.events, BB_WS_EVENT_SITES_DONE);
+      return;
+    }
+    xSemaphoreGive(s_ws.lock);
     return;
   }
   if (strcmp(type, "event") != 0) {
@@ -1946,6 +2029,169 @@ esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_v
   xSemaphoreGive(s_ws.lock);
   ESP_LOGI(TAG, "ws voice.verify ok match=%d confidence=%.3f", out_result->match, (double)out_result->confidence);
   return ESP_OK;
+}
+
+/* ── ADR-027: Home Adapter ("机器") switching ───────────────────────────── */
+
+/* Parse the `sites` array out of a sites.list reply body. Walks each object in
+ * the array and extracts the per-site fields with the existing scalar helpers
+ * (scoped to a copy of the object so labels/ids don't bleed across entries). */
+static int parse_sites_array(const char* body, bb_site_info_t* out, int max) {
+  if (body == NULL || out == NULL || max <= 0) {
+    return 0;
+  }
+  const char* arr = strstr(body, "\"sites\"");
+  if (arr == NULL) {
+    return 0;
+  }
+  arr = strchr(arr, '[');
+  if (arr == NULL) {
+    return 0;
+  }
+  int n = 0;
+  const char* p = arr + 1;
+  while (n < max) {
+    const char* obj = strchr(p, '{');
+    if (obj == NULL) {
+      break;
+    }
+    int depth = 0;
+    const char* end = obj;
+    for (; *end != '\0'; end++) {
+      if (*end == '{') {
+        depth++;
+      } else if (*end == '}') {
+        depth--;
+        if (depth == 0) {
+          break;
+        }
+      }
+    }
+    if (*end != '}') {
+      break;
+    }
+    size_t len = (size_t)(end - obj + 1);
+    char tmp[224];
+    if (len >= sizeof(tmp)) {
+      len = sizeof(tmp) - 1;
+    }
+    memcpy(tmp, obj, len);
+    tmp[len] = '\0';
+    memset(&out[n], 0, sizeof(out[n]));
+    (void)json_extract_string(tmp, "homeSiteId", out[n].home_site_id, sizeof(out[n].home_site_id));
+    (void)json_extract_string(tmp, "label", out[n].label, sizeof(out[n].label));
+    out[n].online = (uint8_t)json_extract_bool(tmp, "online", 0);
+    out[n].active = (uint8_t)json_extract_bool(tmp, "active", 0);
+    if (out[n].home_site_id[0] != '\0') {
+      n++;
+    }
+    p = end + 1;
+    const char* q = p;
+    while (*q == ' ' || *q == ',' || *q == '\n' || *q == '\r' || *q == '\t') {
+      q++;
+    }
+    if (*q == ']' || *q == '\0') {
+      break;
+    }
+  }
+  return n;
+}
+
+/* Send a sites.* control frame and block on the matching reply/error. */
+static esp_err_t sites_request(int kind, const char* home_site_id, bb_sites_req_t* req) {
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  ESP_RETURN_ON_ERROR(ws_client_ensure_connected(), TAG, "ws connect failed");
+
+  char message_id[64] = {0};
+  snprintf(message_id, sizeof(message_id), "sites-%lld", (long long)bb_now_ms());
+
+  char body[256];
+  if (kind == 0) {
+    snprintf(body, sizeof(body),
+             "{\"type\":\"request\",\"kind\":\"sites.list\",\"messageId\":\"%s\",\"deviceId\":\"%s\"}",
+             message_id, BBCLAW_DEVICE_ID);
+  } else {
+    snprintf(body, sizeof(body),
+             "{\"type\":\"request\",\"kind\":\"sites.activate\",\"messageId\":\"%s\",\"deviceId\":\"%s\","
+             "\"payload\":{\"homeSiteId\":\"%s\"}}",
+             message_id, BBCLAW_DEVICE_ID, home_site_id != NULL ? home_site_id : "");
+  }
+
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  ws_sites_reset_locked();
+  s_ws.sites_req = req;
+  s_ws.sites_waiting = 1;
+  snprintf(s_ws.sites_message_id, sizeof(s_ws.sites_message_id), "%s", message_id);
+  xSemaphoreGive(s_ws.lock);
+  xEventGroupClearBits(s_ws.events, BB_WS_EVENT_SITES_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED);
+
+  esp_err_t send_err = ws_send_text_message(body);
+  if (send_err != ESP_OK) {
+    xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+    ws_sites_reset_locked();
+    xSemaphoreGive(s_ws.lock);
+    return send_err;
+  }
+
+  EventBits_t bits = xEventGroupWaitBits(s_ws.events,
+                                         BB_WS_EVENT_SITES_DONE | BB_WS_EVENT_DISCONNECTED,
+                                         pdFALSE, pdFALSE, pdMS_TO_TICKS(8000));
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  ws_sites_reset_locked();
+  esp_err_t result;
+  if ((bits & BB_WS_EVENT_SITES_DONE) != 0U && req->ok) {
+    result = ESP_OK;
+  } else {
+    if (req->err_code[0] == '\0') {
+      snprintf(req->err_code, sizeof(req->err_code), "%s",
+               (bits & BB_WS_EVENT_DISCONNECTED) != 0U ? "DISCONNECTED" : "TIMEOUT");
+    }
+    result = ESP_FAIL;
+  }
+  xSemaphoreGive(s_ws.lock);
+  return result;
+}
+
+esp_err_t bb_adapter_sites_list(bb_site_info_t* out_sites, int max_sites, int* out_count) {
+  if (out_sites == NULL || max_sites <= 0 || out_count == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *out_count = 0;
+  bb_sites_req_t req;
+  memset(&req, 0, sizeof(req));
+  req.kind = 0;
+  req.sites = out_sites;
+  req.max = max_sites;
+  esp_err_t err = sites_request(0, NULL, &req);
+  *out_count = req.count;
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "ws sites.list ok count=%d", req.count);
+  } else {
+    ESP_LOGW(TAG, "ws sites.list failed err=%s code=%s", esp_err_to_name(err), req.err_code);
+  }
+  return err;
+}
+
+esp_err_t bb_adapter_sites_activate(const char* home_site_id, char* out_active_id, size_t active_len,
+                                    char* out_err_code, size_t err_len) {
+  if (home_site_id == NULL || home_site_id[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  bb_sites_req_t req;
+  memset(&req, 0, sizeof(req));
+  req.kind = 1;
+  esp_err_t err = sites_request(1, home_site_id, &req);
+  if (out_active_id != NULL && active_len > 0U) {
+    snprintf(out_active_id, active_len, "%s", req.active_id);
+  }
+  if (out_err_code != NULL && err_len > 0U) {
+    snprintf(out_err_code, err_len, "%s", req.err_code);
+  }
+  ESP_LOGI(TAG, "ws sites.activate '%s' -> %s active=%s code=%s", home_site_id, esp_err_to_name(err),
+           req.active_id, req.err_code);
+  return err;
 }
 
 /* Strip markdown formatting and other characters that the TTS engine would

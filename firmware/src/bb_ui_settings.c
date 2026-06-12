@@ -37,10 +37,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bb_adapter_client.h"
 #include "bb_agent_client.h"
 #include "bb_audio.h"
 #include "bb_device_config.h"
 #include "bb_session_store.h"
+#include "bb_transport.h"
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_theme.h"
 #include "esp_log.h"
@@ -56,6 +58,7 @@ static const char* TAG = "bb_ui_settings";
 #define BB_SETTINGS_NVS_NS         "bbclaw"
 #define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
 #define BB_SETTINGS_DRIVER_CACHE_MAX 6
+#define BB_SETTINGS_SITE_CACHE_MAX   6
 
 #define BB_SETTINGS_FETCH_TASK_STACK 4096
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
@@ -78,16 +81,22 @@ typedef enum {
   LEVEL_MAIN = 0,
   LEVEL_DRIVER_PICKER,
   LEVEL_MODEL_PICKER,
+  LEVEL_ADAPTER_PICKER,
   LEVEL_VOLUME_ADJUST,
 } settings_level_t;
 
+/* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
+ * cloud_saas mode, so the on-screen row order/count is dynamic — see
+ * main_visible_rows(). Cursor index (s_st.sel) indexes the *visible* list,
+ * not these ids directly. */
 typedef enum {
   MAIN_ROW_DRIVER = 0,
   MAIN_ROW_MODEL,
+  MAIN_ROW_ADAPTER,
   MAIN_ROW_VOLUME,
   MAIN_ROW_TTS,
   MAIN_ROW_BACK,
-  MAIN_ROW_COUNT,
+  MAIN_ROW_ID_COUNT,
 } main_row_t;
 
 /* ── State ── */
@@ -118,6 +127,15 @@ typedef struct {
   char active_driver[24];
   /* active_model is per-driver — we read it off
    * driver_cache[i].active_model directly. */
+
+  /* ADR-027: Home Adapter ("机器") catalog. Populated async (WS sites.list)
+   * when the Adapter picker is entered / Settings opened in cloud_saas. */
+  bb_site_info_t site_cache[BB_SETTINGS_SITE_CACHE_MAX];
+  int site_cache_count;
+  volatile int site_fetch_pending;
+  volatile uint32_t site_fetch_generation;
+  char active_site_id[40]; /* optimistic active selection for snappy UI */
+  int pending_chat_sync;   /* 1 = re-sync chat driver/session after site switch */
 
   int tts_enabled;
 
@@ -261,50 +279,108 @@ static const char* current_model_label(const bb_agent_driver_info_t* d) {
   return d->models[0].label[0] != '\0' ? d->models[0].label : d->models[0].id;
 }
 
+/* ── Dynamic main-row layout (ADR-027: Adapter row only in cloud_saas) ── */
+
+static int main_visible_rows(main_row_t* out) {
+  int n = 0;
+  out[n++] = MAIN_ROW_DRIVER;
+  out[n++] = MAIN_ROW_MODEL;
+  if (bb_transport_is_cloud_saas()) {
+    out[n++] = MAIN_ROW_ADAPTER;
+  }
+  out[n++] = MAIN_ROW_VOLUME;
+  out[n++] = MAIN_ROW_TTS;
+  out[n++] = MAIN_ROW_BACK;
+  return n;
+}
+
+static int main_visible_row_count(void) {
+  main_row_t rows[MAIN_ROW_ID_COUNT];
+  return main_visible_rows(rows);
+}
+
+/* Map a logical row id to its index in the current visible list (for cursor
+ * placement). Falls back to 0 if not visible. */
+static int main_row_to_index(main_row_t row) {
+  main_row_t rows[MAIN_ROW_ID_COUNT];
+  int n = main_visible_rows(rows);
+  for (int i = 0; i < n; ++i) {
+    if (rows[i] == row) return i;
+  }
+  return 0;
+}
+
+/* Label of the currently-active Home Adapter for the main-page Adapter row. */
+static const char* current_site_label(void) {
+  if (s_st.site_fetch_pending && s_st.site_cache_count == 0) return "(loading)";
+  for (int i = 0; i < s_st.site_cache_count; ++i) {
+    int is_active = s_st.site_cache[i].active ||
+                    (s_st.active_site_id[0] != '\0' &&
+                     strcmp(s_st.site_cache[i].home_site_id, s_st.active_site_id) == 0);
+    if (is_active) {
+      const char* lbl = s_st.site_cache[i].label[0] != '\0' ? s_st.site_cache[i].label
+                                                            : s_st.site_cache[i].home_site_id;
+      return s_st.site_cache[i].online ? lbl : "(offline)";
+    }
+  }
+  if (s_st.active_site_id[0] != '\0') return s_st.active_site_id;
+  return "(none)";
+}
+
 static void render_main(void) {
   if (s_st.root == NULL) return;
   lv_label_set_text(s_st.header_lbl, "Settings");
 
-  build_rows_box(MAIN_ROW_COUNT);
+  main_row_t rows[MAIN_ROW_ID_COUNT];
+  int n = main_visible_rows(rows);
+  build_rows_box(n);
   char buf[80];
 
   const bb_agent_driver_info_t* active = active_driver_entry();
 
-  /* Row: Driver */
-  const char* drv_name = (active != NULL) ? active->name :
-                          (s_st.driver_fetch_pending ? "loading..." : "(offline)");
-  snprintf(buf, sizeof(buf), "Driver: %s", drv_name);
-  lv_label_set_text(s_st.rows[MAIN_ROW_DRIVER], buf);
-
-  /* Row: Model */
-  snprintf(buf, sizeof(buf), "Model: %s", current_model_label(active));
-  lv_label_set_text(s_st.rows[MAIN_ROW_MODEL], buf);
-
-  /* Row: Volume — show mini bar as text art + percent */
-  {
-    int pct = s_st.volume_pct;
-    const int BLOCKS = 10;
-    int filled = (pct * BLOCKS + 50) / 100;
-    if (filled < 0) filled = 0;
-    if (filled > BLOCKS) filled = BLOCKS;
-    char mini[16];
-    int ci = 0;
-    mini[ci++] = '[';
-    for (int k = 0; k < BLOCKS; k++) {
-      mini[ci++] = (k < filled) ? '#' : '-';
+  for (int i = 0; i < n; ++i) {
+    switch (rows[i]) {
+      case MAIN_ROW_DRIVER: {
+        const char* drv_name = (active != NULL) ? active->name :
+                                (s_st.driver_fetch_pending ? "loading..." : "(offline)");
+        snprintf(buf, sizeof(buf), "Driver: %s", drv_name);
+        break;
+      }
+      case MAIN_ROW_MODEL:
+        snprintf(buf, sizeof(buf), "Model: %s", current_model_label(active));
+        break;
+      case MAIN_ROW_ADAPTER:
+        snprintf(buf, sizeof(buf), "Adapter: %s", current_site_label());
+        break;
+      case MAIN_ROW_VOLUME: {
+        int pct = s_st.volume_pct;
+        const int BLOCKS = 10;
+        int filled = (pct * BLOCKS + 50) / 100;
+        if (filled < 0) filled = 0;
+        if (filled > BLOCKS) filled = BLOCKS;
+        char mini[16];
+        int ci = 0;
+        mini[ci++] = '[';
+        for (int k = 0; k < BLOCKS; k++) {
+          mini[ci++] = (k < filled) ? '#' : '-';
+        }
+        mini[ci++] = ']';
+        mini[ci] = '\0';
+        snprintf(buf, sizeof(buf), "Vol: %s %d%%", mini, pct);
+        break;
+      }
+      case MAIN_ROW_TTS:
+        snprintf(buf, sizeof(buf), "TTS: %s", s_st.tts_enabled ? "On" : "Off");
+        break;
+      case MAIN_ROW_BACK:
+        snprintf(buf, sizeof(buf), "Back");
+        break;
+      default:
+        buf[0] = '\0';
+        break;
     }
-    mini[ci++] = ']';
-    mini[ci] = '\0';
-    snprintf(buf, sizeof(buf), "Vol: %s %d%%", mini, pct);
+    lv_label_set_text(s_st.rows[i], buf);
   }
-  lv_label_set_text(s_st.rows[MAIN_ROW_VOLUME], buf);
-
-  /* Row: TTS */
-  snprintf(buf, sizeof(buf), "TTS: %s", s_st.tts_enabled ? "On" : "Off");
-  lv_label_set_text(s_st.rows[MAIN_ROW_TTS], buf);
-
-  /* Row: Back */
-  lv_label_set_text(s_st.rows[MAIN_ROW_BACK], "Back");
 
   highlight_selected();
 }
@@ -330,6 +406,42 @@ static void render_driver_picker(void) {
     snprintf(buf, sizeof(buf), "%s%s",
              s_st.driver_cache[i].name,
              is_active ? "  *" : "");
+    lv_label_set_text(s_st.rows[i], buf);
+  }
+  highlight_selected();
+}
+
+/* ── Render: Adapter picker (ADR-027 — WS sites.list, async) ── */
+
+static void render_adapter_picker(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "Adapter");
+
+  if (s_st.site_fetch_pending && s_st.site_cache_count == 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], "Loading...");
+    highlight_selected();
+    return;
+  }
+
+  if (s_st.site_cache_count == 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], "(none)");
+    highlight_selected();
+    return;
+  }
+
+  build_rows_box(s_st.site_cache_count);
+  for (int i = 0; i < s_st.site_cache_count; ++i) {
+    char buf[80];
+    const char* lbl = s_st.site_cache[i].label[0] != '\0' ? s_st.site_cache[i].label
+                                                          : s_st.site_cache[i].home_site_id;
+    int is_active = s_st.site_cache[i].active ||
+                    (s_st.active_site_id[0] != '\0' &&
+                     strcmp(s_st.site_cache[i].home_site_id, s_st.active_site_id) == 0);
+    snprintf(buf, sizeof(buf), "%s%s%s", lbl,
+             is_active ? "  *" : "",
+             s_st.site_cache[i].online ? "" : "  (offline)");
     lv_label_set_text(s_st.rows[i], buf);
   }
   highlight_selected();
@@ -468,6 +580,7 @@ static void rerender(void) {
     case LEVEL_MAIN:           render_main(); break;
     case LEVEL_DRIVER_PICKER:  render_driver_picker(); break;
     case LEVEL_MODEL_PICKER:   render_model_picker(); break;
+    case LEVEL_ADAPTER_PICKER: render_adapter_picker(); break;
     case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
   }
 }
@@ -511,6 +624,17 @@ static void on_driver_fetch_done(void* user_data) {
     s_st.active_driver[sizeof(s_st.active_driver) - 1] = '\0';
     ESP_LOGI(TAG, "driver fetch ok: %d drivers active='%s'",
              total, s_st.active_driver);
+  }
+  /* ADR-027 §4: a Home Adapter switch requested a chat context re-sync. The new
+   * adapter's active driver is now resolved above — flip the chat overlay over
+   * to it so the topbar label + session reflect the new machine. We run inside
+   * an lv_async_call (LVGL task), so direct chat calls are safe here. */
+  if (s_st.pending_chat_sync && s_st.active_driver[0] != '\0') {
+    s_st.pending_chat_sync = 0;
+    esp_err_t cerr = bb_ui_agent_chat_set_active_driver(s_st.active_driver);
+    if (cerr != ESP_OK) {
+      ESP_LOGW(TAG, "site switch: chat driver sync failed (%s)", esp_err_to_name(cerr));
+    }
   }
   rerender();
   free(r);
@@ -557,6 +681,107 @@ static void spawn_driver_fetch_task(void) {
   }
 }
 
+/* ── Site (Home Adapter) fetch — ADR-027, WS sites.list, async ── */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int count;
+  bb_site_info_t sites[BB_SETTINGS_SITE_CACHE_MAX];
+} site_fetch_result_t;
+
+static void on_site_fetch_done(void* user_data) {
+  site_fetch_result_t* r = (site_fetch_result_t*)user_data;
+  if (r == NULL) return;
+  s_st.site_fetch_pending = 0;
+  if (!s_st.active || r->gen != s_st.site_fetch_generation) {
+    free(r);
+    return;
+  }
+  if (r->err != ESP_OK || r->count <= 0) {
+    ESP_LOGW(TAG, "site fetch failed (%s) count=%d", esp_err_to_name(r->err), r->count);
+    s_st.site_cache_count = 0;
+  } else {
+    int total = r->count > BB_SETTINGS_SITE_CACHE_MAX ? BB_SETTINGS_SITE_CACHE_MAX : r->count;
+    memcpy(s_st.site_cache, r->sites, sizeof(r->sites[0]) * (size_t)total);
+    s_st.site_cache_count = total;
+    /* Seed active_site_id from the reply's active flag if we don't have one. */
+    for (int i = 0; i < total; ++i) {
+      if (r->sites[i].active) {
+        strncpy(s_st.active_site_id, r->sites[i].home_site_id, sizeof(s_st.active_site_id) - 1);
+        s_st.active_site_id[sizeof(s_st.active_site_id) - 1] = '\0';
+        break;
+      }
+    }
+    ESP_LOGI(TAG, "site fetch ok: %d sites active='%s'", total, s_st.active_site_id);
+  }
+  if (s_st.level == LEVEL_ADAPTER_PICKER || s_st.level == LEVEL_MAIN) {
+    rerender();
+  }
+  free(r);
+}
+
+static void site_fetch_task(void* arg) {
+  site_fetch_result_t* r = (site_fetch_result_t*)arg;
+  if (r == NULL) {
+    s_st.site_fetch_pending = 0;
+    vTaskDelete(NULL);
+    return;
+  }
+  r->err = bb_adapter_sites_list(r->sites, BB_SETTINGS_SITE_CACHE_MAX, &r->count);
+  if (lvgl_port_lock(200)) {
+    lv_async_call(on_site_fetch_done, r);
+    lvgl_port_unlock();
+  } else {
+    free(r);
+  }
+  vTaskDelete(NULL);
+}
+
+static void spawn_site_fetch_task(void) {
+  if (!bb_transport_is_cloud_saas()) return;
+  if (s_st.site_fetch_pending) return;
+  s_st.site_fetch_pending = 1;
+  uint32_t gen = ++s_st.site_fetch_generation;
+
+  site_fetch_result_t* r = (site_fetch_result_t*)calloc(1, sizeof(*r));
+  if (r == NULL) {
+    ESP_LOGE(TAG, "spawn_site_fetch_task: calloc failed");
+    s_st.site_fetch_pending = 0;
+    return;
+  }
+  r->gen = gen;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(site_fetch_task, "site_fetch",
+                              BB_SETTINGS_FETCH_TASK_STACK, r,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_site_fetch_task: xTaskCreate failed");
+    s_st.site_fetch_pending = 0;
+    free(r);
+  }
+}
+
+/* ADR-027 §4: after the active binding flips, re-pull agent state from the
+ * now-active adapter (driver/model catalog + chat session context) and refresh
+ * the site list so its `active` flag reflects cloud truth. Runs on the LVGL
+ * thread (dispatched via lv_async_call). */
+static void on_adapter_activated(void* arg) {
+  (void)arg;
+  if (!s_st.active) return;
+  s_st.pending_chat_sync = 1;
+  spawn_driver_fetch_task();
+  spawn_site_fetch_task();
+}
+
+/* sites.activate failed — reconcile the optimistic active mark against cloud
+ * truth by re-pulling the list (no driver/chat re-sync; binding didn't move). */
+static void on_adapter_activate_failed(void* arg) {
+  (void)arg;
+  if (!s_st.active) return;
+  spawn_site_fetch_task();
+}
+
 /* ── Commit task (async PUT) ── */
 
 typedef enum {
@@ -564,12 +789,14 @@ typedef enum {
   COMMIT_KIND_MODEL,
   COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
   COMMIT_KIND_TTS,     /* int_val = 0/1 */
+  COMMIT_KIND_ADAPTER, /* site_id = target homeSiteId (WS sites.activate) */
 } commit_kind_t;
 
 typedef struct {
   commit_kind_t kind;
   char driver_name[24];
   char model_id[40];
+  char site_id[40];
   int int_val;
 } commit_payload_t;
 
@@ -622,6 +849,22 @@ static void commit_task(void* arg) {
   } else if (p->kind == COMMIT_KIND_TTS) {
     err = persist_tts_enabled(p->int_val);
     ESP_LOGI(TAG, "commit tts=%d -> %s", p->int_val, esp_err_to_name(err));
+  } else if (p->kind == COMMIT_KIND_ADAPTER) {
+    /* ADR-027: WS sites.activate (cloud-terminated). On success the active
+     * binding has flipped; refresh agent state from the new adapter. On
+     * failure the optimistic UI selection is left as-is and the next picker
+     * open / refresh will reconcile from cloud truth. */
+    char active_id[40] = {0};
+    char err_code[32] = {0};
+    err = bb_adapter_sites_activate(p->site_id, active_id, sizeof(active_id), err_code, sizeof(err_code));
+    ESP_LOGI(TAG, "commit adapter site='%s' -> %s (active='%s' code='%s')",
+             p->site_id, esp_err_to_name(err), active_id, err_code);
+    if (lvgl_port_lock(200)) {
+      lv_async_call(err == ESP_OK ? on_adapter_activated : on_adapter_activate_failed, NULL);
+      lvgl_port_unlock();
+    } else {
+      ESP_LOGW(TAG, "commit adapter: lvgl_port_lock timeout, agent state will sync on next entry");
+    }
   }
   free(p);
   vTaskDelete(NULL);
@@ -646,6 +889,27 @@ static void spawn_commit_task(commit_kind_t kind, const char* driver, const char
                               BB_SETTINGS_FETCH_TASK_PRIO, &t);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_commit_task: xTaskCreate failed");
+    free(p);
+  }
+}
+
+/* ADR-027: commit a Home Adapter switch (WS sites.activate) on a fresh task —
+ * the call blocks on the WS round-trip, so it must not run on the LVGL thread. */
+static void spawn_commit_adapter(const char* home_site_id) {
+  if (home_site_id == NULL || home_site_id[0] == '\0') return;
+  commit_payload_t* p = (commit_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) {
+    ESP_LOGE(TAG, "spawn_commit_adapter: calloc failed");
+    return;
+  }
+  p->kind = COMMIT_KIND_ADAPTER;
+  strncpy(p->site_id, home_site_id, sizeof(p->site_id) - 1);
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(commit_task, "site_commit",
+                              BB_SETTINGS_FETCH_TASK_STACK, p,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_commit_adapter: xTaskCreate failed");
     free(p);
   }
 }
@@ -702,13 +966,27 @@ static void enter_model_picker(void) {
   rerender();
 }
 
-static void return_to_main(int new_sel_row) {
-  s_st.level = LEVEL_MAIN;
-  if (new_sel_row >= 0 && new_sel_row < MAIN_ROW_COUNT) {
-    s_st.sel = new_sel_row;
-  } else {
-    s_st.sel = MAIN_ROW_DRIVER;
+/* ADR-027: open the Adapter picker. List arrives async (WS sites.list); show
+ * cached entries immediately and kick a refresh so online/active stay current. */
+static void enter_adapter_picker(void) {
+  s_st.level = LEVEL_ADAPTER_PICKER;
+  s_st.sel = 0;
+  for (int i = 0; i < s_st.site_cache_count; ++i) {
+    int is_active = s_st.site_cache[i].active ||
+                    (s_st.active_site_id[0] != '\0' &&
+                     strcmp(s_st.site_cache[i].home_site_id, s_st.active_site_id) == 0);
+    if (is_active) {
+      s_st.sel = i;
+      break;
+    }
   }
+  spawn_site_fetch_task();
+  rerender();
+}
+
+static void return_to_main(main_row_t row) {
+  s_st.level = LEVEL_MAIN;
+  s_st.sel = main_row_to_index(row);
   rerender();
 }
 
@@ -757,7 +1035,11 @@ void bb_ui_settings_show(lv_obj_t* parent) {
 
   /* Kick off async driver/model fetch. apply renders a stale (or empty)
    * snapshot in the meantime — on_driver_fetch_done re-renders when done. */
+  s_st.pending_chat_sync = 0;
   spawn_driver_fetch_task();
+  /* ADR-027: in cloud_saas, also pull the Home Adapter list so the main-page
+   * "Adapter: <label>" row shows the active machine on first paint. */
+  spawn_site_fetch_task();
   rerender();
 
   ESP_LOGI(TAG, "show level=MAIN tts=%d", s_st.tts_enabled);
@@ -767,6 +1049,7 @@ void bb_ui_settings_hide(void) {
   if (!s_st.active) return;
   s_st.active = 0;
   s_st.driver_fetch_generation++;
+  s_st.site_fetch_generation++;
   destroy_rows();
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
@@ -801,10 +1084,13 @@ void bb_ui_settings_handle_rotate(int delta) {
   int row_count;
   switch (s_st.level) {
     case LEVEL_MAIN:
-      row_count = MAIN_ROW_COUNT;
+      row_count = main_visible_row_count();
       break;
     case LEVEL_DRIVER_PICKER:
       row_count = (s_st.driver_cache_count > 0) ? s_st.driver_cache_count : 1;
+      break;
+    case LEVEL_ADAPTER_PICKER:
+      row_count = (s_st.site_cache_count > 0) ? s_st.site_cache_count : 1;
       break;
     case LEVEL_MODEL_PICKER: {
       const bb_agent_driver_info_t* d = active_driver_entry();
@@ -825,8 +1111,11 @@ void bb_ui_settings_handle_rotate(int delta) {
 int bb_ui_settings_handle_click(void) {
   if (!s_st.active) return 0;
   switch (s_st.level) {
-    case LEVEL_MAIN:
-      switch ((main_row_t)s_st.sel) {
+    case LEVEL_MAIN: {
+      main_row_t vis[MAIN_ROW_ID_COUNT];
+      int vn = main_visible_rows(vis);
+      main_row_t logical = (s_st.sel >= 0 && s_st.sel < vn) ? vis[s_st.sel] : MAIN_ROW_BACK;
+      switch (logical) {
         case MAIN_ROW_DRIVER:
           enter_driver_picker();
           break;
@@ -840,6 +1129,9 @@ int bb_ui_settings_handle_click(void) {
           }
           break;
         }
+        case MAIN_ROW_ADAPTER:
+          enter_adapter_picker();
+          break;
         case MAIN_ROW_VOLUME:
           /* Enter volume adjust sub-level */
           s_st.level = LEVEL_VOLUME_ADJUST;
@@ -859,11 +1151,12 @@ int bb_ui_settings_handle_click(void) {
         }
         case MAIN_ROW_BACK:
           return 1; /* caller tears down + returns to chat */
-        case MAIN_ROW_COUNT:
+        case MAIN_ROW_ID_COUNT:
         default:
           break;
       }
       return 0;
+    }
 
     case LEVEL_DRIVER_PICKER:
       if (s_st.driver_cache_count <= 0) {
@@ -883,6 +1176,30 @@ int bb_ui_settings_handle_click(void) {
         }
       }
       return_to_main(MAIN_ROW_DRIVER);
+      return 0;
+
+    case LEVEL_ADAPTER_PICKER:
+      if (s_st.site_cache_count <= 0) {
+        return_to_main(MAIN_ROW_ADAPTER);
+        return 0;
+      }
+      if (s_st.sel >= 0 && s_st.sel < s_st.site_cache_count) {
+        const char* picked = s_st.site_cache[s_st.sel].home_site_id;
+        int already = s_st.site_cache[s_st.sel].active ||
+                      (s_st.active_site_id[0] != '\0' && strcmp(picked, s_st.active_site_id) == 0);
+        if (picked[0] != '\0' && !already) {
+          /* Optimistic local update — mark picked active so the main page +
+           * picker reflect the choice before the WS round-trip confirms. */
+          strncpy(s_st.active_site_id, picked, sizeof(s_st.active_site_id) - 1);
+          s_st.active_site_id[sizeof(s_st.active_site_id) - 1] = '\0';
+          for (int i = 0; i < s_st.site_cache_count; ++i) {
+            s_st.site_cache[i].active = (i == s_st.sel) ? 1 : 0;
+          }
+          spawn_commit_adapter(picked);
+          ESP_LOGI(TAG, "adapter picker -> '%s' (committed)", picked);
+        }
+      }
+      return_to_main(MAIN_ROW_ADAPTER);
       return 0;
 
     case LEVEL_MODEL_PICKER: {
@@ -937,6 +1254,9 @@ int bb_ui_settings_handle_back(void) {
       return 1; /* caller exits to chat */
     case LEVEL_DRIVER_PICKER:
       return_to_main(MAIN_ROW_DRIVER);
+      return 0;
+    case LEVEL_ADAPTER_PICKER:
+      return_to_main(MAIN_ROW_ADAPTER);
       return 0;
     case LEVEL_MODEL_PICKER:
       return_to_main(MAIN_ROW_MODEL);

@@ -49,9 +49,9 @@ ADR-019 的 sessions/cwd/drivers/models 数据都在 **home adapter 本地**，c
 **权威来源**：cloud 侧已实现并合并（`bbclaw-reference` PR #28，`router/sites.go` + `httpapi/server.go`）。以下契约以该实现为准，firmware 必须对齐。
 
 ```json
-// 请求 device→cloud（deviceId 由 WS 连接身份 peer.DeviceID 决定，请求带不带都被忽略）
-{"type":"request","kind":"sites.list","messageId":"<seq>"}
-{"type":"request","kind":"sites.activate","messageId":"<seq>","payload":{"homeSiteId":"<id>"}}
+// 请求 device→cloud（deviceId 由 WS 连接身份 peer.DeviceID 决定，cloud 忽略请求体里带的值；firmware 仍带上以对齐 router 解析）
+{"type":"request","kind":"sites.list","messageId":"<seq>","deviceId":"<id>"}
+{"type":"request","kind":"sites.activate","messageId":"<seq>","deviceId":"<id>","payload":{"homeSiteId":"<id>"}}
 // 成功回包 cloud→device：type="reply"（带回请求的 messageId 与 kind）
 {"type":"reply","kind":"sites.list","messageId":"<seq>","payload":{"sites":[{"homeSiteId":"hs-1","label":"家里 Mac","online":true,"active":true}]}}
 {"type":"reply","kind":"sites.activate","messageId":"<seq>","payload":{"result":"ok","activeHomeSiteId":"hs-2"}}
@@ -59,8 +59,9 @@ ADR-019 的 sessions/cwd/drivers/models 数据都在 **home adapter 本地**，c
 {"type":"error","kind":"sites.activate","messageId":"<seq>","error":"NOT_BOUND","payload":{"error":{"code":"NOT_BOUND","detail":"..."}}}
 ```
 
-- 成功 `type:"reply"`、失败 `type:"error"`（贴合 cloud 既有 `ack`/`error` 约定，非新造 `response`）。
-- firmware 靠 **`kind` + `messageId`** 对上 in-flight 请求；`messageId` 单调自增，过期回包丢弃。失败时读顶层 `error`（稳定 code）或 `payload.error.code`。
+- 成功 `type:"reply"`、失败 `type:"error"`（**以 cloud 已合并实现为权威**，bbclaw-reference PR #28 `router/sites.go`；贴合 cloud 既有 `ack`/`error` 约定，早期草案曾写 `type:"response"`，已废弃）。
+- firmware 靠 **`kind` + `messageId`** 对上 in-flight 请求；`messageId` 由设备维护、单调自增，过期回包丢弃。失败时优先读顶层 `error`（稳定 code），回退 `payload.error.code`。
+- 错误码全集：`NOT_BOUND` / `OWNER_MISMATCH` / `ADAPTER_OFFLINE` / `INTERNAL`（兜底）。
 - **firmware 侧注意**：现有 driver picker 走 HTTP 同步，本菜单走 WS 异步——必须改成「发请求 → Loading → 回包到达后重绘」，不能照搬同步 fetch。
 
 **为什么 WS 而非 HTTP**：firmware 在 cloud_saas 下的 HTTP agent API（`/v1/agent/*`）默认经 cloud relay 转发到 home adapter；本菜单恰恰不能 relay。WS 是 cloud 已终结、已认得设备身份的通道，复用它无需另开"不 relay 的 device HTTP 路径 + 设备态鉴权"，最省。
@@ -124,8 +125,8 @@ ADR-019 的 firmware `bb_menu_view` 渲染器尚未实现（checklist 末两项�
 - [ ] cloud: hub 设备态 `sites.list` / `sites.activate`（终结，不 relay）
 - [ ] cloud: `deviceId → owner → bindings` 反查 + 列表组装（label/online/active）
 - [ ] cloud: `ActivateBinding` 设备态调用 + 错误码（NOT_BOUND/OWNER_MISMATCH/ADAPTER_OFFLINE）+ 单测
-- [ ] firmware: WS `sites.list`/`sites.activate` 调用 + 回包解析
-- [ ] firmware: Settings `Adapter` 行（仅 cloud_saas）+ picker + commit
-- [ ] firmware: 切换后 agent 状态刷新
+- [x] firmware: WS `sites.list`/`sites.activate` 调用 + 回包解析（`bb_adapter_client.c`：`bb_adapter_sites_list`/`bb_adapter_sites_activate`，同步 reply/error 对账，复用 voice.verify EventGroup 模式）
+- [x] firmware: Settings `Adapter` 行（仅 cloud_saas）+ picker + commit（`bb_ui_settings.c`：`MAIN_ROW_ADAPTER` 动态行 + `LEVEL_ADAPTER_PICKER` + `COMMIT_KIND_ADAPTER`）
+- [x] firmware: 切换后 agent 状态刷新（`on_adapter_activated` → 重拉 driver/model + chat session 重绑）
 - [ ] design: ADR-019 / ADR-016 交叉引用更新
 - [ ] testing.md: 补 cloud_saas 多 adapter 切换验证步骤

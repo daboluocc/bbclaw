@@ -95,6 +95,15 @@ typedef struct {
   char message[128];
 } bb_voice_verify_result_t;
 
+/* ADR-027: a single Home Adapter ("机器") the device may switch its active
+ * binding to. Populated from the cloud-terminated WS `sites.list` reply. */
+typedef struct {
+  char home_site_id[40];
+  char label[40];
+  uint8_t online;
+  uint8_t active;
+} bb_site_info_t;
+
 esp_err_t bb_adapter_healthz(int* http_status);
 esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx);
 esp_err_t bb_adapter_stream_chunk(bb_stream_ctx_t* ctx, const uint8_t* data, size_t len, int64_t ts_ms);
@@ -111,3 +120,16 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
+
+/* ADR-027 — device-side Home Adapter switching (cloud_saas only). Both calls
+ * are synchronous: they send a cloud-terminated WS control frame and block on
+ * the matching reply (or error / timeout). Call from a background task, not the
+ * LVGL thread.
+ *
+ * sites.list  — fills out_sites (up to max_sites) and *out_count.
+ * sites.activate — ESP_OK when the reply is result:"ok"; on failure returns
+ *   ESP_FAIL and fills out_err_code with the stable cloud error code
+ *   (NOT_BOUND / OWNER_MISMATCH / ADAPTER_OFFLINE / INTERNAL / TIMEOUT). */
+esp_err_t bb_adapter_sites_list(bb_site_info_t* out_sites, int max_sites, int* out_count);
+esp_err_t bb_adapter_sites_activate(const char* home_site_id, char* out_active_id, size_t active_len,
+                                    char* out_err_code, size_t err_len);
