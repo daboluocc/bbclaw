@@ -1024,6 +1024,7 @@ func (a *Adapter) handleAgentMessageRequest(ctx context.Context, write func(Clou
 		},
 		Metrics:            &cloudMetrics{m: a.metrics},
 		Log:                a.log,
+		Inflight:           a.inflight,
 		ResolveActiveModel: a.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		// Shared with the local path so cloud-relayed butler turns persist

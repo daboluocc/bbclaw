@@ -36,6 +36,7 @@ const (
 	EvTurnEnd        EventType = "turn_end"        // one assistant turn finished
 	EvSessionInit    EventType = "session_init"    // CLI reported its real session id (Text field)
 	EvDispatchStatus EventType = "dispatch_status" // MCP bbclaw tool dispatch progress (ADR-021-firmware-ui §1.2)
+	EvInterrupted    EventType = "turn_cancelled"  // in-flight turn was aborted via Interrupter (ADR-028 §2.5.1)
 )
 
 // Event is the single type every driver emits on its Events channel.
@@ -151,6 +152,17 @@ type Driver interface {
 	Events(sid SessionID) <-chan Event
 	Approve(sid SessionID, tid ToolID, decision Decision) error
 	Stop(sid SessionID) error
+}
+
+// Interrupter is an optional capability for drivers that can abort the
+// in-flight turn WITHOUT destroying the session (barge-in, ADR-028 §2.5.1).
+// Interrupt kills the turn's subprocess (and any tool execution inside it)
+// but keeps the session and its resume id, so the next Send continues the
+// same conversation. Drivers signal the abort by emitting EvInterrupted
+// before the turn's EvTurnEnd. Calling Interrupt with no turn in flight is
+// a no-op (returns nil).
+type Interrupter interface {
+	Interrupt(sid SessionID) error
 }
 
 // ErrUnsupported is returned by Approve on drivers where Capabilities.ToolApproval is false.

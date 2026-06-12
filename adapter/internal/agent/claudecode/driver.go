@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -266,6 +267,15 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	ctx, cancel := context.WithCancel(s.rootCtx)
 	cmd := exec.CommandContext(ctx, d.bin, args...)
+	// Barge-in (ADR-028 §2.5.1): on ctx cancel send SIGTERM first so the CLI
+	// gets a chance to flush its session JSONL, then SIGKILL after WaitDelay.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = s.cwd
 	if len(d.env) > 0 || len(s.env) > 0 {
 		base := mergeEnv(os.Environ(), d.env)
@@ -288,6 +298,7 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	s.mu.Lock()
 	s.cancel = cancel
+	s.interrupted = false
 	s.mu.Unlock()
 
 	d.log.Infof("claude-code: input sid=%s text=%q", sid, truncate(text, 200))
@@ -313,7 +324,19 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	waitErr := cmd.Wait()
 	<-stderrDone
-	if waitErr != nil {
+	// Turn over: drop the cancel func so a late Interrupt() is a clean no-op
+	// instead of marking the NEXT turn as interrupted.
+	s.mu.Lock()
+	s.cancel = nil
+	s.mu.Unlock()
+	if s.consumeInterrupted() {
+		// Barge-in (ADR-028 §2.5.1): the turn was aborted on purpose. The
+		// subprocess death is expected — suppress the exit error and tell the
+		// device the turn was cancelled, then end the turn normally so the
+		// NDJSON/WS stream tears down and the session stays resumable.
+		d.log.Infof("claude-code: turn interrupted sid=%s resume=%q", sid, s.resumeID)
+		s.emit(agent.Event{Type: agent.EvInterrupted})
+	} else if waitErr != nil {
 		snap := stderrCap.snapshot()
 		switch {
 		case snap.SessionBusy:
@@ -358,6 +381,32 @@ func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
 		return agent.ErrUnknownSession
 	}
 	s.setModel(strings.TrimSpace(model))
+	return nil
+}
+
+// Interrupt aborts the in-flight turn's subprocess (SIGTERM → 2s grace →
+// SIGKILL via cmd.Cancel/WaitDelay) while KEEPING the session and its
+// resumeID, so the next Send still --resume's the same conversation.
+// Implements agent.Interrupter (barge-in, ADR-028 §2.5.1). No-op when no
+// turn is in flight.
+func (d *Driver) Interrupt(sid agent.SessionID) error {
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	s.mu.Lock()
+	cancel := s.cancel
+	if cancel != nil {
+		s.interrupted = true
+	}
+	s.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	d.log.Infof("claude-code: interrupt requested sid=%s", sid)
+	cancel()
 	return nil
 }
 
@@ -417,6 +466,20 @@ type session struct {
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
+	// interrupted marks the in-flight turn as deliberately aborted via
+	// Interrupt() so Send suppresses the subprocess exit error and emits
+	// EvInterrupted instead (ADR-028 §2.5.1). Reset at each turn start.
+	interrupted bool
+}
+
+// consumeInterrupted reports whether the just-finished turn was aborted via
+// Interrupt(), clearing the flag.
+func (s *session) consumeInterrupted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.interrupted
+	s.interrupted = false
+	return v
 }
 
 // sessionFlags returns the per-session CLI flags appended after the

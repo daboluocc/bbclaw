@@ -80,6 +80,11 @@ type Adapter struct {
 	memory           butler.MemoryWriter
 	dispatchRing     *butler.DispatchRing
 	dispatchRecorder *butler.DispatchRecorder
+
+	// inflight is the process-level in-flight turn registry for barge-in
+	// (ADR-028 §2.5.1), shared with the local HTTP server via SetInflight so a
+	// device's turn.cancel finds the turn no matter which ingress started it.
+	inflight *butler.InflightRegistry
 }
 
 type Status struct {
@@ -193,6 +198,10 @@ func (a *Adapter) SetButlerInfra(mem butler.MemoryWriter, ring *butler.DispatchR
 // from the local HTTP layer so cloud-proxied agent turns honour the same
 // active driver / active model selection as LAN-direct turns.
 func (a *Adapter) SetDriverState(store *driverstate.Store) { a.driverState = store }
+
+// SetInflight wires the shared in-flight turn registry (ADR-028 §2.5.1
+// barge-in). nil disables the turn.cancel kind.
+func (a *Adapter) SetInflight(r *butler.InflightRegistry) { a.inflight = r }
 
 // resolveActiveModel mirrors httpapi.Server.resolveActiveModel for the cloud
 // proxy path. Returns "" when no driverState store is wired.
@@ -433,6 +442,10 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// Phase 4.8 cloud agent proxy: cloud reverse-proxies firmware
 		// /v1/agent/message NDJSON streams through this kind.
 		return a.handleAgentMessageRequest(ctx, write, env)
+	case "turn.cancel":
+		// ADR-028 §2.5.1 barge-in: device PTT aborts the in-flight turn — kill
+		// the CLI subprocess, keep the session resumable, note the interruption.
+		return a.handleTurnCancelRequest(write, env)
 	case "agent.menu":
 		// ADR-019: cloud proxies firmware GET /v1/agent/menu/{id} so the
 		// server-driven menu renderer works in cloud_saas mode.
@@ -443,6 +456,45 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 	default:
 		return nil
 	}
+}
+
+// handleTurnCancelRequest aborts the device's in-flight agent turn (barge-in,
+// ADR-028 §2.5.1). Payload: {playedSeq?, playedText?}. Replies with
+// {cancelled: bool}; cancelled=false means no turn was in flight (the device
+// only stopped local TTS playback — the interruption note is still recorded
+// so the next --resume turn knows the reply was cut off).
+func (a *Adapter) handleTurnCancelRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	reply := func(payload map[string]any, errCode string) error {
+		return write(CloudEnvelope{
+			Type:       "reply",
+			MessageID:  env.MessageID,
+			HomeSiteID: a.cfg.HomeSiteID,
+			DeviceID:   env.DeviceID,
+			Kind:       env.Kind,
+			Payload:    payload,
+			Error:      errCode,
+		})
+	}
+	if a.inflight == nil {
+		return reply(nil, "CANCEL_NOT_CONFIGURED")
+	}
+	playedText, _ := env.Payload["playedText"].(string)
+	playedSeq := 0
+	if v, ok := env.Payload["playedSeq"].(float64); ok {
+		playedSeq = int(v)
+	}
+	found, err := a.inflight.Cancel(env.DeviceID, playedText)
+	if !found {
+		a.inflight.NoteInterruption(env.DeviceID, playedText)
+	}
+	if err != nil {
+		a.log.Warnf("turn.cancel device=%q found=%v err=%v", env.DeviceID, found, err)
+		return reply(map[string]any{"cancelled": false, "detail": err.Error()}, "")
+	}
+	a.metrics.Inc("cloud_turn_cancel")
+	a.log.Infof("turn.cancel device=%q inflight=%v played_seq=%d played_chars=%d",
+		env.DeviceID, found, playedSeq, len(playedText))
+	return reply(map[string]any{"cancelled": found}, "")
 }
 
 func (a *Adapter) handleChatDriversRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
@@ -837,6 +889,7 @@ func (a *Adapter) handleChatTextViaButler(
 		},
 		Metrics:            &cloudMetrics{m: a.metrics},
 		Log:                a.log,
+		Inflight:           a.inflight,
 		ResolveActiveModel: a.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		ButlerMCPServers:   a.butlerMCPServers,

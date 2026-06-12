@@ -877,6 +877,11 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 	// recording, so a remote device's memory files never updated.
 	butlerDeps := buildButlerInfra(butlerWorkspace, sessionMgr, agentRouter, logger)
 
+	// In-flight turn registry for barge-in (ADR-028 §2.5.1) — one per process,
+	// shared by the local HTTP server and the cloud relay so a device's cancel
+	// always finds the running turn regardless of ingress.
+	inflight := butler.NewInflightRegistry()
+
 	var cloudRelay *homeadapter.Adapter
 	var err error
 	if cfg.EnableCloudRelay() {
@@ -890,6 +895,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 		// observability as the local path (otherwise remote turns never persist
 		// long-term memory or show up in dispatch history).
 		cloudRelay.SetButlerInfra(butlerDeps.memory, butlerDeps.ring, butlerDeps.recorder)
+		cloudRelay.SetInflight(inflight)
 		if sessionMgr != nil {
 			cloudRelay.SetSessionManager(sessionMgr)
 			// Route cloud voice turns to the per-device butler session (ADR-021).
@@ -935,6 +941,7 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			logger.Errorf("%v", err)
 			os.Exit(1)
 		}
+		agentSrv.SetInflight(inflight)
 		// Surface read-only identity/diagnostics on the admin page: the resolved
 		// device identity (env or identity.json), the build version, and the
 		// persistent log path. These are shown but never edited (ADR-025).

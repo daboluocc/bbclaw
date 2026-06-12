@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
@@ -444,4 +445,95 @@ func TestParseStreamJSONNonMCPToolResultIgnored(t *testing.T) {
 	if len(evs) != 0 {
 		t.Errorf("want 0 events for non-dispatch tool_result, got %d: %+v", len(evs), evs)
 	}
+}
+
+// TestInterruptKillsTurnKeepsSession spawns a fake `claude` that prints an
+// init frame then blocks, interrupts it mid-turn, and verifies the barge-in
+// contract (ADR-028 §2.5.1):
+//  1. the turn ends with EvInterrupted + EvTurnEnd and NO EvError
+//  2. the session survives (still registered, resumeID preserved)
+//  3. Interrupt with no in-flight turn is a no-op
+func TestInterruptKillsTurnKeepsSession(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	// `exec sleep` replaces the shell so SIGTERM lands on the blocker directly
+	// and the stdout pipe closes immediately on death.
+	script := "#!/bin/sh\n" +
+		`echo '{"type":"system","subtype":"init","session_id":"int-1","model":"m"}'` + "\n" +
+		"exec sleep 30\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New(Options{Bin: bin}, obs.NewLogger())
+	sid, err := d.Start(context.Background(), agent.StartOpts{Cwd: dir})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	events := d.Events(sid)
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- d.Send(sid, "hello") }()
+
+	// Wait for the init event so we know the subprocess is alive mid-turn.
+	select {
+	case ev := <-events:
+		if ev.Type != agent.EvSessionInit {
+			t.Fatalf("first event: want EvSessionInit, got %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for EvSessionInit")
+	}
+
+	if err := d.Interrupt(sid); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	var sawInterrupted, sawError, sawTurnEnd bool
+collect:
+	for {
+		select {
+		case ev := <-events:
+			switch ev.Type {
+			case agent.EvInterrupted:
+				sawInterrupted = true
+			case agent.EvError:
+				sawError = true
+				t.Logf("unexpected EvError: %s", ev.Text)
+			case agent.EvTurnEnd:
+				sawTurnEnd = true
+				break collect
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for EvTurnEnd after Interrupt")
+		}
+	}
+	if !sawInterrupted {
+		t.Error("want EvInterrupted before EvTurnEnd")
+	}
+	if sawError {
+		t.Error("interrupted turn must not emit EvError")
+	}
+	if !sawTurnEnd {
+		t.Error("want EvTurnEnd")
+	}
+	if err := <-sendDone; err != nil {
+		t.Errorf("Send after interrupt: want nil, got %v", err)
+	}
+
+	// Session must survive with its resume id for the next --resume turn.
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	d.mu.Unlock()
+	if !ok {
+		t.Fatal("session destroyed by Interrupt; must survive for --resume")
+	}
+	if s.resumeID != "int-1" {
+		t.Errorf("resumeID: want 'int-1', got %q", s.resumeID)
+	}
+
+	// No in-flight turn now → Interrupt is a no-op.
+	if err := d.Interrupt(sid); err != nil {
+		t.Errorf("idle Interrupt: want nil, got %v", err)
+	}
+	_ = d.Stop(sid)
 }

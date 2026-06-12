@@ -38,6 +38,12 @@ type Deps struct {
 	// GET /v1/butler/dispatch/recent API. Wired by main.go.
 	DispatchRecorder *DispatchRecorder
 
+	// Inflight 是进程级 in-flight turn 注册表(ADR-028 §2.5.1 barge-in)。非 nil 时
+	// RunTurn 在 Send 期间登记 (deviceID → drv,sid) 供 /v1/agent/cancel 与云端
+	// turn.cancel 查找打断,并在每轮开始时消费待注入的打断备注(prompt 前缀)。
+	// 与 ring/memory 一样由 main.go 构造一次,LOCAL 与 CLOUD 两条链路共用。
+	Inflight *InflightRegistry
+
 	// ResolveActiveModel 注入:两 caller 各传自己的。driver 为驱动名,返回持久化
 	// active_model 或 ""。butler 不缓存其结果以保留 ADR-016 mid-session 语义。
 	ResolveActiveModel func(driver string) string
@@ -86,6 +92,7 @@ type Result struct {
 	FinalSID      string // 最终 cli sid(string)
 	VisibleID     string // 发给设备的 id:usingLogical ? logicalID : FinalSID
 	TurnEnded     bool
+	Interrupted   bool // turn 被 barge-in 中止(EvInterrupted,ADR-028 §2.5.1)
 	TextCount     int
 	ErrorCount    int
 	LastText      string
@@ -164,6 +171,27 @@ func withWorkerDriver(specs []agent.MCPServerSpec, driverName string) []agent.MC
 func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) {
 	d := e.d
 	maxAttempts := d.Policy.maxAttempts()
+
+	// barge-in(ADR-028 §2.5.1):上一回合若被打断,把打断备注注入本轮 prompt,
+	// 让 --resume 后的模型知道用户听到了多少、执行截断在哪。auto-title 用原始
+	// 文本(titleText),不被注入段污染。
+	titleText := req.Text
+	if d.Inflight != nil {
+		if note := d.Inflight.ConsumePromptNote(req.DeviceID); note != "" {
+			req.Text = note + "\n\n" + req.Text
+			if d.Log != nil {
+				d.Log.Infof("agent: injected interruption note device=%q", req.DeviceID)
+			}
+		}
+	}
+	// in-flight 登记的注销兜底:RunTurn 的任何退出路径(ctx done、客户端断开、
+	// 错误)都不能留下陈旧登记,否则下一次 cancel 会打到已结束的 turn。
+	var inflightTok uint64
+	defer func() {
+		if d.Inflight != nil && inflightTok != 0 {
+			d.Inflight.End(req.DeviceID, inflightTok)
+		}
+	}()
 
 	// ── 1) driver 解析(差异 #2 PreStream) ──
 	var (
@@ -341,6 +369,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		lastError     string
 		lastText      string
 		turnEnded     bool
+		interrupted   bool
 		sendErr       error
 		channelClosed bool
 	)
@@ -350,6 +379,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		lastError = ""
 		lastText = ""
 		turnEnded = false
+		interrupted = false
 		sendErr = nil
 		channelClosed = false
 		sessionNotFound := false
@@ -426,6 +456,9 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		if mu, ok := drv.(agent.ModelUpdater); ok {
 			_ = mu.UpdateModel(curSid, d.resolveModel(drv.Name()))
 		}
+		if d.Inflight != nil {
+			inflightTok = d.Inflight.Begin(req.DeviceID, drv, curSid)
+		}
 		go func() { sendErrCh <- drv.Send(curSid, req.Text) }()
 
 	loop:
@@ -482,6 +515,8 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 							d.Hooks.OnStateChange(bSID, "error", ev.Text)
 						}
 					}
+				case agent.EvInterrupted:
+					interrupted = true
 				case agent.EvTurnEnd:
 					turnEnded = true
 				}
@@ -554,7 +589,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		}
 		if d.Policy.AutoTitle {
 			if ls, ok := d.Sessions.Get(logicalID); ok && ls.Title == "" {
-				title := truncateRunes(req.Text, 20)
+				title := truncateRunes(titleText, 20)
 				if title != "" {
 					if err := d.Sessions.SetTitle(logicalID, title); err != nil && d.Log != nil {
 						d.Log.Warnf("agent: auto-title logical=%s err=%v", logicalID, err)
@@ -583,9 +618,10 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 	}
 
 	// 管家长期记忆(ADR-021 §4):仅【管家会话 + turn 正常结束 + 无错误】才把本轮
-	// 投递给记忆管线。RecordTurn 契约保证非阻塞、自吞失败,engine 主路径不受影响。
-	if d.Memory != nil && logicalRole == logicalsession.RoleButler && turnEnded && errorCount == 0 {
-		d.Memory.RecordTurn(req.Text, lastText, logicalCwd)
+	// 投递给记忆管线。被打断的 turn 回复不完整,不入记忆(ADR-028 §2.5.1)。
+	// RecordTurn 契约保证非阻塞、自吞失败,engine 主路径不受影响。
+	if d.Memory != nil && logicalRole == logicalsession.RoleButler && turnEnded && errorCount == 0 && !interrupted {
+		d.Memory.RecordTurn(titleText, lastText, logicalCwd)
 	}
 
 	// 收尾指标由 caller 经 MetricsSink.TurnDone 据原始信号自行判定名与分支
@@ -608,6 +644,7 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 		FinalSID:      string(sid),
 		VisibleID:     visibleID,
 		TurnEnded:     turnEnded,
+		Interrupted:   interrupted,
 		TextCount:     textCount,
 		ErrorCount:    errorCount,
 		LastText:      lastText,

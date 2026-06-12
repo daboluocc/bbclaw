@@ -152,6 +152,58 @@ func (s *Server) SetMemoryWriter(w butler.MemoryWriter) { s.memoryWriter = w }
 // Wired by main.go when butler mode is active.
 func (s *Server) SetDispatchRing(r *butler.DispatchRing) { s.dispatchRing = r }
 
+// SetInflight wires the process-level in-flight turn registry (ADR-028
+// §2.5.1 barge-in). Shared with the cloud relay so a cancel finds the turn
+// no matter which ingress started it.
+func (s *Server) SetInflight(r *butler.InflightRegistry) { s.inflight = r }
+
+// agentCancelRequest is the device barge-in payload (ADR-028 §2.5.1).
+// playedText is the last TTS sentence the user actually heard (optional);
+// it is recorded and injected into the next turn's prompt so the resumed
+// model knows where the user stopped listening.
+type agentCancelRequest struct {
+	DeviceID   string `json:"deviceId"`
+	SessionID  string `json:"sessionId"`
+	PlayedSeq  int    `json:"playedSeq"`
+	PlayedText string `json:"playedText"`
+}
+
+// handleAgentCancel aborts the device's in-flight agent turn: kills the CLI
+// subprocess via the driver's Interrupter capability while keeping the
+// session resumable, and records an interruption note for the next turn.
+// Responds 200 with data.cancelled=false when no turn is in flight (the
+// device may just be stopping local TTS playback — still worth the note).
+func (s *Server) handleAgentCancel(w http.ResponseWriter, r *http.Request) {
+	if s.inflight == nil {
+		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "CANCEL_NOT_CONFIGURED"})
+		return
+	}
+	var req agentCancelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST"})
+		return
+	}
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		deviceID = strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	}
+	found, err := s.inflight.Cancel(deviceID, req.PlayedText)
+	if !found {
+		// No agent turn running — the device interrupted local playback only.
+		// Record the note anyway so the next turn knows the reply was cut off.
+		s.inflight.NoteInterruption(deviceID, req.PlayedText)
+	}
+	if err != nil {
+		s.log.Warnf("agent: cancel device=%q found=%v err=%v", deviceID, found, err)
+		writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"cancelled": false, "detail": err.Error()}})
+		return
+	}
+	s.metrics.Inc("agent_cancel")
+	s.log.Infof("agent: cancel device=%q inflight=%v played_seq=%d played_chars=%d",
+		deviceID, found, req.PlayedSeq, len(req.PlayedText))
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"cancelled": found}})
+}
+
 // resolveActiveDriver picks the driver name to use when the request didn't
 // specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
 // own default. Both fall back gracefully to "" when neither resolves.
@@ -734,6 +786,7 @@ func (s *Server) handleAgentMessage(w http.ResponseWriter, r *http.Request) {
 		},
 		Metrics:            &localMetrics{m: s.metrics},
 		Log:                s.log,
+		Inflight:           s.inflight,
 		ResolveActiveModel: s.resolveActiveModel,
 		SystemPrompt:       butler.DeviceSystemPrompt,
 		ButlerMCPServers:   s.butlerMCPServers,
@@ -1240,8 +1293,9 @@ func (s *Server) writeAgentEvent(sw *finishStreamWriter, ev agent.Event) bool {
 			}
 			frame["dispatch"] = d
 		}
-	case agent.EvTurnEnd:
-		// no extra fields
+	case agent.EvTurnEnd, agent.EvInterrupted:
+		// no extra fields; turn_cancelled tells the device its barge-in took
+		// effect (ADR-028 §2.5.1) and is always followed by turn_end.
 	case agent.EvSessionInit:
 		// Internal event — not forwarded to the device.
 		return true

@@ -118,6 +118,11 @@ type Server struct {
 	// via SetDispatchRing from main.go. Used by GET /v1/butler/dispatch/recent.
 	dispatchRing *butler.DispatchRing
 
+	// inflight is the process-level in-flight turn registry for barge-in
+	// (ADR-028 §2.5.1). Wired via SetInflight from main.go and shared with the
+	// cloud relay; backs POST /v1/agent/cancel. Optional: nil disables cancel.
+	inflight *butler.InflightRegistry
+
 	// WebSocket hub for local_home device connections + notification queue.
 	wsHub      *WSHub
 	notifQueue *NotificationQueue
@@ -215,6 +220,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/pull", s.withAuth(s.handleDisplayPull))
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
+	mux.HandleFunc("POST /v1/agent/cancel", s.withAuth(s.handleAgentCancel))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/environment", s.withAuth(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))
