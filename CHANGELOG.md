@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **WiFi「最近成功优先」对 compile-time fallback 无效（issue #163 跟进）**：`got_ip` 成功后
+  只更新已在 NVS saved slots 的 SSID 的时间戳；连上的 SSID 若不在 slots（典型 compile-time
+  fallback `BBCLAW_WIFI_SSID`）则找不到 slot、不记时间戳，永远进不了"最近成功"排序候选，每次
+  重启仍按旧 slots 顺序挨个试、fallback 垫底。修：缓存当前连接密码（`s_active_password`），
+  `got_ip` 成功时先 `save_sta_credentials` 把连上的 SSID 自动入库，再更新其 `ts=seq`，使其
+  下次启动即可优先。
+
 ## [0.5.4] - 2026-06-13
 
 ### Fixed

@@ -43,6 +43,7 @@ static int s_wifi_ready;
 static int s_event_handlers_registered;
 static bb_wifi_mode_t s_mode;
 static char s_active_ssid[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
+static char s_active_password[sizeof(((wifi_sta_config_t*)0)->password)] = {0};
 static char s_ap_ssid[sizeof(((wifi_ap_config_t*)0)->ssid)] = {0};
 static char s_ap_password[sizeof(((wifi_ap_config_t*)0)->password)] = BBCLAW_WIFI_AP_PASSWORD;
 static char s_ap_ip[16] = "192.168.4.1";
@@ -837,6 +838,9 @@ static esp_err_t start_sta_connection(const char* ssid, const char* password) {
   reconnect_timer_stop_and_reset();
   xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
   copy_string(s_active_ssid, sizeof(s_active_ssid), ssid);
+  /* issue #163 fix: cache password so got_ip can auto-save a freshly-connected
+   * SSID that isn't yet in NVS (e.g. the compile-time fallback). */
+  copy_string(s_active_password, sizeof(s_active_password), password != NULL ? password : "");
 
   wifi_config_t wifi_config = {
       .sta =
@@ -975,6 +979,12 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     /* 记住本次成功的 SSID 及时间戳，下次启动按时间倒序优先尝试 */
     if (is_nonempty(s_active_ssid)) {
+      /* issue #163 fix: 若连上的 SSID 尚未保存（典型：compile-time fallback
+       * BBCLAW_WIFI_SSID，或老固件遗留），先自动入库；否则下面的 ts 更新循环
+       * 找不到对应 slot → 该 SSID 永远进不了"最近成功"排序候选、每次只能垫底。
+       * save_sta_credentials 对已存在 SSID 幂等，slots 满时返回错误（忽略）。 */
+      (void)save_sta_credentials(s_active_ssid, s_active_password);
+
       nvs_handle_t h;
       if (nvs_open(BBCLAW_WIFI_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
         /* 保留旧的 last_ok 字段以向后兼容 */
