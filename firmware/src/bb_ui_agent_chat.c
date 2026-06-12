@@ -153,7 +153,10 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
  *    stop chasing earlier history (the user is told via a one-shot toast in
  *    the topbar — for v1, just stop silently).
  */
-#define BB_HISTORY_PAGE_SIZE   50
+/* ADR-028 跟手:50→24。初次 hydrate 一次性插 50 条 label,每条都触发 CJK
+ * 完整排版,真机日志显示 hydrate 后紧跟一串 lvgl lock timeout。24 条够看
+ * 一屏多,更早的历史靠上翻分页按需加载(机制已有)。 */
+#define BB_HISTORY_PAGE_SIZE   24
 #define BB_HISTORY_MAX_LOADED  300
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */

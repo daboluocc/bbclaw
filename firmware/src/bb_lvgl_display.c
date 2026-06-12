@@ -100,7 +100,12 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 
 /* Auto-scroll */
 #define UI_AUTO_SCROLL_PERIOD_MS       96   /* timer interval: re-evaluate anim need, see #149 #155 */
-#define UI_AUTO_SCROLL_ANIM_MS         800  /* lv_anim duration for scroll-to-bottom */
+#define UI_AUTO_SCROLL_ANIM_MS         200  /* lv_anim duration for scroll-to-bottom.
+                                             * ADR-028 跟手:曾是 800ms——流式回复期间
+                                             * 滚动动画几乎连续触发,动画每帧重绘整个
+                                             * 滚动区,LVGL 任务长期占锁(真机日志
+                                             * lvgl_port_lock timeout 集中在此窗口)。
+                                             * 200ms 保留平滑感,重绘窗口缩到 1/4。 */
 #define UI_AUTO_SCROLL_STEP_PX         1    /* threshold only (not a stepping value) */
 #define UI_AUTO_SCROLL_TOP_HOLD_TICKS  12
 #define UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS 14
@@ -2122,7 +2127,10 @@ void bb_display_set_tts_sentence(const char* sentence_text) {
   int32_t target_y = lpos.y > 4 ? lpos.y - 4 : 0;
   int32_t max_y = lv_obj_get_scroll_bottom(s_scroll_text);
   if (target_y > max_y) target_y = max_y;
-  lv_obj_scroll_to_y(s_scroll_text, target_y, LV_ANIM_ON);
+  /* ADR-028 跟手:逐句跟读改瞬时跳转。每句都触发一次滚动,LV_ANIM_ON 意味着
+   * 每句拖一条动画(动画期间整滚动区逐帧重绘),TTS 播放窗口正是按键最需要
+   * 响应的窗口。瞬时跳转 = 单次重绘。 */
+  lv_obj_scroll_to_y(s_scroll_text, target_y, LV_ANIM_OFF);
   s_auto_scroll_text.phase = UI_AUTO_SCROLL_HOLD_BOTTOM;
   s_auto_scroll_text.wait_ticks = UI_AUTO_SCROLL_BOTTOM_HOLD_TICKS;
   s_auto_scroll_pause_until_ms = bb_now_ms() + UI_MANUAL_SCROLL_PAUSE_MS;
