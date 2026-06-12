@@ -46,21 +46,18 @@ ADR-019 的 sessions/cwd/drivers/models 数据都在 **home adapter 本地**，c
 
 复用现有信封（`router.Envelope`：`type` + `kind` + `messageId` + `payload`）。精确契约（device↔cloud 逐字一致，firmware/cloud 两侧 issue 已锁定同一份）：
 
-**权威来源**：cloud 侧已实现并合并（`bbclaw-reference` PR #28，`router/sites.go` + `httpapi/server.go`）。以下契约以该实现为准，firmware 必须对齐。
-
 ```json
-// 请求 device→cloud（deviceId 由 WS 连接身份 peer.DeviceID 决定，请求带不带都被忽略）
-{"type":"request","kind":"sites.list","messageId":"<seq>"}
-{"type":"request","kind":"sites.activate","messageId":"<seq>","payload":{"homeSiteId":"<id>"}}
-// 成功回包 cloud→device：type="reply"（带回请求的 messageId 与 kind）
-{"type":"reply","kind":"sites.list","messageId":"<seq>","payload":{"sites":[{"homeSiteId":"hs-1","label":"家里 Mac","online":true,"active":true}]}}
-{"type":"reply","kind":"sites.activate","messageId":"<seq>","payload":{"result":"ok","activeHomeSiteId":"hs-2"}}
-// 错误回包 cloud→device：type="error"，code 双写（顶层 error 字符串 + payload.error 对象）
-{"type":"error","kind":"sites.activate","messageId":"<seq>","error":"NOT_BOUND","payload":{"error":{"code":"NOT_BOUND","detail":"..."}}}
+// 请求 device→cloud
+{"type":"request","kind":"sites.list","messageId":"<seq>","deviceId":"<id>"}
+{"type":"request","kind":"sites.activate","messageId":"<seq>","deviceId":"<id>","payload":{"homeSiteId":"<id>"}}
+// 回包 cloud→device（带回请求的 messageId）
+{"type":"response","kind":"sites.list","messageId":"<seq>","payload":{"sites":[{"homeSiteId":"hs-1","label":"家里 Mac","online":true,"active":true}]}}
+{"type":"response","kind":"sites.activate","messageId":"<seq>","payload":{"result":"ok","activeHomeSiteId":"hs-2"}}
+{"type":"response","kind":"sites.activate","messageId":"<seq>","error":{"code":"NOT_BOUND","detail":"..."}}
 ```
 
-- 成功 `type:"reply"`、失败 `type:"error"`（贴合 cloud 既有 `ack`/`error` 约定，非新造 `response`）。
-- firmware 靠 **`kind` + `messageId`** 对上 in-flight 请求；`messageId` 单调自增，过期回包丢弃。失败时读顶层 `error`（稳定 code）或 `payload.error.code`。
+- `messageId`：设备维护单调自增序号，回包据此对上 in-flight 请求，过期回包丢弃。
+- error 用对象 `{code,detail}`，沿用 cloud↔device 既有约定（ADR-019 跨层一致性记录）。
 - **firmware 侧注意**：现有 driver picker 走 HTTP 同步，本菜单走 WS 异步——必须改成「发请求 → Loading → 回包到达后重绘」，不能照搬同步 fetch。
 
 **为什么 WS 而非 HTTP**：firmware 在 cloud_saas 下的 HTTP agent API（`/v1/agent/*`）默认经 cloud relay 转发到 home adapter；本菜单恰恰不能 relay。WS 是 cloud 已终结、已认得设备身份的通道，复用它无需另开"不 relay 的 device HTTP 路径 + 设备态鉴权"，最省。
