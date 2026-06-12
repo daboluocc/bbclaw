@@ -148,6 +148,43 @@ local_home 从逐帧 HTTP POST 升级为 WS（adapter 已有 WS 基础设施；H
 Cloud relay 改动：透传 `turn.cancel`、`turn.state`、`asr.partial`、`flow.credit`
 四类新 kind（按 CLAUDE.md 跨组件同步表，cloud hub 路由需同步加 kind 分发）。
 
+### 2.5.1 `turn.cancel` 的 adapter 端语义：杀掉 in-flight `claude -p` 进程
+
+claude-code 驱动的事实（`adapter/internal/agent/claudecode/driver.go`）：
+
+- 每个回合就是一个独立子进程：`claude -p <text> --output-format stream-json
+  [--resume <id>]`，经 `exec.CommandContext` 启动，`cancel()` 即杀进程。
+- 因此 **PTT 打断 = 终止当前回合的整个后台执行**——LLM 推理、正在跑的
+  bash/工具调用、MCP 调用随进程一起终止。这不是副作用而是期望语义：
+  用户按 PTT 既表示"别说了"，也表示"别做了"。
+- `resumeID` 在回合开始即落定（`--session-id` / init 事件），且 Claude Code
+  增量持久化会话 JSONL —— **中途被杀的回合仍可 `--resume`**，恢复加载时
+  能看到被截断的部分 assistant 输出。
+
+需要新增/修改：
+
+1. **`Interrupt(sid)` 驱动方法**（区别于现有 `Stop(sid)`）：现有 `Stop` 会
+   `delete(d.sessions, sid)` + `close(s.events)`，把逻辑会话整个销毁，对打断
+   过重。`Interrupt` 只 `s.cancel()` 杀当前回合子进程，**保留 session 与
+   resumeID**，使下一回合继续 `--resume` 同一对话。终止顺序：SIGTERM →
+   2s 宽限 → SIGKILL（设置 `cmd.Cancel` / `WaitDelay`，给 CLI 机会 flush
+   JSONL）。被杀回合向设备 emit `turn.cancelled {turnId}` 后正常 `EvTurnEnd`。
+2. **打断记录（resume 可见）**：设备发 `turn.cancel` 时附带播放进度
+   `{playedSeq, playedText}`（audio_out 知道实际播到哪句）。adapter 把打断
+   作为会话事实记两处：
+   - adapter 会话历史/chat cache 记 `turn.interrupted` 事件（设备 transcript
+     显示截断标记的数据来源）；
+   - **下一回合的 prompt 前注入打断上下文**，随 `claude -p --resume` 带给模型，
+     形如：`[系统提示：你上一条回复在「<playedText 末句>」处被用户按键打断，
+     其后的内容用户没有听到；若有正在执行的任务已被终止。]`
+     这样 resume 后的 AI 明确知道发生过打断、用户听到了多少、执行被截断在哪，
+     而不是把半截输出当作已完整送达。
+3. **边界**：`turn.cancel` 杀的是**当前回合**的 CLI 进程。butler 经
+   `mcp__bbclaw__dispatch` 派发出去的 worker 任务是独立进程，不随回合进程
+   终止（dispatch cancel 仍为 §2.5 表外的 P2，需 OpenClaw gateway 配合）；
+   打断注入的上下文应说明 dispatch 任务仍在后台运行（如有），由 butler
+   下回合自行汇报。
+
 ### 2.6 状态：6 核心态 + 装饰事件
 
 核心状态机收敛为 6 态：`SLEEP / IDLE / LISTENING / THINKING / SPEAKING / ERROR`。
@@ -180,7 +217,7 @@ Cloud relay 改动：透传 `turn.cancel`、`turn.state`、`asr.partial`、`flow
 
 | 阶段 | 内容 | 跨组件 |
 |---|---|---|
-| M1 协议 | adapter + firmware 实现 `turn.cancel`、tts.chunk 元数据（turnId/seq/text/首帧采样率）、`turn.state`；旧帧保留兼容 | cloud relay 透传新 kind |
+| M1 协议 | adapter + firmware 实现 `turn.cancel`（含 `Interrupt(sid)` 杀回合进程 + 播放进度上报 + 打断上下文注入下一回合，见 §2.5.1）、tts.chunk 元数据（turnId/seq/text/首帧采样率）、`turn.state`；旧帧保留兼容 | cloud relay 透传新 kind |
 | M2 音频 | audio_out 统一 sink；删 PTT 路同步播放；字幕对齐；固定 24kHz；64-sample 中断粒度；cancel 时 drain+flush | 无 |
 | M3 核心 | conv_core 替换 stream_task 巨循环；废除三重状态机与 post_state；6 态收敛；PTT 全状态可打断 | 无 |
 | M4 传输 | local_home 升级 WS + 二进制帧 + flow.credit；asr.partial | adapter WS server、cloud relay |
