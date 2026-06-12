@@ -39,3 +39,10 @@
 | [ADR-020](ADR-020-memory-pipeline.md) | 记忆管线——用户需求记忆 + 本地项目画像（复用 Claude 原生） | 2026-05-30 | 草案（v1 范围明确，蒸馏延后） |
 | [ADR-021](ADR-021-conversational-orchestrator-butler.md) | 对话式编排管家——Claude 管家会话 + MCP 派发到 worker CLI Agent | 2026-05-30 | 草案（方向已定，2 个 spike 闸门） |
 | [ADR-022](ADR-022-memory-consolidation-and-profile-docs.md) | 记忆整理——收件箱 + 画像文档两层记忆（consolidation 归档进 workspace/MEMORY/） | 2026-06-02 | 已接受（v1 范围明确，5 项决策定稿） |
+| [ADR-021-firmware-ui](ADR-021-firmware-ui.md) | 管家模式固件 UI——Task List / 派发状态注入 / 底部状态栏 / PTT 文案 | 2026-05-30 | 草案（docs-only） |
+| [ADR-023](ADR-023-driver-management-and-butler-driver.md) | 驱动管理——通用驱动 / 独立 butler 驱动 / 环境检测接入页面 | 2026-06-10 | 已接受（v1 范围明确） |
+| [ADR-024](ADR-024-multi-driver-butler-ecosystem.md) | 多-driver 自包含管家生态——persona 投影 + 同源 worker + 随 driver 的记忆 | 2026-06-10 | 已接受（设计定稿，分期实现） |
+| [ADR-025](ADR-025-web-first-configuration.md) | Web 优先配置——把 .env 搬上管理页，分系统/AI/对话/数据四页 | 2026-06-10 | 已接受（v1 范围明确） |
+| [ADR-026](ADR-026-butler-onboarding.md) | 管家初次见面(onboarding)——确定性注入而非 persona 软指引 | 2026-06-11 | 已接受 |
+| [ADR-027](ADR-027-device-home-adapter-switching.md) | 设备端切换 Home Adapter（切机器）——cloud 组装的设备态选择器 | 2026-06-12 | 提议（待评审） |
+| [ADR-028](ADR-028-conversation-core-v2.md) | Conversation Core v2——Turn 模型 / 全状态打断 / 6 态收敛 / sink 驱动字幕对齐 | 2026-06-13 | 提议（待评审） |
