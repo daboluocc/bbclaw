@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **OTA 升级死循环兜底护栏（issue #179）**：cloud_saas 开机 OTA check 新增「重刷循环」
+  退避逻辑。设备在切分区重启前把目标版本写入 NVS（`ota/last_try`）；下次开机 check 时
+  若 cloud 给的目标版本 == 上次已烧录尝试过的版本，且当前运行版本仍未变成该目标版本，
+  判定上一次升级虽烧录成功但固件自报版本号未递增（典型：发布构建用了占位/dev 版本号），
+  于是抑制本次 `hasUpdate`、记 `WARN` 日志、正常进主流程，避免无限重刷弹窗。根因仍需
+  发布构建注入递增版本号（见 CLAUDE.md 发布约束 / `release_local.sh`），此为软件侧兜底。
+
 ### Added
 - **设备端切换 Home Adapter（机器）选择器（issue #176, ADR-027）**：cloud_saas 模式下
   Settings 新增 `Adapter` 行 + 选择器，可在已绑定的多台 home adapter 间就地切 active，

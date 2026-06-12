@@ -19,6 +19,11 @@
 
 static const char* TAG = "bb_ota";
 
+// NVS 命名空间与键（OTA 状态持久化）
+#define OTA_NVS_NAMESPACE     "ota"
+#define OTA_NVS_KEY_JUST_UPD  "just_upd"   // 升级完成庆祝标志
+#define OTA_NVS_KEY_LAST_TRY  "last_try"   // 上次「已烧录并重启」尝试的目标版本
+
 // OTA 状态
 static ota_state_t s_state = OTA_STATE_IDLE;
 
@@ -56,6 +61,37 @@ static esp_err_t ota_http_event_handler(esp_http_client_event_t* evt) {
             break;
     }
     return ESP_OK;
+}
+
+// 读取上次尝试升级的目标版本（issue #179 死循环护栏）。
+// 成功返回 ESP_OK 且 out 填入版本字符串；无记录或出错返回非 ESP_OK。
+static esp_err_t ota_nvs_get_last_try(char* out, size_t out_size) {
+    if (out == NULL || out_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = '\0';
+    nvs_handle_t nvsh;
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvsh) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    size_t len = out_size;
+    esp_err_t err = nvs_get_str(nvsh, OTA_NVS_KEY_LAST_TRY, out, &len);
+    nvs_close(nvsh);
+    return err;
+}
+
+// 记录本次「已烧录并准备重启」尝试的目标版本（issue #179 死循环护栏）。
+static void ota_nvs_set_last_try(const char* version) {
+    if (version == NULL || version[0] == '\0') {
+        return;
+    }
+    nvs_handle_t nvsh;
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READWRITE, &nvsh) == ESP_OK) {
+        nvs_set_str(nvsh, OTA_NVS_KEY_LAST_TRY, version);
+        nvs_commit(nvsh);
+        nvs_close(nvsh);
+        ESP_LOGI(TAG, "OTA NVS last_try set to %s", version);
+    }
 }
 
 ota_state_t bb_ota_get_state(void) {
@@ -219,6 +255,27 @@ esp_err_t bb_ota_check(ota_update_info_t* info) {
                     info->release_notes[len] = '\0';
                 }
             }
+        }
+    }
+
+    // 死循环护栏（issue #179）：若 cloud 给出的目标版本与上次「已烧录并重启」
+    // 尝试过的版本相同，但当前运行版本仍未变成该目标版本，说明上一次升级虽然
+    // 烧录成功，新固件自报的 esp_app_desc.version 却没有递增（典型：发布构建用
+    // 了占位/dev 版本号）。cloud 因此持续 hasUpdate=true，继续弹窗只会无限重刷，
+    // 故在此退避，让设备正常进入主流程。这是软件侧兜底，根因仍需发布构建注入
+    // 递增版本号（见 CLAUDE.md 发布约束 / release_local.sh）。
+    if (info->has_update && info->version[0] != '\0') {
+        char last_try[sizeof(info->version)] = {0};
+        if (ota_nvs_get_last_try(last_try, sizeof(last_try)) == ESP_OK &&
+            last_try[0] != '\0' &&
+            strcmp(last_try, info->version) == 0 &&
+            strcmp(bb_ota_get_current_version(), info->version) != 0) {
+            ESP_LOGW(TAG,
+                     "OTA loop guard: target version=%s already flashed but running "
+                     "version=%s unchanged — suppressing update to break reflash loop "
+                     "(published firmware likely did not bump esp_app_desc.version)",
+                     info->version, bb_ota_get_current_version());
+            info->has_update = false;
         }
     }
 
@@ -392,12 +449,18 @@ esp_err_t bb_ota_apply_update(void) {
 
     /* Mark "just updated" flag in NVS so first-boot celebration can be shown */
     nvs_handle_t nvsh;
-    if (nvs_open("ota", NVS_READWRITE, &nvsh) == ESP_OK) {
-        nvs_set_u32(nvsh, "just_upd", 1);
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READWRITE, &nvsh) == ESP_OK) {
+        nvs_set_u32(nvsh, OTA_NVS_KEY_JUST_UPD, 1);
         nvs_commit(nvsh);
         nvs_close(nvsh);
         ESP_LOGI(TAG, "OTA NVS just_upd flag set");
     }
+
+    /* Record the version we are about to flash+reboot into, so the next boot's
+     * OTA check can detect a reflash loop if the running version doesn't change
+     * (issue #179). Only versions that actually reach reboot are recorded —
+     * transient download failures never call this function. */
+    ota_nvs_set_last_try(s_pending_update.version);
 
     // 标记待启动的分区
     esp_err_t err = esp_ota_set_boot_partition(update_partition);
@@ -417,13 +480,13 @@ esp_err_t bb_ota_apply_update(void) {
 
 int bb_ota_was_just_updated(void) {
     nvs_handle_t nvsh;
-    if (nvs_open("ota", NVS_READONLY, &nvsh) != ESP_OK) {
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &nvsh) != ESP_OK) {
         return 0;
     }
     uint32_t val = 0;
-    nvs_get_u32(nvsh, "just_upd", &val);
+    nvs_get_u32(nvsh, OTA_NVS_KEY_JUST_UPD, &val);
     if (val == 1) {
-        nvs_erase_key(nvsh, "just_upd");
+        nvs_erase_key(nvsh, OTA_NVS_KEY_JUST_UPD);
         nvs_commit(nvsh);
         ESP_LOGI(TAG, "OTA celebration flag cleared");
     }
