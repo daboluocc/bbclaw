@@ -2137,7 +2137,7 @@ esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_
     ESP_LOGI(TAG, "tts: skip empty-after-sanitize chunk (orig_len=%u)", (unsigned)strlen(text));
     return ESP_OK;
   }
-  ESP_LOGI(TAG, "tts: sanitize raw=%u clean=%u", (unsigned)strlen(text), (unsigned)strlen(cleaned));
+  ESP_LOGI(TAG, "tts: seg=%d sanitize raw=%u clean=%u", seg_idx, (unsigned)strlen(text), (unsigned)strlen(cleaned));
 
   char* escaped = json_escape_alloc(cleaned);
   free(cleaned);

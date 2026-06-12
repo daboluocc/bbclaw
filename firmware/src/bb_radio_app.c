@@ -1446,7 +1446,7 @@ static void maybe_speak_pairing_code(const bb_transport_state_t* state) {
   }
 
   bb_tts_audio_t tts = {0};
-  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(utter, &tts);
+  esp_err_t syn = bb_adapter_tts_synthesize_pcm16(utter, &tts, 0);
   if (syn != ESP_OK || tts.pcm_data == NULL || tts.pcm_len == 0U) {
     ESP_LOGW(TAG, "pairing code TTS failed err=%s pcm=%p len=%u", esp_err_to_name(syn), (void*)tts.pcm_data,
              (unsigned)tts.pcm_len);
@@ -2676,7 +2676,7 @@ static void stream_task(void* arg) {
         } else {
           /* Fallback: synthesize full text in one shot. */
           bb_tts_audio_t tts = {0};
-          if (bb_adapter_tts_synthesize_pcm16(tts_text, &tts) == ESP_OK && tts.pcm_data != NULL && tts.pcm_len > 0U) {
+          if (bb_adapter_tts_synthesize_pcm16(tts_text, &tts, 0) == ESP_OK && tts.pcm_data != NULL && tts.pcm_len > 0U) {
             ESP_LOGI(TAG, "phase=tts_play mono_ms=%lld pcm_bytes=%u", (long long)bb_now_ms(),
                      (unsigned)tts.pcm_len);
             (void)bb_display_show_status(BB_STATUS_SPEAK);
