@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **设备端切换 Home Adapter（机器）选择器（issue #176, ADR-027）**：cloud_saas 模式下
+  Settings 新增 `Adapter` 行 + 选择器，可在已绑定的多台 home adapter 间就地切 active，
+  无需打开 Web 后台。列表经 cloud 终结的 WS `sites.list` 异步拉取（Loading→回包重绘），
+  选中发 `sites.activate`；离线机器标 `(offline)` 仍可切；切换成功后自动刷新 driver/model
+  与 chat session 上下文。仅 cloud_saas 可见，local_home 不渲染该行。
+
 ## [0.5.0] - 2026-06-12
 
 里程碑：**一轮完整的固件性能 / 稳定性优化定版**（汇总 0.4.16–0.4.18 的优化，并补齐本地发版工具）。
