@@ -1254,6 +1254,9 @@ static void tts_playback_task(void* arg) {
  * and from EvTurnEnd (flush tail). */
 static void tts_kick_or_spawn(void) {
   if (!s_chat.tts_enabled) return;
+  /* ADR-028 barge-in:本回合已被用户打断(可能在 TTS spawn 之前)——不再起播,
+   * 否则旧回复会盖着用户的新话说。 */
+  if (s_chat.tts_cancel_requested) return;
   if (s_chat.tts_task != NULL) return;
   if (!reply_buf_has_content()) return;
 
@@ -2125,12 +2128,18 @@ void bb_ui_agent_chat_request_cancel(void) {
    * never post UI state (PTT_DOWN dispatch already drives LISTENING). */
   int any = 0;
   if (s_chat.tts_task != NULL) {
-    s_chat.tts_cancel_requested = 1;
     bb_audio_request_playback_interrupt();
     any = 1;
   }
-  if (s_chat.active && s_chat.sending && !s_chat.agent_cancel_requested) {
-    s_chat.agent_cancel_requested = 1;
+  if (s_chat.active && s_chat.sending) {
+    /* 真机日志教训:tts_cancel_requested 必须无条件设(而非仅当 TTS task 已
+     * 在跑)——用户在 thinking 期间打断时 TTS 还没 spawn,稍后句子到达
+     * tts_kick_or_spawn 会照常起播,旧回复盖着用户的新话说。flag 在下一
+     * 回合 reply_buf_reset 清零。 */
+    s_chat.tts_cancel_requested = 1;
+    if (!s_chat.agent_cancel_requested) {
+      s_chat.agent_cancel_requested = 1;
+    }
     any = 1;
   }
   if (any) {

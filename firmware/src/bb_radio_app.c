@@ -272,6 +272,14 @@ static volatile int s_transport_adapter_connected;
 static volatile int s_tts_playback_active;
 static volatile int s_tts_interrupt_requested;
 
+/* ADR-028 barge-in — 当前 voice turn 已被用户打断(回复作废)。与
+ * s_tts_interrupt_requested 的区别:后者在 tts_playback_set_active(1) 时被
+ * 清掉,挡不住"打断发生在 TTS 开播之前"的场景(真机日志:cloud_wait 中按
+ * PTT,1.3s 后旧回复 TTS 照样 tts_play_start 盖着用户说话)。本标志由
+ * tts_stream_task 在每个 chunk 前检查,stale turn 的 chunk 直接丢弃不播,
+ * 新 turn 的 tts_stream_ui_init 清零。 */
+static volatile int s_voice_turn_stale;
+
 /* ADR-028 §2.5.1 — last sentence the voice-path TTS stream actually started
  * playing (mirrors bb_display_set_tts_sentence). Attached to turn.cancel as
  * playedText so the adapter can tell the next --resume turn where the user
@@ -871,15 +879,18 @@ static void on_ptt_changed(int pressed) {
     int agent_busy = bb_ui_agent_chat_is_busy();
     int speaking = s_tts_playback_active || bb_ui_agent_chat_tts_speaking();
     if (s_cloud_wait_busy || agent_busy || speaking) {
+      /* 标记当前 voice turn 作废:挡住"打断发生在 TTS 开播之前、稍后 chunk
+       * 到达照样起播"的窗口(s_tts_interrupt_requested 会被开播清掉)。 */
+      s_voice_turn_stale = 1;
       char played[192] = {0};
       bb_ui_agent_chat_copy_last_played(played, sizeof(played));
       if (played[0] == '\0') {
         voice_last_sentence_copy(played, sizeof(played));
       }
-      (void)bb_adapter_request_turn_cancel(played);
+      esp_err_t cancel_err = bb_adapter_request_turn_cancel(played);
       bb_ui_agent_chat_request_cancel();
-      ESP_LOGI(TAG, "ptt barge-in: cancel requested (cloud_wait=%d busy=%d speaking=%d)",
-               s_cloud_wait_busy ? 1 : 0, agent_busy, speaking);
+      ESP_LOGI(TAG, "ptt barge-in: cancel requested (cloud_wait=%d busy=%d speaking=%d send=%s)",
+               s_cloud_wait_busy ? 1 : 0, agent_busy, speaking, esp_err_to_name(cancel_err));
     }
   }
   s_ptt_change_version++;
@@ -1089,6 +1100,7 @@ static int tts_interrupt_requested(void) {
 static void tts_stream_task(void* arg) {
   bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)arg;
   int playback_started = 0;
+  int stale_logged = 0;
   int playback_sample_rate = BBCLAW_AUDIO_SAMPLE_RATE;
   char last_sentence[256] = {0};
 
@@ -1112,6 +1124,15 @@ static void tts_stream_task(void* arg) {
     }
 
     bb_tts_chunk_t* chunk = evt.chunk;
+    if (s_voice_turn_stale) {
+      /* ADR-028 barge-in:本 turn 已被打断,回复作废 — 丢 chunk 不播。 */
+      if (!stale_logged) {
+        ESP_LOGI(TAG, "phase=tts_drop_stale_turn seq=%d (barge-in)", chunk->seq);
+        stale_logged = 1;
+      }
+      free_single_tts_chunk(chunk);
+      continue;
+    }
     if (!playback_started) {
       ESP_LOGI(TAG, "phase=tts_play_start mono_ms=%lld first_chunk=1 queue_depth=%u", (long long)bb_now_ms(),
                (unsigned)uxQueueMessagesWaiting(ui->tts_queue));
@@ -1189,6 +1210,7 @@ static esp_err_t tts_stream_ui_init(bb_reply_stream_ui_ctx_t* ui) {
     return ESP_ERR_INVALID_ARG;
   }
   voice_last_sentence_set(NULL); /* ADR-028: fresh turn, nothing played yet */
+  s_voice_turn_stale = 0;        /* ADR-028: new turn supersedes any barge-in */
   ui->tts_queue = xQueueCreate(BB_TTS_STREAM_QUEUE_DEPTH, sizeof(bb_tts_queue_evt_t));
   if (ui->tts_queue == NULL) {
     return ESP_ERR_NO_MEM;
@@ -3409,6 +3431,14 @@ esp_err_t bb_radio_app_start(void) {
   esp_err_t health_err = wait_for_transport_health(&health_status);
   if (health_err == ESP_OK) {
     s_transport_health_ok = 1;
+    /* ADR-028 跟手修复:boot 首次 transport ready 也要告知 bb_state,否则状态机
+     * 整个会话停留在 net=OFFLINE,所有 PTT_DOWN 被转移表 DROPPED
+     * reason=net_offline(真机日志实锤)。心跳恢复路径(NET_UP)只覆盖
+     * 掉线重连,覆盖不到首次成功。 */
+    bb_state_dispatch((bb_event_payload_t){
+        .type = BB_EVT_NET_UP,
+        .error_code = bb_transport_is_cloud_saas() ? (int)BB_NET_CLOUD : (int)BB_NET_LOCAL,
+    });
     if (bb_transport_is_cloud_saas()) {
       bb_transport_state_t state = {
           .ready = s_transport_ready,

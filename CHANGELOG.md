@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   安全忽略，向后兼容）。
 
 ### Fixed
+- **真机首验暴露的 4 个跟手问题（2026-06-13 异地日志）**：
+  1. *cancel 发不出去*：barge-in 一次性任务用 8KB internal 栈，真机 internal RAM 碎片化
+     （largest 常 <8KB）导致 `xTaskCreate` 静默失败——改 `xTaskCreateWithCaps` PSRAM 栈
+     并在失败时记 ERROR；
+  2. *打断后旧回合 TTS 照播*：`tts_playback_set_active(1)` 开播时清中断标志，洗掉了
+     "打断发生在开播之前"的请求——新增 turn 级 stale 标志（voice 路 `s_voice_turn_stale`
+     丢 chunk 不播；chat 路 `tts_cancel_requested` 无条件置位 + `tts_kick_or_spawn` 拦截）；
+  3. *bb_state 整个会话 net=OFFLINE*：boot 首次 transport ready 路径漏发 `NET_UP`（只有
+     心跳"恢复"才发），所有 `PTT_DOWN` 被转移表 `DROPPED reason=net_offline`——boot ready
+     时补发；
+  4. *LVGL 锁忙时状态事件被丢*（PTT_DOWN/PTT_UP/ASR_RESULT 大量 `lvgl_port_lock timeout
+     — DROPPED`）：dispatch 改为锁忙落 PSRAM 溢出队列、由 LVGL 任务内 `lv_timer` 排空
+     （保序、不丢），锁等待 200ms→50ms 减少对 esp_timer 任务的拖累。
 - **TTS 逐 chunk/逐句 I2S 重配卡顿（ADR-028 M2）**：`bb_audio_set_playback_sample_rate`
   增加幂等保护——目标速率与当前一致时跳过 disable→reconfig→enable 周期（每次 ~50-100ms
   可闻断口）。此前 24kHz TTS 流每个 chunk 都重配一次；agent chat 路更是每句播完回切 16k、

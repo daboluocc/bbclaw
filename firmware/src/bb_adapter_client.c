@@ -730,7 +730,12 @@ esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
   if (played_text != NULL && played_text[0] != '\0') {
     copy = strdup(played_text);
   }
-  if (xTaskCreate(turn_cancel_task, "bb_turn_cancel", 8192, copy, 5, NULL) != pdPASS) {
+  /* 栈走 PSRAM:真机 internal RAM 高度碎片化(largest 常 <8KB),internal 栈
+   * xTaskCreate 会静默失败 → cancel 根本发不出去(2026-06-13 真机日志实锤)。
+   * 网络 IO 在 PSRAM 栈上没问题(stream_task 40KB PSRAM 栈同样跑 HTTP/WS)。 */
+  if (xTaskCreateWithCaps(turn_cancel_task, "bb_turn_cancel", 8192, copy, 5, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "turn_cancel: task spawn failed (no mem) — cancel NOT sent");
     free(copy);
     s_turn_cancel_inflight = 0;
     return ESP_ERR_NO_MEM;

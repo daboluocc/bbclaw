@@ -23,6 +23,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/idf_additions.h"
 #include "freertos/portmacro.h"
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -544,12 +546,43 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
 }
 
 /* 真正的 dispatch — 在 LVGL 任务上执行 */
+/* ── ADR-028 跟手修复:溢出队列 ─────────────────────────────────────────
+ * 真机日志显示 PTT_DOWN/PTT_UP/ASR_RESULT 频繁因 lvgl_port_lock 超时被
+ * DROPPED(渲染忙时 LVGL 锁 >200ms 不放)。事件丢失 = 状态机错过转换 =
+ * UI 卡在旧状态。现在抢不到锁不丢:事件落入 FreeRTOS 队列,由 LVGL 任务内
+ * 的 lv_timer 排空(timer 回调天然在 LVGL 上下文,无需跨任务锁)。队列
+ * 非空时后续事件也入队,保持顺序。 */
+#define BB_STATE_OVERFLOW_QUEUE_DEPTH 16
+#define BB_STATE_OVERFLOW_DRAIN_MS 25
+static QueueHandle_t s_overflow_q;
+static lv_timer_t* s_overflow_timer; /* 惰性创建:只能在 LVGL 任务上建 */
+
+static void dispatch_on_lvgl(void* user_data);
+
+static void overflow_drain_timer_cb(lv_timer_t* t) {
+  (void)t;
+  if (s_overflow_q == NULL) return;
+  bb_event_payload_t evt;
+  /* 每 tick 最多排 8 个,避免一帧内长时间占用渲染 */
+  for (int i = 0; i < 8 && xQueueReceive(s_overflow_q, &evt, 0) == pdTRUE; ++i) {
+    bb_event_payload_t* heap_evt = (bb_event_payload_t*)malloc(sizeof(*heap_evt));
+    if (heap_evt == NULL) return;
+    *heap_evt = evt;
+    dispatch_on_lvgl(heap_evt); /* 已在 LVGL 任务上,直接执行(它会 free) */
+  }
+}
+
 static void dispatch_on_lvgl(void* user_data) {
   bb_event_payload_t* evt = (bb_event_payload_t*)user_data;
   if (!evt) return;
   if (!s_initialized) {
     free(evt);
     return;
+  }
+  /* 惰性建排空 timer:本函数必然运行在 LVGL 任务上,在这里建是安全的。 */
+  if (s_overflow_timer == NULL) {
+    s_overflow_timer = lv_timer_create(overflow_drain_timer_cb,
+                                       BB_STATE_OVERFLOW_DRAIN_MS, NULL);
   }
 
   bb_state_t prev = s_state;
@@ -640,6 +673,14 @@ void bb_state_dispatch(bb_event_payload_t evt) {
     ESP_LOGE(TAG, "dispatch before init: evt=%s", bb_event_name(evt.type));
     return;
   }
+  /* 保序:溢出队列里还有积压时,新事件必须排在其后,不能走快路超车。 */
+  if (s_overflow_q != NULL && uxQueueMessagesWaiting(s_overflow_q) > 0) {
+    if (xQueueSend(s_overflow_q, &evt, 0) != pdTRUE) {
+      ESP_LOGE(TAG, "dispatch: overflow queue full (evt=%s) — DROPPED",
+               bb_event_name(evt.type));
+    }
+    return;
+  }
   /* 拷一份到堆，因为 lv_async_call 在 LVGL 任务上异步处理 */
   bb_event_payload_t* heap_evt = (bb_event_payload_t*)malloc(sizeof(*heap_evt));
   if (!heap_evt) {
@@ -649,12 +690,17 @@ void bb_state_dispatch(bb_event_payload_t evt) {
   *heap_evt = evt;
   /* LVGL 配 LV_OS_NONE，跨任务调 lv_async_call 必须先持 lvgl_port 锁，
    * 否则会和 lv_timer_handler 抢 TLSF 堆导致破坏（参考 bb_ui_agent_chat.c
-   * 的 safe_lv_async_call 注释）。 */
-  if (!lvgl_port_lock(200)) {
-    ESP_LOGW(TAG, "dispatch: lvgl_port_lock timeout (evt=%s) — DROPPED",
-             bb_event_name(evt.type));
+   * 的 safe_lv_async_call 注释）。锁忙不再丢事件:落溢出队列,由 LVGL 任务
+   * 内的 lv_timer 排空(ADR-028 跟手修复)。超时降到 50ms——调用方可能是
+   * esp_timer 任务(PTT 边沿),长阻塞会拖累所有定时器。 */
+  if (!lvgl_port_lock(50)) {
     free(heap_evt);
-    /* 记一笔丢弃但走不到 dropped_events 因为没进队列 — 用 ESP_LOG 标识即可 */
+    if (s_overflow_q != NULL && xQueueSend(s_overflow_q, &evt, 0) == pdTRUE) {
+      ESP_LOGI(TAG, "dispatch: lvgl busy — queued (evt=%s)", bb_event_name(evt.type));
+    } else {
+      ESP_LOGE(TAG, "dispatch: lvgl busy + queue unavailable (evt=%s) — DROPPED",
+               bb_event_name(evt.type));
+    }
     return;
   }
   lv_result_t r = lv_async_call(dispatch_on_lvgl, heap_evt);
@@ -734,6 +780,20 @@ void bb_state_init(void) {
   s_state.dropped_events = 0;
 
   s_initialized = true;
+
+  /* 溢出队列(ADR-028 跟手修复):LVGL 锁忙时事件落这里而非丢弃。存储走
+   * PSRAM(payload 272B × 16 ≈ 4.4KB,internal RAM 太碎不敢碰)。 */
+  s_overflow_q = xQueueCreateWithCaps(BB_STATE_OVERFLOW_QUEUE_DEPTH,
+                                      sizeof(bb_event_payload_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (s_overflow_q == NULL) {
+    /* PSRAM 不可用(模拟器等):退回 internal。再失败则保持 NULL,
+     * dispatch 退化为旧的"超时即丢"行为。 */
+    s_overflow_q = xQueueCreate(BB_STATE_OVERFLOW_QUEUE_DEPTH, sizeof(bb_event_payload_t));
+  }
+  if (s_overflow_q == NULL) {
+    ESP_LOGE(TAG, "init: overflow queue create failed — busy-time events will drop");
+  }
 
   /* DIZZY 自动恢复 one-shot 定时器：由 dispatch_on_lvgl 在进入 DIZZY
    * 时启动，离开 DIZZY 时 stop。非 DIZZY 态下 timer 不运行，零开销。 */
