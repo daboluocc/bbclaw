@@ -268,6 +268,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsGet))
 	mux.HandleFunc("PUT /v1/admin/settings", s.adminLocalOnly(s.handleAdminSettingsPut))
 	mux.HandleFunc("POST /v1/admin/restart", s.adminLocalOnly(s.handleAdminRestart))
+	// Self-upgrade (loopback-only): check for and download the latest GitHub
+	// release binary, then re-exec to load it. Mirrors the clawflow CLI's
+	// /api/version + /api/update pair so the admin page can offer a one-click
+	// upgrade matching the dashboard banner pattern users already know.
+	mux.HandleFunc("GET /v1/admin/version", s.adminLocalOnly(s.handleAdminVersion))
+	mux.HandleFunc("POST /v1/admin/update", s.adminLocalOnly(s.handleAdminUpdate))
 	// Recent runtime logs for the admin 日志 page (ADR-025) — read from the
 	// logger's in-memory ring; loopback-only.
 	mux.HandleFunc("GET /v1/admin/logs", s.adminLocalOnly(s.handleAdminLogs))

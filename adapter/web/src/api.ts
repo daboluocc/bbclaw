@@ -92,6 +92,39 @@ export async function restartAdapter(): Promise<void> {
   await envelope("/v1/admin/restart", { method: "POST" });
 }
 
+/* ── self-upgrade ── */
+// VersionState mirrors GET /v1/admin/version. `latest` is empty when the GitHub
+// lookup fails (no network, rate-limited) — the page should treat that as
+// "unknown" rather than "up to date" so a transient outage doesn't hide a real
+// upgrade.
+export interface VersionState {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  updating: boolean;
+}
+export async function getAdapterVersion(): Promise<VersionState> {
+  try {
+    const d = await envelope<VersionState>("/v1/admin/version");
+    return {
+      current: d.current ?? "",
+      latest: d.latest ?? "",
+      update_available: !!d.update_available,
+      updating: !!d.updating,
+    };
+  } catch {
+    return { current: "", latest: "", update_available: false, updating: false };
+  }
+}
+// triggerAdapterUpdate kicks off the synchronous upgrade. The server only
+// responds after the binary swap finishes (or fails), so callers should not
+// race it with a short timeout. `restarting:true` tells the page to start
+// polling /healthz the same way the existing 重启 button does.
+export interface UpdateResult { output: string; upgraded: boolean; restarting: boolean }
+export async function triggerAdapterUpdate(): Promise<UpdateResult> {
+  return envelope<UpdateResult>("/v1/admin/update", { method: "POST" });
+}
+
 /* ── runtime logs (ADR-025) ── */
 export interface AdapterLogs { file: string; lines: string[] }
 // adapterLogs returns the recent runtime log tail (from the adapter's in-memory
