@@ -61,8 +61,31 @@ static void ota_ui_progress_cb(int percent) {
   bb_page_ota_set_progress(percent);
 }
 
+/* issue #179: OTA download+flash MUST run on a task whose stack is in internal
+ * RAM. The confirm callback runs in the radio-app main loop / stream_task whose
+ * stack lives in PSRAM; calling bb_ota_download_and_flash there writes flash
+ * with the cache frozen and trips s_task_stack_is_sane_when_cache_frozen()
+ * (esp_cache_utils.c) → panic → reboot → re-detect same version → infinite
+ * reflash loop. xTaskCreate allocates the stack in internal RAM by default, so
+ * the cache-freeze stack sanity check passes. bb_page_ota_* are internally
+ * lvgl-locked, so calling them from this task is safe. */
+static void ota_apply_task(void* arg) {
+  (void)arg;
+  bb_page_ota_show(s_pending_ota_info.version);
+  esp_err_t dl_err = bb_ota_download_and_flash(&s_pending_ota_info, ota_ui_progress_cb);
+  if (dl_err == ESP_OK) {
+    ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
+    bb_page_ota_set_done();
+    (void)bb_ota_apply_update();  /* set_boot_partition + esp_restart; never returns */
+  } else {
+    ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+    bb_page_ota_dismiss();
+  }
+  vTaskDelete(NULL);
+}
+
 /* Called by bb_page_ota_confirm when the user (or 30 s timeout) decides.
- * accept=1 → run the existing download/flash/reboot flow.
+ * accept=1 → spawn ota_apply_task (internal-RAM stack) for download/flash/reboot.
  * accept=0 → mark skipped for this boot cycle; system resumes normally. */
 static void ota_confirm_cb(int accept) {
   if (!accept) {
@@ -73,15 +96,12 @@ static void ota_confirm_cb(int accept) {
   }
   ESP_LOGI(TAG, "OTA confirm: user accepted version=%s", s_pending_ota_info.version);
   s_pending_ota_prompt = 0;
-  bb_page_ota_show(s_pending_ota_info.version);
-  esp_err_t dl_err = bb_ota_download_and_flash(&s_pending_ota_info, ota_ui_progress_cb);
-  if (dl_err == ESP_OK) {
-    ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
-    bb_page_ota_set_done();
-    (void)bb_ota_apply_update();
-    /* Never returns */
-  } else {
-    ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+  /* issue #179: dedicated internal-RAM-stack task; 16 KB covers chunk[4096] +
+   * mbedTLS/cert-bundle TLS handshake. Do NOT run download/flash inline here —
+   * this callback's task stack is in PSRAM and would panic on cache-freeze. */
+  BaseType_t ok = xTaskCreate(ota_apply_task, "ota_apply", 16384, NULL, 5, NULL);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "OTA apply task create failed (internal RAM exhausted?)");
     bb_page_ota_dismiss();
   }
 }
