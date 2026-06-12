@@ -96,10 +96,13 @@ static void ota_confirm_cb(int accept) {
   }
   ESP_LOGI(TAG, "OTA confirm: user accepted version=%s", s_pending_ota_info.version);
   s_pending_ota_prompt = 0;
-  /* issue #179: dedicated internal-RAM-stack task; 16 KB covers chunk[4096] +
-   * mbedTLS/cert-bundle TLS handshake. Do NOT run download/flash inline here —
-   * this callback's task stack is in PSRAM and would panic on cache-freeze. */
-  BaseType_t ok = xTaskCreate(ota_apply_task, "ota_apply", 16384, NULL, 5, NULL);
+  /* issue #179: dedicated internal-RAM-stack task. 12 KB fits chunk[4096] + the
+   * TLS handshake stack and, unlike 16 KB, fits within internal RAM's largest
+   * free block (~15 KB). mbedTLS heap buffers (16 KB IN record) now live in
+   * PSRAM (CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC) so they no longer exhaust internal
+   * RAM. Do NOT run download/flash inline — this callback's task stack is in
+   * PSRAM and would panic on cache-freeze during flash write. */
+  BaseType_t ok = xTaskCreate(ota_apply_task, "ota_apply", 12288, NULL, 5, NULL);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "OTA apply task create failed (internal RAM exhausted?)");
     bb_page_ota_dismiss();
