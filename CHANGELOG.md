@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-06-13
+
 ### Fixed
 - **WiFi「最近成功优先」对 compile-time fallback 无效（issue #163 跟进）**：`got_ip` 成功后
   只更新已在 NVS saved slots 的 SSID 的时间戳；连上的 SSID 若不在 slots（典型 compile-time
