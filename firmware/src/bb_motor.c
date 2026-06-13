@@ -83,12 +83,16 @@ esp_err_t bb_motor_init(void) {
   s_ready = 1;
   ESP_LOGI(TAG, "motor ready gpio=%d active_level=%d", BBCLAW_MOTOR_GPIO, BBCLAW_MOTOR_ACTIVE_LEVEL);
 
-  /* boot self-test: direct GPIO pulse bypassing task queue */
-  ESP_LOGW(TAG, "motor self-test: gpio=%d HIGH for 500ms", BBCLAW_MOTOR_GPIO);
-  gpio_set_level(BBCLAW_MOTOR_GPIO, BBCLAW_MOTOR_ACTIVE_LEVEL);
-  vTaskDelay(pdMS_TO_TICKS(500));
-  gpio_set_level(BBCLAW_MOTOR_GPIO, BBCLAW_MOTOR_ACTIVE_LEVEL ? 0 : 1);
-  ESP_LOGW(TAG, "motor self-test done");
+  /* boot self-test: enqueue a 500ms pulse instead of blocking here.
+   * motor_task (created just above) runs it concurrently, so the haptic
+   * "motor works" feedback is unchanged but bootstrap no longer stalls
+   * 500ms on the critical path before audio init / boot wav / wifi. */
+  motor_event_t selftest = {.on_ms = 500, .off_ms = 0, .repeat = 1};
+  if (xQueueSend(s_queue, &selftest, 0) == pdTRUE) {
+    ESP_LOGW(TAG, "motor self-test queued: gpio=%d 500ms pulse (async)", BBCLAW_MOTOR_GPIO);
+  } else {
+    ESP_LOGW(TAG, "motor self-test enqueue failed (queue full)");
+  }
 
   return ESP_OK;
 }

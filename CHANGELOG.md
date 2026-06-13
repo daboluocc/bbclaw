@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **开机 motor 自检改异步入队，关键路径省 ~500ms**：`bb_motor_init` 原先用
+  `vTaskDelay(500)` 直接阻塞 bootstrap 做触觉自检，把后续 audio init / boot wav /
+  wifi 全部串行后移。改为把 500ms 脉冲入队给已经创建好的 `motor_task` 并发执行——
+  触觉「motor works」反馈不变，但 bootstrap 立即往下走。真机实测：`audio init done`
+  提早 ~488ms，`got ip` / `cloud transport ready` 整体提早 ~491ms，boot wav 与并发
+  motor 脉冲无干扰（playback ratio 99% / ESP_OK）。
 - **状态事件投递从 ~300ms 降到约一个渲染周期（ADR-028 跟手）**：真机二验确认按键反馈/打断
   即时，但 PTT 后的**视觉状态（LISTENING/录音指示）滞后 ~300ms**。根因：TTS 播放 + 转写流
   期间 LVGL 持锁连续渲染（>50ms/帧），状态事件靠抢 LVGL 锁投递，旧的 25ms esp_timer 周期泵
