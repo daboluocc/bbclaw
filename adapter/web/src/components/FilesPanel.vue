@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { workspaceFiles, workspaceFile, type WorkspaceFileMeta } from "../api";
 
 interface Entry { meta: WorkspaceFileMeta; content: string; loading: boolean }
 
+const REFRESH_MS = 5000;
+
 const entries = ref<Entry[]>([]);
 const loading = ref(false);
+let timer: ReturnType<typeof setInterval> | null = null;
 
 async function fill(entry: Entry) {
   entry.loading = true;
@@ -34,7 +37,17 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  timer = setInterval(load, REFRESH_MS);
+});
+
+onUnmounted(() => {
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+});
 </script>
 
 <template>
