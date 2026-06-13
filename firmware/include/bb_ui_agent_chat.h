@@ -198,6 +198,18 @@ void bb_ui_agent_chat_post_user_text(const char* text);
 void bb_ui_agent_chat_post_reply_delta(const char* text);
 
 /**
+ * Signal the end of a cloud_saas reply turn (all deltas delivered).
+ *
+ * The HTTP agent path renders via BB_AGENT_EVENT_TURN_END, which force-flushes
+ * any assistant chunk bytes that failed to queue under LVGL lock contention.
+ * The cloud voice path has no such event: the reply often arrives as a single
+ * delta, so a dropped lv_async_call would strand the reply with no "next chunk"
+ * to retry it. The cloud finish path calls this once all reply deltas arrived
+ * to run the same blocking flush (5× retry, ~1s). Safe to call from any task.
+ */
+void bb_ui_agent_chat_post_reply_done(void);
+
+/**
  * Issue #146 — persist a session id + driver learned from the cloud voice
  * (butler) path so cache replay + history work on CHAT re-entry.
  *

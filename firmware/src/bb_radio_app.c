@@ -2613,6 +2613,13 @@ static void stream_task(void* arg) {
               ESP_LOGI(TAG, "agent_chat: cloud already routed, skip duplicate send (reply_len=%u)",
                        (unsigned)strlen(ui_stream->reply_text));
               log_phase_text_chunks("phase=assistant text=", ui_stream->reply_text);
+              /* Turn boundary for the cloud_saas path: all reply deltas have
+               * arrived (stream_finish returned). Force-flush any assistant
+               * chunk that lost the LVGL lock — the reply commonly arrives as a
+               * single delta, so post_assistant_chunk's "next chunk" retry never
+               * fires and a dropped dispatch would leave the AI text unrendered
+               * (user text survives via post_user's 5× retry). */
+              bb_ui_agent_chat_post_reply_done();
               agent_chat_voice_post_error(NULL);
             } else {
               ESP_LOGI(TAG, "agent_chat: routing transcript len=%u", (unsigned)strlen(t));

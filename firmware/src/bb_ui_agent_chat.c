@@ -507,6 +507,33 @@ static void post_assistant_chunk(const char* delta) {
   }
 }
 
+/* Force-flush any assistant chunk bytes still sitting in the coalesce buffer
+ * that failed to queue earlier due to LVGL lock contention. Used as a turn-end
+ * safety net: post_assistant_chunk() only fires one lv_async_call and relies on
+ * "the next chunk" to retry a dropped queue — but when the whole reply arrives
+ * as a single delta (cloud_saas path) there is no next chunk, so a dropped
+ * dispatch would strand the reply forever. Retry with the same patience as
+ * async_post (5×, ~1s total); losing the reply text is unacceptable. */
+static void flush_pending_chunk_blocking(void) {
+  int has_pending = 0;
+  taskENTER_CRITICAL(&s_chunk_mux);
+  has_pending = (s_chunk_len[s_chunk_widx] > 0);
+  if (has_pending && !s_chunk_queued) {
+    s_chunk_queued = 1;
+  }
+  taskEXIT_CRITICAL(&s_chunk_mux);
+  if (!has_pending) return;
+  for (int i = 0; i < 5; i++) {
+    if (safe_lv_async_call(on_lvgl_chunk_dispatch, NULL) == LV_RESULT_OK) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+    taskENTER_CRITICAL(&s_chunk_mux);
+    s_chunk_queued = 0;  /* allow retry */
+    taskEXIT_CRITICAL(&s_chunk_mux);
+  }
+}
+
 static void post_tool_call(const char* tool, const char* hint) {
   bb_async_payload_t* p = async_alloc(BB_ASYNC_APPEND_TOOL_CALL);
   if (p == NULL) return;
@@ -683,28 +710,7 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       /* Flush any pending chunk data that failed to queue earlier due to
        * LVGL lock contention. After turn_end no more chunks will arrive,
        * so this is the last chance to render them. */
-      {
-        int has_pending = 0;
-        taskENTER_CRITICAL(&s_chunk_mux);
-        has_pending = (s_chunk_len[s_chunk_widx] > 0);
-        if (has_pending && !s_chunk_queued) {
-          s_chunk_queued = 1;
-        }
-        taskEXIT_CRITICAL(&s_chunk_mux);
-        if (has_pending) {
-          /* Retry with the same patience as async_post — this text is the
-           * user's reply, losing it is unacceptable. */
-          for (int i = 0; i < 5; i++) {
-            if (safe_lv_async_call(on_lvgl_chunk_dispatch, NULL) == LV_RESULT_OK) {
-              break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
-            taskENTER_CRITICAL(&s_chunk_mux);
-            s_chunk_queued = 0;  /* allow retry */
-            taskEXIT_CRITICAL(&s_chunk_mux);
-          }
-        }
-      }
+      flush_pending_chunk_blocking();
       /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
        * Phase 4.5.2 — set turn_complete so the streaming task will flush the
        * tail (any text after the last sentence boundary) and then exit. The
@@ -2255,6 +2261,16 @@ void bb_ui_agent_chat_post_reply_delta(const char* text) {
     post_state(BB_AGENT_STATE_BUSY);
   }
   post_assistant_chunk(text);
+}
+
+void bb_ui_agent_chat_post_reply_done(void) {
+  if (!s_chat.active) return;
+  /* cloud_saas turn boundary. The HTTP agent path gets BB_AGENT_EVENT_TURN_END
+   * which runs this flush; the cloud voice path has no such event, so the
+   * caller (bb_radio_app cloud finish) invokes this once all reply deltas have
+   * arrived. Without it, a single reply delta whose lv_async_call lost the LVGL
+   * lock would never render (no "next chunk" to retry the queue). */
+  flush_pending_chunk_blocking();
 }
 
 /* Issue #146 — persist a session id + driver learned from the cloud voice
