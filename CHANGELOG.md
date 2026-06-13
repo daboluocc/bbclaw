@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-06-13
+
+### Added
+- **PTT 全状态打断（barge-in，ADR-028 M1+M2）**：PTT 在任何状态按下都生效——立即停止本地
+  TTS 播放，并向 adapter 发 `turn.cancel`（local: `POST /v1/agent/cancel`；cloud: WS kind
+  `turn.cancel`，云 hub 通用路由直接透传，云端零改动），adapter 杀掉 in-flight `claude -p`
+  子进程（SIGTERM→2s 宽限→KILL，连带其中的工具执行一并终止）但**保留 session/resumeID**。
+  废除 cloud_wait 期间吞 PTT：取消使 NDJSON/WS 流即刻收尾，设备最长 90s 的阻塞死等自动解除。
+- **打断对 `--resume` 可见**：设备随 cancel 上报实际播到的最后一句（playedText，chat 路取
+  字幕、voice 路取 chunk tts_text），adapter 记录打断备注并注入下一回合 prompt——恢复后的
+  模型明确知道用户听到了多少、执行截断在哪；被打断回合不进长期记忆，auto-title 用原话不受
+  注入段污染。
+- adapter：`agent.Interrupter` 可选驱动能力 + `butler.InflightRegistry`（进程级 in-flight
+  turn 登记，LOCAL/CLOUD 两条链路共用）；被打断回合向设备发 `turn_cancelled` 帧（旧固件
+  安全忽略，向后兼容）。
+
 ### Changed
 - **开机 motor 自检改异步入队，关键路径省 ~500ms**：`bb_motor_init` 原先用
   `vTaskDelay(500)` 直接阻塞 bootstrap 做触觉自检，把后续 audio init / boot wav /
@@ -36,24 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   执行 → timer 永不创建 → 队列灌满后 NAV/PTT/FORCE_AGENT 全部 `overflow queue full
   DROPPED`。改为 `bb_state_init` 即建的 `esp_timer` 周期任务（25ms），不依赖任何 LVGL
   上下文，拿不到锁就等下一 tick、事件不丢。
-
-## [0.5.6] - 2026-06-13
-
-### Added
-- **PTT 全状态打断（barge-in，ADR-028 M1+M2）**：PTT 在任何状态按下都生效——立即停止本地
-  TTS 播放，并向 adapter 发 `turn.cancel`（local: `POST /v1/agent/cancel`；cloud: WS kind
-  `turn.cancel`，云 hub 通用路由直接透传，云端零改动），adapter 杀掉 in-flight `claude -p`
-  子进程（SIGTERM→2s 宽限→KILL，连带其中的工具执行一并终止）但**保留 session/resumeID**。
-  废除 cloud_wait 期间吞 PTT：取消使 NDJSON/WS 流即刻收尾，设备最长 90s 的阻塞死等自动解除。
-- **打断对 `--resume` 可见**：设备随 cancel 上报实际播到的最后一句（playedText，chat 路取
-  字幕、voice 路取 chunk tts_text），adapter 记录打断备注并注入下一回合 prompt——恢复后的
-  模型明确知道用户听到了多少、执行截断在哪；被打断回合不进长期记忆，auto-title 用原话不受
-  注入段污染。
-- adapter：`agent.Interrupter` 可选驱动能力 + `butler.InflightRegistry`（进程级 in-flight
-  turn 登记，LOCAL/CLOUD 两条链路共用）；被打断回合向设备发 `turn_cancelled` 帧（旧固件
-  安全忽略，向后兼容）。
-
-### Fixed
 - **真机首验暴露的 4 个跟手问题（2026-06-13 异地日志）**：
   1. *cancel 发不出去*：barge-in 一次性任务用 8KB internal 栈，真机 internal RAM 碎片化
      （largest 常 <8KB）导致 `xTaskCreate` 静默失败——改 `xTaskCreateWithCaps` PSRAM 栈
