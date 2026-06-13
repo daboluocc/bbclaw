@@ -239,3 +239,42 @@ M4/M5 是延迟与可维护性收益。每阶段固件 + adapter 同 tag 发布�
 | 字幕与播放句对齐 | PTT 路无字幕 | 逐句高亮，两通路一致 |
 | 等云无响应的死等 | 90s 硬阻塞 | 15s 判超时，立即可重试 |
 | 逐 chunk I2S 重配 | 每 chunk 可能 ~50-100ms | 每 turn ≤ 1 次 |
+
+## 5. 实施记录（M1+M2，2026-06-13）
+
+> 本节是开发实录，供后续（尤其 M3）参考。M1+M2 已实现并真机两轮验证；**未打 tag**。
+
+### 5.1 已落地（commit）
+
+| commit | 内容 |
+|---|---|
+| `7825589` | adapter：`agent.Interrupter` 能力 + claudecode `Interrupt(sid)`（SIGTERM→2s→KILL 杀回合子进程，保 session/resumeID）；`butler.InflightRegistry`（进程级 in-flight turn 登记 + 打断备注，LOCAL/CLOUD 共用）；`POST /v1/agent/cancel` + homeadapter kind `turn.cancel`；打断备注注入下一回合 `--resume` prompt |
+| `9e52610` | firmware：`on_ptt_changed` 全状态打断（busy/speaking/cloud_wait 都发 cancel）；`bb_adapter_request_turn_cancel`（一次性后台任务）；`bb_ui_agent_chat_request_cancel` 非阻塞取消；`bb_audio_set_playback_sample_rate` 幂等（每 turn ≤1 次 I2S 重配）。版本 v0.5.6 |
+| `b21a4aa` | adapter：barge-in HTTP 端到端测试（in-flight→cancel→turn_cancelled+turn_end→下一轮注入验证） |
+| `49c94c2` | firmware 真机首验 4 修：cancel 任务 internal 栈分不出→改 PSRAM 栈；打断后旧 turn TTS 照播→turn 级 stale 标志拦截；bb_state 全程 net=OFFLINE→boot ready 补发 NET_UP；LVGL 锁忙丢状态事件→PSRAM 溢出队列 |
+| `cc61ce6` | firmware 渲染削重绘：滚动动画 800→200ms、逐句跟读 LV_ANIM_OFF、初始历史 50→24 条 |
+| `508c042` | firmware 修回归：溢出队列泵从惰性 lv_timer 改 esp_timer 周期任务 |
+| `1dcb9e5` | firmware：`BB_WS_EVENT_ABORT` 本地中断 finish 等待——PTT 不再依赖服务端 cancel 即可立刻重录（error_code=ABORTED_BY_USER 静默收尾） |
+| `70c1a8d` | firmware：状态事件投递改**专用 drain 任务**（prio 7>LVGL 6，信号量唤醒，阻塞等锁）——视觉滞后 ~300ms→~1 渲染周期；dispatch 首试锁 50→5ms |
+
+### 5.2 真机验证暴露的关键教训（M3 务必继承）
+
+1. **internal RAM 高度碎片化**：真机 `internal_largest` 常 <8KB、最低 288B。任何 `xTaskCreate` 的 internal 栈都可能静默失败 → 一次性任务一律用 `xTaskCreateWithCaps(...PREFER_PSRAM)`。
+2. **LVGL（LV_OS_NONE）持锁连续渲染 >50ms**：TTS+转写流期间 `lvgl_port_lock` 几乎抢不到。任何"跨任务驱动 UI"的机制都不能靠在热路径上抢锁——要么落队列由高优先级 drain 任务在帧间隙送达，要么彻底脱离 LVGL 锁（M3 conv_core 的目标）。
+3. **打断不能依赖服务端**：旧 home adapter 不认 `turn.cancel` 时设备曾卡 `finish_stream` 34s。设备必须能本地 unblock（`BB_WS_EVENT_ABORT`）；服务端 cancel 只是"额外把后台 `claude -p` 也杀掉 + 注入打断备注"的增益。
+4. **打断时序**：打断可能发生在 TTS 开播**之前**（chunk 还在路上）。`s_tts_interrupt_requested` 在 `tts_playback_set_active(1)` 时被清，挡不住——必须用 turn 级 stale 标志。
+
+### 5.3 验收实测（真机日志）
+
+- PTT→TTS 静音：~64ms（`play_pcm interrupted`）✓
+- 打断后旧回复残留：0（`tts_drop_stale_turn` + `played_chunks=0`）✓
+- cloud_wait 死等：34s → 立即（`finish_aborted_by_user` 即起新 turn）✓
+- 状态视觉滞后：~300ms → ~1 渲染周期（drain 任务）✓
+- mic 实际开录：~300ms **未解决**，受 INMP441/MAX98357A 半双工 I2S 重配约束（硬件），M3 评估
+
+### 5.4 已知遗留（未做）
+
+- **M2 协议层未做**：仍走旧 `voice.stream.*` + 同步 finish 等待；`turn.start/commit`、二进制 TTS 帧、`asr.partial`、`flow.credit`、`turn.state` 均未实现。当前打断是"在旧架构上打补丁"，非 ADR 设想的 Turn 模型。
+- **`INVARIANT_FAIL=INV_6` 刷屏**：FORCE_AGENT/FORCE_PTT 事件不带 request_id，触发 `agent_in_flight && request_id_in_flight==0` 告警。无害噪声，M3 随状态机重构一并清。
+- **home adapter 部署**：服务端杀子进程 + resume 注入只在 home adapter 跑新代码时生效；设备侧已靠本地 abort 不受影响。
+- 渲染性能配置层（CPU 240MHz、SPI 时钟、-O2、RGB565_SWAPPED）属 issue #149，本次未动。
