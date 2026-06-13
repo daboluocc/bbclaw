@@ -71,10 +71,15 @@ const char *bbclaw_session_key(void) { return "sim:preview"; }
  * heavy refresh is exactly what stalls the dispatch→render path (the drain
  * task / lv_async_call can only run between refreshes), so this pinpoints
  * which UI state is responsible for the ~240ms 跟手 lag. */
-#if defined(CONFIG_BBCLAW_DEVICE_MONITOR) && !defined(BBCLAW_SIM_BUILD)
-#define BBCLAW_LVGL_REFR_PROFILE 1
-#define BBCLAW_LVGL_REFR_PROFILE_MIN_MS 25
+/* Off by default — flip to 1 locally when profiling render latency. Must stay
+ * 0 in shipped builds: it ESP_LOGWs on every heavy refresh (and bb_bar mode
+ * changes), which would spam real-device logs. NOT gated on
+ * CONFIG_BBCLAW_DEVICE_MONITOR because that is intentionally =y in production
+ * (ADR-015 CDC1 monitor ships on the PCB). */
+#ifndef BBCLAW_LVGL_REFR_PROFILE
+#define BBCLAW_LVGL_REFR_PROFILE 0
 #endif
+#define BBCLAW_LVGL_REFR_PROFILE_MIN_MS 25
 
 #ifdef BBCLAW_HAVE_CJK_FONT
 extern const lv_font_t lv_font_bbclaw_cjk;

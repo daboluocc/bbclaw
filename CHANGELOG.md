@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-06-13
+
 ### Fixed
 - **底栏状态条不随 agent 状态变化(空闲/聆听/忙碌/说话/报错无区分)**：chat 模式下 agent 状态
   走 `theme->set_state`,**故意不更新 legacy `s_status`**(`bb_radio_app` PTT release 分支注释
@@ -22,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dev 构建(生产不编入该任务)。
 
 ### Changed
+- **WiFi 自动连接改 scan-then-connect,跳过不在场网络的盲等超时(#182)**:原先是「串行盲连」
+  ——已保存 SSID 按最近成功时间戳倒序逐个 `set_config`→等满一个
+  `BBCLAW_WIFI_STA_CONNECT_TIMEOUT_MS` 才轮到下一个,排在前面的网络若此刻不在范围内
+  (出门/换地点),设备必须白等一整个超时,多网时启动/重连明显变慢。现在连接前先做一次
+  全信道阻塞扫描(~1-2s,一次即可并发看到周围所有 AP),给每个候选标记「是否在场」:
+  **Pass 0 先连在场命中的(快路径,不盲等),Pass 1 再连其余**(覆盖扫描失败/隐藏 SSID/
+  弱信号漏扫,等价原盲连)。扫描失败或交集为空自动回退全量盲连,行为不退化;单 SSID 不变。
+  扫描核心抽出 `wifi_scan_collect()` 与 HTTP 配网页共用;预筛期间用 `s_suppress_autoconnect`
+  抑制 STA_START 的自动连接与掉线重试,避免空配置连接风暴。ESP32 单射频无法并发*连接*
+  但可并发*扫描*,故只在「能连的集合」里按优先级依次连。
 - **移除聊天录音遮罩,录音指示改由底栏 VU 跟进——跟手实测 ~240ms→~90ms(最佳 44ms)**：
   chat 主题里那个 320×112 全宽录音遮罩每 48ms 重绘 7 条 meter,是活动态最贵的 LVGL 重绘源;
   而状态机的 dispatch 处理(进 LISTEN/起录音)经 `lv_async_call` 排在 LVGL 渲染之后,被这帧
@@ -31,9 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`bb_display_set_record_level`),保留"被听到"反馈。真机实测重帧 60–82ms→≤34ms 且数量骤减。
 
 ### Added
-- **LVGL 刷新性能探针(dev-only,gate 在 `CONFIG_BBCLAW_DEVICE_MONITOR`)**：挂
-  `REFR_START`/`REFR_READY`/`INVALIDATE_AREA` 事件,渲染持锁超阈值(25ms)即打印耗时+脏区
-  包围盒,定位拖慢 state→render 的重帧来源。生产构建不编入。
+- **LVGL 刷新性能探针(默认关,源码级 opt-in)**：挂 `REFR_START`/`REFR_READY`/`INVALIDATE_AREA`
+  事件,渲染持锁超阈值(25ms)即打印耗时+脏区包围盒,定位拖慢 state→render 的重帧来源。
+  由 `BBCLAW_LVGL_REFR_PROFILE`(默认 0)控制,**不随生产构建**——故意不挂在
+  `CONFIG_BBCLAW_DEVICE_MONITOR` 上(后者在生产 sdkconfig 为 y,会把 heavy-refresh 警告刷到真机)。
+  排障时本地手动置 1。
 
 ### Fixed
 - **PTT 去抖从 ~60ms 收到 ~10ms（对齐 ADR-028 规格，真机实测验证）**：`bb_ptt.c` 原先把
