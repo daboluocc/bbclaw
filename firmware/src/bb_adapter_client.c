@@ -145,6 +145,7 @@ static bb_ws_state_t s_ws;
 #define BB_WS_EVENT_DISCONNECTED BIT3
 #define BB_WS_EVENT_VERIFY_DONE BIT4
 #define BB_WS_EVENT_SITES_DONE BIT5
+#define BB_WS_EVENT_ABORT BIT6 /* ADR-028: PTT barge-in 本地中断 finish 等待 */
 
 static int body_contains_ok_true(const char* body);
 static int json_extract_string(const char* body, const char* key, char* out, size_t out_len);
@@ -682,6 +683,18 @@ static esp_err_t ws_send_text_message(const char* payload) {
 
 esp_err_t bb_adapter_client_send_text(const char* payload) {
   return ws_send_text_message(payload);
+}
+
+void bb_adapter_abort_finish_wait(void) {
+  /* 只在确有 finish 等待在飞时才设位,避免给下一轮 finish 留下 stale ABORT。
+   * events 为 NULL(WS 未初始化)时静默返回。 */
+  if (s_ws.events == NULL) {
+    return;
+  }
+  if (s_ws.finish_waiting) {
+    ESP_LOGI(TAG, "phase=finish_abort_local (barge-in)");
+    xEventGroupSetBits(s_ws.events, BB_WS_EVENT_ABORT);
+  }
 }
 
 /* ── ADR-028 §2.5.1 barge-in: fire-and-forget turn cancel ─────────────────
@@ -1871,10 +1884,14 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
     s_ws.finish_result = out_result;
     s_ws.finish_on_event = on_event;
     s_ws.finish_user_ctx = user_ctx;
+    /* 在 finish_waiting=1 之前清位(含 ABORT):barge-in 只在 finish_waiting=1
+     * 时才设 ABORT,而我们在置位前已清干净,关掉了"设位后被清"的竞态窗口;
+     * 同时清掉上一轮可能残留的 stale ABORT。clear 在锁内做,与置位互斥。 */
+    xEventGroupClearBits(s_ws.events,
+                         BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT);
     s_ws.finish_waiting = 1;
     snprintf(s_ws.finish_stream_id, sizeof(s_ws.finish_stream_id), "%s", ctx->stream_id);
     xSemaphoreGive(s_ws.lock);
-    xEventGroupClearBits(s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED);
 
     char body[320] = {0};
     snprintf(body, sizeof(body),
@@ -1893,14 +1910,18 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
       return send_err;
     }
 
-    EventBits_t bits = xEventGroupWaitBits(s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED,
-                                           pdFALSE, pdFALSE, pdMS_TO_TICKS(BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS));
+    EventBits_t bits = xEventGroupWaitBits(
+        s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT, pdFALSE,
+        pdFALSE, pdMS_TO_TICKS(BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS));
     xSemaphoreTake(s_ws.lock, portMAX_DELAY);
     s_ws.finish_waiting = 0;
     if ((bits & BB_WS_EVENT_DONE) == 0U) {
       if (out_result->error_code[0] == '\0') {
+        /* ADR-028 §2.5.1:本地 barge-in 中断优先于 timeout/disconnect 归因。 */
         snprintf(out_result->error_code, sizeof(out_result->error_code), "%s",
-                 (bits & BB_WS_EVENT_DISCONNECTED) != 0U ? "WS_DISCONNECTED" : "VOICE_SESSION_TIMEOUT");
+                 (bits & BB_WS_EVENT_ABORT) != 0U          ? "ABORTED_BY_USER"
+                 : (bits & BB_WS_EVENT_DISCONNECTED) != 0U ? "WS_DISCONNECTED"
+                                                           : "VOICE_SESSION_TIMEOUT");
       }
       ws_finish_reset_locked();
       xSemaphoreGive(s_ws.lock);

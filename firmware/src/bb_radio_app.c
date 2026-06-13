@@ -889,6 +889,12 @@ static void on_ptt_changed(int pressed) {
       }
       esp_err_t cancel_err = bb_adapter_request_turn_cancel(played);
       bb_ui_agent_chat_request_cancel();
+      /* 关键:不依赖服务端 cancel。本地立即中断 finish 等待,让 stream_task
+       * 马上脱离 cloud_wait 去起新一轮录音(真机:旧 adapter 不认 turn.cancel
+       * 时设备曾卡 cloud_wait 34s,PTT 只能发 cancel 不能开新录音)。 */
+      if (s_cloud_wait_busy) {
+        bb_adapter_abort_finish_wait();
+      }
       ESP_LOGI(TAG, "ptt barge-in: cancel requested (cloud_wait=%d busy=%d speaking=%d send=%s)",
                s_cloud_wait_busy ? 1 : 0, agent_busy, speaking, esp_err_to_name(cancel_err));
     }
@@ -2638,6 +2644,13 @@ static void stream_task(void* arg) {
             tts_streamed = (ui_stream != NULL && ui_stream->tts_chunk_received > 0) || (finish->tts_chunks != NULL);
 #endif
           }
+        } else if (strcmp(finish->error_code, "ABORTED_BY_USER") == 0) {
+          /* ADR-028 §2.5.1:用户 barge-in 主动中断,不是错误。不弹错误、不震动,
+           * 直接静默收尾——stream_task 接着循环就会处理用户正在按的新 PTT。
+           * 旧 turn 的 reply/TTS 已被 s_voice_turn_stale + stream_id 失配丢弃。 */
+          ESP_LOGI(TAG, "phase=finish_aborted_by_user stream=%s (barge-in, starting new turn)",
+                   stream.stream_id);
+          agent_chat_voice_post_error(NULL); /* 仅清 listening 提示 */
         } else {
           ESP_LOGE(TAG,
                    "phase=finish_failed esp=%s http_status=%d error_code=%s stream=%s reply_wait_timed_out=%d",

@@ -133,6 +133,18 @@ esp_err_t bb_adapter_client_send_text(const char* payload);
  * Duplicate requests while one is still in flight are coalesced. */
 esp_err_t bb_adapter_request_turn_cancel(const char* played_text);
 
+/* ADR-028 §2.5.1 barge-in — abort the local finish-stream wait immediately.
+ *
+ * bb_adapter_stream_finish_stream() blocks up to BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
+ * (90s) waiting for the cloud/adapter reply. On PTT barge-in the device must
+ * NOT depend on the server actually honouring turn.cancel (it may be slow, or
+ * an old adapter ignores it) — this unblocks the wait right away so stream_task
+ * can start the next turn. The in-flight finish then returns with
+ * error_code="ABORTED_BY_USER"; any late reply/TTS frames for that stream are
+ * dropped (stream id no longer matches). Safe to call from the PTT edge /
+ * esp_timer context. No-op when no finish wait is in flight. */
+void bb_adapter_abort_finish_wait(void);
+
 /* ADR-027 — device-side Home Adapter switching (cloud_saas only). Both calls
  * are synchronous: they send a cloud-terminated WS control frame and block on
  * the matching reply (or error / timeout). Call from a background task, not the

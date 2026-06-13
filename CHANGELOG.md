@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **PTT 打断后设备仍卡 cloud_wait、无法立即重录（真机二验，ADR-028）**：barge-in 时设备
+  发出 `turn.cancel` 后仍**阻塞在 `finish_stream` 等服务端回复**（最长 90s，真机实测卡 34s
+  直到 WS 被对端 FIN），期间 PTT 只能反复发 cancel、起不了新录音——这是「PTT 能力受限」的
+  根因。新增 `BB_WS_EVENT_ABORT` 本地中断位：PTT barge-in 在 `cloud_wait` 时立即唤醒
+  finish 等待（`bb_adapter_abort_finish_wait`），**不再依赖服务端是否真的取消**（旧 home
+  adapter 不认 `turn.cancel` 时也能跟手）；中断以 `error_code=ABORTED_BY_USER` 收尾，
+  radio_app 视为用户主动行为，不弹错误、不震动，stream_task 直接进入用户正在按的新一轮。
+- **bb_state 溢出队列泵从未运行致事件全丢（上一版回归）**：排空 timer 惰性创建于「首次
+  `dispatch_on_lvgl`」，但开机第一条事件即撞上 LVGL 忙直接进队列、`dispatch_on_lvgl` 从未
+  执行 → timer 永不创建 → 队列灌满后 NAV/PTT/FORCE_AGENT 全部 `overflow queue full
+  DROPPED`。改为 `bb_state_init` 即建的 `esp_timer` 周期任务（25ms），不依赖任何 LVGL
+  上下文，拿不到锁就等下一 tick、事件不丢。
+
 ## [0.5.6] - 2026-06-13
 
 ### Added
