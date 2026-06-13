@@ -3207,7 +3207,7 @@ static void stream_task(void* arg) {
     int speaker_active = s_tts_playback_active || bb_ui_agent_chat_tts_speaking() ||
                          bb_audio_is_playback_active();
     if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy &&
-        !speaker_active) {
+        !speaker_active && !bb_page_ota_active()) {
       int64_t now_ms = bb_now_ms();
       if (agent_chat_is_active()) {
         /* Don't idle-exit while pickers are open or agent is still busy

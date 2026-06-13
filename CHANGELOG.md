@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-06-14
+
+### Fixed
+- **OTA 固件下载在 ~32% 处必崩 `esp-aes: Failed to allocate memory` → OTA 失败**:HTTPS 下载走
+  TLS,密码套件用 AES-GCM。配置是硬件 AES(`MBEDTLS_HARDWARE_AES=y`)+ TLS 缓冲在 PSRAM
+  (`EXTERNAL_MEM_ALLOC=y`)+ 16KB 接收记录(`SSL_IN_CONTENT_LEN=16384`):硬件 AES 对 PSRAM 里
+  的大记录解密时要临时申请一块**连续的内部 DMA bounce 缓冲**,而 OTA 时内部最大连续块只有
+  ~10.7KB < 16KB → 分配失败 → `esp_tls_conn_read` 报错 → `bb_ota: HTTP read error` → 整个 OTA
+  中止。改 **`CONFIG_MBEDTLS_HARDWARE_AES=n`(软件 AES)**:彻底去掉 esp-aes 的 DMA 分配路径,
+  不再吃内部 DMA RAM。本设备 TLS 吞吐很低(opus 音频 + 控制 + 偶尔 OTA),软件 AES 的 CPU 代价
+  可忽略;`HARDWARE_MPI`(RSA/ECC 握手加速)保留。**注意:旧固件无法靠 OTA 自愈此问题(下载用的
+  就是有问题的 TLS 栈),需 USB 烧录一次带本修复的固件,之后 OTA 才可靠。**
+- **idle 超时未判断 OTA 进行中**:OTA 下载期间若静默超过 `BBCLAW_CHAT_IDLE_TIMEOUT_MS`,主循环
+  仍会触发 `agent_chat_exit()`/状态切换,干扰 OTA 进度页渲染(不影响 flash 写入,但画面会乱)。
+  idle 超时外层条件加 `!bb_page_ota_active()` 守卫。
+
 ## [0.5.8] - 2026-06-14
 
 ### Fixed
