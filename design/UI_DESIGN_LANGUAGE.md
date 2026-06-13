@@ -62,8 +62,8 @@ daboluo 云黄 = `oklch(0.86 0.17 96)`。Web 侧 `:root` 取值见 `dot-matrix-u
 | 网络连接 | `bb_page_netconn.c` | WiFi 弧（基点+3 层点弧）逐层点亮 | §3.5.1 |
 | 待机时钟 | `bb_page_standby.c` | 5×7 点阵数字 + 青色呼吸冒号 | 无时间显示居中横杠 |
 | 锁屏 | `bb_page_locked.c` | 点阵锁形（弧形 shackle + 点阵 body + 青色 keyhole 呼吸点）| VERIFY 时 keyhole 呼吸加速；失败 body 闪红一拍 |
-| 录音遮罩 | `bb_chat_recording.c` | VU 7 列×5 行点阵柱，bottom-up 点亮，峰值点 voiced 青闪 | dot 4 / pitch 7 |
-| ACTIVE 底栏点阵带 | `bb_lvgl_display.c` | 3×N 点阵小屏，**按状态切 motif**：处理=扫描sweep（整列彗星）· 聆听=声波vu · 说话=行波wave · 错误=红脉冲pulse · 待机=呼吸breathe | dot 4 / pitch 7 / vpitch 5；取代旧 `[B] cwd \| mem:N+M` 文字（仍在锁屏 footer）；与 daboluo.cc/style 的 `dot-matrix-anim.js` 同源 motif 库 |
+| ~~录音遮罩~~ | ~~`bb_chat_recording.c`~~ | **已移除**（2026-06）——全宽 320×112 遮罩每 48ms 重绘 7 条 meter 是活动态最贵的 LVGL 重绘源，dispatch 经 lv_async 排在其后，录音起点/状态视觉滞后 ~240ms。录音指示统一由下方 ACTIVE 底栏 `BAR_LISTEN`(VU) 表达 | — |
+| ACTIVE 底栏点阵带 | `bb_lvgl_display.c` | 3×N 点阵小屏，**按状态切 motif**：处理/忙碌=扫描sweep（整列彗星）· 聆听=声波vu（**跟随真实麦克风电平**，`bb_display_set_record_level`）· 说话=行波wave · 错误/DIZZY=红脉冲pulse · 待机=呼吸breathe。chat 模式下由 agent 状态直接驱动（`bb_display_set_agent_bar_state`，因 chat 不更新 legacy status）；非 chat 由 status 字符串驱动 | dot 4 / pitch 7 / vpitch 5；取代旧 `[B] cwd \| mem:N+M` 文字（仍在锁屏 footer）；与 daboluo.cc/style 的 `dot-matrix-anim.js` 同源 motif 库 |
 | 聊天气泡 | `bb_chat_transcript.c` | —（色块） | user=青 30%，assistant=ghost 面+冷白字，tool=ghost 10%+DIM，error=ERR |
 | ACTIVE 顶栏 | `bb_lvgl_display.c` | —（文字+位图图标） | 文字 DIM，活跃元素 ACCENT；底栏见上方扫描条 |
 | Settings / 任务列表 | `bb_ui_settings.c` / `bb_ui_task_list.c` | —（列表） | 选中行 = ghost 行面 + 青色左缘 3px 竖条 + LIT 文字 |

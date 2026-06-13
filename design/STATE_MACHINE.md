@@ -143,10 +143,10 @@ typedef enum {
 | `src/bb_chat_topbar.c` | CHAT 顶栏（骨架） |
 | `src/bb_chat_bottombar.c` | CHAT 底栏（骨架） |
 | `src/bb_chat_transcript.c` | 对话气泡渲染（消息气泡、流式 append、历史） |
-| `src/bb_chat_recording.c` | 录音波形遮罩（骨架） |
+| ~~`src/bb_chat_recording.c`~~ | 录音波形遮罩 —— **已移除（2026-06）**，重绘过重拖慢 state→render；录音指示改由 ACTIVE 底栏 `BAR_LISTEN`(VU) 表达。文件暂留为死代码待清理 |
 | `src/bb_chat_pickers.c` | session/cwd/driver picker 转发层 |
 | `src/bb_lvgl_display.c` | LVGL 初始化 + 视图切换调度 |
-| `src/bb_theme_buddy_anim.c` | Chat overlay（Phase 7 后变透明：transcript + 右上角浮动 buddy 表情小窗） |
+| `src/bb_theme_buddy_anim.c` | Chat overlay（透明：仅 transcript。右上角 buddy 表情小窗已于 2026-06-10 移除，agent 状态改由顶栏图标 + 底栏 motif 表达） |
 
 > 全机视觉语言（调色板 token、点阵 motif、各页面应用矩阵）见
 > `design/UI_DESIGN_LANGUAGE.md`，代码侧落地为 `firmware/include/bb_ui_theme.h`。
@@ -166,8 +166,8 @@ Phase 7 架构：底层 ACTIVE 视图提供顶栏+底栏骨架，overlay 透明�
 
 - **顶栏**（底层 `bb_lvgl_display.c`）：mode icon + status icon + status text + WiFi + battery + clock
 - **对话区**（overlay `bb_chat_transcript.c`）：消息气泡流
-- **buddy 表情小窗**（overlay `bb_theme_buddy_anim.c`）：对话区右上角 ~96×38 半透明圆角 chip，face + mood 两行，九态各配一个 lv_anim 动效（呼吸/浮动/点点/摇摆/心跳/抖动/变色/弹跳，见 `design/AGENT_STATE_MACHINE.md`）；录音遮罩 show 时 move_foreground 盖住它
-- **底栏**（底层 `bb_lvgl_display.c`）：session id + cwd name
+- **agent 状态表达**：~~右上角 buddy 表情小窗~~（2026-06-10 移除）+ ~~录音波形遮罩~~（2026-06 移除）均已退役——状态改由**顶栏 status 图标** + **底栏点阵 motif** 表达。底栏 chat 模式下由 agent 状态直接驱动（`bb_display_set_agent_bar_state`：IDLE→breathe / LISTENING→VU / BUSY→sweep / SPEAKING→wave / DIZZY→pulse）；VU 跟随真实麦克风电平
+- **底栏**（底层 `bb_lvgl_display.c`）：session id + cwd name + 状态点阵 motif（见上）
 - **录音时**：底层 `s_view_speaking` 在对话区位置显示波形动画
 - **picker 时**：overlay 弹出 session/cwd 选择器覆盖对话区
 
