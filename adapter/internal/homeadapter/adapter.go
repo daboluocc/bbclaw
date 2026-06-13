@@ -547,14 +547,19 @@ func (a *Adapter) handleChatTextRequest(ctx context.Context, write func(CloudEnv
 	}
 
 	deltaSeq := 0
-	// Keepalive: while the agent runs, re-emit a reply-stream event every 15s so
-	// the cloud's 30s reply-idle timer (ReplyIdleWait) keeps resetting. Without it
-	// a long silent agent turn (claude-code running a tool / thinking with no output)
-	// trips HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the
-	// reply. The 25s connection-level "ping" does NOT reset the per-request idle
-	// timer — only reply-stream events do. Same phase is deduped cloud→device, so
-	// this doesn't churn the device UI. write() is writeMu-locked, so concurrent
-	// emits from here and the callback are safe.
+	// Keepalive — LEGACY no-router openclaw-sink path ONLY. When a.router is set
+	// (every cloud-relay deployment: main.go calls SetRouter), this handler has
+	// already returned above via handleChatTextViaAgent/handleChatTextViaButler,
+	// which run their OWN keepalive in startHeartbeat (voice.reply.heartbeat every
+	// HeartbeatInterval). This block is reached only on the driverless openclaw
+	// sink fallback — do not assume it keeps the agent/butler path alive.
+	// It re-emits a reply-stream event every 15s so the cloud's sliding reply-idle
+	// timer (ReplyIdleWait) keeps resetting; without it a long silent turn trips
+	// HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the reply.
+	// The 25s connection-level "ping" does NOT reset the per-request idle timer —
+	// only reply-stream events do. Same phase is deduped cloud→device, so this
+	// doesn't churn the device UI. write() is writeMu-locked, so concurrent emits
+	// from here and the callback are safe.
 	kaStop := make(chan struct{})
 	go func() {
 		t := time.NewTicker(15 * time.Second)
@@ -651,14 +656,19 @@ func (a *Adapter) handleTranscriptRequest(ctx context.Context, write func(CloudE
 	a.log.Infof("phase=openclaw_request_start device=%s session=%s stream=%s elapsed_s=0.000 text_chars=%d",
 		env.DeviceID, strings.TrimSpace(sessionKey), strings.TrimSpace(streamID), utf8.RuneCountInString(text))
 	deltaSeq := 0
-	// Keepalive: while the agent runs, re-emit a reply-stream event every 15s so
-	// the cloud's 30s reply-idle timer (ReplyIdleWait) keeps resetting. Without it
-	// a long silent agent turn (claude-code running a tool / thinking with no output)
-	// trips HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the
-	// reply. The 25s connection-level "ping" does NOT reset the per-request idle
-	// timer — only reply-stream events do. Same phase is deduped cloud→device, so
-	// this doesn't churn the device UI. write() is writeMu-locked, so concurrent
-	// emits from here and the callback are safe.
+	// Keepalive — LEGACY no-router openclaw-sink path ONLY. When a.router is set
+	// (every cloud-relay deployment: main.go calls SetRouter), this handler has
+	// already returned above via handleChatTextViaAgent/handleChatTextViaButler,
+	// which run their OWN keepalive in startHeartbeat (voice.reply.heartbeat every
+	// HeartbeatInterval). This block is reached only on the driverless openclaw
+	// sink fallback — do not assume it keeps the agent/butler path alive.
+	// It re-emits a reply-stream event every 15s so the cloud's sliding reply-idle
+	// timer (ReplyIdleWait) keeps resetting; without it a long silent turn trips
+	// HOME_ADAPTER_TIMEOUT and the cloud FINs the connection, dropping the reply.
+	// The 25s connection-level "ping" does NOT reset the per-request idle timer —
+	// only reply-stream events do. Same phase is deduped cloud→device, so this
+	// doesn't churn the device UI. write() is writeMu-locked, so concurrent emits
+	// from here and the callback are safe.
 	kaStop := make(chan struct{})
 	go func() {
 		t := time.NewTicker(15 * time.Second)
