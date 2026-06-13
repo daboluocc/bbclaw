@@ -24,6 +24,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/idf_additions.h"
 #include "freertos/portmacro.h"
 #include "esp_attr.h"
@@ -553,37 +554,48 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
  * 的 lv_timer 排空(timer 回调天然在 LVGL 上下文,无需跨任务锁)。队列
  * 非空时后续事件也入队,保持顺序。 */
 #define BB_STATE_OVERFLOW_QUEUE_DEPTH 16
-#define BB_STATE_OVERFLOW_PUMP_MS 25
 static QueueHandle_t s_overflow_q;
-static esp_timer_handle_t s_overflow_pump_timer;
+static SemaphoreHandle_t s_overflow_sig; /* dispatch 入队后 give，唤醒 drain 任务 */
+static TaskHandle_t s_overflow_task;
 
 static void dispatch_on_lvgl(void* user_data);
 
-/* 排空泵:esp_timer 周期任务(init 即建,不依赖任何 LVGL 上下文——上一版用
- * "首次 dispatch_on_lvgl 时惰性建 lv_timer",真机翻车:开机第一条事件就赶上
- * LVGL 忙直接进了队列,dispatch_on_lvgl 从未运行,timer 永远没建,队列灌满
- * 后全员 DROPPED)。队列空时本回调只做一次判空,开销可忽略;拿不到锁就等
- * 下个 tick,事件不丢。 */
-static void overflow_pump_cb(void* arg) {
+/* 溢出排空任务(ADR-028 跟手):平时阻塞在信号量上,零开销。dispatch 把事件入队
+ * 后 give 信号量唤醒本任务。关键区别于之前的 esp_timer 周期泵——本任务能
+ * **阻塞**等 LVGL 锁(lvgl_port_lock 长超时),而 esp_timer 回调不敢久阻塞(会拖
+ * 累其它定时器),只能 10ms 浅试、错过长渲染周期就得等 25ms 下一 tick,实测
+ * 队列事件被拖到 ~300ms 才投递。本任务优先级(7)高于 LVGL(6)且同钉 core 1:
+ * LVGL 一旦在两帧之间释放锁,FreeRTOS 互斥量按优先级立刻把锁交给本任务,
+ * 于是排队的 PTT/状态事件在 ~1 个渲染周期内就送达,不再卡几百毫秒。排空只是
+ * lv_async_call 入队(微秒级),不占渲染。 */
+static void overflow_drain_task(void* arg) {
   (void)arg;
-  if (s_overflow_q == NULL || uxQueueMessagesWaiting(s_overflow_q) == 0) return;
-  if (!lvgl_port_lock(10)) return; /* LVGL 还忙,下个 tick 再试 */
-  bb_event_payload_t evt;
-  int pumped = 0;
-  /* 每 tick 最多排 8 个,避免一帧内长时间占用渲染 */
-  while (pumped < 8 && xQueueReceive(s_overflow_q, &evt, 0) == pdTRUE) {
-    bb_event_payload_t* heap_evt = (bb_event_payload_t*)malloc(sizeof(*heap_evt));
-    if (heap_evt == NULL) break;
-    *heap_evt = evt;
-    if (lv_async_call(dispatch_on_lvgl, heap_evt) != LV_RESULT_OK) {
-      free(heap_evt);
-      break;
+  for (;;) {
+    xSemaphoreTake(s_overflow_sig, portMAX_DELAY);
+    if (s_overflow_q == NULL || uxQueueMessagesWaiting(s_overflow_q) == 0) {
+      continue;
     }
-    pumped++;
-  }
-  lvgl_port_unlock();
-  if (pumped > 0) {
-    ESP_LOGI(TAG, "overflow pump: %d queued event(s) delivered", pumped);
+    /* 阻塞等锁:LVGL 在两帧之间释放锁时本任务(prio 7 > LVGL 6)立即抢到。
+     * 1s 超时只是病态兜底(LVGL 卡死),正常一个渲染周期内必拿到。 */
+    if (!lvgl_port_lock(1000)) {
+      xSemaphoreGive(s_overflow_sig); /* 没拿到,重新挂起待下轮 */
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    bb_event_payload_t evt;
+    int pumped = 0;
+    while (pumped < BB_STATE_OVERFLOW_QUEUE_DEPTH && xQueueReceive(s_overflow_q, &evt, 0) == pdTRUE) {
+      bb_event_payload_t* heap_evt = (bb_event_payload_t*)malloc(sizeof(*heap_evt));
+      if (heap_evt == NULL) break;
+      *heap_evt = evt;
+      if (lv_async_call(dispatch_on_lvgl, heap_evt) != LV_RESULT_OK) {
+        free(heap_evt);
+        break;
+      }
+      pumped++;
+    }
+    lvgl_port_unlock();
+    (void)pumped;
   }
 }
 
@@ -688,6 +700,8 @@ void bb_state_dispatch(bb_event_payload_t evt) {
     if (xQueueSend(s_overflow_q, &evt, 0) != pdTRUE) {
       ESP_LOGE(TAG, "dispatch: overflow queue full (evt=%s) — DROPPED",
                bb_event_name(evt.type));
+    } else if (s_overflow_sig != NULL) {
+      xSemaphoreGive(s_overflow_sig);
     }
     return;
   }
@@ -700,12 +714,14 @@ void bb_state_dispatch(bb_event_payload_t evt) {
   *heap_evt = evt;
   /* LVGL 配 LV_OS_NONE，跨任务调 lv_async_call 必须先持 lvgl_port 锁，
    * 否则会和 lv_timer_handler 抢 TLSF 堆导致破坏（参考 bb_ui_agent_chat.c
-   * 的 safe_lv_async_call 注释）。锁忙不再丢事件:落溢出队列,由 LVGL 任务
-   * 内的 lv_timer 排空(ADR-028 跟手修复)。超时降到 50ms——调用方可能是
-   * esp_timer 任务(PTT 边沿),长阻塞会拖累所有定时器。 */
-  if (!lvgl_port_lock(50)) {
+   * 的 safe_lv_async_call 注释）。这里只**浅试** 5ms:调用方常是 esp_timer 的
+   * PTT 边沿回调,绝不能久阻塞(会拖累按键响应本身)。拿不到就立刻丢进溢出队列,
+   * 由专用 drain 任务(prio>LVGL,能阻塞等锁)在一个渲染周期内送达——这条快路
+   * 只为"LVGL 恰好空闲"时省一次任务切换。 */
+  if (!lvgl_port_lock(5)) {
     free(heap_evt);
     if (s_overflow_q != NULL && xQueueSend(s_overflow_q, &evt, 0) == pdTRUE) {
+      if (s_overflow_sig != NULL) xSemaphoreGive(s_overflow_sig);
       ESP_LOGI(TAG, "dispatch: lvgl busy — queued (evt=%s)", bb_event_name(evt.type));
     } else {
       ESP_LOGE(TAG, "dispatch: lvgl busy + queue unavailable (evt=%s) — DROPPED",
@@ -804,18 +820,23 @@ void bb_state_init(void) {
   if (s_overflow_q == NULL) {
     ESP_LOGE(TAG, "init: overflow queue create failed — busy-time events will drop");
   } else {
-    esp_timer_create_args_t pump_args = {
-        .callback = overflow_pump_cb,
-        .arg = NULL,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "bb_state_pump",
-    };
-    if (esp_timer_create(&pump_args, &s_overflow_pump_timer) == ESP_OK) {
-      esp_timer_start_periodic(s_overflow_pump_timer,
-                               (uint64_t)BB_STATE_OVERFLOW_PUMP_MS * 1000);
+    /* 信号量唤醒 + 专用排空任务(prio 7 > LVGL 6,同钉 core 1):能阻塞等 LVGL
+     * 锁,在 LVGL 两帧间隙立刻拿到锁排空,把队列事件投递延迟从 ~300ms 压到
+     * ~1 个渲染周期。任务平时阻塞在信号量上,零 CPU。 */
+    s_overflow_sig = xSemaphoreCreateBinary();
+    if (s_overflow_sig == NULL) {
+      ESP_LOGE(TAG, "init: overflow sig create failed — busy-time delivery degraded");
     } else {
-      ESP_LOGE(TAG, "init: overflow pump timer create failed");
-      s_overflow_pump_timer = NULL;
+      BaseType_t ok =
+#if CONFIG_FREERTOS_UNICORE
+          xTaskCreate(overflow_drain_task, "bb_state_drain", 3072, NULL, 7, &s_overflow_task);
+#else
+          xTaskCreatePinnedToCore(overflow_drain_task, "bb_state_drain", 3072, NULL, 7, &s_overflow_task, 1);
+#endif
+      if (ok != pdPASS) {
+        ESP_LOGE(TAG, "init: overflow drain task create failed");
+        s_overflow_task = NULL;
+      }
     }
   }
 

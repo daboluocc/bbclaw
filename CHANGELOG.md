@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **状态事件投递从 ~300ms 降到约一个渲染周期（ADR-028 跟手）**：真机二验确认按键反馈/打断
+  即时，但 PTT 后的**视觉状态（LISTENING/录音指示）滞后 ~300ms**。根因：TTS 播放 + 转写流
+  期间 LVGL 持锁连续渲染（>50ms/帧），状态事件靠抢 LVGL 锁投递，旧的 25ms esp_timer 周期泵
+  浅试 10ms 屡屡错过渲染窗口。改为**信号量唤醒的专用 drain 任务**（优先级 7 > LVGL 6、同钉
+  core 1）：能阻塞等锁，LVGL 两帧间隙一释放即按优先级拿到锁排空队列，事件在一个渲染周期内送
+  达。`dispatch` 首次试锁 50ms→5ms（绝不阻塞 PTT 边沿回调本身），拿不到立即入队由 drain 送。
+  注：实际 mic 开录仍受 INMP441/MAX98357A 半双工 I2S 重配约束（~每次切换数十 ms），属硬件
+  限制，待 M3 conv_core 一并评估。
+
 ### Fixed
 - **PTT 打断后设备仍卡 cloud_wait、无法立即重录（真机二验，ADR-028）**：barge-in 时设备
   发出 `turn.cancel` 后仍**阻塞在 `finish_stream` 等服务端回复**（最长 90s，真机实测卡 34s
