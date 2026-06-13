@@ -42,6 +42,20 @@ void bb_display_set_active_model(const char* model_label);
 /** Chat 激活状态：为 1 时强制显示 ACTIVE 视图（顶栏+底栏），
  *  并隐藏底层的简单对话文本区，让 chat overlay 的 transcript 占据中间区域。 */
 void bb_display_set_chat_active(int active);
+
+/** 底栏 motif 跟随 agent 状态（chat 模式）。
+ *  chat 模式下 agent 状态走 theme->set_state，不再更新 legacy s_status，
+ *  底栏(status 驱动)因此停在空闲。此入口让底栏直接跟随 agent 状态：
+ *  IDLE→breathe / LISTENING→VU / BUSY→sweep / SPEAKING→wave / ERROR→pulse。
+ *  仅在 s_chat_active 时生效；chat 退出（set_chat_active(0)）自动交回 status 映射。 */
+typedef enum {
+  BB_BAR_STATE_IDLE = 0,
+  BB_BAR_STATE_LISTENING,
+  BB_BAR_STATE_BUSY,
+  BB_BAR_STATE_SPEAKING,
+  BB_BAR_STATE_ERROR,
+} bb_bar_state_t;
+void bb_display_set_agent_bar_state(bb_bar_state_t state);
 /** ADR-017: 阅读模式提示。on=1 时底栏 session 槽位被一行提示文字覆盖，
  *  告诉用户"按 DOWN 到底回到实时流"；on=0 恢复正常 alias/sid 显示。
  *  由 bb_chat_transcript 在 follow-tail 锁存变化时调用，不需要外部驱动。 */

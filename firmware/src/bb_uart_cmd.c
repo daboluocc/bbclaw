@@ -11,8 +11,10 @@
 #include "bb_nav_input.h"
 #include "bb_ptt.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
 static const char* TAG = "bb_uart_cmd";
@@ -155,8 +157,11 @@ esp_err_t bb_uart_cmd_start(void) {
   }
   /* inject runs the full nav/ptt callback chain (→ bb_state dispatch) inline in
    * this task, same as the esp_timer task does for real edges. Size the stack
-   * with margin over that path — 3072 overflowed. */
-  if (xTaskCreate(uart_cmd_task, "bb_uart_cmd", 6144, NULL, 5, NULL) != pdPASS) {
+   * with margin over that path — 3072 overflowed. Stack goes in PSRAM
+   * (MALLOC_CAP_SPIRAM): this is a dev-only tool and must NOT consume scarce
+   * internal RAM — a 6144B internal stack here fragmented the heap below the
+   * 8192B the adapter WebSocket task needs, breaking audio streaming. */
+  if (xTaskCreateWithCaps(uart_cmd_task, "bb_uart_cmd", 6144, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
     ESP_LOGW(TAG, "uart_cmd task create failed");
     uart_driver_delete(UART_CMD_PORT);
     return ESP_ERR_NO_MEM;

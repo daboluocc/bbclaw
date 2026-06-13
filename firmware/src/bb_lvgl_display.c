@@ -506,9 +506,18 @@ static void apply_battery_widget(void) {
   }
 }
 
+/* >=0 while chat mode drives the bar from agent state (see
+ * bb_display_set_agent_bar_state); overrides the status-string mapping below
+ * because chat mode intentionally stops updating the legacy s_status. */
+static int s_agent_bar_mode = -1;
+
 /* Map the live status string to a sweep mode (color + speed). The strip is
  * the active view's persistent ambient indicator across all states. */
 static void apply_bottom_bar(const char* status, int recording) {
+  if (s_chat_active && s_agent_bar_mode >= 0) {
+    s_bottombar_mode = s_agent_bar_mode; /* chat agent state owns the bar */
+    return;
+  }
   int mode = BAR_IDLE;
   if (status != NULL && status[0] != '\0') {
     if (strstr(status, BB_STATUS_ERR) != NULL || strstr(status, "NO WIFI") != NULL ||
@@ -526,6 +535,11 @@ static void apply_bottom_bar(const char* status, int recording) {
       mode = BAR_SPEAK;
     }
   }
+#if BBCLAW_LVGL_REFR_PROFILE
+  if (mode != s_bottombar_mode) {
+    ESP_LOGI("bb_bar", "mode %d->%d status='%s' rec=%d", s_bottombar_mode, mode, status ? status : "", recording);
+  }
+#endif
   s_bottombar_mode = mode;
 }
 
@@ -2154,7 +2168,27 @@ static int s_chat_active_stub;
 void bb_display_set_chat_active(int active) {
   (void)s_chat_active_stub;
   s_chat_active = active ? 1 : 0;
+  if (!s_chat_active) {
+    s_agent_bar_mode = -1; /* hand the bar back to the status-string mapping */
+  }
   if (s_ready) refresh_ui();
+}
+
+void bb_display_set_agent_bar_state(bb_bar_state_t state) {
+  int mode;
+  switch (state) {
+    case BB_BAR_STATE_LISTENING: mode = BAR_LISTEN; break;
+    case BB_BAR_STATE_BUSY:      mode = BAR_PROCESS; break;
+    case BB_BAR_STATE_SPEAKING:  mode = BAR_SPEAK; break;
+    case BB_BAR_STATE_ERROR:     mode = BAR_ERROR; break;
+    case BB_BAR_STATE_IDLE:
+    default:                     mode = BAR_IDLE; break;
+  }
+  s_agent_bar_mode = mode;
+  s_bottombar_mode = mode; /* take effect on the next 48ms bar tick */
+#if BBCLAW_LVGL_REFR_PROFILE
+  ESP_LOGI("bb_bar", "agent bar state=%d -> mode=%d (chat_active=%d)", (int)state, mode, s_chat_active);
+#endif
 }
 
 void bb_display_set_tts_playing(int playing) {

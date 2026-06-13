@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **底栏状态条不随 agent 状态变化(空闲/聆听/忙碌/说话/报错无区分)**：chat 模式下 agent 状态
+  走 `theme->set_state`,**故意不更新 legacy `s_status`**(`bb_radio_app` PTT release 分支注释
+  实证),而底栏 motif 由 `s_status` 驱动 → 永远停在初始态。新增 `bb_display_set_agent_bar_state`,
+  在 `buddy_state_listener` / async set_state 处把 agent 状态直接映射到底栏 motif:
+  IDLE→breathe / LISTENING→VU / BUSY→sweep / SPEAKING→wave / DIZZY→pulse;chat 退出自动交回
+  status 映射。真机实测 PTT 时底栏 mode 随 LISTEN/BUSY 切换(此前一条不变)。
+- **(dev 回归)UART 自测任务耗尽内部 RAM 致 adapter WebSocket 任务建不起来、音频流中断**：
+  `bb_uart_cmd` 任务用了 6144B **内部** RAM 栈,把内部堆最大连续块挤到 7680B < adapter ws 任务
+  所需的 8192B → `Error create websocket task` / `bb_adapter_stream_start failed` → PTT 录音流
+  送不出、agent 直接 DIZZY。把该任务栈改用 PSRAM(`xTaskCreateWithCaps`+`MALLOC_CAP_SPIRAM`),
+  内部 RAM 零占用。真机实测 ws 恢复连接 + 分片流正常。仅影响 `CONFIG_BBCLAW_DEVICE_MONITOR`
+  dev 构建(生产不编入该任务)。
+
 ### Changed
 - **移除聊天录音遮罩,录音指示改由底栏 VU 跟进——跟手实测 ~240ms→~90ms(最佳 44ms)**：
   chat 主题里那个 320×112 全宽录音遮罩每 48ms 重绘 7 条 meter,是活动态最贵的 LVGL 重绘源;

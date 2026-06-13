@@ -372,6 +372,8 @@ static void on_lvgl_chunk_dispatch(void* unused) {
   }
 }
 
+static bb_bar_state_t agent_to_bar_state(bb_agent_state_t s); /* fwd: defined below */
+
 static void on_lvgl_dispatch(void* user_data) {
   bb_async_payload_t* p = (bb_async_payload_t*)user_data;
   if (p == NULL) return;
@@ -393,6 +395,7 @@ static void on_lvgl_dispatch(void* user_data) {
     case BB_ASYNC_SET_STATE:
       s_chat.state = p->state;
       if (theme->set_state != NULL) theme->set_state(p->state);
+      bb_display_set_agent_bar_state(agent_to_bar_state(p->state));
       break;
     case BB_ASYNC_APPEND_USER:
       if (theme->append_user != NULL) theme->append_user(p->s1 != NULL ? p->s1 : "");
@@ -1314,6 +1317,19 @@ static void tts_cancel_in_flight(void) {
  * bb_state 内部独立走自己的 LVGL async 队列，listener 在 LVGL 任务上回调
  * 时再次调 theme->set_state。哪怕老路径丢一帧，新路径下次仍能把 buddy 拉
  * 到正确状态（idempotent — 同 state 重复 set 等于动画重置）。 */
+/* Map agent state → bottom-bar motif. In chat mode the legacy s_status is not
+ * updated (see bb_radio_app PTT release branch), so the bar must follow the
+ * agent state directly to show 聆听/忙碌/说话/报错/空闲. */
+static bb_bar_state_t agent_to_bar_state(bb_agent_state_t s) {
+  switch (s) {
+    case BB_AGENT_STATE_LISTENING: return BB_BAR_STATE_LISTENING;
+    case BB_AGENT_STATE_BUSY:      return BB_BAR_STATE_BUSY;
+    case BB_AGENT_STATE_SPEAKING:  return BB_BAR_STATE_SPEAKING;
+    case BB_AGENT_STATE_DIZZY:     return BB_BAR_STATE_ERROR;
+    default:                       return BB_BAR_STATE_IDLE; /* SLEEP/IDLE/ATTENTION/CELEBRATE/HEART */
+  }
+}
+
 static void buddy_state_listener(const bb_state_t* prev,
                                  const bb_state_t* next,
                                  const bb_event_payload_t* evt) {
@@ -1322,6 +1338,7 @@ static void buddy_state_listener(const bb_state_t* prev,
   if (theme == NULL) return;
   if (prev->agent != next->agent) {
     if (theme->set_state) theme->set_state(next->agent);
+    bb_display_set_agent_bar_state(agent_to_bar_state(next->agent));
   }
   if (strcmp(prev->driver_name, next->driver_name) != 0 && next->driver_name[0]) {
     if (theme->set_driver) theme->set_driver(next->driver_name);
