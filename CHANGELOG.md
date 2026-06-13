@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **移除聊天录音遮罩,录音指示改由底栏 VU 跟进——跟手实测 ~240ms→~90ms(最佳 44ms)**：
+  chat 主题里那个 320×112 全宽录音遮罩每 48ms 重绘 7 条 meter,是活动态最贵的 LVGL 重绘源;
+  而状态机的 dispatch 处理(进 LISTEN/起录音)经 `lv_async_call` 排在 LVGL 渲染之后,被这帧
+  ~60–82ms 重绘卡住,连**实际录音起点**都推迟 ~240ms。移除遮罩,录音状态改由 ACTIVE 视图
+  底栏(`BAR_LISTEN` / `motif_vu`,canvas 单次 invalidate,便宜得多)表达——它本就按
+  `is_recording_status` 独立驱动,功能冗余。`motif_vu` 从合成正弦改为**跟随真实麦克风电平**
+  (`bb_display_set_record_level`),保留"被听到"反馈。真机实测重帧 60–82ms→≤34ms 且数量骤减。
+
+### Added
+- **LVGL 刷新性能探针(dev-only,gate 在 `CONFIG_BBCLAW_DEVICE_MONITOR`)**：挂
+  `REFR_START`/`REFR_READY`/`INVALIDATE_AREA` 事件,渲染持锁超阈值(25ms)即打印耗时+脏区
+  包围盒,定位拖慢 state→render 的重帧来源。生产构建不编入。
+
 ### Fixed
 - **PTT 去抖从 ~60ms 收到 ~10ms（对齐 ADR-028 规格，真机实测验证）**：`bb_ptt.c` 原先把
   `BBCLAW_PTT_DEBOUNCE_MS=30` 当**轮询周期**用、再要求 2 个稳定样本 ≈ 60ms，导致 <60ms 的

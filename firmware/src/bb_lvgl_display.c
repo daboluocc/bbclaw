@@ -60,9 +60,20 @@ const char *bbclaw_session_key(void) { return "sim:preview"; }
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_disp.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#endif
+
+/* Dev diagnostic: time each LVGL refresh (REFR_START→REFR_READY) and log the
+ * ones that hold the LVGL lock long enough to delay state-event delivery. A
+ * heavy refresh is exactly what stalls the dispatch→render path (the drain
+ * task / lv_async_call can only run between refreshes), so this pinpoints
+ * which UI state is responsible for the ~240ms 跟手 lag. */
+#if defined(CONFIG_BBCLAW_DEVICE_MONITOR) && !defined(BBCLAW_SIM_BUILD)
+#define BBCLAW_LVGL_REFR_PROFILE 1
+#define BBCLAW_LVGL_REFR_PROFILE_MIN_MS 25
 #endif
 
 #ifdef BBCLAW_HAVE_CJK_FONT
@@ -587,14 +598,33 @@ static void motif_sweep(int n, uint32_t comet) {
   }
 }
 
-/* LISTEN — equalizer: per-column level from layered sines, lit bottom-up,
- * peak dot accent. Echoes the mic without duplicating the big record meter. */
+/* LISTEN — equalizer echoing the real mic envelope (bb_display_set_record_level),
+ * bell-weighted across columns, lit bottom-up, peak dot accent. This replaces
+ * the removed full-width record overlay as the sole recording indicator. */
 static void motif_vu(int n, uint32_t accent) {
+  int level_pct, voiced;
+  int64_t updated;
+  portENTER_CRITICAL(&s_state_lock);
+  level_pct = s_record_level_pct;
+  voiced = s_record_voiced;
+  updated = s_record_level_updated_ms;
+  portEXIT_CRITICAL(&s_state_lock);
+  if (updated == 0 || (bb_now_ms() - updated) > 400) {
+    level_pct = 0;
+    voiced = 0;
+  }
+  float base = (float)level_pct / 100.0f; /* 0..1 mic envelope */
+  if (base > 1.0f) base = 1.0f;
+  static const float kBell[7] = {0.5f, 0.7f, 0.9f, 1.0f, 0.9f, 0.7f, 0.5f};
   float t = (float)s_bar_tick;
   for (int i = 0; i < n; i++) {
-    float lv = (sinf(t * 0.22f + i * 0.5f) * 0.5f + 0.5f) * 0.6f +
-               (sinf(t * 0.71f + i * 1.3f) * 0.5f + 0.5f) * 0.4f;
+    float bell = (i < 7) ? kBell[i] : 0.7f;
+    /* small shimmer only while voiced, so silence reads as a flat baseline */
+    float shimmer = voiced ? (sinf(t * 0.6f + i * 1.1f) * 0.5f + 0.5f) * 0.18f : 0.0f;
+    float lv = base * (bell + shimmer);
+    if (lv > 1.0f) lv = 1.0f;
     int lit = (int)(lv * UI_BAR_ROWS + 0.5f);
+    if (lit < 1) lit = 1; /* always one baseline dot while listening */
     for (int r = 0; r < UI_BAR_ROWS; r++) { /* r=0 top */
       int on = r >= UI_BAR_ROWS - lit;
       int peak = r == UI_BAR_ROWS - lit;
@@ -1722,6 +1752,41 @@ static void refresh_ui(void) {
   lvgl_port_unlock();
 }
 
+#if BBCLAW_LVGL_REFR_PROFILE
+static int64_t s_refr_t0_us;
+static lv_area_t s_inv_union;   /* bounding box of all areas invalidated this cycle */
+static int s_inv_valid;
+static void inv_area_cb(lv_event_t* e) {
+  const lv_area_t* a = (const lv_area_t*)lv_event_get_param(e);
+  if (!a) return;
+  if (!s_inv_valid) {
+    s_inv_union = *a;
+    s_inv_valid = 1;
+  } else {
+    if (a->x1 < s_inv_union.x1) s_inv_union.x1 = a->x1;
+    if (a->y1 < s_inv_union.y1) s_inv_union.y1 = a->y1;
+    if (a->x2 > s_inv_union.x2) s_inv_union.x2 = a->x2;
+    if (a->y2 > s_inv_union.y2) s_inv_union.y2 = a->y2;
+  }
+}
+static void refr_start_cb(lv_event_t* e) {
+  (void)e;
+  s_refr_t0_us = esp_timer_get_time();
+}
+static void refr_ready_cb(lv_event_t* e) {
+  (void)e;
+  int64_t dt_ms = (esp_timer_get_time() - s_refr_t0_us) / 1000;
+  lv_area_t u = s_inv_union;
+  int valid = s_inv_valid;
+  s_inv_valid = 0;
+  if (dt_ms >= BBCLAW_LVGL_REFR_PROFILE_MIN_MS && valid) {
+    ESP_LOGW("lvgl_refr", "heavy refresh %lldms bbox=[%d,%d→%d,%d] %dx%d — delays state→render",
+             (long long)dt_ms, (int)u.x1, (int)u.y1, (int)u.x2, (int)u.y2, (int)lv_area_get_width(&u),
+             (int)lv_area_get_height(&u));
+  }
+}
+#endif
+
 /* ── Public API ── */
 
 esp_err_t bb_display_init(void) {
@@ -1829,6 +1894,12 @@ esp_err_t bb_display_init(void) {
     ESP_LOGE(TAG, "lvgl_port_add_disp failed");
     return ESP_FAIL;
   }
+#if BBCLAW_LVGL_REFR_PROFILE
+  lv_display_add_event_cb(disp, refr_start_cb, LV_EVENT_REFR_START, NULL);
+  lv_display_add_event_cb(disp, refr_ready_cb, LV_EVENT_REFR_READY, NULL);
+  lv_display_add_event_cb(disp, inv_area_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+  ESP_LOGI(TAG, "lvgl refr profiler on (threshold %dms)", BBCLAW_LVGL_REFR_PROFILE_MIN_MS);
+#endif
   /* NOTE: do NOT override lv_display_set_flush_cb here.
    * esp_lvgl_port registers its own flush callback (lvgl_port_flush_callback)
    * which handles esp_lcd_panel_draw_bitmap and, when flags.swap_bytes is set,

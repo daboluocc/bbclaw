@@ -153,8 +153,12 @@ static void theme_on_enter(lv_obj_t* parent) {
   const int transcript_h = 112;
   s_st.transcript = bb_chat_transcript_create(s_st.root, 320, transcript_h, transcript_y);
 
-  /* Recording overlay — sits on top of transcript, hidden until PTT pressed */
-  bb_chat_recording_create(s_st.root, 320, transcript_h, transcript_y);
+  /* Recording state is shown by the ACTIVE view's bottom bar (BAR_LISTEN /
+   * motif_vu, driven by is_recording_status) — the old full-width 320×112
+   * recording overlay re-rendered 7 meter bars every 48ms, the dominant
+   * active-state LVGL redraw that delayed state→render (录音起点/LISTEN 视觉
+   * 滞后 ~240ms). Removed in favour of the cheap bottom-bar canvas strip;
+   * the live mic level now feeds the bottom VU instead. */
 
   s_st.active_assistant = NULL;
   s_st.built = 1;
@@ -178,7 +182,6 @@ static void theme_on_exit(void) {
   s_st.active_assistant = NULL;
   s_st.built = 0;
   bb_chat_transcript_destroy();  /* reset internal pointers (root del cascaded) */
-  bb_chat_recording_destroy();   /* delete timer; reset internal pointers (root del cascaded) */
 }
 
 static void theme_set_state(bb_agent_state_t state) {
