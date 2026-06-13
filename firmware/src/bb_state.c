@@ -553,22 +553,37 @@ static const char* should_drop(const bb_state_t* st, const bb_event_payload_t* e
  * 的 lv_timer 排空(timer 回调天然在 LVGL 上下文,无需跨任务锁)。队列
  * 非空时后续事件也入队,保持顺序。 */
 #define BB_STATE_OVERFLOW_QUEUE_DEPTH 16
-#define BB_STATE_OVERFLOW_DRAIN_MS 25
+#define BB_STATE_OVERFLOW_PUMP_MS 25
 static QueueHandle_t s_overflow_q;
-static lv_timer_t* s_overflow_timer; /* 惰性创建:只能在 LVGL 任务上建 */
+static esp_timer_handle_t s_overflow_pump_timer;
 
 static void dispatch_on_lvgl(void* user_data);
 
-static void overflow_drain_timer_cb(lv_timer_t* t) {
-  (void)t;
-  if (s_overflow_q == NULL) return;
+/* 排空泵:esp_timer 周期任务(init 即建,不依赖任何 LVGL 上下文——上一版用
+ * "首次 dispatch_on_lvgl 时惰性建 lv_timer",真机翻车:开机第一条事件就赶上
+ * LVGL 忙直接进了队列,dispatch_on_lvgl 从未运行,timer 永远没建,队列灌满
+ * 后全员 DROPPED)。队列空时本回调只做一次判空,开销可忽略;拿不到锁就等
+ * 下个 tick,事件不丢。 */
+static void overflow_pump_cb(void* arg) {
+  (void)arg;
+  if (s_overflow_q == NULL || uxQueueMessagesWaiting(s_overflow_q) == 0) return;
+  if (!lvgl_port_lock(10)) return; /* LVGL 还忙,下个 tick 再试 */
   bb_event_payload_t evt;
+  int pumped = 0;
   /* 每 tick 最多排 8 个,避免一帧内长时间占用渲染 */
-  for (int i = 0; i < 8 && xQueueReceive(s_overflow_q, &evt, 0) == pdTRUE; ++i) {
+  while (pumped < 8 && xQueueReceive(s_overflow_q, &evt, 0) == pdTRUE) {
     bb_event_payload_t* heap_evt = (bb_event_payload_t*)malloc(sizeof(*heap_evt));
-    if (heap_evt == NULL) return;
+    if (heap_evt == NULL) break;
     *heap_evt = evt;
-    dispatch_on_lvgl(heap_evt); /* 已在 LVGL 任务上,直接执行(它会 free) */
+    if (lv_async_call(dispatch_on_lvgl, heap_evt) != LV_RESULT_OK) {
+      free(heap_evt);
+      break;
+    }
+    pumped++;
+  }
+  lvgl_port_unlock();
+  if (pumped > 0) {
+    ESP_LOGI(TAG, "overflow pump: %d queued event(s) delivered", pumped);
   }
 }
 
@@ -578,11 +593,6 @@ static void dispatch_on_lvgl(void* user_data) {
   if (!s_initialized) {
     free(evt);
     return;
-  }
-  /* 惰性建排空 timer:本函数必然运行在 LVGL 任务上,在这里建是安全的。 */
-  if (s_overflow_timer == NULL) {
-    s_overflow_timer = lv_timer_create(overflow_drain_timer_cb,
-                                       BB_STATE_OVERFLOW_DRAIN_MS, NULL);
   }
 
   bb_state_t prev = s_state;
@@ -793,6 +803,20 @@ void bb_state_init(void) {
   }
   if (s_overflow_q == NULL) {
     ESP_LOGE(TAG, "init: overflow queue create failed — busy-time events will drop");
+  } else {
+    esp_timer_create_args_t pump_args = {
+        .callback = overflow_pump_cb,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "bb_state_pump",
+    };
+    if (esp_timer_create(&pump_args, &s_overflow_pump_timer) == ESP_OK) {
+      esp_timer_start_periodic(s_overflow_pump_timer,
+                               (uint64_t)BB_STATE_OVERFLOW_PUMP_MS * 1000);
+    } else {
+      ESP_LOGE(TAG, "init: overflow pump timer create failed");
+      s_overflow_pump_timer = NULL;
+    }
   }
 
   /* DIZZY 自动恢复 one-shot 定时器：由 dispatch_on_lvgl 在进入 DIZZY
