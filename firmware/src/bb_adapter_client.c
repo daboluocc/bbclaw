@@ -232,15 +232,39 @@ static void append_result_tts_chunk(bb_finish_result_t* result, bb_tts_chunk_t* 
   result->tts_chunks_tail = chunk;
 }
 
+/* TTS chunk structs + PCM payloads are plain data (no DMA, not executable):
+ * playback copies them into the I2S DMA buffer via i2s_channel_write, so the
+ * source can live in PSRAM. Force them there. With
+ * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 a bare malloc() of a <16KB PCM
+ * chunk lands in INTERNAL RAM; a long reply churns dozens of ~10KB chunks and
+ * fragments internal DRAM down to a ~256B largest block, which then starves
+ * TLS/lwip and FreeRTOS task creation (barge-in cancel "no mem"). PSRAM has
+ * megabytes free; fall back to internal only if PSRAM is exhausted. */
+static void* tts_alloc(size_t n) {
+  void* p = heap_caps_malloc(n, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (p == NULL) {
+    p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  return p;
+}
+
+static void* tts_calloc(size_t n) {
+  void* p = tts_alloc(n);
+  if (p != NULL) {
+    memset(p, 0, n);
+  }
+  return p;
+}
+
 static bb_tts_chunk_t* clone_tts_chunk(const bb_tts_chunk_t* src) {
   if (src == NULL || src->pcm_data == NULL || src->pcm_len == 0U) {
     return NULL;
   }
-  bb_tts_chunk_t* copy = (bb_tts_chunk_t*)calloc(1, sizeof(bb_tts_chunk_t));
+  bb_tts_chunk_t* copy = (bb_tts_chunk_t*)tts_calloc(sizeof(bb_tts_chunk_t));
   if (copy == NULL) {
     return NULL;
   }
-  copy->pcm_data = (uint8_t*)malloc(src->pcm_len);
+  copy->pcm_data = (uint8_t*)tts_alloc(src->pcm_len);
   if (copy->pcm_data == NULL) {
     free(copy);
     return NULL;
@@ -269,12 +293,12 @@ static bb_tts_chunk_t* decode_tts_chunk_json(const char* body) {
     free(audio_b64);
     return NULL;
   }
-  bb_tts_chunk_t* chunk = (bb_tts_chunk_t*)calloc(1, sizeof(bb_tts_chunk_t));
+  bb_tts_chunk_t* chunk = (bb_tts_chunk_t*)tts_calloc(sizeof(bb_tts_chunk_t));
   if (chunk == NULL) {
     free(audio_b64);
     return NULL;
   }
-  chunk->pcm_data = (uint8_t*)malloc(pcm_cap);
+  chunk->pcm_data = (uint8_t*)tts_alloc(pcm_cap);
   if (chunk->pcm_data == NULL) {
     free(chunk);
     free(audio_b64);
@@ -637,6 +661,15 @@ static esp_err_t ws_client_ensure_connected(void) {
         .task_stack = 8192,
         .disable_auto_reconnect = false,
         .task_name = "bbclaw_ws",
+        /* Keepalive: cloud closes the device WS after 35s of upstream silence
+         * (cloud wsReadTimeout). During long agent turns the device only
+         * receives TTS and sends nothing, so without periodic pings the relay
+         * reaps an actively-served connection. Ping every 15s (well under 35s);
+         * cloud replies pong and resets its read deadline. disable_pingpong_discon
+         * keeps a late/dropped pong from triggering a *local* disconnect — dead
+         * connections are still caught by the read-error path + auto-reconnect. */
+        .ping_interval_sec = 15,
+        .disable_pingpong_discon = true,
         .crt_bundle_attach = strncmp(ws_url, "wss", 3) == 0 ? esp_crt_bundle_attach : NULL,
     };
     s_ws.client = esp_websocket_client_init(&cfg);
@@ -788,7 +821,7 @@ static void append_tts_chunk_from_ogg_locked(void) {
     bb_ogg_opus_free(pcm);
     return;
   }
-  bb_tts_chunk_t* chunk = (bb_tts_chunk_t*)calloc(1, sizeof(bb_tts_chunk_t));
+  bb_tts_chunk_t* chunk = (bb_tts_chunk_t*)tts_calloc(sizeof(bb_tts_chunk_t));
   if (chunk == NULL) {
     bb_ogg_opus_free(pcm);
     return;

@@ -39,7 +39,19 @@ static const struct nav_name kNavNames[] = {
 };
 
 static void print_help(void) {
-  ESP_LOGI(TAG, "commands: key up|down|left|right|ok|back|ok-long | ptt down|up|tap [ms] | help");
+  ESP_LOGI(TAG, "commands: key up|down|left|right|ok|back|ok-long | ptt down|up|tap [ms] | heap | help");
+}
+
+static void print_heap(void) {
+  ESP_LOGI(TAG,
+           "heap internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u total_free=%u",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+  /* Full per-region breakdown to stdout for deeper field diagnostics. */
+  heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 /* Tokenize in place on spaces. Returns argc, fills argv (max `max`). */
@@ -68,6 +80,11 @@ static void handle_line(char* line) {
 
   if (strcmp(argv[0], "help") == 0) {
     print_help();
+    return;
+  }
+
+  if (strcmp(argv[0], "heap") == 0) {
+    print_heap();
     return;
   }
 

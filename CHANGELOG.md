@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-06-14
+
+### Fixed
+- **长对话中 WebSocket 被云端掐断,整轮回复丢失(`finish_failed WS_DISCONNECTED`)**:云端对设备
+  方向的 WS 用 35s read deadline,且**只在收到设备上行消息时重置、服务端自己不 ping**。长 agent
+  回合里设备只收 TTS、不上行,静默一过 35s 云端就主动 FIN → 设备侧 `ESP_ERR_ESP_TLS_TCP_CLOSED_FIN
+  errno=128`,turn 丢失。真机复现后云端日志实锤 `ws closed role=device ... err=...: i/o timeout`
+  每 30-90s 一次。**云端修复(bbclaw-reference)**:服务端每 12s 主动 ping 每个设备/relay 连接,
+  且**任何成功的下行写入(TTS/事件/ping)都重置 read deadline**——不再依赖设备回 pong(内存吃紧
+  的设备常发不出)。**固件侧(本仓)**:WS 客户端补设 `ping_interval_sec=15` +
+  `disable_pingpong_discon=true` 作纵深防御(漏 pong 不触发本地自断,死连接仍由 read-error 重连兜底)。
+  实测:云端重部署后两台设备 2.5+ 分钟 0 次超时/断开(此前每 30-90s 必断)。
+- **内部 DRAM 在对话中枯竭,致 barge-in 取消发不出 + 偶发流中断**:`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
+  =16384` 把所有 <16KB 的裸 `malloc()` 强制塞进内部 RAM,而 TTS 路径每个 chunk 都 `malloc` 一块
+  ~10KB PCM,一轮上百 chunk 反复 alloc/free → 内部堆碎成最大连续块 256B、free ~3KB →
+  `xTaskCreate`(TCB 必须内部)失败:`turn_cancel: task spawn failed (no mem) — cancel NOT sent`、
+  `capture_task ringbuf full`。把 TTS 的 chunk 结构体 + PCM 缓冲(非 DMA、播放时才 memcpy 进 I2S
+  DMA)改为 PSRAM 优先分配(`tts_alloc`/`tts_calloc`),opus 编码器 25KB 仍留内部(SILK 需内部)。
+  真机实测 `heap after cloud_wait` 内部 free 从 3183→5.9K~13.8K、largest 从 256→1.5K~3.5K,
+  `no mem`/`ringbuf full`/`turn_cancel fail` 全部消失。
+
+### Added
+- **UART 调试命令 `heap`**(仅 `CONFIG_BBCLAW_DEVICE_MONITOR` dev 构建):按需打印
+  internal/spiram free+largest 及 `heap_caps_print_heap_info` 全区明细,现场排查内存碎片用。
+
 ### Changed
 - **WiFi 自动连接改 scan-then-connect,跳过不在场网络的盲等超时(#182)**:原先是「串行盲连」
   ——已保存 SSID 按最近成功时间戳倒序逐个 `set_config`→等满一个
