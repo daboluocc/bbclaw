@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **(ADR-027)Settings「Adapter(机器)」选择器可能永久卡在 `(loading)`**：`site_fetch_task` 在
+  `bb_adapter_sites_list` 返回后,若 `lvgl_port_lock(200)` 拿不到锁,旧逻辑直接 `free(r)` 却
+  **没清 `site_fetch_pending`** → picker 永远显示 `(loading)`,且因 `spawn_site_fetch_task` 在
+  pending 时 early-return,后续再开也不会重拉。改为重试取锁 3 次、最终兜底直接清 pending 并丢结果,
+  保证 loading 态不会永久卡死(正常路径 cloud `sites.list` 回包到达即填表;空列表显示 `(none)`)。
+  cloud 侧 `sites.list`/`sites.activate`(bbclaw-reference PR #28)已于 2026-06-12 部署生产。
 - **底栏状态条不随 agent 状态变化(空闲/聆听/忙碌/说话/报错无区分)**：chat 模式下 agent 状态
   走 `theme->set_state`,**故意不更新 legacy `s_status`**(`bb_radio_app` PTT release 分支注释
   实证),而底栏 motif 由 `s_status` 驱动 → 永远停在初始态。新增 `bb_display_set_agent_bar_state`,

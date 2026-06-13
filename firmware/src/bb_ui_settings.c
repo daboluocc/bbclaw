@@ -729,10 +729,22 @@ static void site_fetch_task(void* arg) {
     return;
   }
   r->err = bb_adapter_sites_list(r->sites, BB_SETTINGS_SITE_CACHE_MAX, &r->count);
-  if (lvgl_port_lock(200)) {
-    lv_async_call(on_site_fetch_done, r);
-    lvgl_port_unlock();
-  } else {
+  /* Hand the result back on the LVGL thread. Retry the lock a few times; if we
+   * still can't get it, clear the pending flag directly and drop the result so
+   * the picker is never wedged on "(loading)" forever. (Leaving site_fetch_pending
+   * set would also block every future refresh, since spawn_site_fetch_task
+   * early-returns while a fetch is pending.) */
+  int delivered = 0;
+  for (int attempt = 0; attempt < 3 && !delivered; ++attempt) {
+    if (lvgl_port_lock(200)) {
+      lv_async_call(on_site_fetch_done, r);
+      lvgl_port_unlock();
+      delivered = 1;
+    }
+  }
+  if (!delivered) {
+    ESP_LOGW(TAG, "site fetch: lvgl lock unavailable, clearing pending");
+    s_st.site_fetch_pending = 0;
     free(r);
   }
   vTaskDelete(NULL);

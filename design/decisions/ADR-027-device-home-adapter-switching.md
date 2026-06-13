@@ -120,11 +120,12 @@ ADR-019 的 firmware `bb_menu_view` 渲染器尚未实现（checklist 末两项�
 
 ## 实现 checklist
 
-- [ ] cloud: hub 设备态 `sites.list` / `sites.activate`（终结，不 relay）
-- [ ] cloud: `deviceId → owner → bindings` 反查 + 列表组装（label/online/active）
-- [ ] cloud: `ActivateBinding` 设备态调用 + 错误码（NOT_BOUND/OWNER_MISMATCH/ADAPTER_OFFLINE）+ 单测
+- [x] cloud: hub 设备态 `sites.list` / `sites.activate`（终结，不 relay）— bbclaw-reference `cloud/internal/httpapi/server.go` 设备 WS 分支 + `router/sites.go`（PR #28，2026-06-12 已部署生产）
+- [x] cloud: `deviceId → owner → bindings` 反查 + 列表组装（label/online/active）— `Hub.ListDeviceSites`
+- [x] cloud: `ActivateBinding` 设备态调用 + 错误码（NOT_BOUND/OWNER_MISMATCH/ADAPTER_OFFLINE）+ 单测 — `Hub.ActivateDeviceSite` + `router/sites_test.go`（8 例全绿）
 - [x] firmware: WS `sites.list`/`sites.activate` 调用 + 回包解析（`bb_adapter_client.c`：`bb_adapter_sites_list`/`bb_adapter_sites_activate`，同步 reply/error 对账，复用 voice.verify EventGroup 模式）
 - [x] firmware: Settings `Adapter` 行（仅 cloud_saas）+ picker + commit（`bb_ui_settings.c`：`MAIN_ROW_ADAPTER` 动态行 + `LEVEL_ADAPTER_PICKER` + `COMMIT_KIND_ADAPTER`）
 - [x] firmware: 切换后 agent 状态刷新（`on_adapter_activated` → 重拉 driver/model + chat session 重绑）
+- [x] firmware: picker `(loading)` 不再可能永久卡死——`site_fetch_task` 在 `lvgl_port_lock` 拿不到时重试 3 次、最终直接清 `site_fetch_pending`（否则会漏标 pending 并阻断后续刷新）
 - [ ] design: ADR-019 / ADR-016 交叉引用更新
 - [ ] testing.md: 补 cloud_saas 多 adapter 切换验证步骤
