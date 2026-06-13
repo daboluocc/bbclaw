@@ -32,6 +32,7 @@ set(_bb_srcs
     "bb_notification.c"
     "bb_ota.c"
     "bb_ptt.c"
+    "bb_uart_cmd.c"
     "bb_radio_app.c"
     "bb_session_store.c"
     "bb_state.c"

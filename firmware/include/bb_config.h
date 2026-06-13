@@ -305,8 +305,18 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_PTT_PULL_UP 1
 #endif
 
+/* PTT debounce window (ADR-028: target ~10ms capture). Decoupled from the
+ * poll granularity below so short taps aren't dropped and release latency stays
+ * low: a level change is confirmed after BBCLAW_PTT_DEBOUNCE_MS /
+ * BBCLAW_PTT_POLL_MS consecutive stable samples. Previously this value WAS the
+ * poll period (30ms) and the code required 2 samples ≈ 60ms, which silently
+ * dropped <60ms taps ("按了没反应") and lagged release ~60ms ("松手仍在录"). */
 #ifndef BBCLAW_PTT_DEBOUNCE_MS
-#define BBCLAW_PTT_DEBOUNCE_MS 30
+#define BBCLAW_PTT_DEBOUNCE_MS 10
+#endif
+
+#ifndef BBCLAW_PTT_POLL_MS
+#define BBCLAW_PTT_POLL_MS 5
 #endif
 
 #ifndef BBCLAW_NAV_ENABLE
@@ -350,14 +360,15 @@ const char *bbclaw_session_key(void);
  * cancels turns, all of which want a fresh tap each time.
  *   INITIAL: how long the user must hold UP/DOWN before auto-repeat kicks in.
  *   INTERVAL: gap between repeats once auto-repeat is active.
- * 400 / 80 ms gives ~12.5 scroll lines per second, similar to a typical
- * laptop arrow-key repeat rate. */
+ * 650 / 100 ms gives ~10 scroll lines per second once held. INITIAL was 400ms,
+ * short enough that a deliberate single tap held slightly long would already
+ * auto-repeat ("长按意外连续滚动"); 650ms requires an intentional hold. */
 #ifndef BBCLAW_NAV_REPEAT_INITIAL_MS
-#define BBCLAW_NAV_REPEAT_INITIAL_MS 400
+#define BBCLAW_NAV_REPEAT_INITIAL_MS 650
 #endif
 
 #ifndef BBCLAW_NAV_REPEAT_INTERVAL_MS
-#define BBCLAW_NAV_REPEAT_INTERVAL_MS 80
+#define BBCLAW_NAV_REPEAT_INTERVAL_MS 100
 #endif
 
 /**

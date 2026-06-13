@@ -29,6 +29,7 @@
 #include "bb_ptt.h"
 #include "bb_state.h"
 #include "bb_time.h"
+#include "bb_uart_cmd.h"
 #include "bb_transport.h"
 #include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
@@ -3412,6 +3413,10 @@ esp_err_t bb_radio_app_start(void) {
 #endif
   ESP_ERROR_CHECK(bb_ptt_init(BBCLAW_PTT_GPIO, on_ptt_changed));
   ESP_ERROR_CHECK(bb_nav_input_init(on_nav_event));
+  /* Dev-only: accept `key`/`ptt` injection commands over the console UART so a
+   * host with only the UART bridge can drive button self-tests (no-op unless
+   * CONFIG_BBCLAW_DEVICE_MONITOR). */
+  (void)bb_uart_cmd_start();
   if (bb_button_test_start() != ESP_OK) {
     ESP_LOGW(TAG, "button test start failed (optional)");
   }

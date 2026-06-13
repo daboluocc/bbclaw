@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **PTT 去抖从 ~60ms 收到 ~10ms（对齐 ADR-028 规格，真机实测验证）**：`bb_ptt.c` 原先把
+  `BBCLAW_PTT_DEBOUNCE_MS=30` 当**轮询周期**用、再要求 2 个稳定样本 ≈ 60ms，导致 <60ms 的
+  快速短按被**静默丢弃**（「按了没反应」），且释放检测滞后 ~60ms（「松手仍在录」）。改为像
+  NAV 那样**解耦轮询率与去抖窗口**：新增 `BBCLAW_PTT_POLL_MS=5` 轮询、`BBCLAW_PTT_DEBOUNCE_MS`
+  降为 10ms 的去抖窗口（= 2 样本）。真机实测：15ms / 30ms 短按可注册，释放边沿→dispatch
+  5ms，15 次按压零丢失零误触。ADR-028 文档写明按键捕获目标 ~10ms，此前实现偏离 6×。
+
+### Changed
+- **NAV 上下键 auto-repeat 触发阈值 400→650ms（消除误触连滚）**：`REPEAT_INITIAL_MS` 400ms
+  过短，一次稍长的单按就被判成长按并开始 auto-repeat（「长按意外连续滚动」）；650ms 要求明确
+  的持续按住。`REPEAT_INTERVAL_MS` 80→100ms（~10 行/秒）。
+
+### Added
+- **UART 调试命令注入通道（`bb_uart_cmd`，dev-only）**：在 console UART0 上读 ASCII 行命令
+  （`key up|down|left|right|ok|back|ok-long` / `ptt down|up|tap [ms]` / `help`）并注入 nav/PTT
+  事件，给只有 UART 桥、TinyUSB CDC1 监控口未接的 bench 板补上**主机驱动按键自测**的闭环：
+  写命令→读日志→量响应。配套新增 `bb_ptt_inject()`（带注入保持，poll 期间不与真实 GPIO 抢）。
+  gate 在 `CONFIG_BBCLAW_DEVICE_MONITOR`，生产构建不编入。注入点在 GPIO 去抖之上，可验证状态机/
+  UI 响应与跟手延迟，但不替代 GPIO 去抖的物理验证。
+
 ## [0.5.6] - 2026-06-13
 
 ### Added
