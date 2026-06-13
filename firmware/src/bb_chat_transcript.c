@@ -171,6 +171,14 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   lv_obj_add_flag(s_transcript, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(s_transcript, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(s_transcript, LV_SCROLLBAR_MODE_AUTO);
+  /* remove_style_all above stripped the default scrollbar style, leaving the
+   * thumb invisible — the user got no position feedback when paging up/down.
+   * Paint a slim rounded thumb so the scroll position is always legible. */
+  lv_obj_set_style_bg_color(s_transcript, lv_color_hex(UI_TEXT_MAIN), LV_PART_SCROLLBAR);
+  lv_obj_set_style_bg_opa(s_transcript, LV_OPA_60, LV_PART_SCROLLBAR);
+  lv_obj_set_style_width(s_transcript, 4, LV_PART_SCROLLBAR);
+  lv_obj_set_style_radius(s_transcript, 2, LV_PART_SCROLLBAR);
+  lv_obj_set_style_pad_right(s_transcript, 1, LV_PART_SCROLLBAR);
 
   s_active_assistant = NULL;
   s_subtitle_label = NULL;
@@ -208,7 +216,13 @@ void bb_chat_transcript_append_user(const char* text) {
   lv_label_set_text(lbl, text);
   s_active_assistant = NULL;
   bb_chat_cache_append_user(text);
-  follow_tail_if_active();
+  /* A new *live* user turn means the user is driving the conversation again.
+   * Rejoin the live tail even if they had scrolled up to read history (which
+   * latched s_follow_tail=0), so this message and the incoming reply both
+   * auto-scroll into view. History replay uses append_history, not this path,
+   * so forcing follow here only fires on a genuine new turn. */
+  set_follow_tail(1);
+  scroll_to_bottom_unconditional();
 }
 
 void bb_chat_transcript_append_assistant_chunk(const char* delta) {
@@ -345,7 +359,11 @@ void bb_chat_transcript_prepend_history(const char* role, const char* content,
 void bb_chat_transcript_scroll(int lines) {
   if (s_transcript == NULL || lines == 0) return;
   int32_t step = lv_font_get_line_height(font()) * lines;
-  lv_obj_scroll_by_bounded(s_transcript, 0, step, LV_ANIM_OFF);
+  /* LV_ANIM_ON: animate the manual UP/DOWN scroll so the direction of travel
+   * is perceptible. LV_ANIM_OFF jumped instantly, which on this small screen
+   * read as a flicker with no clear up-vs-down cue. Auto-scroll (follow-tail)
+   * still uses LV_ANIM_OFF so streaming replies snap to the bottom. */
+  lv_obj_scroll_by_bounded(s_transcript, 0, step, LV_ANIM_ON);
   /* ADR-017 — track follow-tail latch.
    * UP gesture (lines < 0) always drops us into reading mode. DOWN that
    * lands at the very bottom restores auto-scroll so the user can rejoin
