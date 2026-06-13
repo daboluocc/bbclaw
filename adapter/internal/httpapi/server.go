@@ -261,6 +261,7 @@ func (s *Server) Handler() http.Handler {
 	// device-facing routes but behind the localhost gate (no device token needed).
 	mux.HandleFunc("GET /v1/admin/sessions", s.adminLocalOnly(s.handleAgentSessions))
 	mux.HandleFunc("GET /v1/admin/sessions/{id}/messages", s.adminLocalOnly(s.handleAgentSessionMessages))
+	mux.HandleFunc("GET /v1/admin/sessions/{id}/parts", s.adminLocalOnly(s.handleAgentSessionParts))
 	mux.HandleFunc("GET /v1/admin/dispatch/recent", s.adminLocalOnly(s.handleButlerDispatchRecent))
 	// Driver management for the admin SPA (ADR-024) — same handlers as the
 	// device-facing /v1/agent/* routes but behind the localhost gate, since the

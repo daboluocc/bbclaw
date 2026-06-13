@@ -15,6 +15,20 @@ export interface DispatchEntry {
   elapsedMs?: number; error?: string; startedAt: string;
 }
 
+// Structured conversation parts (ADR-029 §2.1). A turn is an ordered list of
+// typed parts: thinking / text / tool / dispatch.
+export interface DispatchPart {
+  taskId?: string; cwd?: string; title?: string; status?: string;
+  elapsedMs?: number; error?: string; childSessionId?: string;
+}
+export interface ConvPart {
+  kind: "text" | "thinking" | "tool" | "dispatch" | string;
+  text?: string;
+  tool?: string;
+  dispatch?: DispatchPart;
+}
+export interface ConvTurn { role: string; seq: number; timestamp?: string; parts: ConvPart[] }
+
 async function envelope<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init);
   let body: any = {};
@@ -175,6 +189,13 @@ export async function listSessions(): Promise<SessionInfo[]> {
 export async function sessionMessages(id: string, driver: string, limit = 200, before = -1): Promise<{ messages: ChatMessage[]; total: number; hasMore: boolean }> {
   const d = driver ? `&driver=${encodeURIComponent(driver)}` : "";
   return envelope(`/v1/admin/sessions/${encodeURIComponent(id)}/messages?before=${before}&limit=${limit}${d}`);
+}
+// sessionParts returns the structured-parts view (ADR-029). Throws when the
+// driver doesn't support it (PARTS_NOT_SUPPORTED) — callers should fall back to
+// sessionMessages and synthesize text-only turns.
+export async function sessionParts(id: string, driver: string, limit = 200, before = -1): Promise<{ turns: ConvTurn[]; total: number; hasMore: boolean }> {
+  const d = driver ? `&driver=${encodeURIComponent(driver)}` : "";
+  return envelope(`/v1/admin/sessions/${encodeURIComponent(id)}/parts?before=${before}&limit=${limit}${d}`);
 }
 export async function dispatchRecent(limit = 30): Promise<DispatchEntry[]> {
   // This endpoint returns a bare JSON array, not the {ok,data} envelope.

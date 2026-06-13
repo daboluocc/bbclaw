@@ -47,10 +47,11 @@ type Project struct {
 }
 
 // WorkerRunner runs one agentic task in cwd and returns the worker's final
-// result text. Production wraps the claudecode driver (runner_claude.go); tests
-// inject a mock. Run must honour ctx cancellation.
+// result text plus the worker session id (for admin drill-down, ADR-029 §2.3).
+// Production wraps the claudecode driver (runner_claude.go); tests inject a
+// mock. Run must honour ctx cancellation.
 type WorkerRunner interface {
-	Run(ctx context.Context, cwd, task string) (string, error)
+	Run(ctx context.Context, cwd, task string) (result, childSessionID string, err error)
 }
 
 // Logger is the minimal logging surface (to stderr — never stdout).
@@ -341,13 +342,13 @@ func (s *Server) toolDispatch(args json.RawMessage) (string, bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(s.bg, workerMaxRuntime)
 		defer cancel()
-		res, err := s.runner.Run(ctx, cwd, task)
+		res, childSID, err := s.runner.Run(ctx, cwd, task)
 		if err != nil {
 			if werr := s.store.MarkError(id, err.Error()); werr != nil {
 				s.log.Warnf("butlermcp: store.MarkError task=%s: %v", id, werr)
 			}
 		} else {
-			if werr := s.store.MarkDone(id, res); werr != nil {
+			if werr := s.store.MarkDone(id, res, childSID); werr != nil {
 				s.log.Warnf("butlermcp: store.MarkDone task=%s: %v", id, werr)
 			}
 		}
@@ -363,7 +364,7 @@ func (s *Server) toolDispatch(args json.RawMessage) (string, bool) {
 		if run.Status == TaskStatusError {
 			return jsonStr(map[string]any{"status": "error", "taskId": id, "error": run.Error}), true
 		}
-		return jsonStr(map[string]any{"status": "done", "result": run.Result}), false
+		return jsonStr(doneResult(run)), false
 	case <-time.After(wait):
 		// degraded to async — worker keeps running; butler polls task_status.
 		s.log.Infof("butlermcp: dispatch degraded to async task=%s cwd=%q", id, cwd)
@@ -392,8 +393,19 @@ func (s *Server) toolTaskResult(args json.RawMessage) (string, bool) {
 	case TaskStatusError:
 		return jsonStr(map[string]any{"status": "error", "error": run.Error}), true
 	default:
-		return jsonStr(map[string]any{"status": "done", "result": run.Result}), false
+		return jsonStr(doneResult(run)), false
 	}
+}
+
+// doneResult builds the JSON payload for a completed task. childSessionId is
+// included (when known) so the butler's tool_result carries it into the JSONL,
+// letting the admin page drill into the worker transcript (ADR-029 §2.3).
+func doneResult(run TaskRun) map[string]any {
+	out := map[string]any{"status": "done", "result": run.Result, "taskId": run.TaskID}
+	if run.ChildSessionID != "" {
+		out["childSessionId"] = run.ChildSessionID
+	}
+	return out
 }
 
 // resolveCwd maps a (project|cwd) selection to an allow-listed cwd. A project

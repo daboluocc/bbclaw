@@ -186,6 +186,45 @@ input[type=text]:focus{outline:none;border-color:var(--accent)}
 .dstat.error{color:var(--err);border-color:#3a2422}
 .dstat.running,.dstat.started,.dstat.async{color:var(--accent);border-color:#1f4d47}
 
+/* ── inline conversation parts (ADR-029): thinking fold / dispatch card / tool chip ── */
+/* ① 思考折叠流 — 青色左缘竖线时间线，默认折叠一行 */
+.think{border-left:2.5px solid var(--ghost);background:rgba(13,18,22,.55);border-radius:0 7px 7px 0;margin:8px 0;overflow:hidden}
+.think.open{border-left-color:var(--accent)}
+.think-head{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;color:var(--dim);font-size:11px;user-select:none}
+.think-head:hover{color:var(--lit)}
+.think-head .dots{letter-spacing:2px;color:var(--accent)}
+.think-head .chev{margin-left:auto;transition:transform .15s}
+.think.open .think-head .chev{transform:rotate(90deg)}
+.think-body{padding:2px 12px 10px 12px;color:var(--dim);font-size:11.5px;font-style:italic;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+
+/* ③ 内联派发卡片 — ghost 卡片，状态三色描边 + dstat chip */
+.idisp{border:1px solid var(--ghost);border-radius:8px;margin:8px 0;background:rgba(13,18,22,.78);overflow:hidden}
+.idisp.done{border-color:#1f3d28}
+.idisp.running{border-color:#1f4d47}
+.idisp.error{border-color:#3a2422}
+.idisp-bar{display:flex;align-items:center;gap:8px;padding:8px 11px;cursor:pointer;user-select:none}
+.idisp-bar:hover{background:rgba(46,196,160,.05)}
+.idisp-glyph{flex:none;color:var(--accent);font-size:12px}
+.idisp-title{color:var(--lit);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.idisp-cwd{flex:none;color:var(--dim);font-size:10px}
+.idisp-cwd::before{content:"→ "}
+.idisp-spacer{margin-left:auto}
+.idisp-bar .chev{flex:none;color:var(--dim);transition:transform .15s}
+.idisp.open .idisp-bar .chev{transform:rotate(90deg)}
+.idisp-body{padding:2px 12px 10px 34px;font-size:10.5px;color:var(--dim)}
+.idisp-meta{letter-spacing:.04em;word-break:break-all}
+.idisp-childhint{margin-top:4px;color:#4f6f67}
+/* ④ 子线程下钻 — worker 自己的 thinking + 回复，缩进一级 */
+.child-label{margin:8px 0 7px;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--wordmark)}
+.child-label b{color:var(--accent);font-weight:600;letter-spacing:.02em;text-transform:none}
+.child-thread{border-left:2px dotted var(--ghost);padding-left:10px;display:flex;flex-direction:column;gap:2px}
+.child-part{color:var(--lit);font-size:11.5px;white-space:pre-wrap;word-break:break-word}
+.child-part.user{color:var(--dim)}
+
+/* 工具调用 chip */
+.toolchip{display:inline-block;margin:6px 0;font-size:10.5px;color:var(--accent);background:rgba(46,196,160,.10);border:1px solid #1f4d47;border-radius:5px;padding:2px 8px;letter-spacing:.03em}
+.toolchip .toolhint{color:var(--dim)}
+
 /* dispatch rail (right column under conversation) */
 .dispatch-rail{display:flex;flex-direction:column;gap:10px;min-width:0;max-height:560px}
 .rail-head{display:flex;align-items:baseline;justify-content:space-between;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);padding:0 2px}

@@ -83,7 +83,7 @@ func TestRunnerCollectsText(t *testing.T) {
 		{Type: agent.EvTurnEnd},
 	}}
 	r := newRunnerWithDriver(d, 0)
-	out, err := r.Run(context.Background(), "/p/proj", "do x")
+	out, _, err := r.Run(context.Background(), "/p/proj", "do x")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestRunnerSurfacesError(t *testing.T) {
 		{Type: agent.EvTurnEnd},
 	}}
 	r := newRunnerWithDriver(d, 0)
-	_, err := r.Run(context.Background(), "/p/proj", "do x")
+	_, _, err := r.Run(context.Background(), "/p/proj", "do x")
 	if err == nil || !strings.Contains(err.Error(), "claude-code exit: 1") {
 		t.Fatalf("want EvError surfaced, got %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRunnerCtxCancel(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 	}()
-	_, err := r.Run(ctx, "/p/proj", "long task")
+	_, _, err := r.Run(ctx, "/p/proj", "long task")
 	if err == nil {
 		t.Fatal("expected ctx cancellation error")
 	}
@@ -130,7 +130,7 @@ func TestRunnerCtxCancel(t *testing.T) {
 func TestRunnerStartError(t *testing.T) {
 	d := &fakeDriver{startErr: context.DeadlineExceeded}
 	r := newRunnerWithDriver(d, 0)
-	if _, err := r.Run(context.Background(), "/p/proj", "x"); err == nil {
+	if _, _, err := r.Run(context.Background(), "/p/proj", "x"); err == nil {
 		t.Fatal("expected start error")
 	}
 }
@@ -143,7 +143,7 @@ func TestRunnerChannelClosedWithoutTurnEnd(t *testing.T) {
 		closeAfterSend: true,
 	}
 	r := newRunnerWithDriver(d, 0)
-	out, err := r.Run(context.Background(), "/p/proj", "x")
+	out, _, err := r.Run(context.Background(), "/p/proj", "x")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

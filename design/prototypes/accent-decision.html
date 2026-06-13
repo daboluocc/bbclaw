@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bbclaw 主色调确认</title>
+<style>
+:root{ --bg:#070b0e; --lit:#dfeaec; --ghost:#152128; --dim:#6e8a93; --wordmark:#4f6f67; --pitch:9px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--lit);font-family:var(--mono);font-size:13px;line-height:1.55;
+  background-image:radial-gradient(var(--ghost) 1px,transparent 1px);background-size:var(--pitch) var(--pitch);
+  -webkit-font-smoothing:antialiased;padding:30px 20px 70px}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:13px;letter-spacing:.42em;font-weight:700;border-bottom:2px dotted var(--dim);display:inline-block;padding-bottom:3px}
+.sub{color:var(--dim);font-size:11px;margin:14px 0 26px;line-height:1.9}
+.sub b{color:var(--lit);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}
+
+/* each swatch column carries its own --a (accent) so the same markup recolors */
+.col{border:1px solid var(--ghost);border-radius:12px;padding:16px 15px;background:rgba(13,18,22,.6);position:relative}
+.col.ref{opacity:.92}
+.col.rec{border-color:var(--a);box-shadow:0 0 0 1px color-mix(in oklch,var(--a),transparent 80%)}
+.tag{position:absolute;top:-10px;left:14px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+  background:var(--bg);padding:0 7px;color:var(--dim)}
+.col.rec .tag{color:var(--a)}
+.name{font-size:13px;color:var(--lit);margin-bottom:2px}
+.hue{font-size:10.5px;color:var(--dim);margin-bottom:14px}
+.hue code{color:var(--a)}
+
+/* big swatch bar */
+.bar{height:34px;border-radius:7px;background:var(--a);margin-bottom:4px}
+.bar2{height:8px;border-radius:5px;background:var(--a);opacity:.18;margin-bottom:16px}
+
+/* mini UI in context */
+.lbl{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--wordmark);margin:14px 0 7px}
+.think{border-left:2.5px solid var(--a);background:rgba(255,255,255,.02);border-radius:0 7px 7px 0;
+  padding:7px 10px;color:var(--dim);font-size:11px}
+.think .d{letter-spacing:2px;color:var(--a);margin-right:6px}
+.chip{display:inline-flex;align-items:center;font-size:10px;letter-spacing:.05em;border:1px solid color-mix(in oklch,var(--a),transparent 60%);
+  border-radius:5px;padding:2px 8px;color:var(--a);margin:8px 6px 0 0}
+.chip .p{width:5px;height:5px;border-radius:50%;background:var(--a);margin-right:6px}
+.row{margin-top:10px;padding:7px 10px;border-radius:6px;background:color-mix(in oklch,var(--a),transparent 90%);
+  box-shadow:inset 3px 0 0 var(--a);font-size:11px;color:var(--lit)}
+.btns{margin-top:14px;display:flex;gap:8px}
+button{font-family:var(--mono);font-size:11px;border-radius:6px;padding:6px 12px;cursor:default}
+.bp{background:var(--a);border:1px solid var(--a);color:#06110d;font-weight:600}
+.bg{background:transparent;border:1px solid var(--ghost);color:var(--dim)}
+.note{margin-top:36px;color:var(--dim);font-size:11px;line-height:1.9;border-top:1px dotted var(--ghost);padding-top:18px}
+.note b{color:var(--lit)}
+.wheel{color:var(--wordmark);font-size:10.5px;margin-top:6px}
+</style></head>
+<body><div class="wrap">
+<h1>BBCLAW 主色调确认</h1>
+<div class="sub">
+架构事实：整套点阵体系<b>只换 hue 一个数字</b>（明度 L=.86 / 饱和 C=.17 固定）。主站 SaaS 门户 = <b>黄 hue 96°</b>（已确认）。
+给 bbclaw 选色 = 选一个跟黄色拉开距离的 hue。下面把候选放在同一套点阵 UI（思考条 / 派发 chip / 选中行 / 按钮）上对比。
+</div>
+
+<div class="grid">
+
+  <!-- reference: SaaS yellow -->
+  <div class="col ref" style="--a:oklch(0.86 0.17 96)">
+    <span class="tag">主站 · 已确认</span>
+    <div class="name">SaaS 门户 · 黄</div>
+    <div class="hue"><code>oklch(.86 .17 96)</code> · hue 96°</div>
+    <div class="bar"></div><div class="bar2"></div>
+    <div class="lbl">在点阵 UI 中</div>
+    <div class="think"><span class="d">⠿</span>思考 4 步</div>
+    <span class="chip"><span class="p"></span>派发中</span><span class="chip">✓ 8.2s</span>
+    <div class="row">› 选中行 motif</div>
+    <div class="btns"><button class="bp">主按钮</button><button class="bg">次级</button></div>
+  </div>
+
+  <!-- candidate A: teal/cyan (firmware existing) — recommended -->
+  <div class="col rec" style="--a:oklch(0.82 0.13 175)">
+    <span class="tag">候选 A · 推荐</span>
+    <div class="name">青绿 · 固件现用</div>
+    <div class="hue"><code>#2ec4a0</code> ≈ hue 175°</div>
+    <div class="bar"></div><div class="bar2"></div>
+    <div class="lbl">在点阵 UI 中</div>
+    <div class="think"><span class="d">⠿</span>思考 4 步</div>
+    <span class="chip"><span class="p"></span>派发中</span><span class="chip">✓ 8.2s</span>
+    <div class="row">› 选中行 motif</div>
+    <div class="btns"><button class="bp">主按钮</button><button class="bg">次级</button></div>
+  </div>
+
+  <!-- candidate B: cool blue -->
+  <div class="col" style="--a:oklch(0.78 0.15 248)">
+    <span class="tag">候选 B</span>
+    <div class="name">冷蓝</div>
+    <div class="hue"><code>oklch(.78 .15 248)</code> · hue 248°</div>
+    <div class="bar"></div><div class="bar2"></div>
+    <div class="lbl">在点阵 UI 中</div>
+    <div class="think"><span class="d">⠿</span>思考 4 步</div>
+    <span class="chip"><span class="p"></span>派发中</span><span class="chip">✓ 8.2s</span>
+    <div class="row">› 选中行 motif</div>
+    <div class="btns"><button class="bp">主按钮</button><button class="bg">次级</button></div>
+  </div>
+
+  <!-- candidate C: magenta -->
+  <div class="col" style="--a:oklch(0.78 0.18 350)">
+    <span class="tag">候选 C</span>
+    <div class="name">品红</div>
+    <div class="hue"><code>oklch(.78 .18 350)</code> · hue 350°</div>
+    <div class="bar"></div><div class="bar2"></div>
+    <div class="lbl">在点阵 UI 中</div>
+    <div class="think"><span class="d">⠿</span>思考 4 步</div>
+    <span class="chip"><span class="p"></span>派发中</span><span class="chip">✓ 8.2s</span>
+    <div class="row">› 选中行 motif</div>
+    <div class="btns"><button class="bp">主按钮</button><button class="bg">次级</button></div>
+  </div>
+
+</div>
+
+<div class="note">
+<b>我的推荐：候选 A 青绿 <code>#2ec4a0</code>（hue 175°）。</b>理由：①它已经是 BBClaw 固件屏幕和点阵设计语言的现用强调色，确认它＝把"硬件/本地层"的既有身份正式化，固件↔adapter↔Web 三端同源；②跟 SaaS 黄（96°）色轮相隔 ~79°，区分清晰，形成"<b>本地/硬件=青</b> · <b>云/SaaS=黄</b>"的双层品牌叙事；③冷青跟 thinking/派发这种"逻辑/执行"语境调性契合，黄色更偏"云/连接"的暖调，分工自洽。
+<div class="wheel">色轮位置：黄 96° ── 青绿 175° ── 冷蓝 248° ── 品红 350°（候选 B/C 仅作对比，若想让 bbclaw 更跳脱可选，但会丢掉固件同源这条线）</div>
+</div>
+</div></body></html>

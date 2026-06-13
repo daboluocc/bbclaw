@@ -21,7 +21,7 @@ func TestTaskStoreMemoryOnly(t *testing.T) {
 		t.Fatalf("expected running, got %q", run.Status)
 	}
 
-	if err := ts.MarkDone("t1", "great result"); err != nil {
+	if err := ts.MarkDone("t1", "great result", "wk-1"); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 	run, ok = ts.Get("t1")
@@ -66,7 +66,7 @@ func TestTaskStoreFilePersistence(t *testing.T) {
 	if err := ts1.Create("persist-1", "/project", "build it"); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := ts1.MarkDone("persist-1", "built successfully"); err != nil {
+	if err := ts1.MarkDone("persist-1", "built successfully", "wk-2"); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 

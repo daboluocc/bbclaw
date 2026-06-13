@@ -88,6 +88,13 @@ type Options struct {
 	// round instead of paying the cold-start penalty. Empty disables butler
 	// pre-warming (the butler still works, just cold the first turn).
 	ButlerWorkspaceCwd string
+	// Thinking enables Claude Code's extended thinking so the stream-json
+	// carries `thinking` content blocks (surfaced as EvThinking for the admin
+	// conversation page, ADR-029 §2.2). Implemented by injecting
+	// `--settings {"alwaysThinkingEnabled":true}`; skipped when the operator
+	// already supplied a --settings flag via ExtraArgs (last-flag wins).
+	// Corresponds to AGENT_THINKING (default on).
+	Thinking bool
 }
 
 // New constructs a Driver. The logger is required; pass obs.NewLogger() if
@@ -116,6 +123,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 		if dm := defaultModelID(); dm != "" {
 			extra = append(extra, "--model", dm)
 		}
+	}
+	// Enable extended thinking so stream-json emits `thinking` content blocks
+	// (ADR-029 §2.2). Skipped when the operator already pinned --settings via
+	// ExtraArgs. Shared into both the warm pool and per-turn args because extra
+	// flows through NewWarmPool and sessionFlags(d.extra).
+	if opts.Thinking && !hasFlag(extra, "--settings") {
+		extra = append(extra, "--settings", `{"alwaysThinkingEnabled":true}`)
 	}
 	driverEnv := make(map[string]string, len(opts.Env))
 	for k, v := range opts.Env {
@@ -558,13 +572,14 @@ type streamMessage struct {
 }
 
 type streamContent struct {
-	Type       string          `json:"type"`
-	Text       string          `json:"text,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	ID         string          `json:"id,omitempty"`
-	ToolUseID  string          `json:"tool_use_id,omitempty"` // present in tool_result frames
-	Input      json.RawMessage `json:"input,omitempty"`
-	Content    json.RawMessage `json:"content,omitempty"` // tool_result content (string or array)
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"` // extended-thinking block payload (ADR-029 §2.2)
+	Name      string          `json:"name,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"` // present in tool_result frames
+	Input     json.RawMessage `json:"input,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"` // tool_result content (string or array)
 }
 
 type streamUsage struct {
@@ -607,6 +622,16 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 					if c.Text != "" {
 						log.Infof("claude-code: reply sid=%s text=%q", s.id, truncate(c.Text, 200))
 						s.emit(agent.Event{Type: agent.EvText, Text: c.Text})
+					}
+				case "thinking":
+					// Extended-thinking block. Only present when thinking is
+					// enabled (Options.Thinking → --settings alwaysThinkingEnabled,
+					// ADR-029 §2.2). Surfaced as EvThinking so the admin
+					// conversation page can render a collapsible thinking stream;
+					// the device side only consumes the coarse turn.state phase.
+					if c.Thinking != "" {
+						log.Infof("claude-code: thinking sid=%s len=%d", s.id, len(c.Thinking))
+						s.emit(agent.Event{Type: agent.EvThinking, Text: c.Thinking})
 					}
 				case "tool_use":
 					if isMCPBBClawDispatch(c.Name) {
@@ -859,10 +884,11 @@ func parseDispatchInput(raw json.RawMessage) (cwd, title string) {
 
 // dispatchResultContent is the JSON shape the MCP dispatch tool returns.
 type dispatchResultContent struct {
-	Status    string `json:"status"`    // "done" | "running" | "async" | "error"
-	TaskID    string `json:"taskId"`
-	ElapsedMs int64  `json:"elapsedMs"`
-	Error     string `json:"error"`
+	Status         string `json:"status"` // "done" | "running" | "async" | "error"
+	TaskID         string `json:"taskId"`
+	ElapsedMs      int64  `json:"elapsedMs"`
+	Error          string `json:"error"`
+	ChildSessionID string `json:"childSessionId"` // worker session id for drill-down (ADR-029 §2.3)
 }
 
 // parseDispatchResult parses a tool_result content blob from the "user" envelope.
@@ -911,6 +937,7 @@ func parseDispatchResult(toolUseID string, raw json.RawMessage) *agent.DispatchS
 		}
 		ds.ElapsedMs = res.ElapsedMs
 		ds.ErrorMsg = res.Error
+		ds.ChildSessionID = res.ChildSessionID
 	}
 	return ds
 }

@@ -346,6 +346,9 @@ var k_driver_registry = []driverReg{
 				WarmCwd:            warmCwd,
 				ButlerWorkspaceCwd: butlerCwd,
 				Env:                map[string]string{},
+				// AGENT_THINKING (default on): surface the butler's extended
+				// thinking on the admin conversation page (ADR-029 §2.2).
+				Thinking: envEnabledDefault(os.Getenv("AGENT_THINKING")),
 			}
 			// Disable Claude Code's native auto-memory (~/.claude/projects/<slug>/
 			// memory) for every adapter-spawned claude session (ADR-021 §4,
@@ -485,7 +488,8 @@ func memoryRunner(router *agent.Router, logger *obs.Logger) memory.PromptRunner 
 		if !ok {
 			return claudeRun(ctx, prompt)
 		}
-		return butlermcp.NewWorkerRunner(drv, 0).Run(ctx, "", prompt)
+		res, _, err := butlermcp.NewWorkerRunner(drv, 0).Run(ctx, "", prompt)
+		return res, err
 	}
 }
 
@@ -722,6 +726,17 @@ func parseArgList(raw string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+// envEnabledDefault parses a default-on boolean env var: empty/unset means
+// enabled; only an explicit falsey value ("0" / "false" / "off" / "no") disables.
+func envEnabledDefault(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // butlerMCPEnv collects the environment the butler's --mcp-config server entry
