@@ -31,6 +31,7 @@ static const char* TAG = "bb_wifi";
 #define WIFI_FAIL_BIT BIT1
 #define WIFI_FORM_BODY_MAX 192
 #define WIFI_SCAN_RESULT_MAX 16
+#define BB_WIFI_SSID_BUF (sizeof(((wifi_sta_config_t*)0)->ssid))
 
 static EventGroupHandle_t s_wifi_event_group;
 static esp_netif_t* s_sta_netif;
@@ -41,6 +42,9 @@ static int s_connected;
 static int s_stack_ready;
 static int s_wifi_ready;
 static int s_event_handlers_registered;
+/* #182 scan-then-connect：扫描预筛期间临时以 STA 模式启动只为扫描，需抑制
+ * STA_START 的自动 esp_wifi_connect 与掉线快速重试，避免空配置连接风暴。 */
+static volatile bool s_suppress_autoconnect = false;
 static bb_wifi_mode_t s_mode;
 static char s_active_ssid[sizeof(((wifi_sta_config_t*)0)->ssid)] = {0};
 static char s_active_password[sizeof(((wifi_sta_config_t*)0)->password)] = {0};
@@ -457,6 +461,33 @@ static int compare_ap_record_rssi_desc(const void* lhs, const void* rhs) {
   return (int)b->rssi - (int)a->rssi;
 }
 
+/* 核心阻塞扫描：要求 wifi 已 start 且处于 STA/APSTA 模式。一次全信道扫描即可
+ * 并发看到周围所有 AP（~1-2s）。records[] 容量须为 WIFI_SCAN_RESULT_MAX；成功
+ * 时 *count 为实际抓到的条数（未去重，调用方自行去重）。HTTP 配网与自动连接
+ * 预筛共用，避免重复 scan_start/get_ap_records 样板。 */
+static esp_err_t wifi_scan_collect(wifi_ap_record_t* records, uint16_t* count) {
+  *count = 0;
+  wifi_scan_config_t scan_cfg = {
+      .show_hidden = false,
+  };
+  esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+  if (err != ESP_OK) {
+    return err;
+  }
+  uint16_t ap_num = 0;
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_scan_get_ap_num(&ap_num));
+  if (ap_num == 0) {
+    return ESP_OK;
+  }
+  uint16_t fetch_num = ap_num > WIFI_SCAN_RESULT_MAX ? WIFI_SCAN_RESULT_MAX : ap_num;
+  err = esp_wifi_scan_get_ap_records(&fetch_num, records);
+  if (err != ESP_OK) {
+    return err;
+  }
+  *count = fetch_num;
+  return ESP_OK;
+}
+
 static esp_err_t handle_scan_get(httpd_req_t* req) {
   wifi_mode_t mode = WIFI_MODE_NULL;
   esp_err_t err = esp_wifi_get_mode(&mode);
@@ -472,31 +503,19 @@ static esp_err_t handle_scan_get(httpd_req_t* req) {
     }
   }
 
-  wifi_scan_config_t scan_cfg = {
-      .show_hidden = false,
-  };
   ESP_LOGI(TAG, "wifi provisioning scan start");
-  err = esp_wifi_scan_start(&scan_cfg, true);
+  uint16_t fetch_num = 0;
+  wifi_ap_record_t records[WIFI_SCAN_RESULT_MAX];
+  memset(records, 0, sizeof(records));
+  err = wifi_scan_collect(records, &fetch_num);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "wifi scan start failed err=%s", esp_err_to_name(err));
+    ESP_LOGW(TAG, "wifi scan failed err=%s", esp_err_to_name(err));
     httpd_resp_set_status(req, "503 Service Unavailable");
     return httpd_resp_sendstr(req, "wifi scan failed");
   }
-
-  uint16_t ap_num = 0;
-  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_scan_get_ap_num(&ap_num));
-  if (ap_num == 0) {
+  if (fetch_num == 0) {
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true,\"networks\":[]}");
-  }
-
-  uint16_t fetch_num = ap_num > WIFI_SCAN_RESULT_MAX ? WIFI_SCAN_RESULT_MAX : ap_num;
-  wifi_ap_record_t records[WIFI_SCAN_RESULT_MAX];
-  memset(records, 0, sizeof(records));
-  err = esp_wifi_scan_get_ap_records(&fetch_num, records);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "wifi scan get records failed err=%s", esp_err_to_name(err));
-    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "wifi scan records failed");
   }
 
   qsort(records, fetch_num, sizeof(records[0]), compare_ap_record_rssi_desc);
@@ -925,6 +944,12 @@ static esp_err_t start_ap_provisioning_mode(void) {
 static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
   (void)arg;
 
+  /* scan 预筛期间（#182）STA 只为扫描而启，不自动连接、不进重试逻辑 */
+  if (s_suppress_autoconnect &&
+      (event_id == WIFI_EVENT_STA_START || event_id == WIFI_EVENT_STA_DISCONNECTED)) {
+    return;
+  }
+
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
     (void)esp_wifi_connect();
     return;
@@ -1015,6 +1040,57 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
   }
 }
 
+/* #182 scan-then-connect 预筛：自动连接前先扫一遍周围 AP，把在场 SSID（去重）
+ * 写进 present[]，返回数量。临时以 STA 模式启动并阻塞扫描（~1-2s），全程抑制
+ * STA_START 的自动连接与掉线重试，扫完即 stop，交回干净状态给后续
+ * start_sta_connection。任何错误/无结果返回 0，调用方据此回退全量盲连，不退化。 */
+static int wifi_scan_present_ssids(char present[][BB_WIFI_SSID_BUF], int max_present) {
+  s_suppress_autoconnect = true;
+  esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+  if (err == ESP_OK) {
+    err = esp_wifi_start();
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "scan prefilter: sta start failed err=%s, fallback blind connect", esp_err_to_name(err));
+    s_suppress_autoconnect = false;
+    return 0;
+  }
+
+  wifi_ap_record_t records[WIFI_SCAN_RESULT_MAX];
+  memset(records, 0, sizeof(records));
+  uint16_t count = 0;
+  err = wifi_scan_collect(records, &count);
+  (void)esp_wifi_stop();
+  s_suppress_autoconnect = false;
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "scan prefilter: scan failed err=%s, fallback blind connect", esp_err_to_name(err));
+    return 0;
+  }
+
+  int n = 0;
+  for (uint16_t i = 0; i < count && n < max_present; i++) {
+    const char* ssid = (const char*)records[i].ssid;
+    if (!is_nonempty(ssid)) {
+      continue;
+    }
+    bool dup = false;
+    for (int j = 0; j < n; j++) {
+      if (strcmp(present[j], ssid) == 0) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) {
+      continue;
+    }
+    copy_string(present[n], BB_WIFI_SSID_BUF, ssid);
+    n++;
+  }
+  ESP_LOGI(TAG, "scan prefilter: present_aps=%u unique_present=%d", (unsigned)count, n);
+  return n;
+}
+
 esp_err_t bb_wifi_init_and_connect(void) {
   s_mode = BB_WIFI_MODE_NONE;
   ESP_RETURN_ON_ERROR(ensure_wifi_stack_ready(), TAG, "wifi stack init failed");
@@ -1023,6 +1099,7 @@ esp_err_t bb_wifi_init_and_connect(void) {
   typedef struct {
     int slot;
     uint64_t ts;
+    bool present; /* #182：本次 scan 是否扫到该 SSID 在场 */
     char ssid[sizeof(((wifi_sta_config_t*)0)->ssid)];
     char password[sizeof(((wifi_sta_config_t*)0)->password)];
   } wifi_candidate_t;
@@ -1064,20 +1141,47 @@ esp_err_t bb_wifi_init_and_connect(void) {
     }
   }
 
-  /* 按排序依次尝试 */
-  for (int i = 0; i < n_candidates; i++) {
-    wifi_candidate_t* c = &candidates[i];
-    if (c->ts > 0) {
-      ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=%llu (previously connected)",
-               c->ssid, i, (unsigned long long)c->ts);
-    } else {
-      ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=0 (never connected)",
-               c->ssid, i);
+  /* --- #182 scan-then-connect：扫一遍在场 AP，标记每个候选是否在场 ---
+   * scan 解决「哪些能连」，已排好的时间戳优先级解决「先连哪个」。 */
+  {
+    char present[WIFI_SCAN_RESULT_MAX][BB_WIFI_SSID_BUF];
+    int n_present = wifi_scan_present_ssids(present, WIFI_SCAN_RESULT_MAX);
+    int n_matched = 0;
+    for (int i = 0; i < n_candidates; i++) {
+      candidates[i].present = false;
+      for (int j = 0; j < n_present; j++) {
+        if (strcmp(candidates[i].ssid, present[j]) == 0) {
+          candidates[i].present = true;
+          n_matched++;
+          break;
+        }
+      }
     }
-    if (start_sta_connection(c->ssid, c->password) == ESP_OK) {
-      return ESP_OK;
+    ESP_LOGI(TAG, "scan prefilter: saved=%d present=%d matched=%d", n_candidates, n_present, n_matched);
+  }
+
+  /* Pass 0：先连在场（scan 命中）候选——快路径，跳过不在场网络的盲等超时。
+   * Pass 1：再连其余候选（scan 失败 → 全部归此 / 隐藏 SSID / 弱信号漏扫），
+   * 等价于原全量盲连，保证行为不退化。两 pass 内均沿用时间戳倒序优先级。 */
+  for (int pass = 0; pass < 2; pass++) {
+    for (int i = 0; i < n_candidates; i++) {
+      wifi_candidate_t* c = &candidates[i];
+      bool want = (pass == 0) ? c->present : !c->present;
+      if (!want) {
+        continue;
+      }
+      if (c->ts > 0) {
+        ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=%llu present=%d (previously connected)",
+                 c->ssid, i, (unsigned long long)c->ts, (int)c->present);
+      } else {
+        ESP_LOGI(TAG, "trying ssid=%s rank=%d last_ok_seq=0 present=%d (never connected)",
+                 c->ssid, i, (int)c->present);
+      }
+      if (start_sta_connection(c->ssid, c->password) == ESP_OK) {
+        return ESP_OK;
+      }
+      ESP_LOGW(TAG, "wifi ssid=%s rank=%d failed, trying next", c->ssid, i);
     }
-    ESP_LOGW(TAG, "wifi ssid=%s rank=%d failed, trying next", c->ssid, i);
   }
 
   /* Fallback: compile-time default */
