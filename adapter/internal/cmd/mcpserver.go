@@ -45,7 +45,10 @@ func buildWorkerRunner(driverName string, cfg config.ButlerConfig, logger *obs.L
 			BaseURL:   cfg.ClaudeBaseURL,
 			AuthToken: cfg.ClaudeAuthToken,
 			ExtraArgs: parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
-			Logger:    logger,
+			// AGENT_THINKING (default on): capture the worker's reasoning so the
+			// admin page can drill into the sub-agent's thinking (ADR-029 §2.3).
+			Thinking: envEnabledDefault(os.Getenv("AGENT_THINKING")),
+			Logger:   logger,
 		})
 	}
 }
@@ -181,6 +184,17 @@ func parseArgList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// envEnabledDefault parses a default-on boolean env var: empty/unset means
+// enabled; only an explicit falsey value disables.
+func envEnabledDefault(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // resolveDataDir returns the adapter data directory for persistent state.

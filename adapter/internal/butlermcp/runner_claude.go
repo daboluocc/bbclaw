@@ -52,6 +52,10 @@ type ClaudeRunnerOptions struct {
 	// "--permission-mode acceptEdits" is always prepended by the runner so the
 	// worker can edit files without an interactive approval round-trip.
 	ExtraArgs []string
+	// Thinking enables extended thinking on the worker so the admin page can
+	// drill into the sub-agent's reasoning (ADR-029 §2.3). Maps to
+	// claudecode.Options.Thinking.
+	Thinking bool
 	// MaxOutputBytes caps the result text. <=0 uses defaultMaxOutputBytes.
 	MaxOutputBytes int
 	// Logger is the obs logger for the underlying claudecode driver. It MUST
@@ -85,6 +89,7 @@ func NewClaudeWorkerRunner(opts ClaudeRunnerOptions) *DriverWorkerRunner {
 		Bin:       opts.Bin,
 		ExtraArgs: extra,
 		Env:       env,
+		Thinking:  opts.Thinking,
 	}, logger)
 	return newRunnerWithDriver(d, opts.MaxOutputBytes)
 }
@@ -107,12 +112,14 @@ func newRunnerWithDriver(d workerDriver, maxOutputBytes int) *DriverWorkerRunner
 }
 
 // Run starts a worker session in cwd, sends task, and returns the worker's
-// final text once the turn ends. Honours ctx cancellation.
-func (r *DriverWorkerRunner) Run(ctx context.Context, cwd, task string) (string, error) {
+// final text plus the worker session id (== its JSONL filename, for admin
+// drill-down per ADR-029 §2.3) once the turn ends. Honours ctx cancellation.
+func (r *DriverWorkerRunner) Run(ctx context.Context, cwd, task string) (string, string, error) {
 	sid, err := r.driver.Start(ctx, agent.StartOpts{Cwd: cwd})
 	if err != nil {
-		return "", fmt.Errorf("butlermcp: start worker: %w", err)
+		return "", "", fmt.Errorf("butlermcp: start worker: %w", err)
 	}
+	childSID := string(sid)
 	// Always tear the session down so the driver doesn't leak it and any
 	// in-flight subprocess is cancelled.
 	defer func() { _ = r.driver.Stop(sid) }()
@@ -130,18 +137,18 @@ func (r *DriverWorkerRunner) Run(ctx context.Context, cwd, task string) (string,
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", childSID, ctx.Err()
 		case ev, ok := <-events:
 			if !ok {
 				// Channel closed before EvTurnEnd — surface whatever Send
 				// reported, else a generic error.
 				if turnErr != nil {
-					return "", turnErr
+					return "", childSID, turnErr
 				}
 				if se := drainSendErr(sendErr); se != nil {
-					return "", se
+					return "", childSID, se
 				}
-				return clampOutput(sb.String(), r.maxOutputBytes), nil
+				return clampOutput(sb.String(), r.maxOutputBytes), childSID, nil
 			}
 			switch ev.Type {
 			case agent.EvText:
@@ -152,9 +159,9 @@ func (r *DriverWorkerRunner) Run(ctx context.Context, cwd, task string) (string,
 				}
 			case agent.EvTurnEnd:
 				if turnErr != nil {
-					return "", turnErr
+					return "", childSID, turnErr
 				}
-				return clampOutput(sb.String(), r.maxOutputBytes), nil
+				return clampOutput(sb.String(), r.maxOutputBytes), childSID, nil
 			}
 		}
 	}

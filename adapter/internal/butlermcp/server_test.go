@@ -12,27 +12,28 @@ import (
 // mockRunner is an injectable WorkerRunner. If gate is non-nil Run blocks until
 // it's closed; otherwise it returns after delay.
 type mockRunner struct {
-	result string
-	err    error
-	delay  time.Duration
-	gate   chan struct{}
+	result   string
+	childSID string
+	err      error
+	delay    time.Duration
+	gate     chan struct{}
 }
 
-func (m *mockRunner) Run(ctx context.Context, cwd, task string) (string, error) {
+func (m *mockRunner) Run(ctx context.Context, cwd, task string) (string, string, error) {
 	if m.gate != nil {
 		select {
 		case <-m.gate:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
 	} else if m.delay > 0 {
 		select {
 		case <-time.After(m.delay):
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
 	}
-	return m.result, m.err
+	return m.result, m.childSID, m.err
 }
 
 func newTestServer(runner WorkerRunner, wait time.Duration) *Server {
@@ -111,7 +112,7 @@ func TestListProjects(t *testing.T) {
 }
 
 func TestDispatchSync(t *testing.T) {
-	s := newTestServer(&mockRunner{result: "done it"}, time.Second)
+	s := newTestServer(&mockRunner{result: "done it", childSID: "wk-abc"}, time.Second)
 	text, isErr := s.callTool("dispatch", json.RawMessage(`{"project":"proj","task":"do x"}`))
 	if isErr {
 		t.Fatalf("isErr: %s", text)
@@ -119,6 +120,11 @@ func TestDispatchSync(t *testing.T) {
 	m := parse(t, text)
 	if m["status"] != "done" || m["result"] != "done it" {
 		t.Fatalf("result=%v", m)
+	}
+	// childSessionId must surface so the admin page can drill into the worker
+	// transcript (ADR-029 §2.3).
+	if m["childSessionId"] != "wk-abc" {
+		t.Fatalf("want childSessionId=wk-abc, got %v", m["childSessionId"])
 	}
 }
 

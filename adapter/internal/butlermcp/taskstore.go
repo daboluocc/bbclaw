@@ -32,6 +32,9 @@ type TaskRun struct {
 	ElapsedMs int64     `json:"elapsedMs,omitempty"`
 	Result    string    `json:"result,omitempty"`
 	Error     string    `json:"error,omitempty"`
+	// ChildSessionID is the worker session id (== its JSONL filename) so the
+	// admin page can drill into the sub-agent's transcript (ADR-029 §2.3).
+	ChildSessionID string `json:"childSessionId,omitempty"`
 }
 
 // TaskStore persists task runs under <dataDir>/task-runs/<taskId>/meta.json.
@@ -83,8 +86,8 @@ func (ts *TaskStore) Create(taskID, cwd, prompt string) error {
 	return ts.writeMeta(run)
 }
 
-// MarkDone updates a task to "done" with the given result.
-func (ts *TaskStore) MarkDone(taskID, result string) error {
+// MarkDone updates a task to "done" with the given result and worker session id.
+func (ts *TaskStore) MarkDone(taskID, result, childSessionID string) error {
 	ts.mu.Lock()
 	run := ts.getOrLoad(taskID)
 	if run == nil {
@@ -96,6 +99,7 @@ func (ts *TaskStore) MarkDone(taskID, result string) error {
 	updated := *run
 	updated.Status = TaskStatusDone
 	updated.Result = result
+	updated.ChildSessionID = childSessionID
 	updated.EndedAt = now
 	updated.ElapsedMs = now.Sub(run.StartedAt).Milliseconds()
 	ts.mu.Unlock()

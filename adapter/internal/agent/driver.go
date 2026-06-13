@@ -29,6 +29,7 @@ type EventType string
 
 const (
 	EvText           EventType = "text"            // assistant text fragment
+	EvThinking       EventType = "thinking"        // assistant extended-thinking block (ADR-029 §2.2)
 	EvToolCall       EventType = "tool_call"       // permission request (Capabilities.ToolApproval)
 	EvStatus         EventType = "status"          // running/waiting/idle/offline
 	EvTokens         EventType = "tokens"          // usage stats
@@ -67,6 +68,10 @@ type DispatchStatus struct {
 	ElapsedMs int64
 	// ErrorMsg holds the failure description when Phase == "error".
 	ErrorMsg string
+	// ChildSessionID is the worker session's own id (== its JSONL filename), so
+	// the admin page can drill into the sub-agent's transcript (ADR-029 §2.3).
+	// Populated on the done phase once the dispatch result carries it.
+	ChildSessionID string
 }
 
 type ToolCall struct {
@@ -204,6 +209,60 @@ type MessagesPage struct {
 	Messages []Message `json:"messages"` // chronological order (oldest first)
 	Total    int       `json:"total"`    // total messages in the session (after filtering)
 	HasMore  bool      `json:"hasMore"`  // true when earlier messages exist beyond the returned slice
+}
+
+// Part is one typed segment of a turn, parsed from the conversation
+// transcript for the admin conversation page (ADR-029 §2.1). A user turn is
+// a single text part; an assistant turn is an ordered mix of thinking / text /
+// tool / dispatch parts, preserving the order they occurred in the turn.
+type Part struct {
+	Kind     string        `json:"kind"`               // "text" | "thinking" | "tool" | "dispatch"
+	Text     string        `json:"text,omitempty"`     // text / thinking content (or tool hint)
+	Tool     string        `json:"tool,omitempty"`     // tool name (Kind == "tool")
+	Dispatch *DispatchPart `json:"dispatch,omitempty"` // non-nil when Kind == "dispatch"
+}
+
+// DispatchPart is a butler sub-task (mcp__bbclaw__dispatch) execution record
+// woven inline into the assistant turn at the point the dispatch occurred
+// (ADR-029 §2.1/§2.4). Status reflects the async lifecycle observed in the
+// transcript: "started" (no result yet), "done", "async"/"running", "error".
+type DispatchPart struct {
+	TaskID    string `json:"taskId,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ElapsedMs int64  `json:"elapsedMs,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// ChildSessionID links to the worker session's own transcript so the page
+	// can drill into the sub-agent's thinking + reply (ADR-029 §2.3). Empty
+	// until the dispatch plumbing records it (M4).
+	ChildSessionID string `json:"childSessionId,omitempty"`
+}
+
+// Turn is one user/assistant turn with its ordered parts. Seq is the 0-based
+// index into the transcript (pagination cursor, same semantics as Message.Seq).
+type Turn struct {
+	Role      string `json:"role"` // "user" | "assistant"
+	Seq       int    `json:"seq"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Parts     []Part `json:"parts"`
+}
+
+// PartsPage is the result of a paginated structured-history load.
+type PartsPage struct {
+	Turns   []Turn `json:"turns"`
+	Total   int    `json:"total"`
+	HasMore bool   `json:"hasMore"`
+}
+
+// PartLoader is an optional capability for drivers that can replay a session's
+// history as structured parts (thinking / text / tool / dispatch) for the
+// admin conversation page (ADR-029). It is additive to MessageLoader: drivers
+// that implement only MessageLoader keep working (flat text); the page falls
+// back to messages when PartLoader is absent. before/limit semantics match
+// MessageLoader.
+type PartLoader interface {
+	LoadParts(ctx context.Context, sid string, before, limit int) (PartsPage, error)
 }
 
 // MessageLoader is an optional capability for drivers that can replay a

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adapter 对话页改造 · 原型</title>
+<style>
+:root{
+  --bg:#070b0e; --lit:#dfeaec; --ghost:#152128; --dim:#6e8a93;
+  --wordmark:#4f6f67; --accent:#2ec4a0; --ok:#4cd964; --err:#e66f6f; --pitch:9px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--lit); font-family:var(--mono);
+  font-size:13px; line-height:1.55; letter-spacing:.01em;
+  background-image:radial-gradient(var(--ghost) 1px, transparent 1px);
+  background-size:var(--pitch) var(--pitch);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:780px; margin:0 auto; padding:26px 20px 80px}
+
+/* ── header ── */
+.topbar{display:flex; align-items:baseline; gap:14px; padding-bottom:14px; border-bottom:1px dotted var(--ghost); margin-bottom:8px}
+.wordmark{font-weight:700; letter-spacing:.42em; color:var(--lit); border-bottom:2px dotted var(--accent); padding-bottom:3px; font-size:13px}
+.crumb{color:var(--dim); font-size:11px; letter-spacing:.12em; text-transform:uppercase}
+.legend{font-size:10.5px; color:var(--dim); margin:10px 0 22px; line-height:1.8}
+.legend b{color:var(--accent); font-weight:600}
+.legend kbd{border:1px solid var(--ghost); border-radius:4px; padding:0 5px; color:var(--lit)}
+
+/* ── timeline ── */
+.turn{margin:22px 0}
+.role{font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim); margin-bottom:7px; display:flex; align-items:center; gap:7px}
+.role::before{content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+  box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost)}
+.role.user::before{background:var(--dim); box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost)}
+
+/* user bubble */
+.user-msg{background:rgba(13,18,22,.5); border:1px solid var(--ghost); border-left:3px solid var(--dim);
+  border-radius:8px; padding:11px 14px; color:var(--lit)}
+
+/* assistant text */
+.asst-text{padding:2px 2px 2px 6px}
+.asst-text p{margin:0 0 8px}
+.asst-text p:last-child{margin:0}
+
+/* ── thinking fold ── */
+.think{border-left:2.5px solid var(--ghost); background:rgba(13,18,22,.55); border-radius:0 8px 8px 0; margin:8px 0; overflow:hidden}
+.think.open{border-left-color:var(--accent)}
+.think-head{display:flex; align-items:center; gap:9px; padding:8px 12px; cursor:pointer; color:var(--dim); font-size:11.5px; user-select:none}
+.think-head:hover{color:var(--lit)}
+.think-head .dots{letter-spacing:2px; color:var(--accent)}
+.think-head .chev{margin-left:auto; transition:transform .15s; color:var(--dim)}
+.think.open .chev{transform:rotate(90deg)}
+.think-body{display:none; padding:2px 12px 12px 12px}
+.think.open .think-body{display:block}
+.sev{position:relative; display:flex; gap:11px; padding:4px 0}
+.sev-node{position:relative; flex:0 0 14px; display:flex; justify-content:center; padding-top:5px}
+.sev-node .pt{width:5px; height:5px; border-radius:50%; background:var(--dim)}
+.sev:not(:last-child) .sev-node::before{content:""; position:absolute; top:9px; bottom:-8px; left:50%; width:1px; background:var(--ghost)}
+.sev-text{color:var(--dim); font-size:12px}
+.sev-think .sev-text{font-style:italic}
+.sev-tool{display:inline-block; background:rgba(46,196,160,.12); color:var(--accent); border-radius:4px; padding:0 6px; font-size:11px; margin-right:6px}
+
+/* ── dispatch card ── */
+.disp{border:1px solid var(--ghost); border-radius:9px; margin:10px 0; background:rgba(13,18,22,.78); overflow:hidden}
+.disp.ok{border-color:rgba(76,217,100,.28)}
+.disp.run{border-color:rgba(46,196,160,.30)}
+.disp.err{border-color:#3a2422}
+.disp-bar{display:flex; align-items:center; gap:10px; padding:10px 13px; cursor:pointer; user-select:none}
+.disp-bar:hover{background:rgba(46,196,160,.05)}
+.disp-glyph{flex:0 0 auto; color:var(--accent); font-size:13px}
+.disp-title{color:var(--lit); font-size:12.5px}
+.disp-cwd{color:var(--dim); font-size:11px}
+.disp-cwd::before{content:"→ "; color:var(--dim)}
+.disp-spacer{margin-left:auto}
+.chip{font-size:10.5px; letter-spacing:.06em; border:1px solid var(--ghost); border-radius:5px; padding:2px 8px; color:var(--dim)}
+.chip.ok{color:var(--ok); border-color:rgba(76,217,100,.3)}
+.chip.run{color:var(--accent); border-color:rgba(46,196,160,.35)}
+.chip.err{color:var(--err); border-color:#3a2422}
+.chip .pulse{display:inline-block; width:5px; height:5px; border-radius:50%; background:var(--accent); margin-right:6px; animation:breathe 1.3s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.3}50%{opacity:1}}
+.disp-chev{color:var(--dim); transition:transform .15s}
+.disp.open .disp-chev{transform:rotate(90deg)}
+.disp-meta{font-size:10px; color:var(--dim); padding:0 13px 8px 36px; letter-spacing:.04em}
+
+/* child sub-thread (recursive) */
+.disp-child{display:none; margin:0 13px 13px 36px; padding:12px 14px; border-left:2px dotted var(--ghost); background:rgba(7,11,14,.6); border-radius:0 8px 8px 0}
+.disp.open .disp-child{display:block}
+.child-label{font-size:9.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--wordmark); margin-bottom:9px}
+.child-label b{color:var(--accent); font-weight:600}
+
+/* async note */
+.async-note{font-size:10.5px; color:var(--dim); padding:0 13px 10px 36px; font-style:italic}
+.async-note b{color:var(--accent); font-style:normal}
+
+.fresh{animation:flash 1.4s ease-out}
+@keyframes flash{0%{background:rgba(46,196,160,.18)}100%{background:transparent}}
+.hint{font-size:10px; color:var(--wordmark); text-align:center; margin-top:40px; letter-spacing:.1em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <span class="wordmark">BBCLAW</span>
+    <span class="crumb">Adapter · 个人对话 · 原型</span>
+  </div>
+
+  <div class="legend">
+    本原型演示对话页三个新交互（点击展开）：<br>
+    <b>① 思考折叠流</b> 默认收起一行摘要，点开看竖向时间线 ·
+    <b>② 内联派发卡片</b> 子 claude -p 25s 内跑完，当轮原位 done ·
+    <b>③ 异步派发卡片</b> 超时降级 async，「派发中」挂起、稍后轮询回填 ·
+    <b>④ 子线程下钻</b> 派发卡片展开成子 agent 自己的思考+回复（agent_room 做不到的）。
+  </div>
+
+  <!-- ─────────── USER TURN ─────────── -->
+  <div class="turn">
+    <div class="role user">你</div>
+    <div class="user-msg">把 auth 模块的 token 刷新逻辑重构一下，顺便看下有没有测试漏的</div>
+  </div>
+
+  <!-- ─────────── BUTLER TURN ─────────── -->
+  <div class="turn">
+    <div class="role">管家 · claude-code</div>
+
+    <!-- ① thinking fold -->
+    <div class="think" data-toggle="think">
+      <div class="think-head">
+        <span class="dots">⠿</span><span>思考 4 步 · 已折叠</span>
+        <span class="chev">▸</span>
+      </div>
+      <div class="think-body">
+        <div class="sev sev-think"><div class="sev-node"><span class="pt"></span></div><div class="sev-text">先读 auth 模块结构，token 刷新散在 client.go 和 middleware 两处，耦合度高。</div></div>
+        <div class="sev"><div class="sev-node"><span class="pt"></span></div><div class="sev-text"><span class="sev-tool">grep</span>refresh_token 引用 6 处，其中 2 处没走统一过期判断。</div></div>
+        <div class="sev sev-think"><div class="sev-node"><span class="pt"></span></div><div class="sev-text">重构动文件、要编辑——派给项目内 worker 跑（acceptEdits）比我在编排上下文里改干净。</div></div>
+        <div class="sev sev-think"><div class="sev-node"><span class="pt"></span></div><div class="sev-text">补测试量大、可能超 25s，单独派一个异步任务，不阻塞这一轮。</div></div>
+      </div>
+    </div>
+
+    <div class="asst-text">
+      <p>看了下，token 刷新逻辑散在两处、耦合偏高。我分两步：先重构刷新逻辑，再补漏掉的单测。重构这块我派给项目里的 worker 直接改文件。</p>
+    </div>
+
+    <!-- ② inline dispatch (done within wait) -->
+    <div class="disp ok" data-toggle="disp">
+      <div class="disp-bar">
+        <span class="disp-glyph">◇</span>
+        <span class="disp-title">重构 token 刷新逻辑</span>
+        <span class="disp-cwd">bbclaw</span>
+        <span class="disp-spacer"></span>
+        <span class="chip ok">✓ 8.2s · 内联</span>
+        <span class="disp-chev">▸</span>
+      </div>
+      <div class="disp-meta">taskId toolu_01a · claude -p · cwd ~/github/bbclaw · 2 files changed</div>
+      <!-- ④ child sub-thread -->
+      <div class="disp-child">
+        <div class="child-label">子 agent 子线程 · <b>childSessionID wk-7f3c</b></div>
+        <div class="think open" style="margin-top:0">
+          <div class="think-head"><span class="dots">⠿</span><span>子 agent 思考 2 步</span><span class="chev" style="transform:rotate(90deg)">▸</span></div>
+          <div class="think-body">
+            <div class="sev sev-think"><div class="sev-node"><span class="pt"></span></div><div class="sev-text">把两处刷新合进 tokenStore.Refresh()，统一过期阈值用 RefreshSkew。</div></div>
+            <div class="sev"><div class="sev-node"><span class="pt"></span></div><div class="sev-text"><span class="sev-tool">edit</span>client.go / middleware.go 改为调用 tokenStore.Refresh()。</div></div>
+          </div>
+        </div>
+        <div class="asst-text" style="color:var(--dim)"><p>已抽出 <code>tokenStore.Refresh()</code>，两处调用点统一收口，过期判断走 RefreshSkew。改了 client.go、middleware.go。建议补一条 skew 边界的单测。</p></div>
+      </div>
+    </div>
+
+    <div class="asst-text">
+      <p>重构跑完了，两处刷新收口到 <code>tokenStore.Refresh()</code>。补测试这块覆盖面大、估计要几分钟，我派成异步任务后台跑，完了回头汇报。</p>
+    </div>
+
+    <!-- ③ async dispatch (degraded → polling → backfilled) -->
+    <div class="disp run" data-toggle="disp" id="async-card">
+      <div class="disp-bar">
+        <span class="disp-glyph">◇</span>
+        <span class="disp-title">补 auth 单测覆盖</span>
+        <span class="disp-cwd">bbclaw</span>
+        <span class="disp-spacer"></span>
+        <span class="chip run"><span class="pulse"></span>派发中 · async</span>
+        <span class="disp-chev">▸</span>
+      </div>
+      <div class="async-note">超过 wait_seconds=25 已降级异步，worker 在后台 ctx 继续跑，管家轮询 <b>task_status</b> 回收 — 终态会原位回填，可能落在后续某一轮。</div>
+      <div class="disp-child">
+        <div class="child-label">子 agent 子线程 · <b>childSessionID wk-9b21</b> · 进行中</div>
+        <div class="asst-text" style="color:var(--dim)"><p>正在为 tokenStore.Refresh() 写表驱动测试，覆盖 skew 边界 / 并发刷新 / 刷新失败回退…</p></div>
+      </div>
+    </div>
+    <p style="text-align:center"><button onclick="resolveAsync()" style="font-family:var(--mono);background:transparent;border:1px solid var(--ghost);color:var(--dim);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:11px">▷ 模拟 3 分钟后轮询回填 done</button></p>
+
+  </div>
+
+  <div class="hint">— 静态原型 · 点击思考条 / 派发卡片展开 —</div>
+</div>
+
+<script>
+document.querySelectorAll('[data-toggle]').forEach(function(el){
+  el.querySelector('.think-head, .disp-bar').addEventListener('click', function(){
+    el.classList.toggle('open');
+  });
+});
+function resolveAsync(){
+  var c = document.getElementById('async-card');
+  c.classList.remove('run'); c.classList.add('ok','fresh');
+  c.querySelector('.chip').className = 'chip ok';
+  c.querySelector('.chip').textContent = '✓ 3m12s · 回填';
+  c.querySelector('.async-note').remove();
+  c.querySelector('.child-label').innerHTML = '子 agent 子线程 · <b>childSessionID wk-9b21</b>';
+  c.querySelector('.disp-child .asst-text p').textContent =
+    '新增 token_refresh_test.go：表驱动覆盖 skew 边界、并发刷新、刷新失败回退三组，4 条用例全绿。原 client_test.go 漏的过期路径已补。';
+  // butler 回头补一条汇报气泡
+  var note = document.createElement('div');
+  note.className = 'asst-text fresh'; note.style.marginTop='10px';
+  note.innerHTML = '<p style="color:var(--accent)">↳ 异步任务回来了：单测已补，4 条用例全绿，漏掉的过期路径也覆盖到了。两步都完成。</p>';
+  c.parentNode.insertBefore(note, c.nextSibling.nextSibling);
+}
+</script>
+</body>
+</html>

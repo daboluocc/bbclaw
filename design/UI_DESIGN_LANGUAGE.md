@@ -18,6 +18,14 @@
 4. **硬切换页**：全屏页之间硬切，**禁止全屏 opa fade**——parent-opa 会让 LVGL
    走临时全屏合成层，曾与 esp_wifi_init 的内部 DMA 申请冲突造成 NO_MEM
    boot loop（STATE_MACHINE.md §3.5）。
+5. **品牌分层色（青 = bbclaw · 黄 = daboluo 云）**：青 `0x2ec4a0` 是 **bbclaw 全线**
+   （固件 + adapter 管理面板 + 配套 Web）的官方唯一强调色，代表「本地 / 硬件层」。
+   云端 daboluo.cc / SaaS 门户走**同一套点阵体系、但把 accent 映射成黄**
+   （`oklch(0.86 0.17 96)`，hue 96°，定义于 `bbclaw-reference/web`，作用域 `.platform-app`/`/app/*`），
+   代表「云 / SaaS 层」。二者只差 hue 一个通道（明度/饱和不变），共同构成
+   「**本地 = 青 · 云 = 黄**」的双层品牌叙事，对应 thin-device + thick-adapter + cloud 架构分层。
+   bbclaw 侧任何 Web 页面（含新 adapter 对话页）一律用青，**不得借用云端黄**；反之亦然。
+   （确认日期 2026-06-13。）
 
 ## 2. Token 表
 
@@ -40,6 +48,11 @@
 `0x4a9fd8`（assistant 蓝，气泡单色化后删除）、
 `0xf0e6c8` / `0xa49a83` / `0xffd166` / `0xff8fd0`（buddy 暖色，收敛三色）、
 `0xffffff`（Settings 选中纯白，并入 DOT_LIT）。
+
+**跨层色相对照（OKLCH 单通道，见 §1 原则 5）**：本体系 Web 落地用 OKLCH 表达，
+层间只变 hue：bbclaw 青 ≈ `oklch(0.82 0.13 175)`（≙ 固件 `0x2ec4a0`）；
+daboluo 云黄 = `oklch(0.86 0.17 96)`。Web 侧 `:root` 取值见 `dot-matrix-ui` skill
+（其唯一真相源即本文档）。
 
 ## 3. 各页面应用
 
