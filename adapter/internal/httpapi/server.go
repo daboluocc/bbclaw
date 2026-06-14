@@ -255,6 +255,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/admin/projects/{name}", s.adminLocalOnly(s.handleAdminProjectsDelete))
 	mux.HandleFunc("GET /v1/admin/fs", s.adminLocalOnly(s.handleAdminFS))
 	mux.HandleFunc("GET /v1/admin/fs/search", s.adminLocalOnly(s.handleAdminFSSearch))
+	mux.HandleFunc("GET /v1/admin/fs/resolve-drop", s.adminLocalOnly(s.handleAdminFSResolveDrop))
 	mux.HandleFunc("GET /v1/admin/workspace-files", s.adminLocalOnly(s.handleAdminWorkspaceFiles))
 	mux.HandleFunc("GET /v1/admin/workspace-file", s.adminLocalOnly(s.handleAdminWorkspaceFile))
 	// Read-only conversation surface for the admin SPA — same handlers as the

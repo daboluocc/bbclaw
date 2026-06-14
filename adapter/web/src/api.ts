@@ -172,6 +172,9 @@ export async function browseDir(path?: string): Promise<{ path: string; parent: 
 export async function searchDir(root: string, q: string): Promise<{ dirs: FsEntry[]; truncated: boolean }> {
   return envelope(`/v1/admin/fs/search?path=${encodeURIComponent(root)}&q=${encodeURIComponent(q)}`);
 }
+export async function resolveDroppedDir(name: string): Promise<{ path: string; matches: FsEntry[] }> {
+  return envelope(`/v1/admin/fs/resolve-drop?name=${encodeURIComponent(name)}`);
+}
 
 /* ── workspace files ── */
 export async function workspaceFiles(): Promise<WorkspaceFileMeta[]> {

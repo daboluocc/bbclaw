@@ -163,6 +163,12 @@ func buildLocalServer(cfg config.Config, sink pipeline.Sink, cloudRelay *homeada
 		case "doubao_native":
 			asrProvider = asr.NewDoubaoNativeProvider(
 				cfg.ASRWSURL, cfg.ASRAppID, cfg.ASRAPIKey, cfg.ASRResourceID, cfg.ASRModel, cfg.ASRLanguage,
+				asr.DoubaoOptions{
+					EnableDDC:     cfg.ASREnableDDC,
+					BoostingTable: cfg.ASRBoostingTable,
+					CorrectTable:  cfg.ASRCorrectTable,
+					Hotwords:      cfg.ASRHotwords,
+				},
 			)
 		case "local":
 			asrProvider = asr.NewLocalCommandProvider(cfg.ASRLocalBin, cfg.ASRLocalArgs, cfg.ASRLocalTextPath)

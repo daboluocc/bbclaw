@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref, watch } from "vue";
 import StatusBar from "./StatusBar.vue";
 import { getSettings, putSettings, getAdapterVersion, triggerAdapterUpdate, type VersionState } from "../api";
 
-const emit = defineEmits<{ (e: "saved"): void }>();
+const emit = defineEmits<{
+  (e: "saved"): void;
+  (e: "modeChanged", localVoice: boolean): void;
+}>();
 
 const loaded = ref(false);
 const busy = ref(false);
@@ -99,6 +102,7 @@ async function load() {
     audio.save_audio = settings.voice.save_audio;
     audio.save_input_on_finish = settings.voice.save_input_on_finish;
     mode.value = settings.topology.local_voice_enabled ? "local" : "cloud";
+    emit("modeChanged", mode.value === "local");
     derived.home_site_id = state.derived?.home_site_id ?? "";
     derived.version = state.derived?.version ?? "";
     loaded.value = true;
@@ -133,6 +137,7 @@ onMounted(() => {
   // for a verbose retry if they suspect something's off.
   checkVersion(false);
 });
+watch(mode, (next) => emit("modeChanged", next === "local"));
 </script>
 
 <template>

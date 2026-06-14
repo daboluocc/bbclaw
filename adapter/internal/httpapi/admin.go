@@ -216,6 +216,11 @@ var fsSearchSkip = map[string]struct{}{
 	"target": {}, ".cache": {}, "Library": {}, ".Trash": {},
 }
 
+// fsDropResolveMaxDepth is a little deeper than the visible picker search so a
+// dragged repo under /Volumes/<disk>/github/<repo> can resolve without forcing
+// the operator through the modal. It is still bounded and loopback-only.
+const fsDropResolveMaxDepth = 8
+
 // handleAdminFSSearch recursively finds directories under a root whose name
 // contains the keyword (case-insensitive), for the picker's keyword search. It is
 // bounded in depth and result count and skips heavy folders; dotfolders are
@@ -280,6 +285,123 @@ func (s *Server) handleAdminFSSearch(w http.ResponseWriter, r *http.Request) {
 		"dirs":      hits,
 		"truncated": truncated,
 	}})
+}
+
+// handleAdminFSResolveDrop resolves a browser drag payload that only exposed a
+// directory name (common in Chrome/Finder). The server searches local roots with
+// a strong preference for external volumes, then returns a single best match.
+//
+//	GET /v1/admin/fs/resolve-drop?name=repo
+//	response: {"ok":true,"data":{"path":"/Volumes/1TB/github/repo","matches":[...]}}
+func (s *Server) handleAdminFSResolveDrop(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "BAD_NAME", Detail: "name must be a plain directory name"})
+		return
+	}
+
+	roots := fsDropResolveRoots(r)
+	var matches []fsEntry
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		for _, hit := range fsFindDirsByExactName(root, name, fsDropResolveMaxDepth) {
+			if _, ok := seen[hit.Path]; ok {
+				continue
+			}
+			seen[hit.Path] = struct{}{}
+			matches = append(matches, hit)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		vi, vj := fsLooksLikeVolumePath(matches[i].Path), fsLooksLikeVolumePath(matches[j].Path)
+		if vi != vj {
+			return vi
+		}
+		if len(matches[i].Path) != len(matches[j].Path) {
+			return len(matches[i].Path) < len(matches[j].Path)
+		}
+		return matches[i].Path < matches[j].Path
+	})
+
+	path := ""
+	if len(matches) > 0 {
+		path = matches[0].Path
+	}
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{
+		"path":    path,
+		"matches": matches,
+	}})
+}
+
+func fsLooksLikeVolumePath(path string) bool {
+	path = filepath.Clean(path)
+	return strings.HasPrefix(path, "/Volumes/") || strings.Contains(path, string(os.PathSeparator)+"Volumes"+string(os.PathSeparator))
+}
+
+func fsDropResolveRoots(r *http.Request) []string {
+	var roots []string
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || !filepath.IsAbs(path) {
+			return
+		}
+		path = filepath.Clean(path)
+		if _, err := os.Stat(path); err != nil {
+			return
+		}
+		if !slices.Contains(roots, path) {
+			roots = append(roots, path)
+		}
+	}
+	for _, raw := range r.URL.Query()["root"] {
+		for _, part := range strings.Split(raw, string(os.PathListSeparator)) {
+			add(part)
+		}
+	}
+	add("/Volumes")
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, "github"))
+		add(filepath.Join(home, "Projects"))
+		add(home)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		add(cwd)
+	}
+	add("/")
+	return roots
+}
+
+func fsFindDirsByExactName(root, name string, maxDepth int) []fsEntry {
+	root = filepath.Clean(root)
+	var hits []fsEntry
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if depth > maxDepth || len(hits) >= fsSearchMaxResults {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if _, skip := fsSearchSkip[e.Name()]; skip {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			if strings.EqualFold(e.Name(), name) {
+				hits = append(hits, fsEntry{Name: e.Name(), Path: full})
+				if len(hits) >= fsSearchMaxResults {
+					return
+				}
+			}
+			walk(full, depth+1)
+		}
+	}
+	walk(root, 0)
+	return hits
 }
 
 // workspacePreviewFiles is the whitelist of butler workspace files the admin page

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -30,7 +31,24 @@ type DoubaoNativeProvider struct {
 	resourceID  string
 	modelName   string
 	language    string
-	dialer      *websocket.Dialer
+	enableDDC   bool
+	// boostingTable / correctTable reference tables pre-registered on the
+	// Doubao self-learning console. Inline hotwords from hotwords +
+	// Metadata.Hotwords take priority over the boosting table.
+	boostingTable string
+	correctTable  string
+	hotwords      []string
+	dialer        *websocket.Dialer
+}
+
+// DoubaoOptions carries the recognition-quality knobs that aren't part of the
+// connection identity. All optional; the zero value reproduces legacy behavior
+// except EnableDDC, which the caller sets explicitly.
+type DoubaoOptions struct {
+	EnableDDC     bool
+	BoostingTable string
+	CorrectTable  string
+	Hotwords      []string
 }
 
 // Ping opens a WebSocket to the ASR endpoint and closes immediately (handshake + auth check).
@@ -56,25 +74,29 @@ func (p *DoubaoNativeProvider) Ping(ctx context.Context) error {
 	return nil
 }
 
-func NewDoubaoNativeProvider(wsURL, appID, accessToken, resourceID, modelName, language string) *DoubaoNativeProvider {
+func NewDoubaoNativeProvider(wsURL, appID, accessToken, resourceID, modelName, language string, opts DoubaoOptions) *DoubaoNativeProvider {
 	return &DoubaoNativeProvider{
-		wsURL:       wsURL,
-		appID:       appID,
-		accessToken: accessToken,
-		resourceID:  resourceID,
-		modelName:   modelName,
-		language:    language,
+		wsURL:         wsURL,
+		appID:         appID,
+		accessToken:   accessToken,
+		resourceID:    resourceID,
+		modelName:     modelName,
+		language:      language,
+		enableDDC:     opts.EnableDDC,
+		boostingTable: strings.TrimSpace(opts.BoostingTable),
+		correctTable:  strings.TrimSpace(opts.CorrectTable),
+		hotwords:      opts.Hotwords,
 		dialer: &websocket.Dialer{
 			HandshakeTimeout: 10 * time.Second,
 		},
 	}
 }
 
-// Transcribe ignores Metadata.Hotwords: the Doubao bigmodel ASR biases via a
-// pre-registered boosting table (request.corpus.boosting_table_name), not inline
-// terms, so project-name hotwords can't be injected per-request here. The
-// butler's read-the-list fuzzy matching covers this provider instead.
-func (p *DoubaoNativeProvider) Transcribe(ctx context.Context, audio []byte, _ Metadata) (Result, error) {
+// Transcribe biases recognition with Metadata.Hotwords (e.g. butler project
+// names) plus the statically configured vocabulary, serialized into
+// request.corpus.context inline hotwords — these take priority over a
+// pre-registered boosting table and the nostream endpoint accepts up to ~5000.
+func (p *DoubaoNativeProvider) Transcribe(ctx context.Context, audio []byte, meta Metadata) (Result, error) {
 	headers := http.Header{
 		"X-Api-App-Key":     []string{p.appID},
 		"X-Api-Access-Key":  []string{p.accessToken},
@@ -95,7 +117,7 @@ func (p *DoubaoNativeProvider) Transcribe(ctx context.Context, audio []byte, _ M
 	}
 	defer conn.Close()
 
-	initPacket, err := p.buildInitialPacket()
+	initPacket, err := p.buildInitialPacket(meta)
 	if err != nil {
 		return Result{}, err
 	}
@@ -154,7 +176,22 @@ func (p *DoubaoNativeProvider) Transcribe(ctx context.Context, audio []byte, _ M
 	return Result{Text: finalText}, nil
 }
 
-func (p *DoubaoNativeProvider) buildInitialPacket() ([]byte, error) {
+func (p *DoubaoNativeProvider) buildInitialPacket(meta Metadata) ([]byte, error) {
+	// language="" lets the bigmodel auto-handle Chinese-English code-switching
+	// and major dialects; a specific code forces that one language and disables
+	// mixed recognition. Only honored on the nostream endpoint we connect to.
+	request := map[string]any{
+		"model_name":      p.modelName,
+		"end_window_size": 300,
+		"enable_punc":     true,
+		"enable_itn":      true,
+		"enable_ddc":      p.enableDDC,
+		"result_type":     "single",
+		"show_utterances": false,
+	}
+	if corpus := p.buildCorpus(meta); corpus != nil {
+		request["corpus"] = corpus
+	}
 	req := map[string]any{
 		"user": map[string]any{
 			"uid": fmt.Sprintf("%d", time.Now().UnixNano()),
@@ -166,15 +203,7 @@ func (p *DoubaoNativeProvider) buildInitialPacket() ([]byte, error) {
 			"channel":  1,
 			"language": p.language,
 		},
-		"request": map[string]any{
-			"model_name":      p.modelName,
-			"end_window_size": 300,
-			"enable_punc":     true,
-			"enable_itn":      true,
-			"enable_ddc":      false,
-			"result_type":     "single",
-			"show_utterances": false,
-		},
+		"request": request,
 	}
 
 	raw, err := json.Marshal(req)
@@ -191,6 +220,63 @@ func (p *DoubaoNativeProvider) buildInitialPacket() ([]byte, error) {
 	packet := append(header, size...)
 	packet = append(packet, zipped...)
 	return packet, nil
+}
+
+// maxInlineHotwords caps how many terms we serialize into corpus.context. The
+// nostream endpoint accepts up to 5000; we stay well under that.
+const maxInlineHotwords = 1000
+
+// buildCorpus assembles request.corpus for the bigmodel ASR. Inline hotwords
+// (corpus.context) bias recognition toward domain terms — the statically
+// configured vocabulary plus per-request Metadata.Hotwords (butler project
+// names). They take priority over a pre-registered boosting table.
+// correct_table_name forces fixed replacements. Returns nil when empty.
+func (p *DoubaoNativeProvider) buildCorpus(meta Metadata) map[string]any {
+	corpus := map[string]any{}
+	if words := mergeHotwords(p.hotwords, meta.Hotwords); len(words) > 0 {
+		items := make([]map[string]string, 0, len(words))
+		for _, w := range words {
+			items = append(items, map[string]string{"word": w})
+		}
+		// corpus.context is a JSON string (the server expects it serialized).
+		if ctx, err := json.Marshal(map[string]any{"hotwords": items}); err == nil {
+			corpus["context"] = string(ctx)
+		}
+	}
+	if p.boostingTable != "" {
+		corpus["boosting_table_name"] = p.boostingTable
+	}
+	if p.correctTable != "" {
+		corpus["correct_table_name"] = p.correctTable
+	}
+	if len(corpus) == 0 {
+		return nil
+	}
+	return corpus
+}
+
+// mergeHotwords trims, de-duplicates, and caps the combined hotword lists,
+// preserving first-seen order (static config first, then per-request terms).
+func mergeHotwords(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, w := range list {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			if _, dup := seen[w]; dup {
+				continue
+			}
+			seen[w] = struct{}{}
+			out = append(out, w)
+			if len(out) >= maxInlineHotwords {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func buildAudioPacket(audio []byte, isLast bool) ([]byte, error) {

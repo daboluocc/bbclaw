@@ -261,6 +261,39 @@ func TestAdminFSSearchRecursive(t *testing.T) {
 	}
 }
 
+func TestAdminFSResolveDropPrefersVolumes(t *testing.T) {
+	srv, _ := newAdminServer(t, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	root := t.TempDir()
+	vol := filepath.Join(root, "Volumes", "1TB", "github", "demo-repo")
+	home := filepath.Join(root, "Users", "mikas", "github", "demo-repo")
+	for _, dir := range []string{vol, home} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	url := ts.URL + "/v1/admin/fs/resolve-drop?name=demo-repo&root=" + filepath.Join(root, "Users") + "&root=" + filepath.Join(root, "Volumes")
+	res, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out struct {
+		Data struct {
+			Path    string    `json:"path"`
+			Matches []fsEntry `json:"matches"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Data.Path != vol {
+		t.Fatalf("resolved path = %q, want %q (matches=%v)", out.Data.Path, vol, out.Data.Matches)
+	}
+}
+
 func listProjectNames(t *testing.T, base string) map[string]bool {
 	t.Helper()
 	res, err := http.Get(base + "/v1/admin/projects")

@@ -65,6 +65,8 @@ onMounted(() => go());
       <h3>选择项目目录（可多选）</h3>
       <div class="toolbar">
         <button class="ghost small" :disabled="!parentDir" @click="parentDir && go(parentDir)">↑ 上级</button>
+        <button class="ghost small" @click="go('/Volumes')">外挂盘</button>
+        <button class="ghost small" @click="go('/')">根目录</button>
         <input type="text" v-model="query" placeholder="按关键字过滤 / 回车递归搜索…"
           @input="applyFilter" @keydown.enter.prevent="recursive" />
         <button class="ghost small" @click="recursive">递归搜索</button>

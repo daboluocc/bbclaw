@@ -49,7 +49,11 @@ type Config struct {
 	ASRAPIKey            string
 	ASRResourceID        string
 	ASRModel             string
-	ASRLanguage          string
+	ASRLanguage          string // "" = Chinese-English mixed + dialects
+	ASREnableDDC         bool   // 语义顺滑 (disfluency removal)
+	ASRBoostingTable     string // self-learning console 热词表 name
+	ASRCorrectTable      string // self-learning console 替换词表 name
+	ASRHotwords          []string
 	ASRLocalBin          string
 	ASRLocalArgs         []string
 	ASRLocalTextPath     string
@@ -159,21 +163,27 @@ func LoadFromEnv() (Config, error) {
 		mode = "auto"
 	}
 	cfg := Config{
-		AdapterMode:          mode,
-		Addr:                 getEnvOrDefault("ADAPTER_ADDR", ":18080"),
-		AuthToken:            strings.TrimSpace(os.Getenv("ADAPTER_AUTH_TOKEN")),
-		SaveAudio:            getEnvBool("SAVE_AUDIO", false),
-		SaveInputOnFinish:    getEnvBool("SAVE_INPUT_ON_FINISH", true),
-		AudioInDir:           getEnvOrDefault("AUDIO_IN_DIR", "tmp/audio-in"),
-		AudioOutDir:          getEnvOrDefault("AUDIO_OUT_DIR", "tmp/audio-out"),
-		ASRProvider:          getEnvOrDefault("ASR_PROVIDER", "local"),
-		ASRBaseURL:           strings.TrimSpace(os.Getenv("ASR_BASE_URL")),
-		ASRWSURL:             getEnvOrDefault("ASR_WS_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"),
-		ASRAppID:             strings.TrimSpace(os.Getenv("ASR_APP_ID")),
-		ASRAPIKey:            strings.TrimSpace(os.Getenv("ASR_API_KEY")),
-		ASRModel:             getEnvOrDefault("ASR_MODEL", "gpt-4o-mini-transcribe"),
-		ASRResourceID:        getEnvOrDefault("ASR_RESOURCE_ID", "volc.bigasr.sauc.duration"),
-		ASRLanguage:          getEnvOrDefault("ASR_LANGUAGE", "zh-CN"),
+		AdapterMode:       mode,
+		Addr:              getEnvOrDefault("ADAPTER_ADDR", ":18080"),
+		AuthToken:         strings.TrimSpace(os.Getenv("ADAPTER_AUTH_TOKEN")),
+		SaveAudio:         getEnvBool("SAVE_AUDIO", false),
+		SaveInputOnFinish: getEnvBool("SAVE_INPUT_ON_FINISH", true),
+		AudioInDir:        getEnvOrDefault("AUDIO_IN_DIR", "tmp/audio-in"),
+		AudioOutDir:       getEnvOrDefault("AUDIO_OUT_DIR", "tmp/audio-out"),
+		ASRProvider:       getEnvOrDefault("ASR_PROVIDER", "local"),
+		ASRBaseURL:        strings.TrimSpace(os.Getenv("ASR_BASE_URL")),
+		ASRWSURL:          getEnvOrDefault("ASR_WS_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"),
+		ASRAppID:          strings.TrimSpace(os.Getenv("ASR_APP_ID")),
+		ASRAPIKey:         strings.TrimSpace(os.Getenv("ASR_API_KEY")),
+		ASRModel:          getEnvOrDefault("ASR_MODEL", "bigmodel"),
+		ASRResourceID:     getEnvOrDefault("ASR_RESOURCE_ID", "volc.bigasr.sauc.duration"),
+		// Empty = bigmodel auto-handles Chinese-English mixed speech + dialects.
+		// Set ASR_LANGUAGE to a specific code only to pin one language.
+		ASRLanguage:          strings.TrimSpace(os.Getenv("ASR_LANGUAGE")),
+		ASREnableDDC:         getEnvBool("ASR_ENABLE_DDC", true),
+		ASRBoostingTable:     strings.TrimSpace(os.Getenv("ASR_BOOSTING_TABLE")),
+		ASRCorrectTable:      strings.TrimSpace(os.Getenv("ASR_CORRECT_TABLE")),
+		ASRHotwords:          parseHotwords(os.Getenv("ASR_HOTWORDS")),
 		ASRLocalBin:          strings.TrimSpace(os.Getenv("ASR_LOCAL_BIN")),
 		ASRLocalArgs:         splitLocalArgs(os.Getenv("ASR_LOCAL_ARGS")),
 		ASRLocalTextPath:     strings.TrimSpace(os.Getenv("ASR_LOCAL_TEXT_PATH")),
@@ -202,18 +212,18 @@ func LoadFromEnv() (Config, error) {
 		// connects with zero config. Cloud relays are claim_required until the
 		// portal user types in the registration code, so unauthenticated traffic
 		// can't move. Set ADAPTER_MODE=local to opt out entirely.
-		CloudWSURL:           getEnvOrDefault("CLOUD_WS_URL", "wss://bbclaw.daboluo.cc/ws"),
-		CloudAuthToken:       strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
-		HomeSiteID:           strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
-		ReconnectDelay:       time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
-		SessionReuseWindow:   getEnvDuration("BBCLAW_SESSION_REUSE_WINDOW", 5*time.Minute),
-		SessionMaxAge:        getEnvDuration("BBCLAW_SESSION_MAX_AGE", 7*24*time.Hour),
-		DefaultCwd:           strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD")),
-		CwdPool:              parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
-		ClaudePoolSize:       getEnvInt("BBCLAW_CLAUDE_POOL_SIZE", 1),
-		ClaudePoolIdleTTL:    getEnvDuration("BBCLAW_CLAUDE_POOL_IDLE_TTL", 10*time.Minute),
-		ClaudeBaseURL:        strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
-		ClaudeAuthToken:      strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
+		CloudWSURL:         getEnvOrDefault("CLOUD_WS_URL", "wss://bbclaw.daboluo.cc/ws"),
+		CloudAuthToken:     strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
+		HomeSiteID:         strings.TrimSpace(os.Getenv("HOME_SITE_ID")),
+		ReconnectDelay:     time.Duration(getEnvInt("CLOUD_RECONNECT_DELAY_SECONDS", 3)) * time.Second,
+		SessionReuseWindow: getEnvDuration("BBCLAW_SESSION_REUSE_WINDOW", 5*time.Minute),
+		SessionMaxAge:      getEnvDuration("BBCLAW_SESSION_MAX_AGE", 7*24*time.Hour),
+		DefaultCwd:         strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD")),
+		CwdPool:            parseCwdPool(os.Getenv("BBCLAW_CWD_POOL"), strings.TrimSpace(os.Getenv("BBCLAW_DEFAULT_CWD"))),
+		ClaudePoolSize:     getEnvInt("BBCLAW_CLAUDE_POOL_SIZE", 1),
+		ClaudePoolIdleTTL:  getEnvDuration("BBCLAW_CLAUDE_POOL_IDLE_TTL", 10*time.Minute),
+		ClaudeBaseURL:      strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+		ClaudeAuthToken:    strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
 	}
 
 	// LocalVoiceEnabled (ADR-025 §3): default to whether the env already carries
@@ -432,6 +442,25 @@ func splitLocalArgs(s string) []string {
 		return nil
 	}
 	return strings.Fields(s)
+}
+
+// parseHotwords splits ASR_HOTWORDS on comma, Chinese comma, semicolon, or
+// newline (so a term may itself contain spaces, e.g. "claude code").
+func parseHotwords(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnvOrDefault(name, fallback string) string {

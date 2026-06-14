@@ -36,6 +36,7 @@ const version = ref<VersionState>({ current: "", latest: "", update_available: f
 // 部署模式（系统配置）保存后 bump 这个 key，重挂 AI 面板，让它重新读取 cloud/local
 // 并据此刷新下方 ASR/TTS 区是否显示。
 const aiReloadKey = ref(0);
+const localVoicePreview = ref<boolean | null>(null);
 
 function setTab(next: Tab) {
   tab.value = next;
@@ -47,6 +48,7 @@ function setTab(next: Tab) {
 function syncFromHistory() { tab.value = tabFromPath(window.location.pathname); }
 
 function onSystemSaved() { aiReloadKey.value++; refreshRestartFlag(); }
+function onSystemModeChanged(localVoice: boolean) { localVoicePreview.value = localVoice; }
 
 async function refreshRestartFlag() {
   try { restartRequired.value = (await getSettings()).restart_required; }
@@ -111,8 +113,8 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
   <main>
     <Conversation v-if="tab === 'convo'" />
     <template v-else-if="tab === 'settings'">
-      <SystemPanel @saved="onSystemSaved" />
-      <AiPanel :key="aiReloadKey" @saved="refreshRestartFlag" />
+      <SystemPanel @saved="onSystemSaved" @mode-changed="onSystemModeChanged" />
+      <AiPanel :key="aiReloadKey" :local-voice-override="localVoicePreview" @saved="refreshRestartFlag" />
     </template>
     <LogsPanel v-else-if="tab === 'logs'" />
     <FilesPanel v-else />
