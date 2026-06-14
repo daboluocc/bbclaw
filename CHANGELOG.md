@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **adapter CLI 新增 `device set-miyu <on|off>` 子命令**(#190):对标 `set-volume`,
+  通过 `POST /v1/devices/{id}/config` 远程开关设备「密语模式」(即 `miyuEnabled`——
+  cloud_saas 锁屏语音解锁开关),Cloud 经 `config.update` 实时下发到设备,无需重启。
+  AI butler 的设备控制提示(`DeviceSystemPrompt`)同步加入 `set-miyu` 用法,可口头响应
+  「开/关密语模式」。`setConfigRequest` 改为指针字段 + `omitempty`,确保 `set-miyu` 不会
+  误发 `volumePct:0` 把设备静音。
+
 ## [0.5.11] - 2026-06-14
 
 ### Fixed
