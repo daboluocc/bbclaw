@@ -37,8 +37,10 @@ func DeviceSystemPrompt(cwd, deviceID string) string {
 		b.WriteString("当前设备 ID:`" + id + "`\n")
 		b.WriteString("如需调节本设备音量,用 Bash 工具执行:\n")
 		b.WriteString("  bbclaw-adapter device set-volume <0-100> --device " + id + "\n")
-		b.WriteString("成功后用一句话朗读结果(例如「已把音量调到 50%,马上生效」)。\n")
-		b.WriteString("如果设备 ID 未知,不要尝试音量调节。\n")
+		b.WriteString("如需开关密语模式(锁屏语音解锁),用 Bash 工具执行:\n")
+		b.WriteString("  bbclaw-adapter device set-miyu <on|off> --device " + id + "\n")
+		b.WriteString("成功后用一句话朗读结果(例如「已把音量调到 50%,马上生效」「已开启密语模式」)。\n")
+		b.WriteString("如果设备 ID 未知,不要尝试设备控制。\n")
 	}
 	return b.String()
 }

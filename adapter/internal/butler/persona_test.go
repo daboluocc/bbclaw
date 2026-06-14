@@ -29,10 +29,16 @@ func TestDeviceSystemPrompt(t *testing.T) {
 	if !strings.Contains(withDevice, "set-volume") {
 		t.Errorf("expected set-volume CLI hint in prompt, got:\n%s", withDevice)
 	}
+	if !strings.Contains(withDevice, "set-miyu") {
+		t.Errorf("expected set-miyu CLI hint in prompt, got:\n%s", withDevice)
+	}
 
 	// Empty deviceID must omit device-control section.
 	noDevice := DeviceSystemPrompt("/some/cwd", "")
 	if strings.Contains(noDevice, "set-volume") {
 		t.Errorf("empty deviceID must omit set-volume hint, got:\n%s", noDevice)
+	}
+	if strings.Contains(noDevice, "set-miyu") {
+		t.Errorf("empty deviceID must omit set-miyu hint, got:\n%s", noDevice)
 	}
 }
