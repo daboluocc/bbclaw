@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-06-14
+
+### Fixed
+- **切换驱动/模型时概率性重启**:settings 的 fetch/commit 任务栈只有 4096 字节,而一次
+  model commit 要跑 HTTPS PUT(TLS 握手)——v0.5.9 改用软件 AES 后密码运算也压到栈上。
+  真机实测 model commit 峰值用栈 **3980 字节**,在 4096 栈下仅剩 **116 字节**余量,稍有
+  波动(证书链/握手分支)就栈溢出 → 设备重启(故表现为「切模型时概率触发」)。栈提到
+  **8192**(ESP-IDF HTTPS 任务常规值),实测余量回到 4212 字节;压测连续切 driver+model
+  无重启。`commit_task` 增加一行栈高水位日志便于今后现场核对。
+
 ## [0.5.10] - 2026-06-14
 
 ### Changed

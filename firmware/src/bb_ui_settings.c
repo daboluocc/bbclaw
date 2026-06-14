@@ -60,7 +60,14 @@ static const char* TAG = "bb_ui_settings";
 #define BB_SETTINGS_DRIVER_CACHE_MAX 6
 #define BB_SETTINGS_SITE_CACHE_MAX   6
 
-#define BB_SETTINGS_FETCH_TASK_STACK 4096
+/* 4096 was too small for the HTTPS commit/fetch (TLS handshake on a fresh
+ * connection), and v0.5.9's switch to software AES pushed cipher work onto the
+ * stack too — selecting/switching a model (commit PUT) could overflow and
+ * reboot the device probabilistically. 8192 matches ESP-IDF's HTTPS-task norm
+ * and still fits the ~10-11KB largest internal block while in Settings; if a
+ * second concurrent task can't allocate it, xTaskCreate fails gracefully
+ * (logged) rather than crashing. */
+#define BB_SETTINGS_FETCH_TASK_STACK 8192
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
 
 /* Visual — design/UI_DESIGN_LANGUAGE.md tokens. Selected row = ghost face +
@@ -878,6 +885,11 @@ static void commit_task(void* arg) {
       ESP_LOGW(TAG, "commit adapter: lvgl_port_lock timeout, agent state will sync on next entry");
     }
   }
+  /* Diagnostic (crash hunt): how close did the TLS commit get to overflowing
+   * the stack? Words remaining ×4 = bytes. A small number here at 8192 confirms
+   * the old 4096 stack was overflowing on model/driver commit. */
+  ESP_LOGI(TAG, "commit_task done kind=%d stack_min_free_bytes=%u", (int)p->kind,
+           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
   free(p);
   vTaskDelete(NULL);
 }
