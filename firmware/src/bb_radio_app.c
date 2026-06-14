@@ -1960,6 +1960,16 @@ static void stream_task(void* arg) {
              * scroll / driver-cycle / OK event.  LOCKED state is unaffected:
              * nav is already silently dropped in BBCLAW_STATE_LOCKED above. */
             if (!agent_chat_is_active() && !radio_app_is_locked()) {
+              /* Single-click OK from the idle/buddy (standby) screen → SETTINGS
+               * directly, so OK is a consistent "open settings" gesture in every
+               * unlocked state. Other nav keys (and PTT) still wake into chat. */
+              if (nav == BB_NAV_EVENT_OK) {
+                if (settings_overlay_enter() == 0) {
+                  set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                  ESP_LOGI(TAG, "STANDBY: OK -> SETTINGS");
+                }
+                break;
+              }
               if (agent_chat_enter() != 0) {
                 ESP_LOGW(TAG, "nav: agent_chat_enter from standby failed");
               }
@@ -2033,14 +2043,14 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_OK:
-                  /* Short-press OK → Task List page (ADR-021-firmware-ui §3, issue #103).
-                   * Passive screen switch; allowed even while TTS/agent is busy.
-                   * Long-press OK → SETTINGS (handled by nav driver, emitted as BACK). */
-                  if (lvgl_port_lock(600)) {
-                    bb_ui_task_list_show();
-                    lvgl_port_unlock();
-                  } else {
-                    ESP_LOGW(TAG, "CHAT: OK task_list lock timeout");
+                  /* Short-press OK → SETTINGS. The 700ms long-press gesture was
+                   * unreliable in practice (no haptic feedback → users released
+                   * before the threshold, so it never fired), and the Task List
+                   * on short-OK was dropped as unneeded. Settings is safe to
+                   * enter mid-reply; long-press (BACK) still cancels a busy turn. */
+                  if (settings_overlay_enter() == 0) {
+                    set_radio_app_state(BBCLAW_STATE_SETTINGS);
+                    ESP_LOGI(TAG, "CHAT: OK -> SETTINGS");
                   }
                   break;
                 case BB_NAV_EVENT_BACK:

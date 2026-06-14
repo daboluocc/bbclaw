@@ -331,6 +331,7 @@ static int s_bar_head_x10; /* comet head position, column index ×10 */
 static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
 static uint32_t s_bar_tick; /* frame counter — time base for non-sweep motifs */
 static int s_bottombar_mode;
+static int s_bar_idle_drawn; /* idle = static: 1 once the calm frame is painted */
 static lv_timer_t* s_bar_timer;
 static lv_obj_t* s_view_speaking;
 static lv_obj_t* s_obj_record_halo_outer;
@@ -690,6 +691,18 @@ static void bottombar_timer_cb(lv_timer_t* t) {
   (void)t;
   if (s_obj_bar_canvas == NULL || s_bar_dot_count == 0) return;
   if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
+
+  /* Idle = static. Paint one calm frame on entering BAR_IDLE, then skip the
+   * 48ms canvas repaint + invalidate so the LVGL thread is free while the user
+   * just reads/scrolls history (the continuous idle "breathe" was holding the
+   * lock and making UP/DOWN scroll lag, see scroll-latency investigation).
+   * LISTEN/PROCESS/SPEAK/ERROR still animate normally during conversation. */
+  if (s_bottombar_mode == BAR_IDLE) {
+    if (s_bar_idle_drawn) return;
+    s_bar_idle_drawn = 1;
+  } else {
+    s_bar_idle_drawn = 0;
+  }
 
   /* Clear canvas to background before painting dots */
   lv_canvas_fill_bg(s_obj_bar_canvas, lv_color_hex(0x000000), LV_OPA_COVER);

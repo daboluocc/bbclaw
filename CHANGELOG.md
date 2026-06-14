@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-06-14
+
+### Changed
+- **设置入口改为单击 OK(取代不可靠的长按)**:原先进设置要长按 OK 700ms 触发 BACK
+  手势,但没有触觉反馈、用户普遍在到阈值前就松手,长按几乎从不成立(真机实测连续按压
+  全部停在 ~150-200ms → 只判成短按)。现在**单击 OK 直接进设置**——待机/buddy 屏和聊天
+  视图里都生效(`bb_radio_app.c`:CHAT 态 OK 分支 + 待机唤醒分支各加 OK→SETTINGS)。
+  原短按 OK 的 Task List 入口按用户要求移除;长按(BACK)仍保留"忙时取消当前对话"。
+  进聊天对话改用方向键 / PTT。
+
+### Fixed
+- **历史对话上/下翻滚动卡顿**:空闲时底栏点阵 motif 仍以 48ms 周期重绘(`BAR_IDLE` 的
+  breathe 动画),持续占用 LVGL 线程,导致滚动事件被 defer——真机实测每次 UP→实际滚动
+  延迟在 **70~335ms 抖动**,并伴随 `lvgl busy — queued` / `lock timeout dropping`。改为
+  **空闲时底栏只渲染一帧静态、不再重绘**(`bottombar_timer_cb` 对 `BAR_IDLE` 提前返回),
+  LISTEN/PROCESS/SPEAK/ERROR 对话态照常动画。实测滚动延迟降到 **0~16ms 且无抖动/丢弃**,
+  翻历史跟手。
+
 ## [0.5.9] - 2026-06-14
 
 ### Fixed
