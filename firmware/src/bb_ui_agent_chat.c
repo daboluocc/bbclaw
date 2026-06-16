@@ -329,6 +329,9 @@ static void apply_driver_cache_idx(void);
 /* Forward decls for Phase S3 history replay (defined alongside session-fetch). */
 static void spawn_history_fetch_task(int before, int is_initial);
 static void history_state_reset(void);
+/* Defined further down (TTS reply buffer); also used by the live transcript
+ * coalesce path to avoid splitting a multibyte UTF-8 char on truncation. */
+static size_t utf8_safe_truncate(const char* buf, size_t len);
 
 /* ADR-027: Home Adapter switch resync. When the adapter changes while the chat
  * overlay is CLOSED, we can't resync live — stash the new machine's driver and
@@ -525,9 +528,18 @@ static void post_assistant_chunk(const char* delta) {
   size_t avail = BB_CHAT_CHUNK_COALESCE_CAP - s_chunk_len[s_chunk_widx];
   if (avail > 0) {
     size_t copy = dlen < avail ? dlen : avail;
-    memcpy(s_chunk_buf[s_chunk_widx] + s_chunk_len[s_chunk_widx], delta, copy);
-    s_chunk_len[s_chunk_widx] += copy;
-    /* NUL-termination deferred to drain side for speed; buf is [CAP+1] */
+    /* When the delta doesn't fully fit, truncate on a UTF-8 char boundary so we
+     * never emit a split multibyte sequence (a 3-byte 中文字 cut mid-character
+     * renders as tofu/乱码). The dropped tail is recovered by the authoritative
+     * history fetch when the turn ends. */
+    if (copy < dlen) {
+      copy = utf8_safe_truncate(delta, copy);
+    }
+    if (copy > 0) {
+      memcpy(s_chunk_buf[s_chunk_widx] + s_chunk_len[s_chunk_widx], delta, copy);
+      s_chunk_len[s_chunk_widx] += copy;
+      /* NUL-termination deferred to drain side for speed; buf is [CAP+1] */
+    }
   }
   if (!s_chunk_queued) {
     s_chunk_queued = 1;

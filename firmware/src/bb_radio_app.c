@@ -264,6 +264,15 @@ static void log_phase_text_chunks(const char* phase, const char* text) {
 static volatile int s_ptt_pressed;
 static volatile unsigned s_ptt_change_version;
 static volatile unsigned s_nav_event_versions[BB_NAV_EVENT_COUNT];
+/* Wall-clock (ms) of the most recent press of each nav event — used by the
+ * stream_task consume loop to drop a stale backlog that piled up while the
+ * task was blocked (cloud_wait / TTS). */
+static volatile int64_t s_nav_event_ms[BB_NAV_EVENT_COUNT];
+/* A queued nav press older than this when the task finally gets to it is
+ * dropped instead of fired. Comfortably above the loop's worst idle delay
+ * (~250 ms) so genuine presses are never dropped; only presses stuck behind a
+ * multi-second busy stretch (cloud_wait / TTS i2s_write) expire. */
+#define BB_NAV_EVENT_STALE_MS 1500
 static volatile int s_transport_health_ok;
 static volatile int s_transport_ready;
 static volatile int s_transport_audio_streaming_ready;
@@ -949,6 +958,7 @@ static void on_nav_event(bb_nav_event_t event) {
   }
 
   if (!fast_path) {
+    s_nav_event_ms[event] = bb_now_ms();
     s_nav_event_versions[event]++;
   }
   /* Phase 4.9: 同步分发到 bb_state 用于状态日志和未来的转换决策。
@@ -1970,6 +1980,23 @@ static void stream_task(void* arg) {
 
   while (1) {
     for (int event = 0; event < BB_NAV_EVENT_COUNT; ++event) {
+      unsigned cur_ver = s_nav_event_versions[event];
+      if (nav_handled_versions[event] != cur_ver) {
+        /* Collapse a backlog that piled up while this task was blocked
+         * (cloud_wait / TTS i2s_write blocks the loop for seconds): a burst of
+         * one key fires AT MOST once on recovery instead of replaying every
+         * press the user mashed during the freeze ("补操作"). And if even the
+         * newest press is already stale, drop it too — a key tapped seconds ago
+         * shouldn't suddenly act the moment the system frees up. */
+        int64_t age_ms = bb_now_ms() - s_nav_event_ms[event];
+        if (age_ms > BB_NAV_EVENT_STALE_MS) {
+          ESP_LOGI(TAG, "nav: dropped stale %d backlog (age=%lldms, %u queued)",
+                   event, (long long)age_ms, (unsigned)(cur_ver - nav_handled_versions[event]));
+          nav_handled_versions[event] = cur_ver; /* drop the whole backlog */
+          continue;
+        }
+        nav_handled_versions[event] = cur_ver - 1; /* keep only the latest press */
+      }
       while (nav_handled_versions[event] != s_nav_event_versions[event]) {
         nav_handled_versions[event]++;
         bb_nav_event_t nav = (bb_nav_event_t)event;
