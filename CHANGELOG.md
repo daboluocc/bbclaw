@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-06-17
+
+### Fixed
+- **流式中文回复乱码(UTF-8 被切断)**:对话回复的 coalesce 缓冲(`post_assistant_chunk`,
+  `bb_ui_agent_chat.c`)在缓冲将满时按**字节**截断 delta,把一个 3 字节中文字切成半个并丢弃
+  尾字节 → 渲染成豆腐块/乱码。改为截断时调已有的 `utf8_safe_truncate()` 落在字符边界
+  (TTS 路径早就这么做、渲染路径漏了);丢掉的尾部由回合结束的权威历史 fetch 补回。
+- **系统繁忙时按键积压、恢复后逐个重放(补操作)**:nav 事件用 per-type 版本计数器,
+  stream_task 繁忙时(cloud_wait / TTS i2s_write 阻塞主循环数秒)无法消费,版本号累积,
+  恢复后 `while(handled!=cur)` 把繁忙期间狂按的每一次都重放一遍 → UI 乱跳。改为消费时
+  **折叠**:一串同键 backlog 最多触发一次;并给每个 nav 事件记按下时间戳,若最新一次也已
+  超过 `BB_NAV_EVENT_STALE_MS`(1500ms,远高于循环最坏 ~250ms idle delay,正常按键绝不误丢)
+  则整批丢弃——几秒前按的键不会在系统空闲瞬间突然生效。(`bb_radio_app.c`)
+
+### Removed
+- **删除死的 LVGL 元素图资覆盖文件 `bb_lvgl_img_elements.c/.h`(327+38 行)**:全树零引用
+  的手写资源覆盖,含 12 个早已废弃的角色 idle 动画帧(red/blue/green ×4)+ avatar/mic/claw/
+  battery plate。删除后 CMake 自动回退到生成基线 `generated/bb_lvgl_element_assets.c`(由
+  `make gen-lvgl-elements` 维护)。链接器 `--gc-sections` 本就 GC 掉了这些未引用数据,故不省
+  flash,纯属源码清理(去掉死代码 + display.c 的重复 include)。注:调查确认其余动画(boot
+  扫描 / 锁屏钥匙孔呼吸 / 待机冒号呼吸 / 对话平滑滚动 / 底栏 motif / 录音 VU)**均在用**,未动。
+
 ## [0.5.14] - 2026-06-17
 
 ### Added
@@ -36,24 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   关着时(从待机进设置切机器)走延迟标志,下次开聊天时从后台解析,避免读到旧机器的 NVS 会话。
   会话查询任务跑 PSRAM 栈(HTTPS,无 NVS)。实测:切到另一台机器后自动加载了它那条 374 条
   消息的会话历史。
-- **流式中文回复乱码(UTF-8 被切断)**:对话回复的 coalesce 缓冲(`post_assistant_chunk`,
-  `bb_ui_agent_chat.c`)在缓冲将满时按**字节**截断 delta,把一个 3 字节中文字切成半个并丢弃
-  尾字节 → 渲染成豆腐块/乱码。改为截断时调已有的 `utf8_safe_truncate()` 落在字符边界
-  (TTS 路径早就这么做、渲染路径漏了);丢掉的尾部由回合结束的权威历史 fetch 补回。
-- **系统繁忙时按键积压、恢复后逐个重放(补操作)**:nav 事件用 per-type 版本计数器,
-  stream_task 繁忙时(cloud_wait / TTS i2s_write 阻塞主循环数秒)无法消费,版本号累积,
-  恢复后 `while(handled!=cur)` 把繁忙期间狂按的每一次都重放一遍 → UI 乱跳。改为消费时
-  **折叠**:一串同键 backlog 最多触发一次;并给每个 nav 事件记按下时间戳,若最新一次也已
-  超过 `BB_NAV_EVENT_STALE_MS`(1500ms,远高于循环最坏 ~250ms idle delay,正常按键绝不误丢)
-  则整批丢弃——几秒前按的键不会在系统空闲瞬间突然生效。(`bb_radio_app.c`)
-
-### Removed
-- **删除死的 LVGL 元素图资覆盖文件 `bb_lvgl_img_elements.c/.h`(327+38 行)**:全树零引用
-  的手写资源覆盖,含 12 个早已废弃的角色 idle 动画帧(red/blue/green ×4)+ avatar/mic/claw/
-  battery plate。删除后 CMake 自动回退到生成基线 `generated/bb_lvgl_element_assets.c`(由
-  `make gen-lvgl-elements` 维护)。链接器 `--gc-sections` 本就 GC 掉了这些未引用数据,故不省
-  flash,纯属源码清理(去掉死代码 + display.c 的重复 include)。注:调查确认其余动画(boot
-  扫描 / 锁屏钥匙孔呼吸 / 待机冒号呼吸 / 对话平滑滚动 / 底栏 motif / 录音 VU)**均在用**,未动。
 
 ## [0.5.13] - 2026-06-16
 
