@@ -819,7 +819,10 @@ loop:
 				if ev.Tool != nil {
 					lastActivity.Store(time.Now().UnixNano())
 					currentPhase.Store("tool_call")
-					writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
+					// ADR-030: carry the short hint (command / file path) so the
+					// device shows a meaningful step ("set-volume 20"), not just
+					// the bare tool name. Display-only — never enters voice.reply.
+					writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool, "hint": ev.Tool.Hint})
 				}
 			case agent.EvTurnEnd:
 				break loop
@@ -1033,7 +1036,9 @@ func (v *voiceEventSink) EmitEvent(ev agent.Event) bool {
 				v.lastActivity.Store(time.Now().UnixNano())
 				v.currentPhase.Store("tool_call")
 			}
-			v.writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool})
+			// ADR-030: carry the short hint so the device step is meaningful
+			// ("set-volume 20"), not just "Bash". Display-only — never spoken.
+			v.writeEvent("tool_call", map[string]any{"name": ev.Tool.Tool, "hint": ev.Tool.Hint})
 		}
 	}
 	return true

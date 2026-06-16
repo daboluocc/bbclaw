@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-06-17
+
+### Added
+- **设备端执行步骤展示(ADR-030)**:管家执行一次工具调用(如
+  `Bash: bbclaw-adapter device set-volume 20`)时,对话页现在会显示一行简要的
+  执行步骤(`[tool] Bash: …`),而**不会**被语音播报。明确区分两条通道:
+  - **主内容通道**(`reply.delta` / `voice.reply`)= 展示 **且** TTS 播报;
+  - **步骤通道**(`tool_call` / `thinking` / `dispatch_status`)= 只展示,**永不**进入
+    TTS。
+
+  后台因此只播报「音量已调到 20%」这类主结果,避免把大量进行中文本读出来。
+- **工具步骤携带 hint**:`tool_call` 帧新增 `hint` 字段(命令 / 文件路径预览,
+  ≤80 字),对话页步骤行显示有意义的内容而不只是裸工具名。向后兼容:旧固件忽略
+  `hint`,旧适配器不发 `hint` 时按原样渲染。跨端联动:adapter
+  `homeadapter/adapter.go` 发送 `{name, hint}`,cloud relay 透传 `hint`
+  (`server.go` 两处 + `chat_api.go`),firmware 解析并在对话页
+  (`on_finish_stream_event_tts_only`)渲染为步骤行。
+
+### Fixed
+- **切换 Adapter(机器)后会话/历史不跟着切**:此前切机器后重拉新机器的 driver,
+  两台机器 active driver 同名(都 `claude-code`)→ `bb_ui_agent_chat_set_active_driver`
+  撞上「同名 no-op」短路,session 和历史**根本没重载**,画面停在旧机器的会话,且
+  `session_id` 仍是旧机器的(下一条消息会带旧 session 发到新机器 → `SESSION_NOT_FOUND`)。
+  改走新路径 `bb_ui_agent_chat_resync_after_adapter_switch`:**不按 driver 名 no-op**,
+  丢掉旧机器的 session+transcript,向新机器 `GET /v1/agent/sessions` 要会话列表、取最近
+  一条、实时拉它的历史——**不在设备上按机器存多份,始终从后台拉对应机器的数据**。聊天浮层
+  关着时(从待机进设置切机器)走延迟标志,下次开聊天时从后台解析,避免读到旧机器的 NVS 会话。
+  会话查询任务跑 PSRAM 栈(HTTPS,无 NVS)。实测:切到另一台机器后自动加载了它那条 374 条
+  消息的会话历史。
+
+## [0.5.13] - 2026-06-16
+
+### Changed
+- **设置页去掉「Back」菜单行**:编码器长按本来就是 BACK(主页长按直接退回
+  chat,子选择器长按退一级),那行 Back 是功能冗余。改为主页底部一行 dim 提示
+  `hold to go back`,菜单只剩真正的设置项(Driver / Model / Adapter / Vol / TTS)。
+- **设置页菜单循环导航**:↑/↓ 到顶/到底后回绕到另一端(原来是夹住不动),
+  主页和所有子选择器(Driver/Model/Adapter/Vol)一致。
+- **Adapter 在线/离线状态显式展示**:Adapter 选择器每行都标 `[on]`/`[offline]`
+  (原来只在离线时挂个 `(offline)`,在线无标记);主页 Adapter 行也带上绑定
+  adapter 的实时状态(如 `macbook [on]`)。离线 adapter 仍然列出、仍可选中。
+- **状态灯改红绿灯配色(红/绿/橙)**:原来 P3 思考 / P4 倾听 / 新通知脉冲 /
+  boot marquee 用蓝色,现统一换成橙 `(255,165,0)`。RYG 三线板上经 Y=R+G 近似
+  为黄灯(交通灯黄/琥珀),WS2812/RGB 模块上为真橙;不再用蓝。
+- **退出设置回到对话页而非待机页**:从设置页(OK-Back / 长按 BACK)退出后,落到
+  聊天对话浮层而不是待机时钟视图——退菜单应回到对话上下文。密语锁定态下仍走锁屏不受影响。
+- **密语(miyu)运行时关闭即时解锁(修 bug)**:此前在 LOCKED 锁屏态被云端
+  `config.update` 远程关掉密语后,设备无任何解锁路径会卡死在锁屏。现在主循环检测到
+  密语已关 + 处于 LOCKED 就立即解锁回 CHAT,无需重启。
+
+- **修复设置页 Adapter/Driver 全空 + 切换静默失败(内部 DRAM 碎片)**:设置页打开时
+  内部 DRAM 最大连续块会跌到 ~7.7KB(< 8KB 任务栈),导致 `xTaskCreate` 失败——
+  driver 列表 / sites.list 的 fetch 任务**根本没创建**,设备从不向云端查询,于是
+  Driver 显示 `offline`、Adapter 显示 `(none)`,**与云端是否有在线 adapter 无关**
+  (实测云端 2 台在线时设备仍全空)。同一碎片还让 adapter 切换 / 音量 / TTS / 模型
+  提交任务建不起来,日志报 committed 实则没执行。修法(`bb_ui_settings.c`):
+  - **纯网络任务挪 PSRAM**(`xTaskCreateWithCaps`):driver 列表 fetch、sites.list
+    fetch、MODEL 提交(HTTPS PUT)、ADAPTER 提交(WS sites.activate)——均无 NVS/flash
+    写,PSRAM 栈对 cache-freeze 安全。
+  - **DRIVER 提交拆分**:HTTPS PUT 走 PSRAM,其 NVS 写(记录 active driver)拆到独立
+    4KB 内部小任务,绕开「PSRAM 栈 + NVS cache freeze 会 fault」的约束。
+  - **VOLUME/TTS 持久化缩栈**:仅 NVS set+commit,8KB→4KB 内部栈,可靠塞进碎片堆。
+  - WithCaps 任务配 `vTaskDeleteWithCaps` 自删,避免 PSRAM 栈/TCB 泄漏。
+
+### Notes
+- 设置页打开时 PTT 已被丢弃(`s_settings_active` 早返),本次确认无需改动。
+
 ## [0.5.12] - 2026-06-16
 
 ### Changed

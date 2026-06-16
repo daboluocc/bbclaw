@@ -626,10 +626,13 @@ static void settings_click_locked(void) {
     }
     lvgl_port_unlock();
   }
-  /* Back row clicked at the main level → tear down + return to chat. */
+  /* Back row clicked at the main level → tear down + return to chat.
+   * Land on the conversation page (chat overlay), not the standby clock —
+   * exiting a menu should put the user back in the dialog, not at idle. */
   if (want_exit && s_settings_active) {
     settings_overlay_exit();
     set_radio_app_state(BBCLAW_STATE_CHAT);
+    if (!radio_app_is_locked()) agent_chat_enter();
   }
 }
 static void settings_back_locked(void) {
@@ -643,7 +646,10 @@ static void settings_back_locked(void) {
   if (want_exit && s_settings_active) {
     settings_overlay_exit();
     set_radio_app_state(BBCLAW_STATE_CHAT);
-    ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT");
+    /* Same as the OK-Back path: drop the user onto the conversation page,
+     * not the standby clock. */
+    if (!radio_app_is_locked()) agent_chat_enter();
+    ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT (chat overlay)");
   }
 }
 
@@ -1312,9 +1318,14 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
   }
 
   if (event->type == BB_FINISH_STREAM_EVENT_TOOL_CALL && event->text != NULL && event->text[0] != '\0') {
-    ESP_LOGI(TAG, "phase=tool_call name=%s", event->text);
+    ESP_LOGI(TAG, "phase=tool_call name=%s hint=%.80s", event->text, event->hint != NULL ? event->hint : "");
     size_t cur = strlen(ui->reply_text);
-    snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[tool: %s]\n", cur > 0 ? "\n" : "", event->text);
+    if (event->hint != NULL && event->hint[0] != '\0') {
+      snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[tool: %s %s]\n", cur > 0 ? "\n" : "", event->text,
+               event->hint);
+    } else {
+      snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[tool: %s]\n", cur > 0 ? "\n" : "", event->text);
+    }
     (void)bb_display_upsert_chat_turn(ui->transcript[0] != '\0' ? ui->transcript : "...", ui->reply_text, 0);
     return;
   }
@@ -1440,6 +1451,15 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
       ui->transcript[sizeof(ui->transcript) - 1] = '\0';
       bb_ui_agent_chat_post_user_text(text);
     }
+    return;
+  }
+
+  /* ADR-030: display-only execution step. Shown on the conversation page as a
+   * dimmed tool line; never enqueued to TTS (the step channel is independent of
+   * the voice.reply speak channel). event->text=tool name, event->hint=preview. */
+  if (event->type == BB_FINISH_STREAM_EVENT_TOOL_CALL && event->text != NULL && event->text[0] != '\0') {
+    ESP_LOGI(TAG, "phase=tool_call name=%s hint=%.80s", event->text, event->hint != NULL ? event->hint : "");
+    bb_ui_agent_chat_post_tool_call(event->text, event->hint);
     return;
   }
 
@@ -3238,6 +3258,17 @@ static void stream_task(void* arg) {
      */
     int speaker_active = s_tts_playback_active || bb_ui_agent_chat_tts_speaking() ||
                          bb_audio_is_playback_active();
+
+    /* Runtime 密语 (miyu) toggle reconcile: if miyu was turned OFF via cloud
+     * config.update while the device is sitting LOCKED, nothing else would ever
+     * unlock it (the only unlock path is a successful voice-verify). Drop to
+     * CHAT here so disabling 密语 takes effect without a reboot. (Turning miyu
+     * ON while in CHAT is handled lazily by the standby idle-lock below.) */
+    if (s_app_state == BBCLAW_STATE_LOCKED && !passphrase_unlock_enabled()) {
+      ESP_LOGI(TAG, "miyu disabled at runtime while LOCKED -> unlock to CHAT");
+      set_radio_app_state(BBCLAW_STATE_CHAT);
+    }
+
     if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy &&
         !speaker_active && !bb_page_ota_active()) {
       int64_t now_ms = bb_now_ms();

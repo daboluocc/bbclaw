@@ -68,6 +68,9 @@ typedef struct {
   bb_finish_stream_event_type_t type;
   const char* phase;
   const char* text;
+  /* ADR-030: short tool hint (command / file path) for TOOL_CALL events.
+   * text carries the tool name, hint the preview. NULL/"" when unavailable. */
+  const char* hint;
   bb_tts_chunk_t* tts_chunk; /* callback owns this when non-NULL */
   int reply_wait_timed_out;
   /* non-NULL when type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS */

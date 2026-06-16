@@ -202,6 +202,24 @@ static void emit_dispatch_event(bb_finish_stream_event_cb_t cb, void* user_ctx,
   cb(&event, user_ctx);
 }
 
+/* ADR-030: emit a TOOL_CALL step carrying both the tool name and a short hint
+ * (command / file path). Separate helper so the hint field doesn't ripple
+ * through every emit_finish_stream_event call site. */
+static void emit_tool_call_event(bb_finish_stream_event_cb_t cb, void* user_ctx,
+                                 const char* name, const char* hint) {
+  if (cb == NULL || name == NULL || name[0] == '\0') return;
+  bb_finish_stream_event_t event = {
+      .type = BB_FINISH_STREAM_EVENT_TOOL_CALL,
+      .phase = NULL,
+      .text = name,
+      .hint = hint,
+      .tts_chunk = NULL,
+      .reply_wait_timed_out = 0,
+      .dispatch = NULL,
+  };
+  cb(&event, user_ctx);
+}
+
 static int json_extract_int(const char* body, const char* key, int fallback) {
   if (body == NULL || key == NULL || key[0] == '\0') {
     return fallback;
@@ -1086,10 +1104,11 @@ static void ws_handle_text_message(const char* msg) {
     }
   } else if (strcmp(kind, "tool_call") == 0) {
     char name[64] = {0};
+    char hint[160] = {0};
     (void)json_extract_string(msg, "name", name, sizeof(name));
+    (void)json_extract_string(msg, "hint", hint, sizeof(hint)); /* ADR-030 */
     if (s_ws.finish_on_event != NULL && name[0] != '\0') {
-      emit_finish_stream_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL,
-                               name, NULL, 0);
+      emit_tool_call_event(s_ws.finish_on_event, s_ws.finish_user_ctx, name, hint);
     }
   } else if (strcmp(kind, "dispatch_status") == 0) {
     /* ADR-021-firmware-ui §1.2: butler dispatch progress via WS relay */
@@ -1546,9 +1565,11 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
 
   if (strcmp(type, "tool_call") == 0) {
     char name[64] = {0};
+    char hint[160] = {0};
     (void)json_extract_string(line, "name", name, sizeof(name));
+    (void)json_extract_string(line, "hint", hint, sizeof(hint)); /* ADR-030 */
     if (accum->on_event != NULL && name[0] != '\0') {
-      emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_TOOL_CALL, NULL, name, NULL, 0);
+      emit_tool_call_event(accum->on_event, accum->user_ctx, name, hint);
     }
     return;
   }

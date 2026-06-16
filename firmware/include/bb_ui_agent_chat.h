@@ -103,6 +103,20 @@ esp_err_t bb_ui_agent_chat_cycle_driver(int delta);
 esp_err_t bb_ui_agent_chat_set_active_driver(const char* name);
 
 /**
+ * ADR-027 — re-sync the chat after the bound Home Adapter (machine) changed.
+ *
+ * Unlike set_active_driver, this does NOT no-op when the driver name is
+ * unchanged: switching machines changes the whole session universe even if
+ * both expose the same driver (e.g. "claude-code"). It drops the old
+ * machine's session + transcript and asks the NEW machine for its session
+ * list, then loads the most-recent session's history live — nothing is
+ * cached per-adapter on the device. Safe to call with the same or a
+ * different driver name. Blocks (returns INVALID_STATE) if a turn is in
+ * flight. Caller must hold the LVGL lock.
+ */
+esp_err_t bb_ui_agent_chat_resync_after_adapter_switch(const char* driver_name);
+
+/**
  * ADR-016 — update the model label shown on the bottom bar.
  *
  * Pure UI hint. Does NOT change adapter state — Settings already issued
@@ -196,6 +210,15 @@ void bb_ui_agent_chat_post_user_text(const char* text);
  * Safe to call from any task.
  */
 void bb_ui_agent_chat_post_reply_delta(const char* text);
+
+/**
+ * ADR-030 — render a display-only execution step (tool call) on the
+ * conversation page. Routed from the cloud voice/butler finish-stream path
+ * (BB_FINISH_STREAM_EVENT_TOOL_CALL). `tool` is the tool name, `hint` a short
+ * command/path preview (may be NULL/""). Steps are never spoken: TTS is driven
+ * solely by the reply (voice.reply) channel. Safe to call from any task.
+ */
+void bb_ui_agent_chat_post_tool_call(const char* tool, const char* hint);
 
 /**
  * Signal the end of a cloud_saas reply turn (all deltas delivered).

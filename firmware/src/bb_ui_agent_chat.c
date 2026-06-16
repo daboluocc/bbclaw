@@ -330,6 +330,14 @@ static void apply_driver_cache_idx(void);
 static void spawn_history_fetch_task(int before, int is_initial);
 static void history_state_reset(void);
 
+/* ADR-027: Home Adapter switch resync. When the adapter changes while the chat
+ * overlay is CLOSED, we can't resync live — stash the new machine's driver and
+ * let the next chat-enter resolve its session from the backend (instead of
+ * loading a stale NVS session that belonged to the previous machine). */
+static void spawn_adapter_resync_task(const char* driver_name);
+static volatile int s_pending_adapter_resync;
+static char s_pending_resync_driver[24];
+
 /* ── async payload 类型（agent 线程 → LVGL 线程） ── */
 
 typedef enum {
@@ -1483,7 +1491,22 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
    * offline (or slow), this is all they get; when the fetch lands,
    * on_history_fetch_done clears the cache and rewrites it from the
    * authoritative remote history. */
-  if (s_chat.session_id[0] != '\0') {
+  if (s_pending_adapter_resync) {
+    /* ADR-027: the bound machine changed while chat was closed. The NVS session
+     * just loaded may belong to the OLD machine — drop it and resolve the new
+     * machine's recent session from the backend instead of replaying stale
+     * local state. */
+    s_pending_adapter_resync = 0;
+    if (s_pending_resync_driver[0] != '\0') {
+      strncpy(s_chat.driver_name, s_pending_resync_driver, sizeof(s_chat.driver_name) - 1);
+      s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
+      if (theme->set_driver != NULL) theme->set_driver(s_chat.driver_name);
+    }
+    s_chat.session_id[0] = '\0';
+    history_state_reset();
+    spawn_adapter_resync_task(s_chat.driver_name);
+    ESP_LOGI(TAG, "chat enter: pending adapter resync, fetching new machine's session");
+  } else if (s_chat.session_id[0] != '\0') {
     history_state_reset();
     if (bb_chat_cache_has_data() && theme->append_history_message != NULL) {
       replay_chat_cache_into_theme(theme);
@@ -2312,6 +2335,14 @@ void bb_ui_agent_chat_post_reply_delta(const char* text) {
   post_assistant_chunk(text);
 }
 
+/* ADR-030: render a display-only execution step (tool call) on the conversation
+ * page. Routed from the cloud voice/butler finish-stream path. Never spoken —
+ * the step channel is independent of the TTS (voice.reply) channel. */
+void bb_ui_agent_chat_post_tool_call(const char* tool, const char* hint) {
+  if (!s_chat.active || tool == NULL || tool[0] == '\0') return;
+  post_tool_call(tool, hint != NULL ? hint : "");
+}
+
 void bb_ui_agent_chat_post_reply_done(void) {
   if (!s_chat.active) return;
   /* cloud_saas turn boundary. The HTTP agent path gets BB_AGENT_EVENT_TURN_END
@@ -2582,4 +2613,144 @@ void bb_ui_agent_chat_set_active_model(const char* model_label) {
         .active_model[sizeof(s_chat.driver_cache[s_chat.driver_cache_idx].active_model) - 1] = '\0';
   }
   ESP_LOGI(TAG, "set_active_model: '%s'", model_label != NULL ? model_label : "(cleared)");
+}
+
+/* ── ADR-027: Home Adapter (machine) switch resync ──
+ * Switching the bound adapter changes the entire session universe — the new
+ * machine has its own sessions and the old session_id is meaningless there.
+ * We deliberately do NOT cache sessions per-adapter on the device (the user's
+ * design call): instead we ask the NEW machine for its session list and load
+ * the most-recent session's history live. */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  char driver_name[24];
+  char session_id[64]; /* most-recent session on the new machine ("" = none) */
+} adapter_resync_result_t;
+
+static void on_adapter_resync_done(void* user_data) {
+  adapter_resync_result_t* r = (adapter_resync_result_t*)user_data;
+  if (r == NULL) return;
+  s_chat.session_fetch_pending = 0;
+  /* Stale guard: another adapter switch / driver change superseded this. */
+  if (!s_chat.active || r->gen != s_chat.session_fetch_generation) {
+    free(r);
+    return;
+  }
+  if (r->err == ESP_OK && r->session_id[0] != '\0') {
+    strncpy(s_chat.session_id, r->session_id, sizeof(s_chat.session_id) - 1);
+    s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+    apply_session_switch_ui(s_chat.session_id, NULL);
+    history_state_reset();
+    spawn_history_fetch_task(-1, /*is_initial=*/1);
+    ESP_LOGI(TAG, "adapter resync: loaded recent session '%s' (driver '%s')",
+             r->session_id, r->driver_name);
+  } else {
+    /* New machine has no sessions for this driver (or fetch failed) — the
+     * transcript is already cleared; the next turn starts a fresh session. */
+    ESP_LOGI(TAG, "adapter resync: no session on new machine for '%s' (err=%s) — fresh start",
+             r->driver_name, esp_err_to_name(r->err));
+  }
+  free(r);
+}
+
+static void adapter_resync_task(void* arg) {
+  adapter_resync_result_t* r = (adapter_resync_result_t*)arg;
+  for (int i = 0; i < 50 && !bb_wifi_is_connected(); ++i) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  /* cap=1 → list_sessions fills only the most-recent (adapter sorts by
+   * lastUsedAt desc), which is all we need to resume. */
+  bb_agent_session_info_t recent;
+  int count = 0;
+  r->err = bb_agent_list_sessions(r->driver_name, &recent, 1, &count);
+  if (r->err == ESP_OK && count > 0) {
+    strncpy(r->session_id, recent.id, sizeof(r->session_id) - 1);
+    r->session_id[sizeof(r->session_id) - 1] = '\0';
+  }
+  safe_lv_async_call(on_adapter_resync_done, r);
+  vTaskDeleteWithCaps(NULL); /* PSRAM stack — see spawn below */
+}
+
+static void spawn_adapter_resync_task(const char* driver_name) {
+  s_chat.session_fetch_pending = 1;
+  uint32_t gen = ++s_chat.session_fetch_generation;
+  adapter_resync_result_t* r = (adapter_resync_result_t*)heap_caps_calloc(
+      1, sizeof(*r), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (r == NULL) {
+    s_chat.session_fetch_pending = 0;
+    return;
+  }
+  r->gen = gen;
+  strncpy(r->driver_name, driver_name, sizeof(r->driver_name) - 1);
+  r->driver_name[sizeof(r->driver_name) - 1] = '\0';
+  TaskHandle_t t = NULL;
+  /* PSRAM stack: HTTPS list-sessions (TLS, no NVS) — safe off the fragmented
+   * internal heap, same rationale as the Settings fetch tasks. */
+  BaseType_t ok = xTaskCreateWithCaps(adapter_resync_task, "sess_resync", 8192, r,
+                                      BB_HISTORY_FETCH_TASK_PRIO, &t,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_adapter_resync_task: xTaskCreateWithCaps failed");
+    s_chat.session_fetch_pending = 0;
+    free(r);
+  }
+}
+
+esp_err_t bb_ui_agent_chat_resync_after_adapter_switch(const char* name) {
+  if (!s_chat.active) {
+    /* Chat overlay closed (e.g. switched adapter from the standby screen).
+     * Defer: stash the new machine's driver so the next chat-enter resolves
+     * its session from the backend rather than a stale NVS one. */
+    const char* d = (name != NULL && name[0] != '\0') ? name : "";
+    strncpy(s_pending_resync_driver, d, sizeof(s_pending_resync_driver) - 1);
+    s_pending_resync_driver[sizeof(s_pending_resync_driver) - 1] = '\0';
+    s_pending_adapter_resync = 1;
+    ESP_LOGI(TAG, "adapter resync deferred (chat closed), driver='%s'", d);
+    return ESP_OK;
+  }
+  if (s_chat.sending) {
+    ESP_LOGI(TAG, "adapter resync: blocked (agent turn in flight)");
+    return ESP_ERR_INVALID_STATE;
+  }
+  /* Adopt the new machine's active driver. Unlike set_active_driver we do NOT
+   * no-op on an unchanged name — the session universe changed regardless. */
+  const char* drv = (name != NULL && name[0] != '\0') ? name : s_chat.driver_name;
+  if (drv != NULL && drv[0] != '\0') {
+    for (int i = 0; i < s_chat.driver_cache_count; ++i) {
+      if (strcmp(s_chat.driver_cache[i].name, drv) == 0) {
+        s_chat.driver_cache_idx = i;
+        break;
+      }
+    }
+    strncpy(s_chat.driver_name, drv, sizeof(s_chat.driver_name) - 1);
+    s_chat.driver_name[sizeof(s_chat.driver_name) - 1] = '\0';
+  }
+  /* Drop the old machine's session + transcript; new data is fetched live. */
+  s_chat.session_id[0] = '\0';
+  bb_state_dispatch((bb_event_payload_t){ .type = BB_EVT_DRIVER_CYCLE, .delta = 0 });
+  history_state_reset();
+  apply_session_switch_ui("", NULL);
+
+  const bb_agent_theme_t* theme = bb_agent_theme_get_active();
+  if (theme != NULL && theme->set_driver != NULL && s_chat.driver_name[0] != '\0') {
+    theme->set_driver(s_chat.driver_name);
+  }
+  if (s_chat.driver_name[0] != '\0') {
+    bb_event_payload_t drv_evt = (bb_event_payload_t){ .type = BB_EVT_DRIVER_NAME_UPDATE };
+    strncpy(drv_evt.text, s_chat.driver_name, sizeof(drv_evt.text) - 1);
+    bb_state_dispatch(drv_evt);
+  }
+  if (s_chat.driver_cache_idx >= 0 && s_chat.driver_cache_idx < s_chat.driver_cache_count) {
+    const char* m = s_chat.driver_cache[s_chat.driver_cache_idx].active_model;
+    bb_display_set_active_model(m[0] != '\0' ? m : NULL);
+  }
+  post_state(BB_AGENT_STATE_IDLE);
+
+  /* Async: ask the new machine for its sessions, load the recent one's history. */
+  spawn_adapter_resync_task(s_chat.driver_name);
+  ESP_LOGI(TAG, "adapter resync: driver='%s', fetching new machine's sessions",
+           s_chat.driver_name);
+  return ESP_OK;
 }
