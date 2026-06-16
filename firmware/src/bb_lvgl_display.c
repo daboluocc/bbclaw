@@ -692,12 +692,16 @@ static void bottombar_timer_cb(lv_timer_t* t) {
   if (s_obj_bar_canvas == NULL || s_bar_dot_count == 0) return;
   if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
 
-  /* Idle = static. Paint one calm frame on entering BAR_IDLE, then skip the
-   * 48ms canvas repaint + invalidate so the LVGL thread is free while the user
-   * just reads/scrolls history (the continuous idle "breathe" was holding the
-   * lock and making UP/DOWN scroll lag, see scroll-latency investigation).
-   * LISTEN/PROCESS/SPEAK/ERROR still animate normally during conversation. */
-  if (s_bottombar_mode == BAR_IDLE) {
+  /* Minimal-animation policy (UI redesign): the bottom bar animates ONLY during
+   * voice INPUT (BAR_LISTEN) to give capture feedback, plus a brief ERROR pulse
+   * as an alert. Everything else — TTS output (SPEAK), thinking (PROCESS) and
+   * IDLE — is painted as a single STATIC frame, so the whole screen is calm
+   * ("静态齐屏") and the user can scroll/read history smoothly while listening
+   * to the reply (the 48ms repaint no longer steals the LVGL thread). This also
+   * restores the listening animation that an earlier follow-tail gate had
+   * accidentally suppressed after the user scrolled up. */
+  int animate = (s_bottombar_mode == BAR_LISTEN || s_bottombar_mode == BAR_ERROR);
+  if (!animate) {
     if (s_bar_idle_drawn) return;
     s_bar_idle_drawn = 1;
   } else {

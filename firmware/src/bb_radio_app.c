@@ -921,12 +921,24 @@ static void on_nav_event(bb_nav_event_t event) {
    * in this branch — letting stream_task also dispatch later would
    * double-scroll once it catches up. The Task List page still needs
    * the stream_task path, so skip fast-path when it is open. */
+  int is_scroll = (event == BB_NAV_EVENT_UP || event == BB_NAV_EVENT_DOWN);
+
+  /* Voice INPUT in progress (PTT held / recording): disable history scroll
+   * entirely — there's no need to scroll while talking, and dropping it keeps
+   * the capture/encode path uncontended (UI redesign: scroll only matters
+   * during output, when the user reads while listening). */
+  if (is_scroll && s_ptt_pressed) {
+    return;
+  }
+
   int fast_path = 0;
-  if ((event == BB_NAV_EVENT_UP || event == BB_NAV_EVENT_DOWN) &&
+  if (is_scroll &&
       s_app_state == BBCLAW_STATE_CHAT &&
       s_agent_chat_active &&
       !bb_ui_task_list_visible()) {
-    bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? -2 : 2);
+    /* Inverted up/down: UP key scrolls toward newer (down), DOWN toward older
+     * (up) — matches the physical layout / user preference. */
+    bb_chat_scroll_request(event == BB_NAV_EVENT_UP ? 2 : -2);
     fast_path = 1;
   }
 
@@ -1207,6 +1219,16 @@ static void tts_stream_task(void* arg) {
   }
   tts_playback_set_active(0);
   bb_display_set_tts_playing(0);
+  /* Speaking just finished → end the post-reply DIZZY settle NOW so the bar/LED
+   * return to idle (green) immediately. Previously DIZZY→IDLE only fired on the
+   * fixed 3s timer started at cloud_done (text done); for short replies the
+   * audio ends well before that, leaving ~2s of stale "speaking" blue after the
+   * sound stopped. DIZZY_TIMEOUT is ignored by the state machine if we already
+   * left DIZZY (e.g. a long reply whose timer already elapsed), so this is safe.
+   * Only fire when we actually played audio and the turn wasn't barged-in. */
+  if (playback_started && !s_voice_turn_stale) {
+    bb_state_dispatch_simple(BB_EVT_DIZZY_TIMEOUT);
+  }
   ui->tts_task_done = 1;
   ui->tts_task = NULL;
   vTaskDelete(NULL);
@@ -2020,7 +2042,7 @@ static void stream_task(void* arg) {
                    * scroll call silently dropped. Match the picker path's
                    * 600 ms budget and log the rare give-up. */
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_scroll(-2);
+                    bb_ui_agent_chat_scroll(2); /* inverted: UP → newer */
                     lvgl_port_unlock();
                   } else {
                     ESP_LOGW(TAG, "CHAT: UP scroll lock timeout");
@@ -2028,7 +2050,7 @@ static void stream_task(void* arg) {
                   break;
                 case BB_NAV_EVENT_DOWN:
                   if (lvgl_port_lock(600)) {
-                    bb_ui_agent_chat_scroll(+2);
+                    bb_ui_agent_chat_scroll(-2); /* inverted: DOWN → older */
                     lvgl_port_unlock();
                   } else {
                     ESP_LOGW(TAG, "CHAT: DOWN scroll lock timeout");

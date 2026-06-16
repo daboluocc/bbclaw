@@ -7,13 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.5.12] - 2026-06-16
+
+### Changed
+- **对话 UI / 历史滚动重做(往最精简 + 静态齐屏)**:
+  - **底栏动画精简**:只在语音**输入(LISTEN)**时动(给采集反馈),**输出(SPEAK)/思考
+    (PROCESS)/空闲(IDLE)一律静态一帧** → 屏幕安静,边听 TTS 边翻历史更顺。修复了此前
+    follow-tail 守卫误把"听写动画"在用户翻过历史后冻掉的回退。
+  - **输出阅读不重排**:TTS 流式回复时若用户上翻读历史(reading mode),新到的文字只进
+    缓存+暂存、不再每块 `lv_label_ins_text` 重排整列(那是边听边翻的卡顿源);翻回底部 /
+    新一轮 / 回复结束时一次性补齐,不丢字、不乱序。
+  - **滚动加速**:按住 ↑/↓ 连续重复时步长递增(2→…→16 行/步,封顶),长按快速到顶。
+  - **上/下翻方向翻转**;**录音输入时禁用上下翻**(说话时无需翻、也让采集路径不被占)。
+  - 上翻分页批量 24→8(每次到顶加载的突发更小、更顺);渲染上限收到 120 条。
 - **adapter CLI 新增 `device set-miyu <on|off>` 子命令**(#190):对标 `set-volume`,
   通过 `POST /v1/devices/{id}/config` 远程开关设备「密语模式」(即 `miyuEnabled`——
   cloud_saas 锁屏语音解锁开关),Cloud 经 `config.update` 实时下发到设备,无需重启。
   AI butler 的设备控制提示(`DeviceSystemPrompt`)同步加入 `set-miyu` 用法,可口头响应
   「开/关密语模式」。`setConfigRequest` 改为指针字段 + `omitempty`,确保 `set-miyu` 不会
   误发 `volumePct:0` 把设备静音。
+
+### Fixed
+- **时间分隔符乱码**:`── HH:MM ──` 用的制表符 U+2500 不在中文字库子集 → 渲染成乱码。
+  改用 ASCII 短横,并加上日期:`-- MM-DD HH:MM --`。
+- **TTS 播完后状态灯/底栏延迟 ~2s 才转绿(idle)**:回 IDLE 只靠从 cloud_done(文本完成)
+  起算的固定 3s DIZZY 定时器,短回复音频早于 3s 放完仍空等残余 → 音停后还蓝着一两秒。
+  改为**音频播放结束即触发 DIZZY→IDLE**,底栏+灯立刻转绿(长回复/barge-in 不受影响)。
 
 ## [0.5.11] - 2026-06-14
 

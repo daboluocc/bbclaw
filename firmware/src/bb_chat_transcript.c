@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "bb_chat_cache.h"
 #include "bb_display.h"
@@ -77,10 +78,47 @@ static int transcript_at_bottom(void) {
   return lv_obj_get_scroll_bottom(s_transcript) <= 4;
 }
 
+/* Forward decls — used by flush_pending_assistant()/set_follow_tail() which are
+ * defined above their bodies. */
+static lv_obj_t* make_assistant_label(void);
+static void scroll_to_bottom_unconditional(void);
+
+/* Deferred assistant text (issue: scroll jank while a reply streams). When the
+ * user has scrolled up to read history during TTS output (s_follow_tail=0),
+ * incoming reply chunks are buffered here instead of doing a per-chunk
+ * lv_label_ins_text → full-column relayout that fights the user's scroll. The
+ * buffer is flushed into the live label in ONE relayout when the user returns
+ * to the tail or the turn ends, so the screen stays static ("静态齐屏") while
+ * reading. The cache (bb_chat_cache) is always kept current, so no text is lost
+ * even if this view buffer overflows (then we fall back to live append). */
+#define BB_PENDING_ASSISTANT_CAP 4096
+static char s_pending_assistant[BB_PENDING_ASSISTANT_CAP];
+static size_t s_pending_assistant_len;
+
+static void flush_pending_assistant(void) {
+  if (s_pending_assistant_len == 0) return;
+  if (s_active_assistant == NULL) {
+    s_active_assistant = make_assistant_label();
+    if (s_active_assistant != NULL) {
+      lv_label_set_text(s_active_assistant, s_pending_assistant);
+    }
+  } else {
+    lv_label_ins_text(s_active_assistant, LV_LABEL_POS_LAST, s_pending_assistant);
+  }
+  s_pending_assistant_len = 0;
+  s_pending_assistant[0] = '\0';
+}
+
 static void set_follow_tail(int follow) {
   follow = follow ? 1 : 0;
   if (s_follow_tail == follow) return;
   s_follow_tail = follow;
+  if (follow) {
+    /* Re-joining the live tail: render any text deferred while reading, in one
+     * relayout, then snap to bottom so the now-complete reply is visible. */
+    flush_pending_assistant();
+    scroll_to_bottom_unconditional();
+  }
 }
 
 static const lv_font_t* font(void) {
@@ -205,6 +243,10 @@ lv_obj_t* bb_chat_transcript_get_container(void) {
 
 void bb_chat_transcript_append_user(const char* text) {
   if (s_transcript == NULL || text == NULL) return;
+  /* If the user was reading history while the previous reply streamed, render
+   * its deferred tail into the (old) assistant bubble before we close the turn,
+   * so it isn't lost/misplaced. */
+  flush_pending_assistant();
   /* A new user message marks the end of the previous assistant turn.
    * Flush any pending streamed chunks into the cache as one finalized
    * message BEFORE we record the new user line — otherwise the cloud
@@ -227,6 +269,25 @@ void bb_chat_transcript_append_user(const char* text) {
 
 void bb_chat_transcript_append_assistant_chunk(const char* delta) {
   if (s_transcript == NULL || delta == NULL) return;
+  /* Cache is always current (persistence) regardless of reading mode. */
+  bb_chat_cache_append_assistant_chunk(delta);
+  /* Reading mode (user scrolled up during output): buffer the delta instead of
+   * relaying out the column on every chunk — that fight with the user's scroll
+   * is the jank when flipping history while a reply streams. Flushed in one pass
+   * on return-to-tail / turn end. Overflow falls back to live append (no loss). */
+  if (!s_follow_tail) {
+    size_t dl = strlen(delta);
+    size_t room = (size_t)(BB_PENDING_ASSISTANT_CAP - 1) - s_pending_assistant_len;
+    if (dl <= room) {
+      memcpy(s_pending_assistant + s_pending_assistant_len, delta, dl);
+      s_pending_assistant_len += dl;
+      s_pending_assistant[s_pending_assistant_len] = '\0';
+      return;
+    }
+    /* buffer full → render what's buffered first (keep order), then live-append
+     * this delta. Rare: only for a >4KB reply read-deferred the whole time. */
+    flush_pending_assistant();
+  }
   if (s_active_assistant == NULL) {
     s_active_assistant = make_assistant_label();
     if (s_active_assistant == NULL) return;
@@ -234,12 +295,12 @@ void bb_chat_transcript_append_assistant_chunk(const char* delta) {
   } else {
     lv_label_ins_text(s_active_assistant, LV_LABEL_POS_LAST, delta);
   }
-  bb_chat_cache_append_assistant_chunk(delta);
   follow_tail_if_active();
 }
 
 void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
   if (s_transcript == NULL) return;
+  flush_pending_assistant();
   bb_chat_cache_finalize_assistant();
   lv_obj_t* lbl = make_msg_label(UI_TEXT_DIM, UI_TOOL_FG, LV_TEXT_ALIGN_LEFT, 1);
   if (lbl == NULL) return;
@@ -258,6 +319,7 @@ void bb_chat_transcript_append_tool_call(const char* tool, const char* hint) {
 
 void bb_chat_transcript_append_error(const char* msg) {
   if (s_transcript == NULL) return;
+  flush_pending_assistant();
   bb_chat_cache_finalize_assistant();
   lv_obj_t* lbl = make_msg_label(UI_ERROR_FG, UI_ERROR_FG, LV_TEXT_ALIGN_LEFT, 0);
   if (lbl == NULL) return;
@@ -294,12 +356,18 @@ static void make_segment_separator(const char* label, int prepend) {
  * We skip real TZ handling on device — display as UTC offset by the
  * adapter's reported time which is already in the user's wall-clock. */
 static void format_hhmm(int64_t ts_ms, char* out, size_t out_sz) {
-  int64_t ts_sec = ts_ms / 1000;
-  int sec_of_day = (int)(ts_sec % 86400);
-  if (sec_of_day < 0) sec_of_day += 86400;
-  int hh = sec_of_day / 3600;
-  int mm = (sec_of_day % 3600) / 60;
-  snprintf(out, out_sz, "── %02d:%02d ──", hh, mm);
+  /* ts is already in the user's wall-clock (adapter-provided), so interpret it
+   * as-is via gmtime_r (no extra TZ shift) to get the calendar date + time. */
+  time_t ts_sec = (time_t)(ts_ms / 1000);
+  struct tm tmv;
+  gmtime_r(&ts_sec, &tmv);
+  /* ASCII-only dashes: the box-drawing char U+2500 (──) is not in the CJK font
+   * subset and rendered as garbage (乱码). Hyphen-minus is always present.
+   * Show date (MM-DD) + time so long histories are easy to place in time. */
+  /* %100 bounds each field to 2 digits (values are already valid) so the
+   * compiler can prove no format truncation into the caller's 24-byte buffer. */
+  snprintf(out, out_sz, "-- %02d-%02d %02d:%02d --", (tmv.tm_mon + 1) % 100,
+           tmv.tm_mday % 100, tmv.tm_hour % 100, tmv.tm_min % 100);
 }
 
 void bb_chat_transcript_append_history(const char* role, const char* content,
@@ -399,10 +467,15 @@ void bb_chat_transcript_clear(void) {
   if (s_transcript == NULL) return;
   lv_obj_clean(s_transcript);
   s_active_assistant = NULL;
+  s_pending_assistant_len = 0;
+  s_pending_assistant[0] = '\0';
   s_history_last_ts_ms = 0;
 }
 
 void bb_chat_transcript_finalize_assistant(void) {
+  /* Reply complete: render any text deferred while the user read history, so the
+   * finished bubble is whole before we close the streaming label. */
+  flush_pending_assistant();
   s_active_assistant = NULL;
   bb_chat_cache_finalize_assistant();
 }

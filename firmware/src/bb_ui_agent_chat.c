@@ -87,9 +87,29 @@ void bb_chat_scroll_worker_init(void) {
 
 void bb_chat_scroll_request(int lines) {
   if (s_scroll_queue == NULL || lines == 0) return;
+  /* Acceleration: the nav driver auto-repeats UP/DOWN at ~100ms while the key
+   * is held. Ramp the per-step line count for consecutive same-direction
+   * requests so a long hold accelerates and flies to the top/bottom. Resets on
+   * direction change or a >250ms gap (a fresh press / manual tap, not a held
+   * repeat). Single producer (nav dispatch), so plain statics are fine. */
+  static uint32_t last_ms = 0;
+  static int last_dir = 0;
+  static int run = 0;
+  uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+  int dir = lines < 0 ? -1 : 1;
+  if (dir == last_dir && (now - last_ms) <= 250U) {
+    if (run < 1000) run++;
+  } else {
+    run = 0;
+  }
+  last_dir = dir;
+  last_ms = now;
+  int mult = 1 + run; /* ramp 1×,2×,3×… */
+  if (mult > 8) mult = 8; /* cap 8× = 16 lines/step → fast but not jumpy */
+  int step = lines * mult;
   /* Drop if queue is full — buffer is 16 deep, user can't physically
    * press faster than the worker drains under normal load. */
-  (void)xQueueSend(s_scroll_queue, &lines, 0);
+  (void)xQueueSend(s_scroll_queue, &step, 0);
 }
 
 /* Thread-safe wrapper around lv_async_call(). LVGL is configured with
@@ -157,7 +177,16 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
  * 完整排版,真机日志显示 hydrate 后紧跟一串 lvgl lock timeout。24 条够看
  * 一屏多,更早的历史靠上翻分页按需加载(机制已有)。 */
 #define BB_HISTORY_PAGE_SIZE   24
-#define BB_HISTORY_MAX_LOADED  300
+/* Pagination (scroll-to-top "load earlier") inserts each fetched message as a
+ * CJK label with full text layout, all in one LVGL callback → a burst that
+ * stutters the scroll. Use a smaller page for paginated loads so each scroll-up
+ * fetch is a short burst; the initial hydrate keeps PAGE_SIZE for a full first
+ * screen. */
+#define BB_HISTORY_PAGE_PAGINATE 8
+/* Hard cap on labels kept in the LVGL flex column. Lower = cheaper relayout on
+ * every scroll/append (the whole column reflows). 120 is plenty of scrollback;
+ * older history stops loading past this (matches "超过 N 条不再加载"). */
+#define BB_HISTORY_MAX_LOADED  120
 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
@@ -1884,8 +1913,11 @@ static void history_fetch_task(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(200));
   }
 
+  /* Initial hydrate fetches a full screen; scroll-to-top pagination fetches a
+   * small batch so each prepend burst is short and the up-scroll stays smooth. */
+  int page = args->is_initial ? BB_HISTORY_PAGE_SIZE : BB_HISTORY_PAGE_PAGINATE;
   res->err = bb_agent_load_messages(args->session_id, args->driver_name,
-                                    args->before, BB_HISTORY_PAGE_SIZE,
+                                    args->before, page,
                                     &res->msgs, &res->count, &res->total, &res->has_more);
   free(args);
   safe_lv_async_call(on_history_fetch_done, res);
