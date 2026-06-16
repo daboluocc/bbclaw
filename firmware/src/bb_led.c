@@ -5,7 +5,7 @@
  * 自己合成效果。业务层只在需要"瞬时提示"时调 bb_led_pulse()。
  *
  * v2 变更（issue #168）：
- *   - 颜色仅用 红 / 绿 / 蓝（或灭）
+ *   - 颜色仅用 红 / 绿 / 橙（或灭）—— 红绿灯配色
  *   - 动画仅用 SOLID / SLOW_BLINK(~1Hz) / FAST_BLINK(~3Hz)
  *   - 移除所有 BREATHE / PULSE / SINGLE_FLASH / TRIPLE_BLINK
  *   - 状态切换瞬时，无渐变
@@ -212,7 +212,7 @@ static void render_boot_marquee(uint32_t elapsed_ms) {
   uint32_t idx = (elapsed_ms / step) % 3U;
   if (idx == 0U)      output_rgb(255, 0, 0);
   else if (idx == 1U) output_rgb(0, 255, 0);
-  else                output_rgb(0, 0, 255);
+  else                output_rgb(255, 165, 0); /* 橙，替代蓝（红绿灯配色） */
 }
 
 /* ================ Pulse overlay ================ */
@@ -276,12 +276,13 @@ static bool take_pulse(pulse_state_t* out, int64_t now_ms) {
  * 优先级从高到低（第一个满足的条件胜出）：
  *   P1  错误/失联  → 红快闪（FAST_BLINK ~3Hz）
  *   P2  Worker 长任务 → 红慢闪（SLOW_BLINK ~1Hz）
- *   P3  AI 思考/生成  → 蓝慢闪（SLOW_BLINK ~1Hz）
- *   P4  倾听中       → 蓝常亮（SOLID）
+ *   P3  AI 思考/生成  → 橙慢闪（SLOW_BLINK ~1Hz）
+ *   P4  倾听中       → 橙常亮（SOLID）
  *   P5  空闲/默认    → 绿常亮（SOLID）
  *
- * 注：RYG 三线板（BBCLAW_STATUS_LED_KIND_RGB_MODULE==0）蓝色在 output_rgb
- * 中退化为绿，因此该硬件上 P3/P4 与 P5 外观相同，属已知限制。
+ * 红绿灯配色（红/绿/橙），不再用蓝。RYG 三线板
+ * （BBCLAW_STATUS_LED_KIND_RGB_MODULE==0）上橙(255,165,0)经 Y=R+G 近似为黄灯，
+ * 正好对应交通灯的黄/琥珀；WS2812/RGB 模块上显示真橙色。
  */
 static effect_t compose_from_state(const bb_state_t* st, const bb_power_state_t* bp) {
   (void)bp; /* 低电量不占常态，只通过 pulse overlay 提示 */
@@ -305,22 +306,22 @@ static effect_t compose_from_state(const bb_state_t* st, const bb_power_state_t*
     return e;
   }
 
-  /* P3: AI 思考 / 生成中（含 ATTENTION、BUSY、SPEAKING、TTS 播放）— 蓝慢闪 */
+  /* P3: AI 思考 / 生成中（含 ATTENTION、BUSY、SPEAKING、TTS 播放）— 橙慢闪 */
   if (st->agent == BB_AGENT_STATE_ATTENTION ||
       st->agent == BB_AGENT_STATE_BUSY      ||
       st->agent == BB_AGENT_STATE_SPEAKING  ||
       st->ptt   == BB_PTT_RELEASED_WAIT     ||
       st->tts_in_flight) {
-    e.color     = (rgb_t){0, 0, 255};
+    e.color     = (rgb_t){255, 165, 0};
     e.mode      = ANIM_SLOW_BLINK;
     e.period_ms = 1000;
     return e;
   }
 
-  /* P4: 倾听中（PTT 按下 / agent LISTENING）— 蓝常亮 */
+  /* P4: 倾听中（PTT 按下 / agent LISTENING）— 橙常亮 */
   if (st->ptt == BB_PTT_ARMED || st->ptt == BB_PTT_STREAMING ||
       st->agent == BB_AGENT_STATE_LISTENING) {
-    e.color     = (rgb_t){0, 0, 255};
+    e.color     = (rgb_t){255, 165, 0};
     e.mode      = ANIM_SOLID;
     e.period_ms = 0;
     return e;
@@ -330,7 +331,7 @@ static effect_t compose_from_state(const bb_state_t* st, const bb_power_state_t*
   return e;
 }
 
-/* v2 pulse overlay（issue #168）：颜色收敛到红/绿/蓝，动画收敛到三波形 */
+/* v2 pulse overlay（issue #168）：颜色收敛到红/绿/橙，动画收敛到三波形 */
 static effect_t compose_pulse(bb_led_pulse_t kind) {
   effect_t e = { .color = {0, 255, 0}, .mode = ANIM_SOLID, .period_ms = 0 };
   switch (kind) {
@@ -351,8 +352,8 @@ static effect_t compose_pulse(bb_led_pulse_t kind) {
       e.mode = ANIM_SOLID;
       break;
     case BB_LED_PULSE_NOTIFY:
-      /* 蓝常亮 400ms：新通知 */
-      e.color = (rgb_t){0, 0, 255};
+      /* 橙常亮 400ms：新通知 */
+      e.color = (rgb_t){255, 165, 0};
       e.mode = ANIM_SOLID;
       break;
     default:

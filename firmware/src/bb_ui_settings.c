@@ -9,7 +9,7 @@
  *     Driver: <name>
  *     Model:  <label>
  *     TTS:    On/Off
- *     Back
+ *     (no Back row — encoder long-press exits; footer hint says so)
  *
  * Layout (LEVEL_DRIVER_PICKER):
  *     <driver-1>   ✓        (✓ = adapter's persisted active_driver)
@@ -40,6 +40,7 @@
 #include "bb_adapter_client.h"
 #include "bb_agent_client.h"
 #include "bb_audio.h"
+#include "bb_config.h"
 #include "bb_device_config.h"
 #include "bb_session_store.h"
 #include "bb_transport.h"
@@ -63,12 +64,24 @@ static const char* TAG = "bb_ui_settings";
 /* 4096 was too small for the HTTPS commit/fetch (TLS handshake on a fresh
  * connection), and v0.5.9's switch to software AES pushed cipher work onto the
  * stack too — selecting/switching a model (commit PUT) could overflow and
- * reboot the device probabilistically. 8192 matches ESP-IDF's HTTPS-task norm
- * and still fits the ~10-11KB largest internal block while in Settings; if a
- * second concurrent task can't allocate it, xTaskCreate fails gracefully
- * (logged) rather than crashing. */
+ * reboot the device probabilistically. 8192 matches ESP-IDF's HTTPS-task norm.
+ *
+ * The two READ-ONLY fetch tasks (driver list / sites.list) now allocate their
+ * stack from PSRAM via xTaskCreateWithCaps — internal DRAM gets badly
+ * fragmented while in Settings (largest free block seen as low as ~7.9KB),
+ * so plain xTaskCreate(8192) would fail and the Driver/Adapter rows silently
+ * stayed empty ("offline"/"(none)") even though the cloud had online adapters.
+ * They do network I/O only (no NVS / flash writes), so a PSRAM stack is safe
+ * w.r.t. the flash-cache-disable constraint. The commit/persist task keeps an
+ * INTERNAL stack on purpose — it writes NVS (cache frozen). */
 #define BB_SETTINGS_FETCH_TASK_STACK 8192
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
+/* Volume/TTS persist only does an NVS set+commit (no TLS) — a 4KB stack is
+ * plenty and, unlike 8KB, reliably fits the fragmented internal heap that
+ * starved the old 8KB commit/persist tasks (xTaskCreate failed → settings
+ * silently not applied). Must stay INTERNAL: NVS write freezes the flash
+ * cache, which would fault on a PSRAM stack. */
+#define BB_SETTINGS_PERSIST_TASK_STACK 4096
 
 /* Visual — design/UI_DESIGN_LANGUAGE.md tokens. Selected row = ghost face +
  * teal left-edge bar + cool-white text (shared list selection idiom). */
@@ -151,6 +164,7 @@ typedef struct {
   int volume_dirty;      /* 1 = changed since entering adjust mode */
   lv_obj_t* vol_fill;    /* fill rect inside the big bar (partial-update ref) */
   lv_obj_t* vol_pct_lbl; /* "NN%" label next to the bar (partial-update ref) */
+  lv_obj_t* hint_lbl;    /* footer hint on main page ("hold to go back") */
 } settings_state_t;
 
 static settings_state_t s_st = {0};
@@ -220,6 +234,10 @@ static void destroy_rows(void) {
   if (s_st.rows_box != NULL) {
     lv_obj_del(s_st.rows_box);
     s_st.rows_box = NULL;
+  }
+  if (s_st.hint_lbl != NULL) {
+    lv_obj_del(s_st.hint_lbl);
+    s_st.hint_lbl = NULL;
   }
 }
 
@@ -297,7 +315,8 @@ static int main_visible_rows(main_row_t* out) {
   }
   out[n++] = MAIN_ROW_VOLUME;
   out[n++] = MAIN_ROW_TTS;
-  out[n++] = MAIN_ROW_BACK;
+  /* No explicit Back row — encoder long-press (BB_NAV_EVENT_BACK) exits at the
+   * main level; a footer hint on the main page tells the user. */
   return n;
 }
 
@@ -319,6 +338,8 @@ static int main_row_to_index(main_row_t row) {
 
 /* Label of the currently-active Home Adapter for the main-page Adapter row. */
 static const char* current_site_label(void) {
+  /* Static scratch — single-threaded LVGL render, freshly filled each call. */
+  static char buf[64];
   if (s_st.site_fetch_pending && s_st.site_cache_count == 0) return "(loading)";
   for (int i = 0; i < s_st.site_cache_count; ++i) {
     int is_active = s_st.site_cache[i].active ||
@@ -327,7 +348,10 @@ static const char* current_site_label(void) {
     if (is_active) {
       const char* lbl = s_st.site_cache[i].label[0] != '\0' ? s_st.site_cache[i].label
                                                             : s_st.site_cache[i].home_site_id;
-      return s_st.site_cache[i].online ? lbl : "(offline)";
+      /* Show the bound adapter's name + live status even from the main page. */
+      snprintf(buf, sizeof(buf), "%s %s", lbl,
+               s_st.site_cache[i].online ? "[on]" : "[offline]");
+      return buf;
     }
   }
   if (s_st.active_site_id[0] != '\0') return s_st.active_site_id;
@@ -390,6 +414,14 @@ static void render_main(void) {
   }
 
   highlight_selected();
+
+  /* Footer hint — there is no Back row; long-press exits (see
+   * main_visible_rows / bb_ui_settings_handle_back). Cleaned up by
+   * destroy_rows on the next render / level change. */
+  s_st.hint_lbl = lv_label_create(s_st.root);
+  lv_obj_set_style_text_color(s_st.hint_lbl, lv_color_hex(BB_UI_TEXT_DIM), 0);
+  lv_label_set_text(s_st.hint_lbl, "hold to go back");
+  lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
 }
 
 /* ── Render: Driver picker ── */
@@ -446,9 +478,12 @@ static void render_adapter_picker(void) {
     int is_active = s_st.site_cache[i].active ||
                     (s_st.active_site_id[0] != '\0' &&
                      strcmp(s_st.site_cache[i].home_site_id, s_st.active_site_id) == 0);
-    snprintf(buf, sizeof(buf), "%s%s%s", lbl,
+    /* Always show the connectivity status so offline adapters are clearly
+     * marked (still selectable — picking one just won't reach it until it
+     * comes back online). "*" marks the currently-bound one. */
+    snprintf(buf, sizeof(buf), "%s%s  %s", lbl,
              is_active ? "  *" : "",
-             s_st.site_cache[i].online ? "" : "  (offline)");
+             s_st.site_cache[i].online ? "[on]" : "[offline]");
     lv_label_set_text(s_st.rows[i], buf);
   }
   highlight_selected();
@@ -632,15 +667,18 @@ static void on_driver_fetch_done(void* user_data) {
     ESP_LOGI(TAG, "driver fetch ok: %d drivers active='%s'",
              total, s_st.active_driver);
   }
-  /* ADR-027 §4: a Home Adapter switch requested a chat context re-sync. The new
-   * adapter's active driver is now resolved above — flip the chat overlay over
-   * to it so the topbar label + session reflect the new machine. We run inside
-   * an lv_async_call (LVGL task), so direct chat calls are safe here. */
+  /* ADR-027 §4: a Home Adapter switch requested a chat context re-sync. Use the
+   * adapter-switch path (NOT set_active_driver) — set_active_driver no-ops when
+   * the driver name is unchanged, but both machines usually expose the same
+   * driver ("claude-code"), so that no-op left the chat stuck on the OLD
+   * machine's session + history. resync_after_adapter_switch always drops the
+   * stale session and pulls the new machine's sessions live. We run inside an
+   * lv_async_call (LVGL task), so direct chat calls are safe here. */
   if (s_st.pending_chat_sync && s_st.active_driver[0] != '\0') {
     s_st.pending_chat_sync = 0;
-    esp_err_t cerr = bb_ui_agent_chat_set_active_driver(s_st.active_driver);
+    esp_err_t cerr = bb_ui_agent_chat_resync_after_adapter_switch(s_st.active_driver);
     if (cerr != ESP_OK) {
-      ESP_LOGW(TAG, "site switch: chat driver sync failed (%s)", esp_err_to_name(cerr));
+      ESP_LOGW(TAG, "site switch: chat resync failed (%s)", esp_err_to_name(cerr));
     }
   }
   rerender();
@@ -651,7 +689,7 @@ static void driver_fetch_task(void* arg) {
   driver_fetch_result_t* r = (driver_fetch_result_t*)arg;
   if (r == NULL) {
     s_st.driver_fetch_pending = 0;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL); /* stack is PSRAM-allocated (xTaskCreateWithCaps) */
     return;
   }
   r->err = bb_agent_list_drivers(r->entries, BB_SETTINGS_DRIVER_CACHE_MAX, &r->total,
@@ -662,7 +700,7 @@ static void driver_fetch_task(void* arg) {
   } else {
     free(r);
   }
-  vTaskDelete(NULL);
+  vTaskDeleteWithCaps(NULL);
 }
 
 static void spawn_driver_fetch_task(void) {
@@ -678,11 +716,13 @@ static void spawn_driver_fetch_task(void) {
   }
   r->gen = gen;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(driver_fetch_task, "drv_fetch",
-                              BB_SETTINGS_FETCH_TASK_STACK, r,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  /* PSRAM stack — internal DRAM is too fragmented in Settings to spare 8KB. */
+  BaseType_t ok = xTaskCreateWithCaps(driver_fetch_task, "drv_fetch",
+                                      BB_SETTINGS_FETCH_TASK_STACK, r,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreateWithCaps failed");
     s_st.driver_fetch_pending = 0;
     free(r);
   }
@@ -732,7 +772,7 @@ static void site_fetch_task(void* arg) {
   site_fetch_result_t* r = (site_fetch_result_t*)arg;
   if (r == NULL) {
     s_st.site_fetch_pending = 0;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL); /* stack is PSRAM-allocated (xTaskCreateWithCaps) */
     return;
   }
   r->err = bb_adapter_sites_list(r->sites, BB_SETTINGS_SITE_CACHE_MAX, &r->count);
@@ -754,7 +794,7 @@ static void site_fetch_task(void* arg) {
     s_st.site_fetch_pending = 0;
     free(r);
   }
-  vTaskDelete(NULL);
+  vTaskDeleteWithCaps(NULL);
 }
 
 static void spawn_site_fetch_task(void) {
@@ -771,11 +811,13 @@ static void spawn_site_fetch_task(void) {
   }
   r->gen = gen;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(site_fetch_task, "site_fetch",
-                              BB_SETTINGS_FETCH_TASK_STACK, r,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  /* PSRAM stack — internal DRAM is too fragmented in Settings to spare 8KB. */
+  BaseType_t ok = xTaskCreateWithCaps(site_fetch_task, "site_fetch",
+                                      BB_SETTINGS_FETCH_TASK_STACK, r,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_site_fetch_task: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_site_fetch_task: xTaskCreateWithCaps failed");
     s_st.site_fetch_pending = 0;
     free(r);
   }
@@ -809,7 +851,13 @@ typedef enum {
   COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
   COMMIT_KIND_TTS,     /* int_val = 0/1 */
   COMMIT_KIND_ADAPTER, /* site_id = target homeSiteId (WS sites.activate) */
+  COMMIT_KIND_PERSIST_DRIVER, /* driver_name → NVS only (split off DRIVER's
+                               * HTTPS PUT so the PUT can run on a PSRAM stack
+                               * while this tiny NVS write stays internal) */
 } commit_kind_t;
+
+/* Forward decl: DRIVER commit (PSRAM stack) defers its NVS write here. */
+static void spawn_persist_driver(const char* driver_name);
 
 typedef struct {
   commit_kind_t kind;
@@ -817,6 +865,12 @@ typedef struct {
   char model_id[40];
   char site_id[40];
   int int_val;
+  UBaseType_t mem_caps; /* 0 = internal (xTaskCreate); else PSRAM caps for
+                         * xTaskCreateWithCaps. Network-only commits (MODEL PUT,
+                         * ADAPTER WS-activate) run on a PSRAM stack to dodge
+                         * internal-DRAM fragmentation; NVS-touching kinds
+                         * (DRIVER/VOLUME/TTS) stay internal. Drives the matching
+                         * self-delete (vTaskDeleteWithCaps vs vTaskDelete). */
 } commit_payload_t;
 
 static void commit_task(void* arg) {
@@ -826,10 +880,17 @@ static void commit_task(void* arg) {
     return;
   }
   esp_err_t err = ESP_OK;
-  if (p->kind == COMMIT_KIND_DRIVER) {
+  if (p->kind == COMMIT_KIND_PERSIST_DRIVER) {
+    /* NVS-only tail of a DRIVER commit — runs on a small INTERNAL stack so the
+     * cache-freezing NVS write is safe. */
+    bb_session_store_save_active_driver(p->driver_name);
+    ESP_LOGI(TAG, "persist active driver='%s' (nvs)", p->driver_name);
+  } else if (p->kind == COMMIT_KIND_DRIVER) {
     err = bb_agent_set_active_driver(p->driver_name);
     if (err == ESP_OK) {
-      bb_session_store_save_active_driver(p->driver_name);
+      /* NVS write can't run on this PSRAM stack (cache freeze) — defer it to a
+       * tiny internal task. */
+      spawn_persist_driver(p->driver_name);
       /* ADR-016: also flip the active chat overlay over to the new driver so
        * the next user prompt routes there + the right session is loaded.
        * The chat overlay is still up underneath Settings; set_active_driver
@@ -890,8 +951,15 @@ static void commit_task(void* arg) {
    * the old 4096 stack was overflowing on model/driver commit. */
   ESP_LOGI(TAG, "commit_task done kind=%d stack_min_free_bytes=%u", (int)p->kind,
            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+  UBaseType_t caps = p->mem_caps;
   free(p);
-  vTaskDelete(NULL);
+  /* Match the allocator: WithCaps tasks must be torn down with the WithCaps
+   * variant so the PSRAM-backed stack/TCB are freed. */
+  if (caps != 0) {
+    vTaskDeleteWithCaps(NULL);
+  } else {
+    vTaskDelete(NULL);
+  }
 }
 
 static void spawn_commit_task(commit_kind_t kind, const char* driver, const char* model_id) {
@@ -907,12 +975,16 @@ static void spawn_commit_task(commit_kind_t kind, const char* driver, const char
   if (model_id != NULL) {
     strncpy(p->model_id, model_id, sizeof(p->model_id) - 1);
   }
+  /* Both DRIVER and MODEL commits are HTTPS PUTs → PSRAM stack, dodging the
+   * fragmented internal heap. DRIVER's NVS write is deferred to a small
+   * internal task (COMMIT_KIND_PERSIST_DRIVER) so this PUT stays PSRAM-safe. */
+  p->mem_caps = BBCLAW_MALLOC_CAP_PREFER_PSRAM;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(commit_task, "drv_commit",
-                              BB_SETTINGS_FETCH_TASK_STACK, p,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  BaseType_t ok = xTaskCreateWithCaps(commit_task, "drv_commit",
+                                      BB_SETTINGS_FETCH_TASK_STACK, p,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t, p->mem_caps);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_commit_task: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_commit_task: xTaskCreateWithCaps failed (kind=%d)", (int)kind);
     free(p);
   }
 }
@@ -928,12 +1000,14 @@ static void spawn_commit_adapter(const char* home_site_id) {
   }
   p->kind = COMMIT_KIND_ADAPTER;
   strncpy(p->site_id, home_site_id, sizeof(p->site_id) - 1);
+  /* WS sites.activate only (no TLS handshake, no NVS) → PSRAM stack. */
+  p->mem_caps = BBCLAW_MALLOC_CAP_PREFER_PSRAM;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(commit_task, "site_commit",
-                              BB_SETTINGS_FETCH_TASK_STACK, p,
-                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  BaseType_t ok = xTaskCreateWithCaps(commit_task, "site_commit",
+                                      BB_SETTINGS_FETCH_TASK_STACK, p,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t, p->mem_caps);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_commit_adapter: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_commit_adapter: xTaskCreateWithCaps failed");
     free(p);
   }
 }
@@ -951,12 +1025,35 @@ static void spawn_persist_int(commit_kind_t kind, int val) {
   }
   p->kind = kind;
   p->int_val = val;
+  p->mem_caps = 0; /* internal stack — NVS write freezes flash cache */
   TaskHandle_t t = NULL;
   BaseType_t ok = xTaskCreate(commit_task, "set_persist",
-                              BB_SETTINGS_FETCH_TASK_STACK, p,
+                              BB_SETTINGS_PERSIST_TASK_STACK, p,
                               BB_SETTINGS_FETCH_TASK_PRIO, &t);
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_persist_int: xTaskCreate failed");
+    free(p);
+  }
+}
+
+/* NVS tail of a DRIVER commit (active-driver name). Small INTERNAL stack —
+ * the NVS write freezes the flash cache, so it cannot run on a PSRAM stack. */
+static void spawn_persist_driver(const char* driver_name) {
+  if (driver_name == NULL || driver_name[0] == '\0') return;
+  commit_payload_t* p = (commit_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) {
+    ESP_LOGE(TAG, "spawn_persist_driver: calloc failed");
+    return;
+  }
+  p->kind = COMMIT_KIND_PERSIST_DRIVER;
+  strncpy(p->driver_name, driver_name, sizeof(p->driver_name) - 1);
+  p->mem_caps = 0; /* internal stack — NVS write freezes flash cache */
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(commit_task, "drv_nvs",
+                              BB_SETTINGS_PERSIST_TASK_STACK, p,
+                              BB_SETTINGS_FETCH_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_persist_driver: xTaskCreate failed");
     free(p);
   }
 }
@@ -1124,9 +1221,9 @@ void bb_ui_settings_handle_rotate(int delta) {
     default:
       return;
   }
-  int next = s_st.sel + delta;
-  if (next < 0) next = 0;
-  if (next >= row_count) next = row_count - 1;
+  /* Wrap-around: past the bottom loops to the top and vice-versa. delta is
+   * ±1 in practice; the double-mod keeps it correct for any magnitude/sign. */
+  int next = ((s_st.sel + delta) % row_count + row_count) % row_count;
   if (next == s_st.sel) return;
   s_st.sel = next;
   highlight_selected();

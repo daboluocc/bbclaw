@@ -18,7 +18,7 @@ typedef enum {
   BB_LED_PULSE_SUCCESS = 0,   /* 绿色 200ms 常亮：turn 正常结束 */
   BB_LED_PULSE_ERROR,         /* 红色快闪 600ms：事件级错误 */
   BB_LED_PULSE_CELEBRATE,     /* 绿色 1s 常亮：快速响应（<5s），退化为 SUCCESS 色 */
-  BB_LED_PULSE_NOTIFY,        /* 蓝色 400ms 常亮：新通知 */
+  BB_LED_PULSE_NOTIFY,        /* 橙色 400ms 常亮：新通知 */
   BB_LED_PULSE__COUNT,
 } bb_led_pulse_t;
 

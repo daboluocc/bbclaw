@@ -36,8 +36,8 @@ typedef enum {
   APP_MODE_OTA_CONFIRM = 7,
   /* LED preview modes (issue #168): maps to v2 LED states */
   APP_MODE_LED_IDLE = 8,      /* 空闲：绿常亮 */
-  APP_MODE_LED_LISTENING = 9, /* 倾听：蓝常亮 */
-  APP_MODE_LED_THINKING = 10, /* AI 思考：蓝慢闪 */
+  APP_MODE_LED_LISTENING = 9, /* 倾听：橙常亮 */
+  APP_MODE_LED_THINKING = 10, /* AI 思考：橙慢闪 */
   APP_MODE_LED_WORKER = 11,   /* Worker 长任务：红慢闪 */
   APP_MODE_LED_ERROR = 12,    /* 错误/失联：红快闪 */
 } app_mode_t;
@@ -56,9 +56,9 @@ static led_state_t led_state_for_mode(app_mode_t mode) {
     case APP_MODE_LED_WORKER:
       return (led_state_t){255, 0, 0, "SLOW_BLINK", 1000};
     case APP_MODE_LED_THINKING:
-      return (led_state_t){0, 0, 255, "SLOW_BLINK", 1000};
+      return (led_state_t){255, 165, 0, "SLOW_BLINK", 1000};
     case APP_MODE_LED_LISTENING:
-      return (led_state_t){0, 0, 255, "SOLID", 0};
+      return (led_state_t){255, 165, 0, "SOLID", 0};
     case APP_MODE_LED_IDLE:
     default:
       return (led_state_t){0, 255, 0, "SOLID", 0};
@@ -178,8 +178,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
       printf("               [--zoom 3.0] [--timeout-ms 0] [--export PATH]\n");
       printf("\nLED preview modes (v2, issue #168):\n");
       printf("  --mode idle       绿常亮   (空闲/待机)\n");
-      printf("  --mode listening  蓝常亮   (倾听中，PTT 按下)\n");
-      printf("  --mode thinking   蓝慢闪   (AI 思考/生成中)\n");
+      printf("  --mode listening  橙常亮   (倾听中，PTT 按下)\n");
+      printf("  --mode thinking   橙慢闪   (AI 思考/生成中)\n");
       printf("  --mode worker     红慢闪   (Worker 长任务)\n");
       printf("  --mode error      红快闪   (错误/失联)\n");
       exit(0);
