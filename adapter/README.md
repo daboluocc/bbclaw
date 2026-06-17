@@ -70,6 +70,18 @@ phone home).
 Which drivers register depends on your local environment:
 - `claude-code` always tries; needs `claude` CLI on PATH for actual calls
 - `opencode` always tries; needs `opencode` CLI on PATH
+
+> **ADR-031 — serve+SDK backend (opt-in):** set `AGENT_OPENCODE_SERVE=1` to drive
+> opencode through a long-lived `opencode serve` + the official Go SDK instead of
+> spawning `opencode run` per turn and scraping NDJSON. This backend adds native
+> streaming text/thinking deltas, mid-session interrupt, session/message/part
+> history, and provider-driven model listing. Same BYO-install model as `claude`
+> (the user installs `opencode`); the adapter pins a supported version range and
+> verifies it at runtime via `GET /global/health`, refusing an unsupported version
+> rather than misparsing a drifted event schema. Unset, the legacy CLI driver is
+> used (reversible migration). See
+> [ADR-031](../design/decisions/ADR-031-opencode-as-canonical-backend.md).
+> Smoke-test the live path: `OC_SMOKE=1 OC_MODEL=deepseek/deepseek-v4-pro go test ./internal/agent/opencode/ -run Smoke -v`.
 - `openclaw` registers when `OPENCLAW_WS_URL` is set (or `AGENT_OPENCLAW_FORCE=1`)
 - `ollama` registers when `127.0.0.1:11434` is listening (or `AGENT_OLLAMA_FORCE=1`)
 - `aider` registers when `aider` CLI is on PATH (or `AGENT_AIDER_FORCE=1`)

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **opencode serve+SDK 后端（ADR-031，opt-in `AGENT_OPENCODE_SERVE=1`）**:opencode driver
+  新增一条经 `opencode serve`(OpenAPI/官方 Go SDK)驱动的后端,取代「每轮 spawn
+  `opencode run` + scrape NDJSON」。落地能力:`serveManager` 懒启动 + 监管常驻 serve +
+  `/global/health` 版本握手(支持区间 `[1.15, 1.30)`,越界拒绝并提示安装) + 崩溃重启;
+  流式 `EvText`/`EvThinking` delta、`Interrupt`(abort barge-in)、原生 `system` 注入、
+  per-turn model;可选能力 `ModelLister`/`SessionLister`/`MessageLoader`/`PartLoader`/
+  `CLISessionChecker` 全实现。事件流弃用 SDK typed-union、改裸 SSE 读 `/global/event` +
+  按 type/raw-JSON 解(对 SDK 版本滞后免疫)。旧 CLI driver 默认不变,迁移可逆。
+  设备审批 UX 与 butler MCP 派发为 fast-follow。
+  (adapter-only,需 tag 才随发布出二进制)
+
+### Design
+- **ADR-031 — OpenCode 作为 canonical 后端**（草案，方向已定 + 1 个 spike 闸门）:
+  把 adapter 的「每家 CLI 一个 scrape driver」动物园收敛为单一 canonical 后端
+  OpenCode——由它在内部适配 75+ provider，adapter 只对接它一个**带版本的稳定 API**
+  (`opencode serve` OpenAPI 3.1 + 官方 Go SDK)，取代现在「每轮 spawn `opencode run`
+  + scrape NDJSON」的弱 driver。沿用 `claude` 同款 BYO 安装模式（用户自带 opencode、
+  发版约定依赖版本、运行时 `GET /global/health` 握手强制版本区间），**不打包**那个
+  ~106MB 二进制。实测映射证明是净升级（白拿 tool approval / interrupt / 历史回放 /
+  原生 SubtaskPart 派活）。重评 ADR-024 的多-driver 前提，待合并评审。
+  （docs-only，无固件/adapter 二进制改动，不触发 tag）
+
 ## [0.5.15] - 2026-06-17
 
 ### Fixed

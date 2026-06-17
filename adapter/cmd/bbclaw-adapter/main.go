@@ -383,10 +383,18 @@ var k_driver_registry = []driverReg{
 	{
 		name: "opencode",
 		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
-			return opencode.New(opencode.Options{
+			opts := opencode.Options{
 				Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
 				ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
-			}, logger), nil
+			}
+			// ADR-031: opt-in serve+SDK backend (long-lived `opencode serve`,
+			// version handshake, native streaming/interrupt/model-listing).
+			// Falls back to the legacy CLI-scrape driver when unset, so the
+			// migration is reversible ("migrate, don't flip").
+			if strings.TrimSpace(os.Getenv("AGENT_OPENCODE_SERVE")) != "" {
+				return opencode.NewServe(opts, logger), nil
+			}
+			return opencode.New(opts, logger), nil
 		},
 		// ADR-023: gate on the opencode CLI being present (see claude-code above).
 		autoEnable: func(cfg config.Config) bool { _, err := exec.LookPath("opencode"); return err == nil },

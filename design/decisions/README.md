@@ -46,3 +46,6 @@
 | [ADR-026](ADR-026-butler-onboarding.md) | 管家初次见面(onboarding)——确定性注入而非 persona 软指引 | 2026-06-11 | 已接受 |
 | [ADR-027](ADR-027-device-home-adapter-switching.md) | 设备端切换 Home Adapter（切机器）——cloud 组装的设备态选择器 | 2026-06-12 | 提议（待评审） |
 | [ADR-028](ADR-028-conversation-core-v2.md) | Conversation Core v2——Turn 模型 / 全状态打断 / 6 态收敛 / sink 驱动字幕对齐 | 2026-06-13 | 提议（待评审） |
+| [ADR-029](ADR-029-conversation-page-structured-parts.md) | 对话页结构化 parts——thinking / text / tool / dispatch 分段回放 | 2026-06-13 | 已接受 |
+| [ADR-030](ADR-030-device-execution-steps.md) | 设备端执行步骤——display-only step 通道（说主结果、显步骤） | 2026-06-17 | 已接受 |
+| [ADR-031](ADR-031-opencode-as-canonical-backend.md) | OpenCode 作为 canonical 后端——收敛 driver 动物园，serve + SDK 取代 scrape-CLI | 2026-06-17 | 草案（方向已定，1 个 spike 闸门） |
