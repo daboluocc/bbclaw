@@ -1,6 +1,8 @@
-# BBClaw adapter — 配置从文件读入（通过 shell 导出为环境变量，供 Go 的 os.Getenv 使用）
+# BBClaw adapter — 运行时配置以管理页(~/.bbclaw-adapter/settings.json)为准。
+# .env 是可选的一次性 bootstrap 种子：存在则在首次启动时播入 settings.json，
+# 之后由管理页接管；不存在则直接用默认值 + settings.json 启动（ADR-025）。
 #
-#   make run       # 运行 bbclaw-adapter，默认读 $(PWD)/.env
+#   make run       # 运行 bbclaw-adapter（有 .env 就加载为种子，没有也照常跑）
 #
 # 覆盖配置文件路径：
 #   make run ENV_FILE=/path/to/custom.env
@@ -41,7 +43,7 @@ help:
 	@echo "  make sync-env-reset # 同上，但放弃当前 .env，全新生成（自动备份）"
 	@echo "  # 可选：从已有 .env 导入 Volcano ASR 密钥（不会读未指定文件）"
 	@echo "  # make sync-env DOUBAO_ENV=<path-to-other-project-env>"
-	@echo "  make run            # 运行 bbclaw-adapter，配置: $(ENV_FILE)"
+	@echo "  make run            # 运行 bbclaw-adapter（配置以管理页 settings.json 为准；.env 可选种子）"
 	@echo "  make log            # tail -f 运行日志"
 	@echo "  make build          # 构建到 $(BIN_DIR)/bbclaw-adapter"
 	@echo "  make install        # build 后安装到 $(INSTALL_DIR)/$(BIN_NAME)"
@@ -101,11 +103,13 @@ clean-run-procs:
 	fi
 
 run: clean-run-procs
-	@test -f "$(ENV_FILE)" || { echo "missing $(ENV_FILE) — copy from .env.example"; exit 1; }; \
-	mkdir -p "$(LOG_DIR)"; \
-	set -a; \
-	. "$(ENV_FILE)"; \
-	set +a; \
+	@mkdir -p "$(LOG_DIR)"; \
+	if [ -f "$(ENV_FILE)" ]; then \
+		set -a; . "$(ENV_FILE)"; set +a; \
+		echo "config: loaded $(ENV_FILE) (bootstrap seed)"; \
+	else \
+		echo "config: no $(ENV_FILE) — running from defaults + web settings (~/.bbclaw-adapter/settings.json)"; \
+	fi; \
 	echo "=== adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$(LOG_FILE)"; \
 	echo "log: $(LOG_FILE)"; \
 	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter 2>&1 | tee -a "$(LOG_FILE)"
