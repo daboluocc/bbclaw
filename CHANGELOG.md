@@ -16,8 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-turn model;可选能力 `ModelLister`/`SessionLister`/`MessageLoader`/`PartLoader`/
   `CLISessionChecker` 全实现。事件流弃用 SDK typed-union、改裸 SSE 读 `/global/event` +
   按 type/raw-JSON 解(对 SDK 版本滞后免疫)。旧 CLI driver 默认不变,迁移可逆。
-  设备审批 UX 与 butler MCP 派发为 fast-follow。
   (adapter-only,需 tag 才随发布出二进制)
+- **opencode serve 后端的 butler MCP 派发(ADR-031)**:`StartOpts.MCPServers` 经
+  `POST /mcp` 注册到共享 serve(每 server 名幂等一次);butler 调 `bbclaw_dispatch`
+  工具时,router 把 tool 状态流映射成 `EvDispatchStatus`(started→async/done→error,
+  带 cwd/title/elapsedMs/childSessionId),对齐 claudecode 的 `mcp__bbclaw__dispatch`
+  语义;`PartLoader` 历史里的 dispatch 也归 `dispatch` kind。新增 `serve_dispatch.go`
+  + dispatch 识别/解析单测 + MCP 注册 live 测试。设备审批 UX 仍为 fast-follow。
 
 ### Design
 - **ADR-031 — OpenCode 作为 canonical 后端**（草案，方向已定 + 1 个 spike 闸门）:

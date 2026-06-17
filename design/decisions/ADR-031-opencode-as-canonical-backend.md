@@ -100,11 +100,13 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 - 流式 `EvText`/`EvThinking`（delta）、`EvToolCall`（显示）、`EvTokens`、`EvTurnEnd`、`EvError`、`EvInterrupted`。
 - `Interrupt`（abort barge-in）、`Resume`、原生 `system` prompt 注入、per-turn model。
 - 可选能力全实现：`ModelLister`（`/config/providers` 已认证 provider）、`SessionLister`、`CLISessionChecker`、`MessageLoader`、`PartLoader`（thinking/text/tool/dispatch）。
-- 文件：`internal/agent/opencode/serve.go` / `serve_driver.go` / `serve_events.go` / `serve_models.go` / `serve_history.go`；测试 `serve_unit_test.go`（纯逻辑）+ `serve_driver_smoke_test.go`（`OC_SMOKE=1` live）。
+- **butler MCP 派发**（2026-06-17 补齐）：`StartOpts.MCPServers` 经 `POST /mcp` 注册到共享 serve（每个 server 名只注册一次，幂等）；butler 调 `bbclaw_dispatch` 工具时,router 把 tool part 的状态流映射成 `EvDispatchStatus`——`pending/running`→`started`(带 cwd/title)、`completed`→解析 output 的 `{status,taskId,elapsedMs,childSessionId}`(`running`→`async`)、`error`→error phase,完全对齐 claudecode 的 `mcp__bbclaw__dispatch` 语义;`PartLoader` 把历史里的 dispatch tool 也归为 `dispatch` kind。`system` persona 走原生 `system` 字段。
+- 文件：`internal/agent/opencode/serve.go` / `serve_driver.go` / `serve_events.go` / `serve_models.go` / `serve_history.go` / `serve_dispatch.go`；测试 `serve_unit_test.go`（纯逻辑：版本/model/分页/parts/dispatch 识别/dispatch 解析）+ `serve_driver_smoke_test.go`（`OC_SMOKE=1` live：流式 + ModelLister/SessionLister + MCP 注册）。
 
 **fast-follow（未做）：**
 - 设备侧 **tool approval UX**（v1 `ToolApproval:false`，router 自动 approve 任何 permission，行为对齐旧 driver）。
-- **butler MCP 派发**：`system` 已原生注入；MCP server 经 serve 启动注入 + `SubtaskPart`→`DispatchStatus`/`/children` 钻入子会话的完整映射（现 `subtask/agent` 仅粗粒度 `EvDispatchStatus`）。
+- dispatch 子会话 **`/children` 钻入**(`ChildSessionID` 已从 output 解析并带出,admin 页深链钻入的 UI 接线待补)。
+- butler 派发的**端到端 live 验证**需可靠调工具的模型 + 真实 butlermcp server(dev box 的 deepseek 不稳定);现以「注册路径 live + 映射/解析单测」覆盖。
 - 达到上述 parity 后再把 serve 后端设为默认、退役旧 CLI driver。
 
 ## 后果

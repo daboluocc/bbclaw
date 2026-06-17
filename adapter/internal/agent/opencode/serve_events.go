@@ -33,6 +33,8 @@ type serveEvent struct {
 				Status string          `json:"status"`
 				Title  string          `json:"title"`
 				Input  json.RawMessage `json:"input"`
+				Output string          `json:"output"`
+				Error  string          `json:"error"`
 			} `json:"state"`
 			Tokens *struct {
 				Input  int `json:"input"`
@@ -154,9 +156,12 @@ func (d *ServeDriver) dispatchEvent(ctx context.Context, typ, raw string) {
 		}
 		switch pr.Part.Type {
 		case "tool":
-			// Display-only step. Only surface the first observation (pending/
-			// running) to avoid one EvToolCall per state transition.
-			if pr.Part.State.Status == "" || pr.Part.State.Status == "pending" || pr.Part.State.Status == "running" {
+			if d.isDispatchTool(pr.Part.Tool) {
+				d.emitDispatch(s, pr.Part.CallID, pr.Part.State.Status,
+					pr.Part.State.Input, pr.Part.State.Output, pr.Part.State.Error)
+			} else if isToolActive(pr.Part.State.Status) && s.markToolSeen(pr.Part.CallID) {
+				// Display-only step, emitted once (a tool fires pending→running→
+				// completed; we don't want one EvToolCall per transition).
 				s.emit(agent.Event{Type: agent.EvToolCall, Tool: &agent.ToolCall{
 					ID:   agent.ToolID(pr.Part.CallID),
 					Tool: pr.Part.Tool,
@@ -171,9 +176,8 @@ func (d *ServeDriver) dispatchEvent(ctx context.Context, typ, raw string) {
 				}})
 			}
 		case "subtask", "agent":
-			// Butler sub-task dispatch (ADR-024/029). v1: surface as a coarse
-			// dispatch status; richer mapping (child session drill-in) is a
-			// fast-follow once the butler MCP path lands.
+			// Native opencode sub-agent part (distinct from the bbclaw_dispatch
+			// MCP tool). Surface as a coarse running dispatch status.
 			s.emit(agent.Event{Type: agent.EvDispatchStatus, Dispatch: &agent.DispatchStatus{
 				Phase: "running",
 				Title: pr.Part.Tool,

@@ -68,16 +68,18 @@ func TestPageBounds(t *testing.T) {
 }
 
 func TestMapParts(t *testing.T) {
+	d := &ServeDriver{registeredMCP: map[string]bool{"bbclaw": true}, dispatchTools: map[string]bool{"bbclaw_dispatch": true}}
 	parts := []ocMsgPart{
 		{Type: "step-start"},
 		{Type: "reasoning", Text: "thinking..."},
 		{Type: "tool", Tool: "Bash"},
+		{Type: "tool", Tool: "bbclaw_dispatch"}, // butler dispatch → dispatch kind
 		{Type: "text", Text: "hello"},
 		{Type: "step-finish"},
 		{Type: "subtask", Tool: "worker"},
 	}
-	got := mapParts(parts)
-	want := []string{"thinking", "tool", "text", "dispatch"}
+	got := d.mapParts(parts)
+	want := []string{"thinking", "tool", "dispatch", "text", "dispatch"}
 	if len(got) != len(want) {
 		t.Fatalf("mapParts len=%d want=%d (%+v)", len(got), len(want), got)
 	}
@@ -85,5 +87,57 @@ func TestMapParts(t *testing.T) {
 		if got[i].Kind != k {
 			t.Errorf("part[%d].Kind=%q want %q", i, got[i].Kind, k)
 		}
+	}
+}
+
+func TestIsDispatchTool(t *testing.T) {
+	d := &ServeDriver{
+		registeredMCP: map[string]bool{"bbclaw": true},
+		dispatchTools: map[string]bool{"bbclaw_dispatch": true},
+	}
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"bbclaw_dispatch", true}, // exact
+		{"bbclaw*dispatch", true}, // lenient: registered prefix + "dispatch"
+		{"bbclaw_list_projects", false},
+		{"Bash", false},
+		{"other_dispatch", false}, // "dispatch" but no registered prefix
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := d.isDispatchTool(c.name); got != c.want {
+			t.Errorf("isDispatchTool(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestParseDispatchResult(t *testing.T) {
+	// bare JSON object
+	ds := parseDispatchResult("call-1", `{"status":"done","taskId":"T9","elapsedMs":1234,"childSessionId":"ses_x"}`)
+	if ds.Phase != "done" || ds.TaskID != "T9" || ds.ElapsedMs != 1234 || ds.ChildSessionID != "ses_x" {
+		t.Errorf("parseDispatchResult object: %+v", ds)
+	}
+	// running → async; falls back to callID when taskId absent
+	ds = parseDispatchResult("call-2", `{"status":"running"}`)
+	if ds.Phase != "async" || ds.TaskID != "call-2" {
+		t.Errorf("parseDispatchResult running: %+v", ds)
+	}
+	// empty output → default done with callID
+	ds = parseDispatchResult("call-3", "")
+	if ds.Phase != "done" || ds.TaskID != "call-3" {
+		t.Errorf("parseDispatchResult empty: %+v", ds)
+	}
+}
+
+func TestParseDispatchInput(t *testing.T) {
+	cwd, title := parseDispatchInput([]byte(`{"cwd":"/proj","prompt":"fix the bug"}`))
+	if cwd != "/proj" || title != "fix the bug" {
+		t.Errorf("parseDispatchInput new schema: cwd=%q title=%q", cwd, title)
+	}
+	cwd, title = parseDispatchInput([]byte(`{"project":"/legacy","task":"do thing"}`))
+	if cwd != "/legacy" || title != "do thing" {
+		t.Errorf("parseDispatchInput legacy schema: cwd=%q title=%q", cwd, title)
 	}
 }

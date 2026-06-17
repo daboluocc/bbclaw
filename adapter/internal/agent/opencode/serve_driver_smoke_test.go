@@ -98,6 +98,44 @@ func TestServeDriverSmoke(t *testing.T) {
 	}
 }
 
+// TestServeMCPRegistrationSmoke proves the butler dispatch wiring: registering
+// an MCP server via POST /mcp succeeds, GET /mcp lists it, and the implied
+// dispatch tool name is recognized. (The model actually calling the tool needs
+// a tool-reliable model + the real butlermcp server, validated separately.)
+func TestServeMCPRegistrationSmoke(t *testing.T) {
+	if os.Getenv("OC_SMOKE") == "" {
+		t.Skip("set OC_SMOKE=1 to run the live MCP-registration smoke test")
+	}
+	d := NewServe(Options{}, obs.NewLogger())
+	defer d.Shutdown()
+
+	ctx := context.Background()
+	specs := []agent.MCPServerSpec{{
+		Name:    "bbclaw",
+		Command: "true", // benign: registration records config; handshake may fail, that's fine
+		Args:    []string{"mcp-server"},
+		Env:     map[string]string{"BBCLAW_TEST": "1"},
+	}}
+	// POST /mcp accepted (the dummy command will report a failed connection in
+	// the response, but registration itself succeeds — the real butlermcp server
+	// connects). 200 → registerMCPServers returns nil.
+	if err := d.registerMCPServers(ctx, specs); err != nil {
+		t.Fatalf("registerMCPServers: %v", err)
+	}
+	if !d.isDispatchTool("bbclaw_dispatch") {
+		t.Errorf("isDispatchTool(bbclaw_dispatch) = false after registration")
+	}
+	if !d.isDispatchTool("bbclaw*dispatch") {
+		t.Errorf("lenient isDispatchTool(bbclaw*dispatch) = false after registration")
+	}
+
+	// Idempotent: a second registration is a no-op (no duplicate POST).
+	if err := d.registerMCPServers(ctx, specs); err != nil {
+		t.Errorf("second registerMCPServers: %v", err)
+	}
+	t.Logf("MCP registration accepted; dispatch tool 'bbclaw_dispatch' recognized")
+}
+
 func firstN(m []agent.ModelInfo, n int) []string {
 	var out []string
 	for i := 0; i < len(m) && i < n; i++ {

@@ -81,7 +81,7 @@ func (d *ServeDriver) LoadParts(ctx context.Context, sid string, before, limit i
 			Role:      m.Info.Role,
 			Seq:       i,
 			Timestamp: rfc3339Millis(m.Info.Time.Created),
-			Parts:     mapParts(m.Parts),
+			Parts:     d.mapParts(m.Parts),
 		})
 	}
 	return agent.PartsPage{Turns: turns, Total: total, HasMore: lo > 0}, nil
@@ -119,7 +119,7 @@ func flattenText(parts []ocMsgPart) string {
 	return b.String()
 }
 
-func mapParts(parts []ocMsgPart) []agent.Part {
+func (d *ServeDriver) mapParts(parts []ocMsgPart) []agent.Part {
 	out := make([]agent.Part, 0, len(parts))
 	for _, p := range parts {
 		switch p.Type {
@@ -132,7 +132,12 @@ func mapParts(parts []ocMsgPart) []agent.Part {
 				out = append(out, agent.Part{Kind: "thinking", Text: p.Text})
 			}
 		case "tool":
-			out = append(out, agent.Part{Kind: "tool", Tool: p.Tool, Text: p.State.Title})
+			if d.isDispatchTool(p.Tool) {
+				// Butler dispatch call woven inline (ADR-029 §2.4).
+				out = append(out, agent.Part{Kind: "dispatch", Dispatch: &agent.DispatchPart{Title: p.State.Title}})
+			} else {
+				out = append(out, agent.Part{Kind: "tool", Tool: p.Tool, Text: p.State.Title})
+			}
 		case "subtask", "agent":
 			out = append(out, agent.Part{Kind: "dispatch", Dispatch: &agent.DispatchPart{Title: p.Tool}})
 		}
