@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import DriversPanel from "./DriversPanel.vue";
 import ProjectsPanel from "./ProjectsPanel.vue";
 import { getSettings, putSettings } from "../api";
 
-// 「智能体」分类：选哪个 CLI、opencode 用哪种后端、Claude 端点、可派活的项目。
-// 语音、部署在各自分类页，互不混杂。
+// 「智能体」分类，按层级组织：
+//   1. 驱动（Driver 层）——选用哪个 CLI；
+//   2. 当前激活驱动的专属配置——只显示该驱动需要的项（claude 配三方端点、
+//      opencode 选 serve 后端…），不再把所有驱动的配置平铺；
+//   3. 项目白名单——跨驱动，管家可派活的目录。
 const emit = defineEmits<{ (e: "saved"): void }>();
 
 const loaded = ref(false);
@@ -13,8 +16,15 @@ const busy = ref(false);
 const note = ref("");
 const noteErr = ref(false);
 const claudeAdvanced = ref(false);
+const activeDriver = ref("");
 
 const ai = reactive({ anthropic_base_url: "", anthropic_auth_token: "", opencode_serve: false });
+
+// Which driver has its own config card here. Other drivers (ollama/aider/codex/
+// openclaw) carry credentials in their own login state/env — nothing to set.
+const hasDriverConfig = computed(
+  () => activeDriver.value === "claude-code" || activeDriver.value === "opencode",
+);
 
 function setNote(t: string, err: boolean) { note.value = t; noteErr.value = err; }
 
@@ -31,7 +41,7 @@ async function save() {
   busy.value = true;
   try {
     await putSettings({ ai: { ...ai } });
-    setNote("已保存。Claude 端点 / opencode 后端的改动需重启适配器后生效。", false);
+    setNote("已保存。需重启适配器后生效。", false);
     emit("saved");
   } catch (e: any) { setNote("保存失败：" + e.message, true); }
   finally { busy.value = false; }
@@ -41,15 +51,16 @@ onMounted(load);
 </script>
 
 <template>
-  <!-- 驱动单选：切换即时生效，不走重启 -->
-  <DriversPanel />
+  <!-- 1. Driver 层：选用哪个 CLI（切换即时生效，不走重启） -->
+  <DriversPanel @active="activeDriver = $event" />
 
-  <div class="card">
-    <h2>opencode 后端（ADR-031）</h2>
+  <!-- 2. 当前激活驱动的专属配置 -->
+  <div v-if="activeDriver === 'opencode'" class="card">
+    <h2>opencode 配置</h2>
     <p class="hint">
-      开启后，opencode 走常驻 <code>opencode serve</code> + SDK（原生流式、可中断、历史回放、
+      serve 后端：常驻 <code>opencode serve</code> + SDK（原生流式、可中断、历史回放、
       模型/会话列举）；关闭则用旧的「每轮 spawn <code>opencode run</code>」CLI 通路。
-      <b>切换需重启适配器后生效。</b>
+      <b>切换需重启后生效。</b>
     </p>
     <label class="toggle">
       <input type="checkbox" v-model="ai.opencode_serve" />
@@ -57,10 +68,11 @@ onMounted(load);
     </label>
   </div>
 
-  <div class="card">
+  <div v-else-if="activeDriver === 'claude-code'" class="card">
+    <h2>claude 配置</h2>
+    <p class="hint">连官方登录态时这里留空即可；只有走代理 / 兼容端点才需要填。</p>
     <button class="disclose" @click="claudeAdvanced = !claudeAdvanced">
       {{ claudeAdvanced ? "▾" : "▸" }} Claude 代理 / 兼容端点
-      <span class="hint" style="margin:0 0 0 8px">（留空使用默认登录态）</span>
     </button>
     <div v-if="claudeAdvanced" class="subsec">
       <div class="form">
@@ -72,12 +84,18 @@ onMounted(load);
     </div>
   </div>
 
-  <!-- 项目白名单：管家可派活的目录，运行时增删，不走重启 -->
+  <div v-else-if="activeDriver" class="card quiet-card">
+    <p class="hint">
+      <b>{{ activeDriver }}</b> 无需在此额外配置——它的凭证走自身的登录态 / 环境变量。
+    </p>
+  </div>
+
+  <!-- 3. 项目白名单：跨驱动，管家可派活的目录（运行时增删，不走重启） -->
   <ProjectsPanel />
 
-  <div class="card">
+  <div v-if="hasDriverConfig" class="card">
     <div class="save-row">
-      <button :disabled="busy || !loaded" @click="save">保存智能体配置</button>
+      <button :disabled="busy || !loaded" @click="save">保存 {{ activeDriver }} 配置</button>
       <span class="msg" :class="{ err: noteErr, ok: !noteErr }">{{ note }}</span>
     </div>
   </div>

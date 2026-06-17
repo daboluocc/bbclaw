@@ -2,6 +2,10 @@
 import { computed, onMounted, ref } from "vue";
 import { drivers, setActiveDriver, type DriverRow } from "../api";
 
+// Report the active driver up so the parent can show only that driver's
+// settings (Driver is the top layer; per-driver config nests under it).
+const emit = defineEmits<{ (e: "active", name: string): void }>();
+
 const rows = ref<DriverRow[]>([]);
 const activeDriver = ref("");
 const butlerDriver = ref("");
@@ -16,6 +20,7 @@ async function load() {
   rows.value = d.drivers;
   activeDriver.value = d.active_driver;
   butlerDriver.value = d.butler_driver;
+  emit("active", activeDriver.value);
 }
 
 function installed(r: DriverRow): boolean { return r.installed !== false; }
