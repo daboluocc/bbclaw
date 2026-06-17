@@ -41,16 +41,36 @@ const restarting = ref(false);
 // chip lights accent + a red dot, mirroring clawflow web's dashboard banner
 // pattern. Click jumps to 设置 → 设备身份 where the upgrade button lives.
 const version = ref<VersionState>({ current: "", latest: "", update_available: false, updating: false });
-const settingsTab = ref<SettingsTab>("conn");
+
+// The settings sub-tab is mirrored in the URL query (?s=conn|agent|voice) so a
+// refresh / shared link reopens the same sub-page instead of resetting to 连接.
+function settingsTabFromURL(): SettingsTab {
+  const s = new URLSearchParams(window.location.search).get("s");
+  return SETTINGS_TABS.some((t) => t.id === s) ? (s as SettingsTab) : "conn";
+}
+const settingsTab = ref<SettingsTab>(settingsTabFromURL());
+
+// settingsURL builds the settings path carrying the current/next sub-tab.
+function settingsURL(sub: SettingsTab): string { return `/admin/settings?s=${sub}`; }
 
 function setTab(next: Tab) {
   tab.value = next;
-  const path = TABS.find((t) => t.id === next)!.path;
-  if (window.location.pathname !== path) window.history.pushState({}, "", path);
+  const path = next === "settings" ? settingsURL(settingsTab.value) : TABS.find((t) => t.id === next)!.path;
+  if (window.location.pathname + window.location.search !== path) window.history.pushState({}, "", path);
   refreshRestartFlag();
 }
 
-function syncFromHistory() { tab.value = tabFromPath(window.location.pathname); }
+function setSettingsTab(next: SettingsTab) {
+  settingsTab.value = next;
+  // replaceState (not push): sub-tab switches shouldn't pile up history entries,
+  // but the URL still carries the param so a refresh stays put.
+  window.history.replaceState({}, "", settingsURL(next));
+}
+
+function syncFromHistory() {
+  tab.value = tabFromPath(window.location.pathname);
+  if (tab.value === "settings") settingsTab.value = settingsTabFromURL();
+}
 
 async function refreshRestartFlag() {
   try { restartRequired.value = (await getSettings()).restart_required; }
@@ -119,7 +139,7 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
         <button
           v-for="st in SETTINGS_TABS" :key="st.id"
           class="subtab" :class="{ on: settingsTab === st.id }"
-          @click="settingsTab = st.id"
+          @click="setSettingsTab(st.id)"
         >{{ st.label }}</button>
       </nav>
       <SystemPanel v-if="settingsTab === 'conn'" @saved="refreshRestartFlag" />
