@@ -103,8 +103,10 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 - **butler MCP 派发**（2026-06-17 补齐）：`StartOpts.MCPServers` 经 `POST /mcp` 注册到共享 serve（每个 server 名只注册一次，幂等）；butler 调 `bbclaw_dispatch` 工具时,router 把 tool part 的状态流映射成 `EvDispatchStatus`——`pending/running`→`started`(带 cwd/title)、`completed`→解析 output 的 `{status,taskId,elapsedMs,childSessionId}`(`running`→`async`)、`error`→error phase,完全对齐 claudecode 的 `mcp__bbclaw__dispatch` 语义;`PartLoader` 把历史里的 dispatch tool 也归为 `dispatch` kind。`system` persona 走原生 `system` 字段。
 - 文件：`internal/agent/opencode/serve.go` / `serve_driver.go` / `serve_events.go` / `serve_models.go` / `serve_history.go` / `serve_dispatch.go`；测试 `serve_unit_test.go`（纯逻辑：版本/model/分页/parts/dispatch 识别/dispatch 解析）+ `serve_driver_smoke_test.go`（`OC_SMOKE=1` live：流式 + ModelLister/SessionLister + MCP 注册）。
 
+**设备侧 tool approval（2026-06-17 补齐，opt-in `AGENT_OPENCODE_TOOL_APPROVAL=1`）：**
+开启后 `Capabilities.ToolApproval=true`,`permission.asked`→`EvToolCall`(审批请求,ID=permissionID),设备 `Approve()`→`Session.Permissions.Respond`(`once`/`reject`);开启时抑制显示型 tool-part EvToolCall(避免与审批提示重复)。**默认仍关闭**(自动放行)——因为 `ToolApproval` 是 driver 级能力,若全局翻 true,无设备接管的会话(HTTP 直调、headless)会卡在等审批;opt-in 让审批管线完整可测而不冒挂起风险。
+
 **fast-follow（未做）：**
-- 设备侧 **tool approval UX**（v1 `ToolApproval:false`，router 自动 approve 任何 permission，行为对齐旧 driver）。
 - dispatch 子会话 **`/children` 钻入**(`ChildSessionID` 已从 output 解析并带出,admin 页深链钻入的 UI 接线待补)。
 - butler 派发的**端到端 live 验证**需可靠调工具的模型 + 真实 butlermcp server(dev box 的 deepseek 不稳定);现以「注册路径 live + 映射/解析单测」覆盖。
 - 达到上述 parity 后再把 serve 后端设为默认、退役旧 CLI driver。

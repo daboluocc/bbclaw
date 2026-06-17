@@ -41,9 +41,18 @@ type serveEvent struct {
 				Output int `json:"output"`
 			} `json:"tokens"`
 		} `json:"part"`
+		// permission.asked fields may appear at the properties level and/or nested
+		// under "permission" — we read both.
+		Type       string `json:"type"`
+		Title      string `json:"title"`
+		Pattern    string `json:"pattern"`
 		Permission struct {
 			ID        string `json:"id"`
 			SessionID string `json:"sessionID"`
+			Type      string `json:"type"`
+			Title     string `json:"title"`
+			Pattern   string `json:"pattern"`
+			Tool      string `json:"tool"`
 		} `json:"permission"`
 	} `json:"properties"`
 }
@@ -159,9 +168,11 @@ func (d *ServeDriver) dispatchEvent(ctx context.Context, typ, raw string) {
 			if d.isDispatchTool(pr.Part.Tool) {
 				d.emitDispatch(s, pr.Part.CallID, pr.Part.State.Status,
 					pr.Part.State.Input, pr.Part.State.Output, pr.Part.State.Error)
-			} else if isToolActive(pr.Part.State.Status) && s.markToolSeen(pr.Part.CallID) {
+			} else if !d.toolApproval && isToolActive(pr.Part.State.Status) && s.markToolSeen(pr.Part.CallID) {
 				// Display-only step, emitted once (a tool fires pending→running→
 				// completed; we don't want one EvToolCall per transition).
+				// Suppressed when ToolApproval is on: there, EvToolCall means an
+				// approval prompt, and the approval is driven by permission.asked.
 				s.emit(agent.Event{Type: agent.EvToolCall, Tool: &agent.ToolCall{
 					ID:   agent.ToolID(pr.Part.CallID),
 					Tool: pr.Part.Tool,
@@ -185,20 +196,32 @@ func (d *ServeDriver) dispatchEvent(ctx context.Context, typ, raw string) {
 		}
 
 	case "permission.asked", "permission.updated":
-		// v1: ToolApproval=false → auto-approve so a permission-gated serve does
-		// not hang. (Device-side approval UX is a fast-follow.)
 		permID := firstNonEmptyStr(pr.ID, pr.Permission.ID)
-		if permID != "" && sid != "" {
-			d.mu.Lock()
-			client := d.client
-			d.mu.Unlock()
-			if client != nil {
-				_, err := client.Session.Permissions.Respond(ctx, sid, permID, opencode.SessionPermissionRespondParams{
-					Response: opencode.F(opencode.SessionPermissionRespondParamsResponseOnce),
-				})
-				if err != nil {
-					d.log.Warnf("opencode serve: auto-approve permission %s failed: %v", permID, err)
-				}
+		if permID == "" || sid == "" {
+			return
+		}
+		if d.toolApproval {
+			// Approval mode: surface the request to the device as an EvToolCall
+			// (ID = permissionID); the device answers via Approve() → Respond.
+			if s := d.sessionByOC(sid); s != nil && s.markToolSeen(permID) {
+				s.emit(agent.Event{Type: agent.EvToolCall, Tool: &agent.ToolCall{
+					ID:   agent.ToolID(permID),
+					Tool: firstNonEmptyStr(pr.Permission.Tool, pr.Permission.Type, pr.Type, "permission"),
+					Hint: firstNonEmptyStr(pr.Permission.Title, pr.Permission.Pattern, pr.Title, pr.Pattern),
+				}})
+			}
+			return
+		}
+		// Default: auto-approve so a permission-gated serve does not hang when no
+		// device is attached to answer.
+		d.mu.Lock()
+		client := d.client
+		d.mu.Unlock()
+		if client != nil {
+			if _, err := client.Session.Permissions.Respond(ctx, sid, permID, opencode.SessionPermissionRespondParams{
+				Response: opencode.F(opencode.SessionPermissionRespondParamsResponseOnce),
+			}); err != nil {
+				d.log.Warnf("opencode serve: auto-approve permission %s failed: %v", permID, err)
 			}
 		}
 

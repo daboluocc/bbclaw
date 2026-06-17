@@ -1,6 +1,10 @@
 package opencode
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/daboluocc/bbclaw/adapter/internal/agent"
+)
 
 func TestCheckVersion(t *testing.T) {
 	cases := []struct {
@@ -128,6 +132,27 @@ func TestParseDispatchResult(t *testing.T) {
 	ds = parseDispatchResult("call-3", "")
 	if ds.Phase != "done" || ds.TaskID != "call-3" {
 		t.Errorf("parseDispatchResult empty: %+v", ds)
+	}
+}
+
+func TestApprovalGate(t *testing.T) {
+	// Off: Approve is unsupported, Capabilities.ToolApproval false.
+	off := &ServeDriver{toolApproval: false, sessions: map[agent.SessionID]*serveSession{}}
+	if off.Capabilities().ToolApproval {
+		t.Errorf("ToolApproval should be false when gate off")
+	}
+	if err := off.Approve("any", "tid", agent.DecisionOnce); err != agent.ErrUnsupported {
+		t.Errorf("Approve off: got %v, want ErrUnsupported", err)
+	}
+
+	// On: Capabilities.ToolApproval true; Approve on an unknown session returns
+	// ErrUnknownSession (not ErrUnsupported).
+	on := &ServeDriver{toolApproval: true, sessions: map[agent.SessionID]*serveSession{}}
+	if !on.Capabilities().ToolApproval {
+		t.Errorf("ToolApproval should be true when gate on")
+	}
+	if err := on.Approve("nope", "tid", agent.DecisionOnce); err != agent.ErrUnknownSession {
+		t.Errorf("Approve on/unknown: got %v, want ErrUnknownSession", err)
 	}
 }
 

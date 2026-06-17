@@ -17,6 +17,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,12 @@ import (
 type ServeDriver struct {
 	log   *obs.Logger
 	serve *serveManager
+
+	// toolApproval gates device-side tool approval (AGENT_OPENCODE_TOOL_APPROVAL).
+	// When true: permission.asked surfaces as an approval EvToolCall the device
+	// answers via Approve(); when false (default): permissions auto-approve so
+	// device-less sessions never hang.
+	toolApproval bool
 
 	mu            sync.Mutex
 	client        *opencode.Client
@@ -61,6 +68,7 @@ func NewServe(opts Options, log *obs.Logger) *ServeDriver {
 	d := &ServeDriver{
 		log:           log,
 		serve:         newServeManager(opts.Bin, log),
+		toolApproval:  toolApprovalEnabled(),
 		sessions:      make(map[agent.SessionID]*serveSession),
 		byOC:          make(map[string]*serveSession),
 		registeredMCP: make(map[string]bool),
@@ -74,10 +82,9 @@ func (d *ServeDriver) Name() string { return driverName }
 
 func (d *ServeDriver) Capabilities() agent.Capabilities {
 	return agent.Capabilities{
-		// v1: tool steps are display-only; permission prompts are auto-approved
-		// in the router (matches legacy opencode behaviour). Device-side approval
-		// UX is a fast-follow.
-		ToolApproval:  false,
+		// ToolApproval is opt-in (AGENT_OPENCODE_TOOL_APPROVAL): on → permission
+		// requests are surfaced to the device; off → auto-approved in the router.
+		ToolApproval:  d.toolApproval,
 		Resume:        true,
 		Streaming:     true,
 		MaxInputBytes: 64 * 1024,
@@ -216,10 +223,37 @@ func (d *ServeDriver) Send(sid agent.SessionID, text string) (sendErr error) {
 	return nil
 }
 
-// Approve is unsupported in v1 (ToolApproval=false). Permission requests are
-// auto-approved in the router.
+// Approve answers a tool-approval prompt (tid == the opencode permissionID
+// surfaced as the EvToolCall ID). Only meaningful when ToolApproval is on;
+// otherwise permissions are auto-approved in the router and this returns
+// ErrUnsupported.
 func (d *ServeDriver) Approve(sid agent.SessionID, tid agent.ToolID, dec agent.Decision) error {
-	return agent.ErrUnsupported
+	if !d.toolApproval {
+		return agent.ErrUnsupported
+	}
+	d.mu.Lock()
+	s, ok := d.sessions[sid]
+	client := d.client
+	d.mu.Unlock()
+	if !ok {
+		return agent.ErrUnknownSession
+	}
+	resp := opencode.SessionPermissionRespondParamsResponseOnce
+	if dec == agent.DecisionDeny {
+		resp = opencode.SessionPermissionRespondParamsResponseReject
+	}
+	_, err := client.Session.Permissions.Respond(d.rootCtx, s.ocID, string(tid),
+		opencode.SessionPermissionRespondParams{Response: opencode.F(resp)})
+	if err != nil {
+		return fmt.Errorf("opencode serve: respond permission %s: %w", tid, err)
+	}
+	return nil
+}
+
+// toolApprovalEnabled reports whether device tool-approval is opted in.
+func toolApprovalEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("AGENT_OPENCODE_TOOL_APPROVAL"))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // UpdateModel implements agent.ModelUpdater — applies on the next turn.
