@@ -82,7 +82,7 @@ export interface TtsSettings {
 export interface Settings {
   version?: number;
   topology: { cloud_relay_enabled: boolean; local_voice_enabled: boolean };
-  ai: { anthropic_base_url: string; anthropic_auth_token: string };
+  ai: { anthropic_base_url: string; anthropic_auth_token: string; opencode_serve?: boolean };
   voice: { asr: AsrSettings; tts: TtsSettings; save_audio: boolean; save_input_on_finish: boolean };
   cloud: { ws_url: string; auth_token: string; home_site_id: string };
   openclaw: { ws_url: string; auth_token: string; node_id: string };

@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   语义;`PartLoader` 历史里的 dispatch 也归 `dispatch` kind。新增 `serve_dispatch.go`
   + dispatch 识别/解析单测 + MCP 注册 live 测试。设备审批 UX 仍为 fast-follow。
 
+- **opencode serve 开关上管理页（ADR-031 / ADR-025）**:把 `AGENT_OPENCODE_SERVE` env 开关
+  收敛为持久化设置 `ai.opencode_serve`(settings.json)——admin「AI 配置」页一个勾选框,保存后
+  重启生效。`config.OpencodeServeEnabled()` web override 优先、回落 env(env 转为首次 bootstrap
+  种子)。沿用 `CloudRelayOverride` 同款「web 设置覆盖 env」链路(settingsstore FromConfig/ApplyTo)。
+
 ### Design
 - **ADR-031 — OpenCode 作为 canonical 后端**（草案，方向已定 + 1 个 spike 闸门）:
   把 adapter 的「每家 CLI 一个 scrape driver」动物园收敛为单一 canonical 后端

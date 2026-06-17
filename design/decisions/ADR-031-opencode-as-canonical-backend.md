@@ -95,7 +95,9 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 2. **`/global/event` 把事件包在 `{directory, project, payload:{...}}` 信封里**（`/event` 不包）。router 解包 `payload` 后再按 type 分发。
 3. SDK v0.19.2 落后 server 1.15.1（server 推 `message.part.delta`，SDK 没建模）→ 事件流**完全弃用 SDK 的 typed union,改裸 SSE 读 + 按 type 字符串/raw JSON 解**（SDK 只用于 session 生命周期、prompt、abort、permission 等请求/响应）。
 
-**已落地（opt-in `AGENT_OPENCODE_SERVE=1`，旧 CLI driver 不动）：**
+**开关已上管理页（2026-06-17，ADR-025 风格）：** serve 后端的开关从纯 env 收敛为持久化设置 `ai.opencode_serve`(settings.json)——admin「AI 配置」页一个勾选框,保存后重启生效。`config.OpencodeServeEnabled()` 优先取 web override,回落到 `AGENT_OPENCODE_SERVE` env(env 此后只作首次 bootstrap 种子,与其它配置一致)。`construct` 在 `buildSettingsStore`(应用 override)之后、`buildAgentRouter` 之前读它,故 web 设置即时参与 driver 构建。
+
+**已落地（开关:管理页 `ai.opencode_serve` / env `AGENT_OPENCODE_SERVE`,旧 CLI driver 不动）：**
 - `serveManager`：懒启动 + 监管常驻 `opencode serve`，`/global/health` 版本握手（支持区间 `[1.15, 1.30)`，越界拒绝并提示安装），崩溃自动重启。
 - 流式 `EvText`/`EvThinking`（delta）、`EvToolCall`（显示）、`EvTokens`、`EvTurnEnd`、`EvError`、`EvInterrupted`。
 - `Interrupt`（abort barge-in）、`Resume`、原生 `system` prompt 注入、per-turn model。

@@ -390,11 +390,12 @@ var k_driver_registry = []driverReg{
 				// (cloud_saas channel). Empty → serve inherits the adapter env.
 				ProviderEnv: parseEnvMap(os.Getenv("AGENT_OPENCODE_PROVIDER_ENV")),
 			}
-			// ADR-031: opt-in serve+SDK backend (long-lived `opencode serve`,
-			// version handshake, native streaming/interrupt/model-listing).
-			// Falls back to the legacy CLI-scrape driver when unset, so the
-			// migration is reversible ("migrate, don't flip").
-			if strings.TrimSpace(os.Getenv("AGENT_OPENCODE_SERVE")) != "" {
+			// ADR-031: serve+SDK backend (long-lived `opencode serve`, version
+			// handshake, native streaming/interrupt/model-listing). Toggled from
+			// the admin page (ai.opencode_serve, settings.json) or the
+			// AGENT_OPENCODE_SERVE env; falls back to the legacy CLI-scrape driver
+			// when off, so the migration is reversible ("migrate, don't flip").
+			if cfg.OpencodeServeEnabled() {
 				return opencode.NewServe(opts, logger), nil
 			}
 			return opencode.New(opts, logger), nil

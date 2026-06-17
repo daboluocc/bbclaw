@@ -31,7 +31,7 @@ const claudeAdvanced = ref(false);
 const asrAdvanced = ref(false);
 const ttsAdvanced = ref(false);
 
-const ai = reactive({ anthropic_base_url: "", anthropic_auth_token: "" });
+const ai = reactive({ anthropic_base_url: "", anthropic_auth_token: "", opencode_serve: false });
 const asr = reactive<AsrSettings>({
   provider: "openai_compatible", base_url: "", ws_url: "", app_id: "", api_key: "",
   resource_id: "", model: "", language: "", local_bin: "", local_args: "", local_text_path: "",
@@ -108,6 +108,19 @@ onMounted(load);
 <template>
   <!-- 驱动单选：切换即时生效，不走重启 -->
   <DriversPanel />
+
+  <div class="card">
+    <h2>opencode 后端（ADR-031）</h2>
+    <p class="hint">
+      开启后，opencode 走常驻 <code>opencode serve</code> + SDK（原生流式、可中断、历史回放、
+      模型/会话列举）；关闭则用旧的「每轮 spawn <code>opencode run</code>」CLI 通路。
+      <b>切换需重启适配器后生效。</b>
+    </p>
+    <label class="toggle">
+      <input type="checkbox" v-model="ai.opencode_serve" />
+      <span class="tl">使用 serve + SDK 后端</span>
+    </label>
+  </div>
 
   <div class="card">
     <button class="disclose" @click="claudeAdvanced = !claudeAdvanced">

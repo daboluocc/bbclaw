@@ -28,6 +28,12 @@ type Config struct {
 	// explicit ADAPTER_MODE=local/cloud env escape hatch. nil = env-only.
 	CloudRelayOverride *bool
 
+	// OpencodeServeOverride, when non-nil, is the web-settings toggle
+	// (settings.json ai.opencode_serve, ADR-031) selecting the opencode serve+SDK
+	// backend over the legacy CLI-scrape driver. Overrides the AGENT_OPENCODE_SERVE
+	// env. nil = env-only.
+	OpencodeServeOverride *bool
+
 	// LocalVoiceEnabled gates the LAN ASR/TTS pipeline (ADR-025 §3). When false
 	// the local HTTP ingress still serves the admin page + agent proxy, but no
 	// ASR/TTS provider is constructed and voice config is not validated — the
@@ -148,6 +154,20 @@ func (c Config) EnableCloudRelay() bool {
 		}
 		return c.cloudConfigured()
 	}
+}
+
+// OpencodeServeEnabled reports whether the opencode driver should use the
+// serve+SDK backend (ADR-031). The web-settings override wins; otherwise the
+// AGENT_OPENCODE_SERVE env is read as truthy (1/true/yes/on).
+func (c Config) OpencodeServeEnabled() bool {
+	if c.OpencodeServeOverride != nil {
+		return *c.OpencodeServeOverride
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_OPENCODE_SERVE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func LoadFromEnv() (Config, error) {

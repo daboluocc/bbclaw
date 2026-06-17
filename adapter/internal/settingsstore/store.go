@@ -68,6 +68,9 @@ type TopologySettings struct {
 type AISettings struct {
 	AnthropicBaseURL   string `json:"anthropic_base_url"`
 	AnthropicAuthToken string `json:"anthropic_auth_token"`
+	// OpencodeServe selects the opencode serve+SDK backend over the legacy
+	// CLI-scrape driver (ADR-031). Replaces the AGENT_OPENCODE_SERVE env.
+	OpencodeServe bool `json:"opencode_serve"`
 }
 
 // ASRSettings mirrors the ASR_* env knobs.
@@ -135,6 +138,7 @@ func FromConfig(cfg config.Config) Settings {
 		AI: AISettings{
 			AnthropicBaseURL:   cfg.ClaudeBaseURL,
 			AnthropicAuthToken: cfg.ClaudeAuthToken,
+			OpencodeServe:      cfg.OpencodeServeEnabled(),
 		},
 		Voice: VoiceSettings{
 			ASR: ASRSettings{
@@ -188,6 +192,9 @@ func (s Settings) ApplyTo(cfg *config.Config) {
 
 	cfg.ClaudeBaseURL = strings.TrimSpace(s.AI.AnthropicBaseURL)
 	cfg.ClaudeAuthToken = strings.TrimSpace(s.AI.AnthropicAuthToken)
+
+	opencodeServe := s.AI.OpencodeServe
+	cfg.OpencodeServeOverride = &opencodeServe
 
 	cfg.ASRProvider = s.Voice.ASR.Provider
 	cfg.ASRBaseURL = strings.TrimSpace(s.Voice.ASR.BaseURL)

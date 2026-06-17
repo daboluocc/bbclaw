@@ -342,15 +342,15 @@ func TestGetEnvDuration(t *testing.T) {
 		fallback time.Duration
 		want     time.Duration
 	}{
-		{"", 5 * time.Minute, 5 * time.Minute},           // empty → fallback
-		{"5m", 0, 5 * time.Minute},                       // Go duration
-		{"24h", 0, 24 * time.Hour},                       // hours
-		{"7d", 0, 7 * 24 * time.Hour},                    // days shorthand
-		{"1d", 0, 24 * time.Hour},                        // 1 day
-		{"30s", 0, 30 * time.Second},                     // seconds
-		{"invalid", 3 * time.Minute, 3 * time.Minute},    // invalid → fallback
-		{"0d", 5 * time.Minute, 5 * time.Minute},         // 0d → fallback (n must be > 0)
-		{"-1d", 5 * time.Minute, 5 * time.Minute},        // negative day → fallback
+		{"", 5 * time.Minute, 5 * time.Minute},        // empty → fallback
+		{"5m", 0, 5 * time.Minute},                    // Go duration
+		{"24h", 0, 24 * time.Hour},                    // hours
+		{"7d", 0, 7 * 24 * time.Hour},                 // days shorthand
+		{"1d", 0, 24 * time.Hour},                     // 1 day
+		{"30s", 0, 30 * time.Second},                  // seconds
+		{"invalid", 3 * time.Minute, 3 * time.Minute}, // invalid → fallback
+		{"0d", 5 * time.Minute, 5 * time.Minute},      // 0d → fallback (n must be > 0)
+		{"-1d", 5 * time.Minute, 5 * time.Minute},     // negative day → fallback
 	}
 	for _, tt := range tests {
 		t.Run(tt.envVal, func(t *testing.T) {
@@ -365,5 +365,33 @@ func TestGetEnvDuration(t *testing.T) {
 				t.Errorf("getEnvDuration(%q, %v) = %v, want %v", tt.envVal, tt.fallback, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOpencodeServeEnabled(t *testing.T) {
+	t.Setenv("AGENT_OPENCODE_SERVE", "")
+	// env truthy values
+	for _, v := range []string{"1", "true", "TRUE", "yes", "on"} {
+		t.Setenv("AGENT_OPENCODE_SERVE", v)
+		if !(Config{}).OpencodeServeEnabled() {
+			t.Errorf("env %q should enable", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "off", "nope"} {
+		t.Setenv("AGENT_OPENCODE_SERVE", v)
+		if (Config{}).OpencodeServeEnabled() {
+			t.Errorf("env %q should NOT enable", v)
+		}
+	}
+	// web override wins over env
+	t.Setenv("AGENT_OPENCODE_SERVE", "1")
+	off := false
+	if (Config{OpencodeServeOverride: &off}).OpencodeServeEnabled() {
+		t.Errorf("override=false should win over env=1")
+	}
+	t.Setenv("AGENT_OPENCODE_SERVE", "0")
+	on := true
+	if !(Config{OpencodeServeOverride: &on}).OpencodeServeEnabled() {
+		t.Errorf("override=true should win over env=0")
 	}
 }
