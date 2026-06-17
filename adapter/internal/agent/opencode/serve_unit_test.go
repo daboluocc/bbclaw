@@ -136,6 +136,54 @@ func TestParseDispatchResult(t *testing.T) {
 	}
 }
 
+func TestBuildServeEnv(t *testing.T) {
+	base := []string{"PATH=/bin", "ANTHROPIC_API_KEY=inherited"}
+	out := buildServeEnv(base, "CFG", map[string]string{"ANTHROPIC_API_KEY": "scoped", "DEEPSEEK_API_KEY": "dk"})
+	// base preserved
+	if out[0] != "PATH=/bin" {
+		t.Errorf("base not preserved: %v", out)
+	}
+	// config content appended
+	if !containsStr(out, "OPENCODE_CONFIG_CONTENT=CFG") {
+		t.Errorf("config content missing: %v", out)
+	}
+	// providerEnv appended after inherited → overrides (last value wins in exec)
+	last := map[string]string{}
+	for _, kv := range out {
+		if k, v, ok := cut(kv); ok {
+			last[k] = v
+		}
+	}
+	if last["ANTHROPIC_API_KEY"] != "scoped" {
+		t.Errorf("providerEnv should override inherited: got %q", last["ANTHROPIC_API_KEY"])
+	}
+	if last["DEEPSEEK_API_KEY"] != "dk" {
+		t.Errorf("providerEnv DEEPSEEK missing: %v", last)
+	}
+	// empty config + nil providerEnv → just base
+	if got := buildServeEnv(base, "", nil); len(got) != len(base) {
+		t.Errorf("empty extras should equal base: %v", got)
+	}
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func cut(kv string) (k, v string, ok bool) {
+	for i := 0; i < len(kv); i++ {
+		if kv[i] == '=' {
+			return kv[:i], kv[i+1:], true
+		}
+	}
+	return kv, "", false
+}
+
 func TestRespawnBackoff(t *testing.T) {
 	cases := []struct {
 		failures int

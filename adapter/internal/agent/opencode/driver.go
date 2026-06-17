@@ -34,10 +34,10 @@ import (
 )
 
 const (
-	driverName    = "opencode"
-	defaultBin    = "opencode"
+	driverName     = "opencode"
+	defaultBin     = "opencode"
 	defaultTimeout = 5 * time.Minute
-	eventBufSize  = 64
+	eventBufSize   = 64
 )
 
 // Driver is the opencode AgentDriver implementation.
@@ -63,6 +63,12 @@ type Options struct {
 	ExtraArgs []string
 	// Timeout is the per-turn deadline. Zero means defaultTimeout (5 min).
 	Timeout time.Duration
+	// ProviderEnv (serve backend only, ADR-031 P1-3) injects extra environment
+	// into the `opencode serve` process on top of the inherited os.Environ —
+	// the scoped path for cloud_saas to hand the adapter provider credentials
+	// (e.g. ANTHROPIC_API_KEY, DEEPSEEK_API_KEY) without putting them in the
+	// adapter's global process env. Keys here override inherited ones.
+	ProviderEnv map[string]string
 }
 
 // New constructs a Driver. The logger is required.
@@ -341,13 +347,13 @@ type opencodeEvent struct {
 }
 
 type opencodePart struct {
-	Type    string      `json:"type"`
-	Text    string      `json:"text,omitempty"`
-	Tool    string      `json:"tool,omitempty"`
-	CallID  string      `json:"callID,omitempty"`
-	Reason  string      `json:"reason,omitempty"`
-	State   *toolState  `json:"state,omitempty"`
-	Tokens  *tokenUsage `json:"tokens,omitempty"`
+	Type   string      `json:"type"`
+	Text   string      `json:"text,omitempty"`
+	Tool   string      `json:"tool,omitempty"`
+	CallID string      `json:"callID,omitempty"`
+	Reason string      `json:"reason,omitempty"`
+	State  *toolState  `json:"state,omitempty"`
+	Tokens *tokenUsage `json:"tokens,omitempty"`
 }
 
 type toolState struct {

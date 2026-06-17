@@ -45,6 +45,10 @@ type serveManager struct {
 	// serve process (butler MCP servers + instructions). Set before first start.
 	configContent string
 
+	// providerEnv is merged onto os.Environ for the serve process (ADR-031 P1-3):
+	// the scoped channel for provider credentials. Set before first start.
+	providerEnv map[string]string
+
 	mu         sync.Mutex
 	started    bool
 	baseURL    string
@@ -98,10 +102,7 @@ func (m *serveManager) ensure(ctx context.Context) (string, error) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	cmd := exec.Command(m.bin, "serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port))
-	cmd.Env = os.Environ()
-	if m.configContent != "" {
-		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+m.configContent)
-	}
+	cmd.Env = buildServeEnv(os.Environ(), m.configContent, m.providerEnv)
 	cmd.Stdout = serveLogWriter{m.log, "stdout"}
 	cmd.Stderr = serveLogWriter{m.log, "stderr"}
 	if err := cmd.Start(); err != nil {
@@ -186,6 +187,23 @@ func (m *serveManager) stop() {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+// buildServeEnv assembles the serve process environment: the inherited base,
+// plus OPENCODE_CONFIG_CONTENT (butler config) and provider credentials. Later
+// entries override earlier ones (Go exec keeps the last value per key), so
+// providerEnv and configContent take precedence over inherited values.
+func buildServeEnv(base []string, configContent string, providerEnv map[string]string) []string {
+	out := append([]string(nil), base...)
+	if configContent != "" {
+		out = append(out, "OPENCODE_CONFIG_CONTENT="+configContent)
+	}
+	for k, v := range providerEnv {
+		if k != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
+}
 
 func freeTCPPort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")

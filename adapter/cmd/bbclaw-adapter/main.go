@@ -386,6 +386,9 @@ var k_driver_registry = []driverReg{
 			opts := opencode.Options{
 				Bin:       os.Getenv("AGENT_OPENCODE_BIN"),
 				ExtraArgs: parseArgList(os.Getenv("AGENT_OPENCODE_EXTRA_ARGS")),
+				// ADR-031 P1-3: scoped provider creds for the serve process
+				// (cloud_saas channel). Empty → serve inherits the adapter env.
+				ProviderEnv: parseEnvMap(os.Getenv("AGENT_OPENCODE_PROVIDER_ENV")),
 			}
 			// ADR-031: opt-in serve+SDK backend (long-lived `opencode serve`,
 			// version handshake, native streaming/interrupt/model-listing).
@@ -738,6 +741,30 @@ func parseArgList(raw string) []string {
 			continue
 		}
 		out = append(out, part)
+	}
+	return out
+}
+
+// parseEnvMap parses a "KEY=VALUE,KEY2=VALUE2" list into a map. Used for
+// AGENT_OPENCODE_PROVIDER_ENV (ADR-031 P1-3). Entries without '=' are skipped.
+// Values may themselves contain '=' (only the first splits).
+func parseEnvMap(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		k, v, ok := strings.Cut(part, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

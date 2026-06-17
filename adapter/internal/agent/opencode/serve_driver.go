@@ -74,6 +74,9 @@ func NewServe(opts Options, log *obs.Logger) *ServeDriver {
 		registeredMCP: make(map[string]bool),
 		dispatchTools: make(map[string]bool),
 	}
+	if len(opts.ProviderEnv) > 0 {
+		d.serve.providerEnv = opts.ProviderEnv
+	}
 	d.rootCtx, d.rootCancel = context.WithCancel(context.Background())
 	return d
 }

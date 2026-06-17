@@ -106,6 +106,9 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 **设备侧 tool approval（2026-06-17 补齐，opt-in `AGENT_OPENCODE_TOOL_APPROVAL=1`）：**
 开启后 `Capabilities.ToolApproval=true`,`permission.asked`→`EvToolCall`(审批请求,ID=permissionID),设备 `Approve()`→`Session.Permissions.Respond`(`once`/`reject`);开启时抑制显示型 tool-part EvToolCall(避免与审批提示重复)。**默认仍关闭**(自动放行)——因为 `ToolApproval` 是 driver 级能力,若全局翻 true,无设备接管的会话(HTTP 直调、headless)会卡在等审批;opt-in 让审批管线完整可测而不冒挂起风险。
 
+**provider 凭证注入（2026-06-17，P1-3 adapter 侧）：**
+`opencode serve` 进程继承 adapter 的 `os.Environ()`,所以 admin/env 里配好的 provider key(`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`/…)**已自动流到 serve**——和 claude driver 拿 `ANTHROPIC_AUTH_TOKEN` 同一机制。额外提供 scoped 注入点 `Options.ProviderEnv`(经 `AGENT_OPENCODE_PROVIDER_ENV="K=V,K2=V2"`),用于 cloud_saas 下发**不进全局 env**的凭证(`buildServeEnv` 合并,provider 值覆盖继承值)。**cloud 侧**(把用户在云端配的 key 下发给 adapter)在 bbclaw-reference 私仓,属跨仓契约,不在本仓范围。
+
 **fast-follow（未做）：**
 - dispatch 子会话 **`/children` 钻入**(`ChildSessionID` 已从 output 解析并带出,admin 页深链钻入的 UI 接线待补)。
 - butler 派发的**端到端 live 验证**需可靠调工具的模型 + 真实 butlermcp server(dev box 的 deepseek 不稳定);现以「注册路径 live + 映射/解析单测」覆盖。
