@@ -1,12 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import StatusBar from "./StatusBar.vue";
 import { getSettings, putSettings, getAdapterVersion, triggerAdapterUpdate, type VersionState } from "../api";
 
-const emit = defineEmits<{
-  (e: "saved"): void;
-  (e: "modeChanged", localVoice: boolean): void;
-}>();
+const emit = defineEmits<{ (e: "saved"): void }>();
 
 const loaded = ref(false);
 const busy = ref(false);
@@ -22,7 +19,6 @@ const mode = ref<"cloud" | "local">("cloud");
 // The OpenClaw gateway is a driver-level concern (it shows up under 驱动 like
 // claude/codex), so it's no longer a config section here.
 const cloud = reactive({ ws_url: "", auth_token: "", home_site_id: "" });
-const audio = reactive({ save_audio: false, save_input_on_finish: true });
 // Read-only, system-generated identity surfaced for reference (not editable).
 const derived = reactive({ home_site_id: "", version: "" });
 
@@ -99,10 +95,7 @@ async function load() {
     const state = await getSettings();
     const { settings } = state;
     Object.assign(cloud, settings.cloud);
-    audio.save_audio = settings.voice.save_audio;
-    audio.save_input_on_finish = settings.voice.save_input_on_finish;
     mode.value = settings.topology.local_voice_enabled ? "local" : "cloud";
-    emit("modeChanged", mode.value === "local");
     derived.home_site_id = state.derived?.home_site_id ?? "";
     derived.version = state.derived?.version ?? "";
     loaded.value = true;
@@ -116,13 +109,9 @@ async function save() {
     const topology = mode.value === "local"
       ? { cloud_relay_enabled: false, local_voice_enabled: true }
       : { cloud_relay_enabled: true, local_voice_enabled: false };
-    const res = await putSettings({
-      topology,
-      cloud: { ...cloud },
-      voice: { save_audio: audio.save_audio, save_input_on_finish: audio.save_input_on_finish },
-    });
-    if (mode.value === "local" && res.voice_incomplete)
-      setNote("已保存。但 ASR/TTS 还没填完整 → 在本页下方「语音（ASR / TTS）」填好后语音才可用。", true);
+    await putSettings({ topology, cloud: { ...cloud } });
+    if (mode.value === "local")
+      setNote("已保存。本地语音的 ASR / TTS 在「语音」分类页填写。重启适配器后生效。", false);
     else
       setNote("已保存。重启适配器后生效。", false);
     emit("saved");
@@ -137,7 +126,6 @@ onMounted(() => {
   // for a verbose retry if they suspect something's off.
   checkVersion(false);
 });
-watch(mode, (next) => emit("modeChanged", next === "local"));
 </script>
 
 <template>
@@ -198,40 +186,24 @@ watch(mode, (next) => emit("modeChanged", next === "local"));
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" v-if="mode === 'cloud'">
     <button class="disclose" @click="advanced = !advanced">
-      {{ advanced ? "▾" : "▸" }} 高级设置<span class="hint" style="margin:0 0 0 8px">（一般不用动）</span>
+      {{ advanced ? "▾" : "▸" }} 高级：自建云 relay<span class="hint" style="margin:0 0 0 8px">（一般不用动）</span>
     </button>
-
-    <div v-if="advanced">
-      <div class="subsec" v-if="mode === 'cloud'">
-        <div class="lbl">自建云 relay</div>
-        <p class="hint" style="margin:0 0 10px">默认指向生产云，开箱即用；只有自建云端时才需要改。</p>
-        <div class="form">
-          <div class="field"><label>云端 WS 地址</label>
-            <input type="text" v-model="cloud.ws_url" placeholder="wss://bbclaw.daboluo.cc/ws" /></div>
-          <div class="field"><label>Auth Token</label>
-            <input type="text" v-model="cloud.auth_token" placeholder="云端关闭匿名接入时才需要" /></div>
-        </div>
-      </div>
-
-      <div class="subsec" v-if="mode === 'local'">
-        <div class="lbl">音频留存</div>
-        <label class="toggle">
-          <input type="checkbox" v-model="audio.save_input_on_finish" />
-          <div><div class="tl">保存输入音频</div><div class="td">每次语音结束把识别用 PCM 落盘，便于排障。</div></div>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" v-model="audio.save_audio" />
-          <div><div class="tl">保存合成音频</div><div class="td">额外保存 TTS 合成结果。</div></div>
-        </label>
+    <div v-if="advanced" class="subsec">
+      <p class="hint" style="margin:0 0 10px">默认指向生产云，开箱即用；只有自建云端时才需要改。</p>
+      <div class="form">
+        <div class="field"><label>云端 WS 地址</label>
+          <input type="text" v-model="cloud.ws_url" placeholder="wss://bbclaw.daboluo.cc/ws" /></div>
+        <div class="field"><label>Auth Token</label>
+          <input type="text" v-model="cloud.auth_token" placeholder="云端关闭匿名接入时才需要" /></div>
       </div>
     </div>
   </div>
 
   <div class="card">
     <div class="save-row">
-      <button :disabled="busy || !loaded" @click="save">保存</button>
+      <button :disabled="busy || !loaded" @click="save">保存连接配置</button>
       <span class="msg" :class="{ err: noteErr, ok: !noteErr }">{{ note }}</span>
     </div>
   </div>

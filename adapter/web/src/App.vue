@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import SystemPanel from "./components/SystemPanel.vue";
-import AiPanel from "./components/AiPanel.vue";
+import AgentPanel from "./components/AgentPanel.vue";
+import VoicePanel from "./components/VoicePanel.vue";
 import FilesPanel from "./components/FilesPanel.vue";
 import Conversation from "./components/Conversation.vue";
 import LogsPanel from "./components/LogsPanel.vue";
 import { getSettings, restartAdapter, getAdapterVersion, type VersionState } from "./api";
 
 type Tab = "convo" | "settings" | "logs" | "files";
+// 「设置」二级分类（ADR-031/ADR-025 重整）：连接 / 智能体 / 语音。
+type SettingsTab = "conn" | "agent" | "voice";
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "conn", label: "连接" },
+  { id: "agent", label: "智能体" },
+  { id: "voice", label: "语音" },
+];
 
 const TABS: { id: Tab; label: string; path: string }[] = [
   { id: "convo", label: "个人对话", path: "/admin/conversations" },
@@ -33,10 +41,7 @@ const restarting = ref(false);
 // chip lights accent + a red dot, mirroring clawflow web's dashboard banner
 // pattern. Click jumps to 设置 → 设备身份 where the upgrade button lives.
 const version = ref<VersionState>({ current: "", latest: "", update_available: false, updating: false });
-// 部署模式（系统配置）保存后 bump 这个 key，重挂 AI 面板，让它重新读取 cloud/local
-// 并据此刷新下方 ASR/TTS 区是否显示。
-const aiReloadKey = ref(0);
-const localVoicePreview = ref<boolean | null>(null);
+const settingsTab = ref<SettingsTab>("conn");
 
 function setTab(next: Tab) {
   tab.value = next;
@@ -46,9 +51,6 @@ function setTab(next: Tab) {
 }
 
 function syncFromHistory() { tab.value = tabFromPath(window.location.pathname); }
-
-function onSystemSaved() { aiReloadKey.value++; refreshRestartFlag(); }
-function onSystemModeChanged(localVoice: boolean) { localVoicePreview.value = localVoice; }
 
 async function refreshRestartFlag() {
   try { restartRequired.value = (await getSettings()).restart_required; }
@@ -113,8 +115,16 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
   <main>
     <Conversation v-if="tab === 'convo'" />
     <template v-else-if="tab === 'settings'">
-      <SystemPanel @saved="onSystemSaved" @mode-changed="onSystemModeChanged" />
-      <AiPanel :key="aiReloadKey" :local-voice-override="localVoicePreview" @saved="refreshRestartFlag" />
+      <nav class="subtabs">
+        <button
+          v-for="st in SETTINGS_TABS" :key="st.id"
+          class="subtab" :class="{ on: settingsTab === st.id }"
+          @click="settingsTab = st.id"
+        >{{ st.label }}</button>
+      </nav>
+      <SystemPanel v-if="settingsTab === 'conn'" @saved="refreshRestartFlag" />
+      <AgentPanel v-else-if="settingsTab === 'agent'" @saved="refreshRestartFlag" />
+      <VoicePanel v-else @saved="refreshRestartFlag" />
     </template>
     <LogsPanel v-else-if="tab === 'logs'" />
     <FilesPanel v-else />
@@ -122,6 +132,15 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
 </template>
 
 <style scoped>
+/* Settings sub-navigation (连接 / 智能体 / 语音). A lighter, pill-row variant of
+   the header tabs so the category split reads clearly without competing with the
+   top-level nav. */
+.subtabs{display:flex;gap:6px;margin:0 0 4px;flex-wrap:wrap}
+.subtab{font:inherit;cursor:pointer;background:transparent;border:1px solid var(--ghost);
+  color:var(--dim);border-radius:7px;padding:6px 16px;font-size:12px;letter-spacing:.04em}
+.subtab:hover{color:var(--lit);border-color:var(--dim)}
+.subtab.on{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
+
 /* Version chip pinned to header left — sits just right of the BBCLAW wordmark.
    Subtle by default (matches the 重启 button's idle look); when an upgrade is
    available the chip switches to accent border + a pulsing red dot so it reads
