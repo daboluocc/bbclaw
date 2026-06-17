@@ -508,6 +508,9 @@ type driverInfoExtended struct {
 	// ButlerCapable mirrors Capabilities.Butler, hoisted to the top level so
 	// the page can build the butler-driver picker without digging into caps.
 	ButlerCapable bool `json:"butler_capable"`
+	// Warning is a non-fatal advisory shown even when installed — e.g. an
+	// opencode version outside the serve backend's supported range (ADR-031 P2-5).
+	Warning string `json:"warning,omitempty"`
 }
 
 // handleAgentDrivers lists the drivers currently registered on the router,
@@ -539,6 +542,7 @@ func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(base, func(i, j int) bool { return base[i].Name < base[j].Name })
 
 	installed := installedByDriver()
+	warnings := warningsByDriver()
 
 	out := make([]driverInfoExtended, 0, len(base))
 	for _, info := range base {
@@ -547,6 +551,7 @@ func (s *Server) handleAgentDrivers(w http.ResponseWriter, r *http.Request) {
 			Capabilities:  info.Capabilities,
 			ActiveModel:   s.resolveActiveModel(info.Name),
 			ButlerCapable: info.Capabilities.Butler,
+			Warning:       warnings[info.Name],
 		}
 		if present, ok := installed[info.Name]; ok {
 			row.Installed = &present
@@ -618,7 +623,6 @@ func (s *Server) handleAgentActiveDriverPut(w http.ResponseWriter, r *http.Reque
 	s.log.Infof("driverstate: active_driver set to %q", name)
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"active_driver": name}})
 }
-
 
 // handleAgentActiveModelPut persists the active model for one driver.
 //

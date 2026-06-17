@@ -164,6 +164,16 @@ func (m *serveManager) versionError() error {
 	return m.versionErr
 }
 
+// ServeVersionCheck reports whether ver is within the serve backend's supported
+// range (nil = supported). Exposed for environment detection so the admin page
+// can warn before the serve driver refuses an unsupported version (ADR-031 P2-5).
+func ServeVersionCheck(ver string) error { return checkVersion(ver) }
+
+// ServeSupportedRange is a human-readable rendering of the supported range.
+func ServeSupportedRange() string {
+	return fmt.Sprintf("[%s, %d.%d)", ocMinVersion, ocSupportedMajor, ocMaxMinorExclusive)
+}
+
 // respawnBackoff is the minimum interval before re-spawning after `failures`
 // consecutive failures: 500ms, 1s, 2s, … capped at 16s.
 func respawnBackoff(failures int) time.Duration {

@@ -15,11 +15,28 @@ import (
 // CLI/service is present on the host. Names match Driver.Name().
 func installedByDriver() map[string]bool { return detect.InstalledByDriver() }
 
+// warningsByDriver maps a driver name to a non-fatal advisory derived from
+// detection — currently the opencode serve version-support warning (ADR-031
+// P2-5). Empty when there is nothing to warn about.
+func warningsByDriver() map[string]string {
+	env := detect.CachedEnvironment()
+	out := map[string]string{}
+	if w, ok := env.OpenCode.Data["serveVersionWarning"].(string); ok && w != "" {
+		out["opencode"] = w
+	}
+	return out
+}
+
 // envRow is one driver's detection result in the GET /v1/agent/environment
 // response.
 type envRow struct {
 	Installed bool   `json:"installed"`
 	Reason    string `json:"reason,omitempty"`
+	// Version is the detected CLI version when known. Warning is a non-fatal
+	// advisory shown even when installed — e.g. an opencode version outside the
+	// serve backend's supported range (ADR-031 P2-5).
+	Version string `json:"version,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 // handleAgentEnvironment reports per-driver host detection (ADR-023 §3) so the
@@ -33,7 +50,14 @@ type envRow struct {
 func (s *Server) handleAgentEnvironment(w http.ResponseWriter, r *http.Request) {
 	env := detect.CachedEnvironment()
 	row := func(res detect.Result) envRow {
-		return envRow{Installed: res.Present, Reason: res.Reason}
+		r := envRow{Installed: res.Present, Reason: res.Reason}
+		if v, ok := res.Data["version"].(string); ok {
+			r.Version = v
+		}
+		if w, ok := res.Data["serveVersionWarning"].(string); ok {
+			r.Warning = w
+		}
+		return r
 	}
 	drivers := map[string]envRow{
 		"claude-code": row(env.ClaudeCode),

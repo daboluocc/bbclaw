@@ -61,6 +61,12 @@ const fallbackActive = computed(() => {
       </button>
       <span v-if="!rows.length" class="empty">没有已注册驱动。</span>
     </div>
+    <p
+      v-for="r in rows.filter((x) => x.warning)" :key="r.name + '-warn'"
+      class="hint" style="color:var(--err)"
+    >
+      ⚠ {{ r.name }}：{{ r.warning }}
+    </p>
     <p v-if="fallbackActive" class="hint" style="color:var(--err)">
       ⚠ 当前驱动不支持管家，设备管家实际使用：<b>{{ butlerDriver }}</b>
     </p>

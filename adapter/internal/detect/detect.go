@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/daboluocc/bbclaw/adapter/internal/agent/opencode"
 )
 
 // Result holds detection results for a single component
@@ -123,16 +126,38 @@ func detectClaudeCode() Result {
 	}
 }
 
-// detectOpenCode checks for opencode binary on PATH
+// detectOpenCode checks for the opencode binary on PATH and, when present,
+// records its version + whether that version is supported by the serve backend
+// (ADR-031 P2-5) so the admin page can warn before the driver refuses it.
 func detectOpenCode() Result {
 	binPath, err := exec.LookPath("opencode")
 	if err != nil {
 		return Result{Present: false, Reason: "opencode not on PATH"}
 	}
-	return Result{
-		Present: true,
-		Data:    map[string]interface{}{"bin": binPath},
+	data := map[string]interface{}{"bin": binPath}
+	if ver := binaryVersion(binPath); ver != "" {
+		data["version"] = ver
+		if verr := opencode.ServeVersionCheck(ver); verr != nil {
+			data["serveVersionWarning"] = verr.Error()
+		}
 	}
+	return Result{Present: true, Data: data}
+}
+
+// binaryVersion runs `<bin> --version` with a short timeout and returns the
+// first whitespace token of stdout (e.g. "1.15.1"), or "" on any failure.
+func binaryVersion(bin string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // detectCodex checks for the codex binary on PATH (ADR-023)
@@ -216,8 +241,8 @@ func detectSayTTS() Result {
 
 // detectFunASR checks if FunASR is installed.
 // Search order:
-//   1. ~/.bbclaw/tools/asr  (user local install)
-//   2. ../tools/asr         (repo dev mode, relative to adapter directory)
+//  1. ~/.bbclaw/tools/asr  (user local install)
+//  2. ../tools/asr         (repo dev mode, relative to adapter directory)
 func detectFunASR() Result {
 	searchPaths := []string{}
 

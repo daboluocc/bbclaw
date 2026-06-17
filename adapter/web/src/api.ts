@@ -48,6 +48,7 @@ export interface DriverRow {
   installed?: boolean;        // omitted when detection has no opinion
   butler_capable?: boolean;
   active_model?: string;
+  warning?: string;           // non-fatal advisory, e.g. unsupported opencode version (ADR-031)
 }
 export interface DriversState {
   active_driver: string;

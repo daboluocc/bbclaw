@@ -109,6 +109,9 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 **provider 凭证注入（2026-06-17，P1-3 adapter 侧）：**
 `opencode serve` 进程继承 adapter 的 `os.Environ()`,所以 admin/env 里配好的 provider key(`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`/…)**已自动流到 serve**——和 claude driver 拿 `ANTHROPIC_AUTH_TOKEN` 同一机制。额外提供 scoped 注入点 `Options.ProviderEnv`(经 `AGENT_OPENCODE_PROVIDER_ENV="K=V,K2=V2"`),用于 cloud_saas 下发**不进全局 env**的凭证(`buildServeEnv` 合并,provider 值覆盖继承值)。**cloud 侧**(把用户在云端配的 key 下发给 adapter)在 bbclaw-reference 私仓,属跨仓契约,不在本仓范围。
 
+**版本不符 admin 提示（2026-06-17，P2-5）：**
+环境检测(`detect.detectOpenCode`)跑 `opencode --version`,用 `opencode.ServeVersionCheck` 比对支持区间;不符时把 warning 写进 detection Data,经 `/v1/agent/drivers`(`driverInfoExtended.Warning`)+ `/v1/agent/environment` 透出,admin 驱动面板渲染「⚠ opencode：版本不在支持区间 + 安装提示」。不 disable 驱动(旧 CLI driver 仍可用),只警示。
+
 **fast-follow（未做）：**
 - dispatch 子会话 **`/children` 钻入**(`ChildSessionID` 已从 output 解析并带出,admin 页深链钻入的 UI 接线待补)。
 - butler 派发的**端到端 live 验证**需可靠调工具的模型 + 真实 butlermcp server(dev box 的 deepseek 不稳定);现以「注册路径 live + 映射/解析单测」覆盖。
