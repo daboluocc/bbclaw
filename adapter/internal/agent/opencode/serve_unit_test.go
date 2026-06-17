@@ -95,6 +95,22 @@ func TestMapParts(t *testing.T) {
 	}
 }
 
+func TestMapPartsDispatchPopulated(t *testing.T) {
+	d := &ServeDriver{dispatchTools: map[string]bool{"bbclaw_dispatch": true}}
+	p := ocMsgPart{Type: "tool", Tool: "bbclaw_dispatch"}
+	p.State.Input = []byte(`{"cwd":"/proj","prompt":"do the thing"}`)
+	p.State.Output = `{"status":"done","taskId":"T1","elapsedMs":4200,"childSessionId":"ses_child"}`
+	parts := d.mapParts([]ocMsgPart{p})
+	if len(parts) != 1 || parts[0].Kind != "dispatch" || parts[0].Dispatch == nil {
+		t.Fatalf("expected one dispatch part, got %+v", parts)
+	}
+	dp := parts[0].Dispatch
+	if dp.ChildSessionID != "ses_child" || dp.Cwd != "/proj" || dp.Title != "do the thing" ||
+		dp.Status != "done" || dp.ElapsedMs != 4200 || dp.TaskID != "T1" {
+		t.Errorf("dispatch part not fully reconstructed: %+v", dp)
+	}
+}
+
 func TestIsDispatchTool(t *testing.T) {
 	d := &ServeDriver{
 		registeredMCP: map[string]bool{"bbclaw": true},

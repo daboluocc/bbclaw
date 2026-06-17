@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -30,7 +31,9 @@ type ocMsgPart struct {
 	Text  string `json:"text"`
 	Tool  string `json:"tool"`
 	State struct {
-		Title string `json:"title"`
+		Title  string          `json:"title"`
+		Input  json.RawMessage `json:"input"`
+		Output string          `json:"output"`
 	} `json:"state"`
 }
 
@@ -133,8 +136,21 @@ func (d *ServeDriver) mapParts(parts []ocMsgPart) []agent.Part {
 			}
 		case "tool":
 			if d.isDispatchTool(p.Tool) {
-				// Butler dispatch call woven inline (ADR-029 §2.4).
-				out = append(out, agent.Part{Kind: "dispatch", Dispatch: &agent.DispatchPart{Title: p.State.Title}})
+				// Butler dispatch call woven inline (ADR-029 §2.4). Reconstruct the
+				// full DispatchPart from the tool's input (cwd/title) and output
+				// (status/elapsed/childSessionId) so the admin page can drill into
+				// the worker's transcript (ADR-029 §2.3, P2-6).
+				cwd, title := parseDispatchInput(p.State.Input)
+				ds := parseDispatchResult("", p.State.Output)
+				out = append(out, agent.Part{Kind: "dispatch", Dispatch: &agent.DispatchPart{
+					TaskID:         ds.TaskID,
+					Cwd:            cwd,
+					Title:          firstNonEmptyStr(title, p.State.Title),
+					Status:         ds.Phase,
+					ElapsedMs:      ds.ElapsedMs,
+					Error:          ds.ErrorMsg,
+					ChildSessionID: ds.ChildSessionID,
+				}})
 			} else {
 				out = append(out, agent.Part{Kind: "tool", Tool: p.Tool, Text: p.State.Title})
 			}

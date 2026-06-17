@@ -112,8 +112,10 @@ spike 跑通核心闸门（GATE-0 版本握手、GATE-1a 流式 text delta），
 **版本不符 admin 提示（2026-06-17，P2-5）：**
 环境检测(`detect.detectOpenCode`)跑 `opencode --version`,用 `opencode.ServeVersionCheck` 比对支持区间;不符时把 warning 写进 detection Data,经 `/v1/agent/drivers`(`driverInfoExtended.Warning`)+ `/v1/agent/environment` 透出,admin 驱动面板渲染「⚠ opencode：版本不在支持区间 + 安装提示」。不 disable 驱动(旧 CLI driver 仍可用),只警示。
 
+**dispatch 子会话钻入（2026-06-17，P2-6）：**
+serve 的 `PartLoader.mapParts` 对 dispatch tool part 解析 input(cwd/title)+ output(status/elapsedMs/**childSessionId**),完整重建 `DispatchPart`。admin 会话页本就按 claude 路径渲染 dispatch 卡片并支持 `childSessionId` 深链(api.ts `DispatchPart.childSessionId`),故 driver 侧填齐后钻入即通,无需改 web。
+
 **fast-follow（未做）：**
-- dispatch 子会话 **`/children` 钻入**(`ChildSessionID` 已从 output 解析并带出,admin 页深链钻入的 UI 接线待补)。
 - butler 派发的**端到端 live 验证**需可靠调工具的模型 + 真实 butlermcp server(dev box 的 deepseek 不稳定);现以「注册路径 live + 映射/解析单测」覆盖。
 - 达到上述 parity 后再把 serve 后端设为默认、退役旧 CLI driver。
 
