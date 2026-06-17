@@ -45,13 +45,21 @@ type serveManager struct {
 	// serve process (butler MCP servers + instructions). Set before first start.
 	configContent string
 
-	mu      sync.Mutex
-	started bool
-	baseURL string
-	version string
-	cmd     *exec.Cmd
-	rootCtx context.Context
+	mu         sync.Mutex
+	started    bool
+	baseURL    string
+	version    string
+	cmd        *exec.Cmd
+	rootCtx    context.Context
+	failures   int       // consecutive spawn/crash failures (reset on healthy start)
+	lastSpawn  time.Time // when the last spawn was attempted (for respawn backoff)
+	versionErr error     // last version-handshake rejection (surfaced to admin, P2-5)
 }
+
+const (
+	respawnBaseBackoff = 500 * time.Millisecond
+	respawnMaxBackoff  = 16 * time.Second
+)
 
 func newServeManager(bin string, log *obs.Logger) *serveManager {
 	if strings.TrimSpace(bin) == "" {
@@ -73,6 +81,16 @@ func (m *serveManager) ensure(ctx context.Context) (string, error) {
 		return m.baseURL, nil
 	}
 
+	// Respawn backoff: after a crash/failed start, don't spawn-storm. Grow the
+	// minimum interval with consecutive failures (reset on a healthy start).
+	if m.failures > 0 && !m.lastSpawn.IsZero() {
+		backoff := respawnBackoff(m.failures)
+		if wait := backoff - time.Since(m.lastSpawn); wait > 0 {
+			return "", fmt.Errorf("opencode serve: backing off after %d failure(s); retry in %s", m.failures, wait.Round(time.Millisecond))
+		}
+	}
+	m.lastSpawn = time.Now()
+
 	port, err := freeTCPPort()
 	if err != nil {
 		return "", fmt.Errorf("opencode serve: pick port: %w", err)
@@ -93,11 +111,14 @@ func (m *serveManager) ensure(ctx context.Context) (string, error) {
 	ver, err := waitHealthy(ctx, base, 20*time.Second)
 	if err != nil {
 		_ = cmd.Process.Kill()
+		m.failures++
 		return "", fmt.Errorf("opencode serve: health handshake: %w", err)
 	}
 	if verr := checkVersion(ver); verr != nil {
 		// Refuse rather than misparse a drifted schema (ADR-031 §2).
 		_ = cmd.Process.Kill()
+		m.failures++
+		m.versionErr = verr
 		return "", verr
 	}
 
@@ -105,6 +126,8 @@ func (m *serveManager) ensure(ctx context.Context) (string, error) {
 	m.baseURL = base
 	m.version = ver
 	m.started = true
+	m.failures = 0 // healthy start clears the backoff
+	m.versionErr = nil
 	m.rootCtx = ctx
 	m.log.Infof("opencode serve: ready pid=%d %s version=%s", cmd.Process.Pid, base, ver)
 
@@ -114,6 +137,7 @@ func (m *serveManager) ensure(ctx context.Context) (string, error) {
 		m.mu.Lock()
 		if m.cmd == cmd {
 			m.started = false
+			m.failures++ // a crash counts toward respawn backoff
 			m.log.Warnf("opencode serve: process pid=%d exited; will respawn on next use", cmd.Process.Pid)
 		}
 		m.mu.Unlock()
@@ -129,6 +153,27 @@ func (m *serveManager) currentVersion() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.version
+}
+
+// versionError returns the last version-handshake rejection, if any (nil once a
+// supported serve started). Surfaced to the admin page (P2-5).
+func (m *serveManager) versionError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.versionErr
+}
+
+// respawnBackoff is the minimum interval before re-spawning after `failures`
+// consecutive failures: 500ms, 1s, 2s, … capped at 16s.
+func respawnBackoff(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	d := respawnBaseBackoff << (failures - 1)
+	if d > respawnMaxBackoff || d <= 0 {
+		d = respawnMaxBackoff
+	}
+	return d
 }
 
 func (m *serveManager) stop() {

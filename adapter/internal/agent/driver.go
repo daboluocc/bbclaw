@@ -170,6 +170,15 @@ type Interrupter interface {
 	Interrupt(sid SessionID) error
 }
 
+// Shutdowner is an optional capability for drivers that hold process-level
+// resources (warm pools, a long-lived `opencode serve`, background goroutines)
+// and need a chance to release them on adapter shutdown. The app calls
+// Shutdown() on every registered driver that implements this during graceful
+// teardown. Implementations must be safe to call once and should not block.
+type Shutdowner interface {
+	Shutdown()
+}
+
 // ErrUnsupported is returned by Approve on drivers where Capabilities.ToolApproval is false.
 var ErrUnsupported = errors.New("agent: operation unsupported by this driver")
 

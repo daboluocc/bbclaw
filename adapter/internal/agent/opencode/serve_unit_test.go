@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"testing"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 )
@@ -132,6 +133,25 @@ func TestParseDispatchResult(t *testing.T) {
 	ds = parseDispatchResult("call-3", "")
 	if ds.Phase != "done" || ds.TaskID != "call-3" {
 		t.Errorf("parseDispatchResult empty: %+v", ds)
+	}
+}
+
+func TestRespawnBackoff(t *testing.T) {
+	cases := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{0, 0},
+		{1, 500 * time.Millisecond},
+		{2, 1 * time.Second},
+		{3, 2 * time.Second},
+		{6, 16 * time.Second},
+		{20, 16 * time.Second}, // capped, no overflow
+	}
+	for _, c := range cases {
+		if got := respawnBackoff(c.failures); got != c.want {
+			t.Errorf("respawnBackoff(%d) = %v, want %v", c.failures, got, c.want)
+		}
 	}
 }
 

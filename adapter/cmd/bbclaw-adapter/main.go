@@ -1003,10 +1003,13 @@ func run(cfg config.Config, logger *obs.Logger, metrics *obs.Metrics) {
 			// 5-second deadline.
 			_ = agentSrv.Shutdown(shutdownCtx)
 			_ = httpSrv.Shutdown(shutdownCtx)
-			// Drain the claude-code warm pool to avoid orphan processes.
-			if drv, ok := agentRouter.Get("claude-code"); ok {
-				if cd, ok := drv.(*claudecode.Driver); ok {
-					cd.Shutdown()
+			// Release process-level driver resources (claude-code warm pool,
+			// opencode serve, …) — any driver implementing agent.Shutdowner.
+			for _, info := range agentRouter.List() {
+				if drv, ok := agentRouter.Get(info.Name); ok {
+					if sd, ok := drv.(agent.Shutdowner); ok {
+						sd.Shutdown()
+					}
 				}
 			}
 		}()
