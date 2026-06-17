@@ -2,8 +2,9 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { getSettings, putSettings, type AsrSettings, type TtsSettings } from "../api";
 
-// 「语音」分类：ASR / TTS / 音频留存。仅本地模式需要配置；云端模式由云端处理，
-// 这里只给一句提示。部署模式在「连接」页切换。
+// 「语音」= 声音在哪处理 + 怎么识别/合成。顶部的云/本地总开关本质就是"语音处理位置"
+// （顺带定了设备接入方式：云端→经云中转，本地→LAN 直连）。云端模式语音由云端做，
+// 本地无需配置；本地模式才配 ASR / TTS / 音频留存。
 const emit = defineEmits<{ (e: "saved"): void }>();
 
 const DEFAULT_ASR = {
@@ -24,10 +25,12 @@ const loaded = ref(false);
 const busy = ref(false);
 const note = ref("");
 const noteErr = ref(false);
-const localVoice = ref(false);
+const mode = ref<"cloud" | "local">("cloud");
+const cloudAdvanced = ref(false);
 const asrAdvanced = ref(false);
 const ttsAdvanced = ref(false);
 
+const cloud = reactive({ ws_url: "", auth_token: "", home_site_id: "" });
 const asr = reactive<AsrSettings>({
   provider: "openai_compatible", base_url: "", ws_url: "", app_id: "", api_key: "",
   resource_id: "", model: "", language: "", local_bin: "", local_args: "", local_text_path: "",
@@ -37,6 +40,8 @@ const tts = reactive<TtsSettings>({
   ws_url: "", local_bin: "", local_args: "", local_output_format: "",
 });
 const audio = reactive({ save_audio: false, save_input_on_finish: true });
+
+const isLocal = computed(() => mode.value === "local");
 
 function setNote(t: string, err: boolean) { note.value = t; noteErr.value = err; }
 
@@ -69,12 +74,13 @@ function normalizeTts(): TtsSettings {
 async function load() {
   try {
     const { settings } = await getSettings();
+    Object.assign(cloud, settings.cloud);
     Object.assign(asr, settings.voice.asr);
     Object.assign(tts, settings.voice.tts);
     audio.save_audio = settings.voice.save_audio;
     audio.save_input_on_finish = settings.voice.save_input_on_finish;
-    localVoice.value = settings.topology.local_voice_enabled;
-    if (!localVoice.value && asr.provider === "local" && !asr.local_bin.trim()) asr.provider = "doubao_native";
+    mode.value = settings.topology.local_voice_enabled ? "local" : "cloud";
+    if (!isLocal.value && asr.provider === "local" && !asr.local_bin.trim()) asr.provider = "doubao_native";
     if (!tts.provider) tts.provider = "doubao_native";
     loaded.value = true;
   } catch (e: any) { setNote("加载失败：" + e.message, true); }
@@ -84,38 +90,74 @@ async function save() {
   if (busy.value) return;
   busy.value = true;
   try {
+    const topology = isLocal.value
+      ? { cloud_relay_enabled: false, local_voice_enabled: true }
+      : { cloud_relay_enabled: true, local_voice_enabled: false };
     const res = await putSettings({
+      topology,
+      cloud: { ...cloud },
       voice: {
         asr: normalizeAsr(), tts: normalizeTts(),
         save_audio: audio.save_audio, save_input_on_finish: audio.save_input_on_finish,
       },
     });
-    if (res.voice_incomplete) setNote("已保存，但还差必填项，补全后重启生效。", true);
-    else setNote("已保存。重启适配器后生效。", false);
+    if (isLocal.value && res.voice_incomplete)
+      setNote("已保存，但本地语音还差必填项，补全后重启生效。", true);
+    else
+      setNote("已保存。切换处理位置 / 端点的改动需重启适配器后生效。", false);
     emit("saved");
   } catch (e: any) { setNote("保存失败：" + e.message, true); }
   finally { busy.value = false; }
 }
 
-const showForm = computed(() => localVoice.value);
-
 onMounted(load);
 </script>
 
 <template>
-  <div v-if="!showForm" class="card quiet-card">
-    <h2>语音</h2>
-    <p class="hint">
-      当前是<b style="color:var(--accent)">云端模式</b>，ASR / TTS 由云端处理，本地无需配置。
-      要在本机跑语音，去「连接」页切到<b>本地模式</b>并重启。
-    </p>
+  <!-- 总开关：语音（及设备接入）在云端还是本地 -->
+  <div class="card">
+    <h2>语音处理位置</h2>
+    <p class="hint">这是总开关：决定语音由云端还是本机处理（设备接入方式随之而定）。选一个即可。</p>
+    <div class="modes">
+      <label class="mode" :class="{ on: mode === 'cloud' }">
+        <input type="radio" value="cloud" v-model="mode" />
+        <div>
+          <div class="mt">☁ 云端处理（推荐）</div>
+          <div class="md">ASR / TTS 由云端完成，本地无需任何配置；设备经云端到达本机。开箱即用。</div>
+        </div>
+      </label>
+      <label class="mode" :class="{ on: mode === 'local' }">
+        <input type="radio" value="local" v-model="mode" />
+        <div>
+          <div class="mt">⌂ 本地处理</div>
+          <div class="md">设备 LAN 直连本机，语音在本机识别 / 合成。需在下方填 ASR / TTS。</div>
+        </div>
+      </label>
+    </div>
   </div>
 
+  <!-- 云端模式：无需配置，仅暴露自建云端点（高级） -->
+  <div v-if="!isLocal" class="card">
+    <p class="hint ok-hint">✓ 云端模式下语音全部由云端处理，本地无需配置。在 daboluo.cc 输入配对码即可激活设备。</p>
+    <button class="disclose" @click="cloudAdvanced = !cloudAdvanced">
+      {{ cloudAdvanced ? "▾" : "▸" }} 高级：自建云 relay 端点<span class="hint" style="margin:0 0 0 8px">（一般不用动）</span>
+    </button>
+    <div v-if="cloudAdvanced" class="subsec">
+      <p class="hint" style="margin:0 0 10px">默认指向生产云，开箱即用；只有自建云端时才需要改。</p>
+      <div class="form">
+        <div class="field"><label>云端 WS 地址</label>
+          <input type="text" v-model="cloud.ws_url" placeholder="wss://bbclaw.daboluo.cc/ws" /></div>
+        <div class="field"><label>Auth Token</label>
+          <input type="text" v-model="cloud.auth_token" placeholder="云端关闭匿名接入时才需要" /></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 本地模式：ASR / TTS / 音频留存 -->
   <template v-else>
     <div class="card">
-      <h2>语音 · ASR / TTS</h2>
+      <h2>识别 / 合成（ASR · TTS）</h2>
       <p class="hint">只填服务商要求的必填项；端点、模型、语言等默认值已内置。</p>
-
       <div class="voice-grid">
         <div class="subsec">
           <div class="lbl">ASR · 语音识别</div>

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import SystemPanel from "./components/SystemPanel.vue";
 import AgentPanel from "./components/AgentPanel.vue";
 import VoicePanel from "./components/VoicePanel.vue";
+import DevicePanel from "./components/DevicePanel.vue";
 import FilesPanel from "./components/FilesPanel.vue";
 import Conversation from "./components/Conversation.vue";
 import LogsPanel from "./components/LogsPanel.vue";
@@ -10,11 +10,11 @@ import { getSettings, restartAdapter, getAdapterVersion, type VersionState } fro
 
 type Tab = "convo" | "settings" | "logs" | "files";
 // 「设置」二级分类（ADR-031/ADR-025 重整）：连接 / 智能体 / 语音。
-type SettingsTab = "conn" | "agent" | "voice";
+type SettingsTab = "agent" | "voice" | "device";
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: "conn", label: "连接" },
   { id: "agent", label: "智能体" },
   { id: "voice", label: "语音" },
+  { id: "device", label: "设备 / 关于" },
 ];
 
 const TABS: { id: Tab; label: string; path: string }[] = [
@@ -46,7 +46,7 @@ const version = ref<VersionState>({ current: "", latest: "", update_available: f
 // refresh / shared link reopens the same sub-page instead of resetting to 连接.
 function settingsTabFromURL(): SettingsTab {
   const s = new URLSearchParams(window.location.search).get("s");
-  return SETTINGS_TABS.some((t) => t.id === s) ? (s as SettingsTab) : "conn";
+  return SETTINGS_TABS.some((t) => t.id === s) ? (s as SettingsTab) : "agent";
 }
 const settingsTab = ref<SettingsTab>(settingsTabFromURL());
 
@@ -142,9 +142,9 @@ onUnmounted(() => window.removeEventListener("popstate", syncFromHistory));
           @click="setSettingsTab(st.id)"
         >{{ st.label }}</button>
       </nav>
-      <SystemPanel v-if="settingsTab === 'conn'" @saved="refreshRestartFlag" />
-      <AgentPanel v-else-if="settingsTab === 'agent'" @saved="refreshRestartFlag" />
-      <VoicePanel v-else @saved="refreshRestartFlag" />
+      <AgentPanel v-if="settingsTab === 'agent'" @saved="refreshRestartFlag" />
+      <VoicePanel v-else-if="settingsTab === 'voice'" @saved="refreshRestartFlag" />
+      <DevicePanel v-else />
     </template>
     <LogsPanel v-else-if="tab === 'logs'" />
     <FilesPanel v-else />
