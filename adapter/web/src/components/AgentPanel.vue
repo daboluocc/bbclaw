@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import DriversPanel from "./DriversPanel.vue";
 import ProjectsPanel from "./ProjectsPanel.vue";
 import { getSettings, putSettings } from "../api";
 
-// 「智能体」分类，按层级组织：
-//   1. 驱动（Driver 层）——选用哪个 CLI；
-//   2. 当前激活驱动的专属配置——只显示该驱动需要的项（claude 配三方端点、
-//      opencode 选 serve 后端…），不再把所有驱动的配置平铺；
-//   3. 项目白名单——跨驱动，管家可派活的目录。
+// 「智能体」分层：
+//   1. 驱动（Driver 层）——选用哪个 CLI（热切换，即时生效）；
+//   2. 当前激活驱动的【运行时】配置——只在该驱动激活时才相关（如 claude 的三方端点）；
+//   3. opencode 后端——驱动的【结构性】运行模式，跟当前激活哪个无关，始终可预先配置
+//      （切换需重启，因为 driver 实例在启动时构造）；
+//   4. 项目白名单——跨驱动，管家可派活的目录。
 const emit = defineEmits<{ (e: "saved"): void }>();
 
 const loaded = ref(false);
@@ -19,12 +20,6 @@ const claudeAdvanced = ref(false);
 const activeDriver = ref("");
 
 const ai = reactive({ anthropic_base_url: "", anthropic_auth_token: "", opencode_serve: false });
-
-// Which driver has its own config card here. Other drivers (ollama/aider/codex/
-// openclaw) carry credentials in their own login state/env — nothing to set.
-const hasDriverConfig = computed(
-  () => activeDriver.value === "claude-code" || activeDriver.value === "opencode",
-);
 
 function setNote(t: string, err: boolean) { note.value = t; noteErr.value = err; }
 
@@ -41,7 +36,7 @@ async function save() {
   busy.value = true;
   try {
     await putSettings({ ai: { ...ai } });
-    setNote("已保存。需重启适配器后生效。", false);
+    setNote("已保存。Claude 端点 / opencode 后端的改动需重启适配器后生效。", false);
     emit("saved");
   } catch (e: any) { setNote("保存失败：" + e.message, true); }
   finally { busy.value = false; }
@@ -54,23 +49,10 @@ onMounted(load);
   <!-- 1. Driver 层：选用哪个 CLI（切换即时生效，不走重启） -->
   <DriversPanel @active="activeDriver = $event" />
 
-  <!-- 2. 当前激活驱动的专属配置 -->
-  <div v-if="activeDriver === 'opencode'" class="card">
-    <h2>opencode 配置</h2>
-    <p class="hint">
-      serve 后端：常驻 <code>opencode serve</code> + SDK（原生流式、可中断、历史回放、
-      模型/会话列举）；关闭则用旧的「每轮 spawn <code>opencode run</code>」CLI 通路。
-      <b>切换需重启后生效。</b>
-    </p>
-    <label class="toggle">
-      <input type="checkbox" v-model="ai.opencode_serve" />
-      <span class="tl">使用 serve + SDK 后端</span>
-    </label>
-  </div>
-
-  <div v-else-if="activeDriver === 'claude-code'" class="card">
+  <!-- 2. 当前激活驱动的运行时配置（只在该驱动激活时相关） -->
+  <div v-if="activeDriver === 'claude-code'" class="card">
     <h2>claude 配置</h2>
-    <p class="hint">连官方登录态时这里留空即可；只有走代理 / 兼容端点才需要填。</p>
+    <p class="hint">连官方登录态时留空即可；只有走代理 / 兼容端点才需要填。</p>
     <button class="disclose" @click="claudeAdvanced = !claudeAdvanced">
       {{ claudeAdvanced ? "▾" : "▸" }} Claude 代理 / 兼容端点
     </button>
@@ -83,19 +65,30 @@ onMounted(load);
       </div>
     </div>
   </div>
-
-  <div v-else-if="activeDriver" class="card quiet-card">
-    <p class="hint">
-      <b>{{ activeDriver }}</b> 无需在此额外配置——它的凭证走自身的登录态 / 环境变量。
-    </p>
+  <div v-else-if="activeDriver && activeDriver !== 'opencode'" class="card quiet-card">
+    <p class="hint"><b>{{ activeDriver }}</b> 无需额外运行时配置——凭证走自身的登录态 / 环境变量。</p>
   </div>
 
-  <!-- 3. 项目白名单：跨驱动，管家可派活的目录（运行时增删，不走重启） -->
+  <!-- 3. opencode 后端：结构性运行模式，始终可见、可预先配置（需重启生效） -->
+  <div class="card">
+    <h2>opencode 后端</h2>
+    <p class="hint">
+      opencode 驱动的运行模式，<b>无论当前激活哪个驱动都可预先配置</b>，激活 opencode 时按此运行。
+      serve：常驻 <code>opencode serve</code> + SDK（原生流式、可中断、历史回放、模型/会话列举）；
+      关闭则用旧的「每轮 spawn <code>opencode run</code>」CLI 通路。<b>切换需重启生效。</b>
+    </p>
+    <label class="toggle">
+      <input type="checkbox" v-model="ai.opencode_serve" />
+      <span class="tl">使用 serve + SDK 后端</span>
+    </label>
+  </div>
+
+  <!-- 4. 项目白名单：跨驱动，管家可派活的目录（运行时增删，不走重启） -->
   <ProjectsPanel />
 
-  <div v-if="hasDriverConfig" class="card">
+  <div class="card">
     <div class="save-row">
-      <button :disabled="busy || !loaded" @click="save">保存 {{ activeDriver }} 配置</button>
+      <button :disabled="busy || !loaded" @click="save">保存智能体配置</button>
       <span class="msg" :class="{ err: noteErr, ok: !noteErr }">{{ note }}</span>
     </div>
   </div>
