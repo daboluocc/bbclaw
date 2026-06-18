@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <title>bbclaw adapter v2</title>
+
+  <!--
+    Minimal Phase 1 web client (issue #208). A single static page — NO npm /
+    Vite build — that lets a browser take over the real interactive CLI terminal
+    over the adapter's /ws endpoint. xterm.js + the fit addon come straight from
+    a CDN so `go build` stays toolchain-free and this file embeds cleanly.
+
+    Wire protocol (see adapter_v2/internal/termchan/termchan.go):
+      client → server : {type:"input",  data}           keystrokes (utf-8)
+                        {type:"resize", cols, rows}      grid size
+      server → client : {type:"reconnected", cols, rows} sent first on (re)connect
+                        {type:"output", data}            raw PTY bytes (ANSI)
+
+    On (re)connect the server replays scrollback + a screen snapshot as a burst
+    of "output" frames (the snapshot is itself ANSI), so writing them verbatim
+    restores the exact pre-refresh screen. We reset() the terminal when the
+    "reconnected" frame arrives so the replay paints onto a clean grid.
+  -->
+
+  <!-- xterm.js core + fit addon, pinned so the CDN can't drift under us. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #1a1a1a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    /* The terminal fills the viewport; the fit addon sizes the grid to it. */
+    #terminal {
+      position: absolute;
+      inset: 0;
+      padding: 4px;
+      box-sizing: border-box;
+    }
+    /* Connection-status banner; hidden unless the socket drops. */
+    #status {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      padding: 6px 10px;
+      font: 12px/1.4 ui-monospace, monospace;
+      color: #1a1a1a;
+      background: #e0c000;
+      text-align: center;
+      display: none;
+    }
+    #status.show { display: block; }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+  <div id="terminal"></div>
+
+  <script>
+    "use strict";
+
+    // ── Session id: stable across refreshes ────────────────────────────────
+    //
+    // The session id is what makes "refresh = resume" work: the same id reaches
+    // the same live PTY session on the server. Resolution order:
+    //   1. ?session=<id> in the URL  (shareable / pinned link)
+    //   2. localStorage              (a plain refresh with no query string)
+    //   3. a fresh random id         (first ever visit)
+    // Whatever we resolve is written back to BOTH localStorage and the URL
+    // (without reloading) so a later refresh reconnects to the same session.
+    function resolveSessionId() {
+      const params = new URLSearchParams(location.search);
+      let id = params.get("session");
+      if (!id) {
+        id = localStorage.getItem("bbclaw.session");
+      }
+      if (!id) {
+        // crypto.randomUUID is available in every browser that ships modern
+        // xterm.js; fall back to a timestamp+random id just in case.
+        id = (crypto.randomUUID && crypto.randomUUID()) ||
+          `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      }
+      localStorage.setItem("bbclaw.session", id);
+      if (params.get("session") !== id) {
+        params.set("session", id);
+        history.replaceState(null, "", `${location.pathname}?${params}`);
+      }
+      return id;
+    }
+
+    const sessionId = resolveSessionId();
+
+    // ── xterm.js setup ─────────────────────────────────────────────────────
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontSize: 14,
+      // Let the alternate-screen TUIs (claude, etc.) use proposed APIs.
+      allowProposedApi: true,
+      theme: { background: "#1a1a1a", foreground: "#c7c7c7" },
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById("terminal"));
+
+    const statusEl = document.getElementById("status");
+    function setStatus(text) {
+      if (text) {
+        statusEl.textContent = text;
+        statusEl.classList.add("show");
+      } else {
+        statusEl.classList.remove("show");
+      }
+    }
+
+    // ── Transport ──────────────────────────────────────────────────────────
+    //
+    // One WebSocket per page. On an unexpected drop we retry with exponential
+    // backoff, reusing the same session id — so the server-side session (which
+    // outlives the connection) is rejoined and its snapshot replayed.
+    let ws = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer = null;
+    let destroyed = false;
+    // Guard the data handler until the socket is OPEN so we never try to send
+    // on a CONNECTING/CLOSED socket.
+    let sentResize = { cols: 0, rows: 0 };
+
+    function wsURL() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${location.host}/ws?session=${encodeURIComponent(sessionId)}`;
+    }
+
+    function send(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      }
+    }
+
+    // fitAndResize measures the container, reflows the grid, and tells the
+    // server the new size so the PTY child reflows to match. Idempotent: it
+    // skips the round-trip when the grid size has not actually changed.
+    function fitAndResize(force) {
+      try {
+        fitAddon.fit();
+      } catch {
+        return; // container not laid out yet
+      }
+      const { cols, rows } = term;
+      if (cols < 2 || rows < 2) return;
+      if (!force && cols === sentResize.cols && rows === sentResize.rows) return;
+      sentResize = { cols, rows };
+      send({ type: "resize", cols, rows });
+    }
+
+    function connect() {
+      ws = new WebSocket(wsURL());
+
+      ws.onopen = () => {
+        reconnectAttempts = 0;
+        setStatus("");
+        // Force a resize so a freshly (re)connected session adopts this
+        // browser's grid size even if it matches the last one we sent.
+        sentResize = { cols: 0, rows: 0 };
+        fitAndResize(true);
+      };
+
+      ws.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return; // ignore non-JSON frames
+        }
+        switch (msg.type) {
+          case "reconnected":
+            // Server is about to replay scrollback + snapshot. Clear the grid so
+            // the ANSI replay paints from a known-empty state, then adopt the
+            // server's reported size before our own fit overrides it.
+            term.reset();
+            if (msg.cols >= 2 && msg.rows >= 2) {
+              term.resize(msg.cols, msg.rows);
+            }
+            break;
+          case "output":
+            // Raw PTY bytes (incl. the snapshot replay) — write verbatim.
+            term.write(msg.data);
+            break;
+          default:
+            // Unknown type: ignore for forward compatibility.
+            break;
+        }
+      };
+
+      ws.onclose = (ev) => {
+        if (destroyed) return;
+        // 1000 = normal close: the session ended (PTY exited). Don't reconnect.
+        if (ev.code === 1000) {
+          setStatus("session ended");
+          term.write("\r\n\x1b[2m[session ended]\x1b[0m\r\n");
+          return;
+        }
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        // onclose handles recovery; nothing actionable here.
+      };
+    }
+
+    function scheduleReconnect() {
+      if (destroyed || reconnectTimer) return;
+      const delay = Math.min(1000 * 2 ** reconnectAttempts, 30000);
+      reconnectAttempts += 1;
+      setStatus(`connection lost — reconnecting in ${Math.round(delay / 1000)}s…`);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    // ── Input & resize wiring ──────────────────────────────────────────────
+    // Every keystroke / paste / arrow / Ctrl-C arrives here as raw bytes.
+    term.onData((data) => send({ type: "input", data }));
+
+    // Keep the grid in sync with the window. The ResizeObserver catches layout
+    // changes (rotation, devtools); the window listener is a belt-and-braces.
+    new ResizeObserver(() => fitAndResize(false)).observe(
+      document.getElementById("terminal")
+    );
+    window.addEventListener("resize", () => fitAndResize(false));
+
+    // Tear down cleanly on navigation so the server detaches us promptly.
+    window.addEventListener("beforeunload", () => {
+      destroyed = true;
+      if (ws) ws.close(1000);
+    });
+
+    connect();
+    term.focus();
+  </script>
+</body>
+</html>
