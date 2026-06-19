@@ -26,10 +26,16 @@
     "reconnected" frame arrives so the replay paints onto a clean grid.
   -->
 
-  <!-- xterm.js core + fit addon, pinned so the CDN can't drift under us. -->
+  <!-- xterm.js core + addons, pinned so the CDN can't drift under us.
+       The WebGL/Canvas renderer addons matter: WITHOUT one, xterm.js falls back
+       to its DOM renderer, which mis-paints SGR backgrounds (claude's light input
+       field bled into a full-width bar) and decoration lines. WebGL rasterizes
+       backgrounds/decorations to the measured cell box; Canvas is the fallback. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"></script>
 
   <style>
     :root { color-scheme: dark; }
@@ -104,15 +110,71 @@
     // ── xterm.js setup ─────────────────────────────────────────────────────
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: 14,
       // Let the alternate-screen TUIs (claude, etc.) use proposed APIs.
       allowProposedApi: true,
-      theme: { background: "#1a1a1a", foreground: "#c7c7c7" },
+      // A COMPLETE theme: without the 16 ANSI colors + cursor/selection, xterm.js
+      // resolves claude's palette against its own defaults, which (with no
+      // renderer addon) showed claude's light input field as a near-white bar and
+      // the cursor as a hollow box. These values are a calm dark scheme.
+      theme: {
+        background: "#1a1a1a",
+        foreground: "#c7c7c7",
+        cursor: "#c7c7c7",
+        cursorAccent: "#1a1a1a",
+        selectionBackground: "#3a3a3a",
+        black: "#1a1a1a",
+        red: "#e06c75",
+        green: "#98c379",
+        yellow: "#e5c07b",
+        blue: "#61afef",
+        magenta: "#c678dd",
+        cyan: "#56b6c2",
+        white: "#c7c7c7",
+        brightBlack: "#5c6370",
+        brightRed: "#e06c75",
+        brightGreen: "#98c379",
+        brightYellow: "#e5c07b",
+        brightBlue: "#61afef",
+        brightMagenta: "#c678dd",
+        brightCyan: "#56b6c2",
+        brightWhite: "#ffffff",
+      },
     });
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(document.getElementById("terminal"));
+
+    // Renderer: prefer WebGL (crisp SGR backgrounds/decorations), fall back to
+    // Canvas, then xterm's built-in DOM renderer — so it works where WebGL is
+    // unavailable (some mobile browsers) or its context is lost. Must run AFTER
+    // term.open().
+    (function loadRenderer() {
+      if (typeof WebglAddon !== "undefined" && WebglAddon.WebglAddon) {
+        try {
+          const webgl = new WebglAddon.WebglAddon();
+          webgl.onContextLoss(() => {
+            webgl.dispose();
+            loadCanvas();
+          });
+          term.loadAddon(webgl);
+          return;
+        } catch (e) {
+          /* fall through to canvas */
+        }
+      }
+      loadCanvas();
+      function loadCanvas() {
+        if (typeof CanvasAddon !== "undefined" && CanvasAddon.CanvasAddon) {
+          try {
+            term.loadAddon(new CanvasAddon.CanvasAddon());
+          } catch (e) {
+            /* DOM renderer remains */
+          }
+        }
+      }
+    })();
 
     const statusEl = document.getElementById("status");
     function setStatus(text) {

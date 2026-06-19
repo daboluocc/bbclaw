@@ -19,21 +19,48 @@ CURDIR  ?= $(shell pwd)
 BIN_DIR ?= $(CURDIR)/bin
 BIN_NAME ?= bbclaw-adapter-v2
 
-.PHONY: help build test e2e clean
+# `make run` knobs (all overridable):
+#   ADDR  listen address           (default :18090)
+#   CLI   CLI to drive under a PTY  (default claude; auto-resolves the install)
+#   CWD   working dir for that CLI  (default: inherit; set to a project root)
+ADDR ?= :18090
+CLI  ?= claude
+CWD  ?=
+
+.PHONY: help build run test e2e clean
 
 help:
 	@echo "BBClaw adapter_v2"
 	@echo ""
+	@echo "  make run     # build + start the server, then open http://localhost$(ADDR)"
 	@echo "  make build   # build $(BIN_DIR)/$(BIN_NAME)"
 	@echo "  make test    # go test ./... (fast, no external deps)"
 	@echo "  make e2e     # device end-to-end voice round-trip smoke"
 	@echo "  make clean   # remove build artifacts"
 	@echo ""
-	@echo "Override the Go toolchain: make test GO=/path/to/go"
+	@echo "  make run CLI=bash CWD=~/proj ADDR=:9000   # drive a shell instead of claude"
+	@echo "  Override the Go toolchain: make test GO=/path/to/go"
 
 build:
 	@mkdir -p "$(BIN_DIR)"
 	$(GO) build -o "$(BIN_DIR)/$(BIN_NAME)" ./cmd/bbclaw-adapter-v2
+
+# Build then run the server in the foreground (Ctrl-C to stop). Open
+# http://localhost$(ADDR) in a browser to take over the CLI's real terminal;
+# refresh the page to reconnect to the same live session.
+#
+# CLI is resolved to a real binary: PATH first, then the standard Claude Code
+# local install (~/.claude/local/claude), else used verbatim — so `make run`
+# works even though `claude` is often only a shell alias.
+run: build
+	@CLI_BIN="$$(command -v $(CLI) 2>/dev/null || true)"; \
+	if [ -z "$$CLI_BIN" ] && [ -x "$$HOME/.claude/local/claude" ] && [ "$(CLI)" = "claude" ]; then \
+		CLI_BIN="$$HOME/.claude/local/claude"; \
+	fi; \
+	[ -n "$$CLI_BIN" ] || CLI_BIN="$(CLI)"; \
+	echo "▶ adapter_v2  →  http://localhost$(ADDR)   (open it, then type to drive the CLI; refresh = reconnect)"; \
+	echo "  CLI=$$CLI_BIN   CWD=$${CWD:-<inherit>}"; \
+	ADAPTER_V2_ADDR="$(ADDR)" ADAPTER_V2_CLI="$$CLI_BIN" ADAPTER_V2_CWD="$(CWD)" "$(BIN_DIR)/$(BIN_NAME)"
 
 # Fast suite: every package's unit + integration tests, no process-spawn smoke.
 test:
