@@ -85,14 +85,21 @@ func (e *Extractor) OnOutput() (Reply, bool) {
 	return Reply{Text: text}, true
 }
 
-// extract computes the newest-reply text from the current screen: take the
-// visible content lines (noise already removed), drop any that were present in
-// the baseline, and join the remainder. Leading/trailing blank lines are
-// trimmed; trailing whitespace per line is trimmed (the acceptance criterion
-// allows trailing-whitespace differences).
-func (e *Extractor) extract() string {
-	lines := contentLines(e.screen.VisibleText())
+// replyMarker is claude's assistant-turn bullet (U+23FA): every assistant block
+// is rendered "⏺ <text>" at column 0, continuation lines indented two spaces.
+const replyMarker = "⏺"
 
+// extract computes the newest-reply text from the current screen. Preferred path:
+// anchor on claude's "⏺" reply marker and take that block (#claude). Fallback for
+// CLIs without the marker: diff the visible content against the per-turn baseline
+// so only the newest lines survive.
+func (e *Extractor) extract() string {
+	visible := e.screen.VisibleText()
+	if reply, ok := extractMarkerBlock(visible); ok {
+		return reply
+	}
+
+	lines := contentLines(visible)
 	// Keep only lines not already present in the baseline. A reply line that
 	// happens to duplicate baseline text verbatim is rare and harmless to drop;
 	// isolating the newest turn matters more for the device/voice line.
@@ -103,8 +110,58 @@ func (e *Extractor) extract() string {
 		}
 		kept = append(kept, l)
 	}
-
 	return strings.Join(kept, "\n")
+}
+
+// extractMarkerBlock isolates the newest claude assistant reply by anchoring on
+// the "⏺" bullet: take the LAST marker line (bullet stripped) plus the indented
+// continuation lines that follow it, stopping at the first non-indented line or
+// noise line (spinner/status/prompt/box-rule). This keeps the surrounding footer
+// chrome and the "✻ … for Ns" completion summary out of the reply, regardless of
+// how their values churn. ok is false when no marker is on screen (a non-claude
+// CLI), so the caller falls back to diff-based extraction.
+func extractMarkerBlock(visible string) (string, bool) {
+	raw := strings.Split(visible, "\n")
+	last := -1
+	for i, l := range raw {
+		if strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return "", false
+	}
+
+	block := []string{stripReplyMarker(strings.TrimRight(raw[last], " \t"))}
+	for k := last + 1; k < len(raw); k++ {
+		l := strings.TrimRight(raw[k], " \t")
+		if l == "" {
+			block = append(block, "") // keep interior blanks (paragraph breaks)
+			continue
+		}
+		// A continuation line is indented; anything flush-left, or any noise line,
+		// ends the reply block (the "✻ … for Ns" summary, box rules, prompt, footer).
+		if isNoiseLine(l) || !strings.HasPrefix(raw[k], "  ") {
+			break
+		}
+		block = append(block, l)
+	}
+	for len(block) > 0 && block[len(block)-1] == "" {
+		block = block[:len(block)-1]
+	}
+	return strings.Join(block, "\n"), true
+}
+
+// stripReplyMarker removes claude's assistant-turn bullet ("⏺ ", U+23FA) from the
+// start of a line so the extracted/spoken text is clean prose. The marker only
+// leads the first line of a reply; continuation lines (claude indents them with
+// spaces) carry no marker and are returned untouched, so their indentation is
+// preserved. A line whose only lead is the marker collapses to its text.
+func stripReplyMarker(l string) string {
+	if rest, ok := strings.CutPrefix(strings.TrimLeft(l, " "), "⏺"); ok {
+		return strings.TrimLeft(rest, " ")
+	}
+	return l
 }
 
 // contentLines splits VisibleText into lines, drops noise lines (prompt region,
@@ -121,7 +178,7 @@ func contentLines(visible string) []string {
 		if isNoiseLine(l) {
 			continue
 		}
-		out = append(out, strings.TrimRight(l, " \t"))
+		out = append(out, stripReplyMarker(strings.TrimRight(l, " \t")))
 	}
 	// Trim leading/trailing empties left behind after noise removal.
 	for len(out) > 0 && out[0] == "" {

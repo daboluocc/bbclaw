@@ -129,9 +129,17 @@ func (d *Detector) TurnEnded(now time.Time) bool {
 	if d.spinnerOnScreen {
 		return false // CLI is still working (e.g. a mid-reply network pause)
 	}
-	// Spinner is gone and output settled. Require the idle prompt to confirm the
-	// CLI handed control back, which is what cleanly separates a real turn end
-	// from a transient repaint that merely happened to drop the spinner line.
+	// Output settled and the working spinner is gone. The primary completion
+	// signal is "the CLI was working this turn (a spinner appeared) and it is now
+	// gone" — robust across CLIs whose idle prompt we cannot pin down: real claude
+	// renders a "❯" box with a rotating "Try …" placeholder, never a bare ">", so
+	// keying on idle-prompt text alone never fired against the real TUI.
+	if d.sawSpinner {
+		return true
+	}
+	// Fallback for a CLI/turn that never showed a spinner (a very fast reply):
+	// require the idle prompt to have returned, so we do not fire in the gap
+	// before the CLI even started working.
 	return d.idlePromptOnScreen
 }
 
@@ -186,5 +194,5 @@ func isIdlePromptLine(t string) bool {
 	t = strings.TrimLeft(t, "│|")
 	t = strings.TrimRight(t, "│|")
 	t = strings.TrimSpace(t)
-	return t == ">" // bare ">" with no trailing user text
+	return t == ">" || t == "❯" // bare prompt glyph with no trailing user text
 }

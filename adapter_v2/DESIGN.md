@@ -137,10 +137,11 @@ PTT 音频 ─Recognizer.Transcribe─▶ Bridge.SubmitVoicePTT ─┐
 冒烟用 `e2e` build tag 隔离，默认 `go test ./...` 不会在测试期 `go build` 子进程、
 保持快且零外部依赖；重的进程冒烟只在 `make e2e` 按需跑。
 
-> 注意：冒烟用 ASCII transcript。服务端 VT 仿真器（`vtscreen` 底层 hinshun/vt10x）
-> 目前不渲染双宽 CJK 字形到 `VisibleText`（"你好" 回复会抽成空）——宽字符渲染是
-> `vtscreen` 的事，单独追踪，与本设备 e2e 解耦；round-trip 链路本身与文本无关，已被
-> ASCII 用例完整覆盖。
+> CJK：已对真 `claude` 验证中英文均正确（注入 "只回复两个字：你好" → 抽出 "你好"）。
+> 早期"CJK 抽成空"的根因不是 vt10x 不支持宽字符，而是 `vtscreen.Feed` 曾逐字节喂
+> vt10x，把多字节 UTF-8 序列拆碎丢弃；改为整块喂 + chunk 边界保留半个 rune 后即正确
+> 渲染。设备 e2e 冒烟仍用 ASCII（不依赖真 agent）；对真 `claude` 的中英文验证靠
+> 一次性探针手工跑（spawn 真 claude → 注入 → 看 deviceapi 抽出的播报文本）。
 
 ### Makefile 入口
 

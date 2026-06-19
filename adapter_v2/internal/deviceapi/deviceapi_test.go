@@ -419,9 +419,11 @@ while IFS= read -r line; do
 done
 `
 
-// TestSubmitVoiceTurnInterruptsInFlight asserts the documented in-flight policy:
-// SubmitVoiceTurn prepends the ESC interrupt key so a previous turn is aborted
-// before the new transcript lands. We observe ESC reaching stdin via a probe CLI.
+// TestSubmitVoiceTurnInterruptsInFlight asserts the in-flight policy: ESC is
+// injected ONLY to abort a turn that is actually running (a barge-in), never at
+// an idle prompt — where a gratuitous ESC would be read as an escape sequence and
+// swallow the transcript's first character (fatal for a leading CJK rune). We
+// observe ESC reaching stdin via a probe CLI.
 func TestSubmitVoiceTurnInterruptsInFlight(t *testing.T) {
 	m := session.NewManager()
 	s, err := m.Create("probe", ptyhost.Config{
@@ -433,12 +435,23 @@ func TestSubmitVoiceTurnInterruptsInFlight(t *testing.T) {
 	}
 	client, _, _ := s.Attach()
 	defer s.Detach(client)
+	br := b(s)
 
-	if err := b(s).SubmitVoiceTurn("second turn"); err != nil {
-		t.Fatalf("SubmitVoiceTurn: %v", err)
+	// At an idle prompt there is nothing to interrupt: no ESC precedes the text.
+	if err := br.SubmitVoiceTurn("first turn"); err != nil {
+		t.Fatalf("SubmitVoiceTurn (idle): %v", err)
+	}
+	if !drainContains(client.Out, "NO_ESC:first turn", 3*time.Second) {
+		t.Fatalf("idle SubmitVoiceTurn must NOT inject an ESC ahead of the transcript")
+	}
+
+	// With a turn in flight, a barge-in interrupts: ESC precedes the new text.
+	br.inFlight.Store(true)
+	if err := br.SubmitVoiceTurn("second turn"); err != nil {
+		t.Fatalf("SubmitVoiceTurn (in-flight): %v", err)
 	}
 	if !drainContains(client.Out, "SAW_ESC:second turn", 3*time.Second) {
-		t.Fatalf("interrupt key (ESC) was not injected ahead of the transcript")
+		t.Fatalf("in-flight SubmitVoiceTurn must inject ESC ahead of the transcript")
 	}
 }
 
