@@ -102,6 +102,21 @@ type DeviceSink interface {
 	Play(ctx context.Context, audio []byte, format string) error
 }
 
+// Events lets a transport (e.g. the bbwire device WebSocket) observe the turn
+// lifecycle so it can emit its own protocol frames around the Bridge's autonomous
+// reply→TTS loop. All methods are invoked from Bridge.Run's goroutine, in order:
+// ReplyComplete (the boundary fired, final reply text) → the Synthesizer/Sink run
+// → TurnIdle (the device may speak again). A nil Events (the default) is a no-op,
+// so the voice-only Bridge is unaffected. Optional; set via SetEvents.
+type Events interface {
+	// ReplyComplete reports the final reply text of a turn, before it is spoken.
+	// The transport emits its reply.end frame here.
+	ReplyComplete(text string)
+	// TurnIdle reports the turn is fully done (spoken) and the device may PTT
+	// again. The transport emits its turn{idle} frame here.
+	TurnIdle()
+}
+
 // Config tunes the Bridge. The zero value is usable: cols/rows fall back to the
 // vtscreen defaults and pollInterval to a sane tick.
 type Config struct {
@@ -119,11 +134,12 @@ const defaultPollInterval = 150 * time.Millisecond
 // Bridge couples one device to one session: ASR transcripts in via
 // SubmitVoiceTurn, completed replies out via Run → Synthesizer → DeviceSink.
 type Bridge struct {
-	sess *session.Session
-	asr  Recognizer
-	tts  Synthesizer
-	sink DeviceSink
-	cfg  Config
+	sess   *session.Session
+	asr    Recognizer
+	tts    Synthesizer
+	sink   DeviceSink
+	cfg    Config
+	events Events // optional turn-lifecycle observer (set via SetEvents)
 
 	// screen is the Bridge's OWN VT mirror of the PTY output, fed by Run from the
 	// raw byte stream it receives as a session Client. It is separate from the
@@ -168,6 +184,10 @@ func New(sess *session.Session, asr Recognizer, tts Synthesizer, sink DeviceSink
 		rearm:  make(chan struct{}, 1),
 	}
 }
+
+// SetEvents attaches a turn-lifecycle observer. Call before Run. Passing nil
+// clears it. Used by the device-WS transport to emit reply.end / turn frames.
+func (b *Bridge) SetEvents(e Events) { b.events = e }
 
 // SubmitVoicePTT is the full PTT entry point: recognise the audio, then inject
 // the transcript as a user turn. Empty/whitespace transcripts are dropped (a
@@ -337,9 +357,25 @@ func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, extP **e
 	det.Reset()
 
 	if isBlank(text) {
-		return nil // completed turn produced no speakable text (e.g. a tool-only turn)
+		// A completed turn with no speakable text (e.g. a tool-only turn) still
+		// hands control back: tell the transport the device may speak again.
+		if b.events != nil {
+			b.events.TurnIdle()
+		}
+		return nil
 	}
-	return b.speak(ctx, text)
+	// Emit the final text (transport sends reply.end) before synthesising, so the
+	// device screen shows the answer ahead of the audio; then speak; then idle.
+	if b.events != nil {
+		b.events.ReplyComplete(text)
+	}
+	if err := b.speak(ctx, text); err != nil {
+		return err
+	}
+	if b.events != nil {
+		b.events.TurnIdle()
+	}
+	return nil
 }
 
 // speak synthesises one reply and hands the audio to the device sink. A nil

@@ -74,7 +74,7 @@ test:
 # -count=1 disables the test cache so the smoke really re-runs (it spawns a child
 # process and is the thing we want to actually exercise on demand).
 e2e:
-	$(GO) test -tags e2e -count=1 -run 'TestE2E' ./internal/deviceapi/...
+	$(GO) test -tags e2e -count=1 -run 'TestE2E' ./...
 
 clean:
 	@rm -rf "$(BIN_DIR)"
