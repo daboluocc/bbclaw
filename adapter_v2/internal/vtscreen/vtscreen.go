@@ -74,6 +74,14 @@ type Screen struct {
 	// oldest first, capped at maxScrollback. Each entry is one fully-resolved
 	// grid row (length == cols at the time it scrolled off).
 	scrollback []scrollLine
+
+	// pending holds the trailing bytes of an incomplete UTF-8 sequence carried
+	// over from the previous Feed. vt10x does NOT buffer a partial rune across
+	// Write calls (a multibyte rune split across writes is dropped), and a PTY
+	// read can split a rune at the chunk boundary, so we hold the incomplete
+	// tail here and prepend it to the next chunk. ≤3 bytes (the max UTF-8
+	// continuation length).
+	pending []byte
 }
 
 // scrollLine is one captured scrollback row.
@@ -97,45 +105,103 @@ func New(cols, rows int) *Screen {
 // Feed advances the emulator by parsing raw PTY output bytes, capturing any
 // rows that scroll off the top of the primary screen into the scrollback ring.
 //
-// vt10x discards scrolled-off lines, so to recover them we watch for the moment
-// a scroll can happen — the cursor sitting on the bottom row of the primary
-// screen — and snapshot the top rows around that byte to diff what shifted off.
-// Bytes that cannot trigger a primary-screen scroll are written in bulk runs so
-// the common case (no pending scroll) stays cheap.
+// The whole chunk is written to vt10x in ONE call (after prepending any partial
+// rune held from the previous Feed). This is essential for correctness: vt10x
+// does not buffer an incomplete UTF-8 sequence across Write calls, so feeding
+// byte-by-byte — or splitting a multibyte rune (❯, …, box-drawing, CJK …) at a
+// chunk boundary — silently drops that rune. claude's TUI is dense with
+// multibyte glyphs, so a faithful device-line scrape requires whole-rune writes.
+//
+// vt10x discards lines that scroll off the top, so to recover them for the
+// scrollback ring we snapshot the grid before the write and diff it against the
+// result, pushing any rows that shifted off. This captures a clean upward scroll
+// of one chunk; a single chunk that scrolls more than a screenful (rare for the
+// ~KB PTY reads we get) keeps only the most recent screen of evicted rows, which
+// is acceptable for best-effort reconnect history.
 func (s *Screen) Feed(p []byte) {
-	for i := 0; i < len(p); {
-		// Fast path: accumulate a run of bytes that cannot scroll the primary
-		// screen, then write it in one call. A scroll is only possible once the
-		// cursor reaches the bottom row of the primary screen.
-		if !s.scrollPossible() {
-			j := i
-			for j < len(p) && !s.scrollPossible() {
-				// vt10x.Terminal implements io.Writer; Write never errors for an
-				// in-memory terminal, so we ignore the result.
-				_, _ = s.term.Write(p[j : j+1])
-				j++
-			}
-			i = j
-			continue
-		}
+	data := p
+	if len(s.pending) > 0 {
+		data = append(s.pending, p...)
+		s.pending = nil
+	}
 
-		// Slow path: a scroll might occur. Snapshot the top region, feed one
-		// byte, then capture whatever rolled off the top.
-		before := s.copyGrid()
-		_, _ = s.term.Write(p[i : i+1])
-		i++
-		s.captureScroll(before)
+	// Hold back a trailing incomplete UTF-8 sequence for the next Feed.
+	n := completeUTF8Prefix(data)
+	if n < len(data) {
+		s.pending = append([]byte(nil), data[n:]...) // fresh copy: never aliases data
+	}
+	data = data[:n]
+	if len(data) == 0 {
+		return
+	}
+
+	// Feed the line CONTENT up to each '\n' first, then the '\n' on its own with a
+	// before/after diff. A '\n' at the bottom row is what scrolls a line off the
+	// top; isolating it means the just-written line is already on screen when we
+	// snapshot, so captureScroll's diff cleanly recovers the evicted row. Writing
+	// the content first (in bulk) keeps multibyte runes and ANSI escapes intact —
+	// '\n' (0x0A) never appears inside either. (A line that scrolls by wrapping,
+	// with no '\n', is not captured; that is an acceptable best-effort gap for
+	// reconnect history.)
+	start := 0
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			if i > start {
+				_, _ = s.term.Write(data[start:i]) // line content; no scroll yet
+			}
+			s.feedNewline(data[i : i+1]) // the '\n' alone, with scroll capture
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		_, _ = s.term.Write(data[start:]) // trailing content after the last '\n'
 	}
 }
 
-// scrollPossible reports whether the next byte could push a line off the top of
-// the primary screen: only when we are on the primary screen with the cursor on
-// (or below) the last row.
-func (s *Screen) scrollPossible() bool {
-	if s.onAlternate() {
-		return false
+// feedNewline writes a single '\n' (the byte that scrolls a line off the bottom),
+// capturing the evicted row into the scrollback ring via a before/after diff.
+func (s *Screen) feedNewline(nl []byte) {
+	before := s.copyGrid()
+	// vt10x.Terminal implements io.Writer; Write never errors for an in-memory
+	// terminal, so we ignore the result.
+	_, _ = s.term.Write(nl)
+	s.captureScroll(before)
+}
+
+// completeUTF8Prefix returns the length of the longest prefix of b that ends on
+// a UTF-8 rune boundary — i.e. it excludes a trailing incomplete multibyte
+// sequence (but never an ASCII byte or a complete rune). Escape sequences are
+// all single-byte and so are never held back; only a split multibyte rune is.
+func completeUTF8Prefix(b []byte) int {
+	if len(b) == 0 {
+		return 0
 	}
-	return s.term.Cursor().Y >= s.rows-1
+	// Walk back over trailing continuation bytes (10xxxxxx) to find the lead.
+	i := len(b) - 1
+	for i >= 0 && b[i]&0xC0 == 0x80 {
+		i--
+	}
+	if i < 0 {
+		return len(b) // all continuation bytes (malformed) — feed as-is
+	}
+	c := b[i]
+	var need int
+	switch {
+	case c&0x80 == 0x00:
+		need = 1
+	case c&0xE0 == 0xC0:
+		need = 2
+	case c&0xF0 == 0xE0:
+		need = 3
+	case c&0xF8 == 0xF0:
+		need = 4
+	default:
+		return len(b) // invalid lead byte — let vt10x deal with it
+	}
+	if len(b)-i >= need {
+		return len(b) // the final rune is complete
+	}
+	return i // incomplete final rune starts at i; cut before it
 }
 
 // captureScroll compares the grid before the last byte against the grid after

@@ -41,10 +41,47 @@ func isNoiseLine(line string) bool {
 	if isSpinnerLine(t) {
 		return true
 	}
+	if isStatusLine(t) {
+		return true
+	}
 	if isBoxDrawingOnly(t) {
 		return true
 	}
 	return false
+}
+
+// isStatusLine matches claude's persistent footer / completion chrome that sits
+// below the reply and whose values mutate every turn (so it slips past the diff
+// baseline): the "✻ Worked for Ns" completion summary, the "[Opus … (… context)]"
+// model line, the "Context …" / "Usage …" meters, and the "… for agents" hint.
+// These are never reply content, so dropping them keeps the spoken text clean.
+func isStatusLine(t string) bool {
+	// A leading dingbat star (U+2722–U+2747) is claude's animated spinner /
+	// completion-summary glyph: "✻ Cogitating…", "✶ Worked for 2s", etc. The verb
+	// and glyph both cycle, but the leading star is stable, so a range check is
+	// far more robust than blocklisting each phrase.
+	if r := firstRune(t); r >= 0x2722 && r <= 0x2747 {
+		return true
+	}
+	switch {
+	case strings.Contains(t, "Worked for") || strings.Contains(t, "Cogitated for"):
+		return true // completion summary without a star glyph
+	case strings.HasPrefix(t, "Context ") || strings.HasPrefix(t, "Usage "):
+		return true // footer progress meters
+	case strings.HasPrefix(t, "[") && strings.Contains(t, "context)]"):
+		return true // "[Opus 4.8 (1M context)] │ …" model status
+	case strings.Contains(t, "for agents"):
+		return true // "… ← for agents" footer hint
+	}
+	return false
+}
+
+// firstRune returns the first rune of s, or 0 for the empty string.
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return 0
 }
 
 // isPromptLine matches the CLI input line where the user types. claude renders
@@ -55,11 +92,15 @@ func isPromptLine(t string) bool {
 	// Strip a leading left-border glyph if the emulator kept it.
 	t = strings.TrimLeft(t, "│|")
 	t = strings.TrimSpace(t)
-	if t == ">" {
-		return true // empty idle prompt
-	}
-	if strings.HasPrefix(t, "> ") {
-		return true // "> what the user typed"
+	// claude renders the prompt glyph as "❯" (U+276F); older/other CLIs use a
+	// plain ">". Match both, empty (idle) or holding the user's typed text.
+	for _, p := range []string{">", "❯"} {
+		if t == p {
+			return true // empty idle prompt
+		}
+		if strings.HasPrefix(t, p+" ") {
+			return true // "❯ what the user typed"
+		}
 	}
 	return false
 }

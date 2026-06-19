@@ -39,6 +39,7 @@ package deviceapi
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/extract"
@@ -61,6 +62,15 @@ const interruptKey = "\x1b"
 // enterKey terminates an injected transcript so the CLI treats it as a submitted
 // user turn (carriage return is what a real Enter sends over a PTY).
 const enterKey = "\r"
+
+// interruptSettle is the gap between an interrupt ESC and the following
+// transcript. A terminal distinguishes a lone ESC key from an escape SEQUENCE by
+// timing: an ESC immediately followed by a byte is read as Alt+<byte> / a
+// sequence, which would swallow the transcript's first character — harmless-ish
+// for ASCII ("reply"→"eply") but fatal for a multibyte CJK rune (ESC eats the
+// lead byte, leaving invalid UTF-8 that the CLI drops). So when we do send an
+// interrupt, we let it land as its own keystroke before typing.
+const interruptSettle = 60 * time.Millisecond
 
 // Recognizer turns a PTT audio buffer into transcript text. It is the device
 // line's ASR entry point. Kept deliberately narrower than v1's asr.Provider
@@ -119,6 +129,14 @@ type Bridge struct {
 	// raw byte stream it receives as a session Client. It is separate from the
 	// Session's broadcast screen so the device-line extraction state is isolated.
 	screen *vtscreen.Screen
+
+	// inFlight is true while a turn we injected is still being worked by the CLI
+	// (set when SubmitVoiceTurn injects, cleared when maybeSpeak sees the turn
+	// complete). It gates the interrupt: we only send ESC to abort a turn that is
+	// actually running. At an idle prompt there is nothing to interrupt, and a
+	// gratuitous ESC there corrupts the next keystroke (see interruptSettle), so
+	// the common sequential case (and the first turn) injects cleanly with no ESC.
+	inFlight atomic.Bool
 
 	// rearm is the cross-goroutine signal that a new user turn was just injected,
 	// so Run must re-baseline the Extractor and reset the Detector for that turn.
@@ -189,15 +207,22 @@ func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 	if isBlank(transcript) {
 		return nil
 	}
-	// Interrupt any in-flight turn first so the new turn lands at a clean prompt.
-	// Best-effort: a failed ESC still lets the transcript through (the CLI may
-	// already be idle, in which case ESC is harmless).
-	if err := b.sess.Write([]byte(interruptKey)); err != nil {
-		return mapErr(err)
+	// Interrupt ONLY a turn that is actually in flight (a barge-in). At an idle
+	// prompt there is nothing to abort, and a gratuitous ESC there is read as the
+	// start of an escape sequence that swallows the transcript's first character
+	// (fatal for a leading CJK rune). When we do interrupt, let the ESC land as
+	// its own keystroke before typing (interruptSettle) so it is not glued to the
+	// first byte of the transcript.
+	if b.inFlight.Load() {
+		if err := b.sess.Write([]byte(interruptKey)); err != nil {
+			return mapErr(err)
+		}
+		time.Sleep(interruptSettle)
 	}
 	if err := b.sess.Write([]byte(transcript + enterKey)); err != nil {
 		return mapErr(err)
 	}
+	b.inFlight.Store(true)
 	// A new user turn is now in flight. Signal Run to re-baseline the Extractor on
 	// the (possibly interrupted) current screen and reset the Detector's settle
 	// clock, so this turn's reply is isolated from the prior one and a barge-in
@@ -300,6 +325,9 @@ func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, extP **e
 	if !det.TurnEnded(time.Now()) {
 		return nil
 	}
+	// The turn the user injected is done; a later barge-in now has nothing to
+	// interrupt, so the next SubmitVoiceTurn injects cleanly without an ESC.
+	b.inFlight.Store(false)
 	reply, _ := (*extP).OnOutput()
 	text := reply.Text
 	// Re-arm for the next turn regardless of whether this one had speakable text:
