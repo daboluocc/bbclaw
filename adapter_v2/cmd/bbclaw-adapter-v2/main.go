@@ -31,6 +31,8 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/termchan"
@@ -90,6 +92,15 @@ func newRouter(mgr *session.Manager, cfg config.Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(mgr, cfg))
 	mux.HandleFunc("/healthz", healthzHandler)
+
+	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
+	// Real ASR/TTS (with codec negotiation) arrive with the shared voice module;
+	// until then a placeholder recognizer (fixed transcript) + the codec-correct
+	// SilentSynthesizer (pcm16) keep the endpoint live so a device or the sim
+	// script can exercise the transport end to end. NB: we deliberately do NOT use
+	// SayTTS here — it emits WAV, which the Phase A sink would mislabel as pcm16.
+	devSrv := devicews.New(mgr, deviceapi.StaticRecognizer{Text: "你好"}, deviceapi.SilentSynthesizer{}, cfg.Argv, cfg.Cwd, devicews.Options{})
+	mux.HandleFunc("/v2/dev/ws", devSrv.Handler())
 	// The embedded web client at "/". ServeMux prefers the more specific "/ws"
 	// and "/healthz" patterns over this catch-all, so the file server only sees
 	// requests those two don't claim.
