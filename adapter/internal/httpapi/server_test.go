@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daboluocc/bbclaw/adapter/internal/asr"
-	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/voice/asr"
+	"github.com/daboluocc/bbclaw/voice/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 )

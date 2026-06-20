@@ -35,10 +35,11 @@ func WithSayVoice(v string) SayOption { return func(s *SayTTS) { s.voice = v } }
 // WithSayBin overrides the `say` binary path (used by tests to point at a fake).
 func WithSayBin(bin string) SayOption { return func(s *SayTTS) { s.bin = bin } }
 
-// NewSayTTS builds a macOS `say` synthesizer. Defaults: bin "say", 22050 Hz,
-// system default voice.
+// NewSayTTS builds a macOS `say` synthesizer. Defaults: bin "say", 16000 Hz
+// (the BBClaw device speaker rate, so its WAV needs no resample — only header
+// stripping — to reach the device as raw PCM16), system default voice.
 func NewSayTTS(opts ...SayOption) *SayTTS {
-	s := &SayTTS{bin: "say", sampleRate: 22050}
+	s := &SayTTS{bin: "say", sampleRate: 16000}
 	for _, o := range opts {
 		o(s)
 	}
