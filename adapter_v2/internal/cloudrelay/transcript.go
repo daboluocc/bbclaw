@@ -160,7 +160,23 @@ type cloudEvents struct {
 	env       Envelope
 	homeSite  string
 	replyText string
-	done      chan struct{}
+	// sent is the last reply snapshot forwarded to the cloud this turn. deviceapi
+	// emits ReplyDelta as a FULL snapshot (robust to TUI redraw, for the device's
+	// re-render). The cloud's TTS streamer, however, treats each voice.reply.delta
+	// as APPEND-only: it speaks text[len(prevDelta):] when the snapshot extends the
+	// previous one, else it speaks the WHOLE text again. claude's TUI redraws make
+	// snapshots non-monotonic, so forwarding every snapshot makes the cloud re-speak
+	// the growing reply over and over. We therefore forward a snapshot ONLY when it
+	// strictly extends `sent` (a prefix-monotonic stream), so the cloud's diff sums
+	// to exactly the reply with no repeats. Non-monotonic snapshots are skipped.
+	// Tradeoff: if the FINAL reply diverges mid-string from the last forwarded
+	// snapshot (a TUI reflow at the final paint — rare for the short replies the
+	// voice persona enforces), the final is skipped too, so the cloud speaks the last
+	// forwarded prefix (slightly stale) rather than re-speaking; the authoritative
+	// full text still goes out in voice.reply. We prefer "never repeat" over "always
+	// fully voiced".
+	sent string
+	done chan struct{}
 }
 
 // begin arms the observer for a new turn and returns its completion channel.
@@ -172,6 +188,7 @@ func (e *cloudEvents) begin(write func(Envelope) error, env Envelope, homeSite s
 	e.env = env
 	e.homeSite = homeSite
 	e.replyText = ""
+	e.sent = ""
 	e.done = make(chan struct{})
 	return e.done
 }
@@ -195,23 +212,35 @@ func (e *cloudEvents) reply() string {
 	return e.replyText
 }
 
-// ReplyDelta streams a live snapshot of the growing reply as a voice.reply.delta
-// event (the cloud feeds it to TTS and re-emits to the device).
-func (e *cloudEvents) ReplyDelta(text string) {
+// forwardDelta forwards a reply snapshot to the cloud ONLY if it strictly extends
+// what we've already sent this turn (prefix-monotonic), keeping the cloud's
+// append-only TTS diff correct (no repeats). Non-monotonic snapshots — caused by
+// claude's TUI redrawing the reply block — are dropped.
+func (e *cloudEvents) forwardDelta(text string) {
 	e.mu.Lock()
-	active, w, env, home := e.active, e.write, e.env, e.homeSite
-	e.mu.Unlock()
-	if !active || w == nil {
+	if !e.active || e.write == nil || len(text) <= len(e.sent) || !strings.HasPrefix(text, e.sent) {
+		e.mu.Unlock()
 		return
 	}
+	w, env, home := e.write, e.env, e.homeSite
+	e.sent = text
+	e.mu.Unlock()
 	_ = w(Envelope{
 		Type: "event", MessageID: env.MessageID, DeviceID: env.DeviceID,
 		HomeSiteID: home, Kind: "voice.reply.delta", Payload: map[string]any{"text": text},
 	})
 }
 
-// ReplyComplete records the authoritative final reply text (sent in voice.reply).
+// ReplyDelta streams the growing reply as a monotonic voice.reply.delta.
+func (e *cloudEvents) ReplyDelta(text string) { e.forwardDelta(text) }
+
+// ReplyComplete records the authoritative final reply text and forwards the final
+// tail when it extends the last snapshot (covering the whole reply in the common
+// append-only case; see the `sent` field doc for the mid-string-divergence
+// tradeoff). It relies on forwardDelta's e.active/e.write guard to drop a late
+// final after end() — that guard must not be removed.
 func (e *cloudEvents) ReplyComplete(text string) {
+	e.forwardDelta(text)
 	e.mu.Lock()
 	if e.active {
 		e.replyText = text
