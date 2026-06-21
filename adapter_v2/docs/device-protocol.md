@@ -22,11 +22,13 @@ byte 0    streamKind  0x01=上行麦克风  0x02=下行TTS
 byte 1    codec       0x01=opus  0x02=pcm16
 bytes 2-3 turnSeq     uint16,镜像 JSON 轮次的 u
 bytes 4-5 frameSeq    uint16,每轮单调递增(gap/重排/断线续传)
-bytes 6-7 flags       bit0=本轮末帧  bit1=opus-config/关键帧
+bytes 6-7 flags       bit0=可播单元末帧  bit1=opus-config/关键帧
 bytes 8.. 原始音频
 ```
 
 (保留 8 字节头——断线续传 `ack upTo` 和中继路由都需要它;拒绝了无头方案和 16 字节过度设计。)
+
+> **`flags.final` 语义**:标记**一个可播音频单元的末帧**——一次性 TTS 下是整段回复,逐句 TTS（Phase B）下是**一句**(每句一个 final 帧,设备收到即播该句、清累积缓冲)。**turn 结束由 `turn{idle}` 控制帧定,不是 `flags.final`**:设备必须在 `turn{idle}` 重新允许 PTT,绝不能在 `flags.final` 上结束(否则逐句 TTS 只会播第一句就停)。
 
 ## 帧 schema
 
@@ -97,8 +99,8 @@ cloud_saas 模式已有大部分:
 
 ## 分期
 
-- **Phase A(LAN 直连,无 Cloud)**:adapter_v2 起 `/v2/dev/ws`,仅必需路径——批量 ASR、`reply.end`-only(暂无流式增量)、一次性 TTS。**零 deviceapi 接口改动**,证明传输契约。
-- **Phase B**:流式 `reply.delta` + 逐句 TTS。
+- **Phase A ✅（已实现）**:adapter_v2 起 `/v2/dev/ws`,必需路径——批量 ASR、`reply.end`、一次性 TTS。零 deviceapi 接口改动,签字门 e2e 锁契约。
+- **Phase B ✅（已实现）**:**流式 `reply.delta`**（快照模型——每帧带当前完整回复,设备替换字幕,稳健于 TUI 重绘;默认开 `ADAPTER_V2_STREAM_DELTA=1`,`reply.end` 仍权威）+ **逐句 TTS**（append-only 分句 `nextSentence`,切句即合即播,turn 末播尾巴;opt-in `ADAPTER_V2_SEGMENT_TTS=1`,默认关=Phase A 一次性 TTS）。e2e 验 `reply.delta` 到达。
 - **Phase C**:resume/`ack` + barge-in 截断。
 - **Phase D**:接 Cloud 中继(`streamType:voice` + 边表),Cloud-ASR/Home-ASR 能力位;Phase-4 终端 mux 落同一 envelope。
 

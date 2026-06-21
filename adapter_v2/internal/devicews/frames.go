@@ -3,10 +3,10 @@
 // discriminator — TEXT frames carry JSON control objects, BINARY frames carry an
 // 8-byte header + raw codec audio (no base64). See adapter_v2/docs/device-protocol.md.
 //
-// Phase A scope: the required path only — hello handshake, PTT uplink → batch
-// ASR → inject into the PTY (deviceapi.Bridge), reply.end-only screen text
-// (no streaming reply.delta), and one-shot TTS streamed back as BINARY frames.
-// Streaming deltas, resume/ack, and the Cloud relay are later phases.
+// Phase A: the required path — hello handshake, PTT uplink → batch ASR → inject
+// into the PTY (deviceapi.Bridge), reply.end + one-shot TTS back as BINARY frames.
+// Phase B adds streaming reply.delta (live screen) and opt-in per-segment TTS.
+// Resume/ack and the Cloud relay are later phases.
 package devicews
 
 import "encoding/binary"
@@ -28,7 +28,14 @@ const (
 
 // flags — binary header bytes 6-7 (bitfield).
 const (
-	flagFinal    = 1 << 0 // last frame of this turn's stream
+	// flagFinal marks the last frame of a PLAYABLE AUDIO UNIT: the whole reply
+	// under one-shot TTS, or one sentence under per-segment streaming TTS (Phase
+	// B). The device plays the buffer it has accumulated and resets it on each
+	// final frame — so under segment TTS it plays each sentence as it arrives.
+	// The TURN END is the turn{idle} control frame, NOT this flag: a device must
+	// re-enable PTT on turn{idle}, never on flagFinal (else it would stop after
+	// the first sentence).
+	flagFinal    = 1 << 0
 	flagKeyframe = 1 << 1 // opus config / keyframe present
 )
 
@@ -135,6 +142,13 @@ type asrFinal struct {
 	Text   string `json:"text"`
 }
 
+type replyDelta struct {
+	T      string `json:"t"`
+	TurnID string `json:"turnId"`
+	Seq    uint16 `json:"seq"`
+	Text   string `json:"text"`
+}
+
 type replyEnd struct {
 	T      string `json:"t"`
 	TurnID string `json:"turnId"`
@@ -168,6 +182,6 @@ const (
 	codeASRTimeout = "ASR_TIMEOUT"
 	codeTTSFailed  = "TTS_FAILED"
 	codeBadProto   = "BAD_PROTO"
-	codeBusy       = "BUSY"       // a ptt.start arrived while a turn was still in flight
-	codeBadAudio   = "BAD_AUDIO"  // uplink codec unsupported / decode failed (not an ASR timeout)
+	codeBusy       = "BUSY"      // a ptt.start arrived while a turn was still in flight
+	codeBadAudio   = "BAD_AUDIO" // uplink codec unsupported / decode failed (not an ASR timeout)
 )

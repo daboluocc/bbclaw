@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -107,14 +108,35 @@ func newRouter(mgr *session.Manager, cfg config.Config) http.Handler {
 	// the endpoint is always live for the sim script / a device. Opus mic audio is
 	// decoded to PCM16 before ASR (ffmpeg).
 	rec, syn, asrMode, ttsMode := voicekit.FromEnv()
-	log.Printf("bbclaw-adapter-v2: device line ASR=%s TTS=%s", asrMode, ttsMode)
-	devSrv := devicews.New(mgr, rec, syn, cfg.Argv, cfg.Cwd, devicews.Options{Decode: voicekit.DecodeUplink})
+	// Phase B streaming: reply.delta on by default (cosmetic, reply.end is
+	// authoritative); per-segment TTS opt-in (ADAPTER_V2_SEGMENT_TTS=1).
+	streamDelta := envBool("ADAPTER_V2_STREAM_DELTA", true)
+	segmentTTS := envBool("ADAPTER_V2_SEGMENT_TTS", false)
+	log.Printf("bbclaw-adapter-v2: device line ASR=%s TTS=%s streamDelta=%v segmentTTS=%v", asrMode, ttsMode, streamDelta, segmentTTS)
+	devSrv := devicews.New(mgr, rec, syn, cfg.Argv, cfg.Cwd, devicews.Options{
+		Decode:           voicekit.DecodeUplink,
+		StreamReplyDelta: streamDelta,
+		SegmentTTS:       segmentTTS,
+	})
 	mux.HandleFunc("/v2/dev/ws", devSrv.Handler())
 	// The embedded web client at "/". ServeMux prefers the more specific "/ws"
 	// and "/healthz" patterns over this catch-all, so the file server only sees
 	// requests those two don't claim.
 	mux.Handle("/", web.Handler())
 	return mux
+}
+
+// envBool reads a boolean env var (1/true/yes/on = true, 0/false/no/off = false),
+// returning def when unset or unrecognised.
+func envBool(name string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
 }
 
 // healthzHandler is the liveness probe.
