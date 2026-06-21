@@ -284,8 +284,13 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 		return
 	}
 	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a
-	// minimal static reply; unknown kinds fall through to a silent no-op.
-	r.handleAgentProxy(write, env)
+	// minimal static reply; unknown kinds fall through to a silent no-op. Log either
+	// way so the device's settings-page traffic is visible while debugging.
+	if r.handleAgentProxy(write, env) {
+		r.log("cloudrelay: proxy device=%s kind=%s", env.DeviceID, env.Kind)
+	} else {
+		r.log("cloudrelay: ignored device=%s kind=%s (no handler)", env.DeviceID, env.Kind)
+	}
 }
 
 // ── small helpers ───────────────────────────────────────────────────────────
