@@ -1765,7 +1765,10 @@ static esp_err_t flush_stream_chunk(bb_stream_ctx_t* stream, uint8_t* pcm_buf, s
     return ESP_OK;
   }
 
-  if (bb_transport_is_cloud_saas()) {
+  /* cloud_saas and bbwire/2 both feed raw PCM16 to the adapter client (cloud
+   * encodes Ogg internally; bbwire/2 sends raw PCM16 binary frames). Only the
+   * legacy local_home path pre-encodes Ogg here and POSTs it. */
+  if (bb_transport_is_cloud_saas() || bb_transport_is_v2()) {
     esp_err_t err = bb_adapter_stream_chunk_pcm(stream, pcm_buf, *pending_pcm_len, bb_now_ms());
     if (err != ESP_OK) {
       return err;

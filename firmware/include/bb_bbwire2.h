@@ -81,19 +81,32 @@ static inline int bb_bbwire2_header_decode(const uint8_t* frame, int frame_len, 
 }
 
 /*
- * ── Client API (implemented in bb_bbwire2.c, increment 2) ──────────────────
+ * ── Client API (bb_bbwire2.c) ──────────────────────────────────────────────
  *
- * These mirror the v1/cloud_saas surface that bb_adapter_client.c's stream
- * functions branch into, so the radio app keeps calling bb_adapter_* unchanged
- * (the adapter is transparent to the device). Declared here; defined later.
+ * The 5 bb_adapter_* stream functions delegate here on the local_home_v2
+ * (bbwire/2) transport, so the radio app keeps calling bb_adapter_* unchanged
+ * (the adapter is transparent to the device). The bb_stream_ctx_t is the same
+ * per-utterance handle the cloud/local paths use.
  *
- *   bb_bbwire2_connect()       — dial /v2/dev/ws, hello/hello.ok handshake.
- *   bb_bbwire2_ptt_start(u)    — open uplink turn u.
- *   bb_bbwire2_send_mic(...)   — one BINARY mic frame (header + opus/pcm16).
- *   bb_bbwire2_ptt_stop(...)   — close the utterance; the reply streams back via
- *                                the bb_finish_stream_event_cb_t the caller passed.
- *
- * The downlink dispatch (asr.final / reply.delta / reply.end / turn / error +
- * BINARY TTS frames) maps onto bb_finish_stream_event_t exactly as the cloud
+ * First bring-up uses raw PCM16 mic + PCM16 TTS (codec 0x02) end to end, which
+ * needs no on-device Opus encode and no ffmpeg on the adapter; the Opus path is
+ * a later optimisation. The downlink (asr.final / reply.delta / reply.end / turn
+ * / error + BINARY TTS) maps onto bb_finish_stream_event_t exactly as the cloud
  * path does, so bb_radio_app.c needs no new event handling.
  */
+
+#include "esp_err.h"
+#include "bb_adapter_client.h" /* bb_stream_ctx_t, bb_finish_result_t, event cb */
+
+/* Open a turn: dial /v2/dev/ws + hello handshake on first call, then ptt.start.
+ * No Opus encoder is created (v2 sends raw PCM16). */
+esp_err_t bb_bbwire2_stream_start(bb_stream_ctx_t* ctx);
+
+/* Send one PTT mic chunk as a BINARY uplink frame (8-byte header, codec pcm16). */
+esp_err_t bb_bbwire2_send_mic_pcm16(bb_stream_ctx_t* ctx, const uint8_t* pcm, size_t pcm_len);
+
+/* Close the utterance (ptt.stop) and block until the reply completes (turn idle),
+ * errors, or times out — streaming asr.final / reply.delta / reply.end / TTS to
+ * on_event and filling out_result, mirroring bb_adapter_stream_finish_stream. */
+esp_err_t bb_bbwire2_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result,
+                            bb_finish_stream_event_cb_t on_event, void* user_ctx);

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "bb_bbwire2.h"
 #include "bb_device_config.h"
 #include "bb_notification.h"
 #include "bb_ogg_opus.h"
@@ -40,6 +41,23 @@ static void log_mem_snapshot(const char* phase) {
 static const char* active_base_url(void) {
   if (strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0) {
     return BBCLAW_CLOUD_BASE_URL;
+  }
+  if (bb_transport_is_v2()) {
+    /* HTTP origin of adapter_v2 (for /healthz readiness): map ws→http, wss→https
+     * from BBCLAW_ADAPTER_V2_BASE_URL. adapter_v2 serves /healthz on the same
+     * origin as /v2/dev/ws. Computed once into a static buffer. */
+    static char v2_http[200];
+    if (v2_http[0] == '\0') {
+      const char* b = BBCLAW_ADAPTER_V2_BASE_URL;
+      if (strncmp(b, "wss://", 6) == 0) {
+        snprintf(v2_http, sizeof(v2_http), "https://%s", b + 6);
+      } else if (strncmp(b, "ws://", 5) == 0) {
+        snprintf(v2_http, sizeof(v2_http), "http://%s", b + 5);
+      } else {
+        snprintf(v2_http, sizeof(v2_http), "%s", b);
+      }
+    }
+    return v2_http;
   }
   return BBCLAW_ADAPTER_BASE_URL;
 }
@@ -1678,6 +1696,12 @@ esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx) {
     return ESP_ERR_INVALID_ARG;
   }
 
+  /* bbwire/2 (local_home_v2): dial /v2/dev/ws + hello + ptt.start. No Ogg
+   * encoder — v2 sends raw PCM16 mic frames. */
+  if (bb_transport_is_v2()) {
+    return bb_bbwire2_stream_start(ctx);
+  }
+
   memset(ctx, 0, sizeof(*ctx));
   snprintf(ctx->stream_id, sizeof(ctx->stream_id), "esp-%lld", (long long)bb_now_ms());
   ctx->next_seq = 1;
@@ -1743,7 +1767,7 @@ esp_err_t bb_adapter_stream_start(bb_stream_ctx_t* ctx) {
 }
 
 esp_err_t bb_adapter_stream_chunk(bb_stream_ctx_t* ctx, const uint8_t* data, size_t len, int64_t ts_ms) {
-  if (bb_transport_is_cloud_saas()) {
+  if (bb_transport_is_cloud_saas() || bb_transport_is_v2()) {
     return bb_adapter_stream_chunk_pcm(ctx, data, len, ts_ms);
   }
   if (ctx == NULL || data == NULL || len == 0U) {
@@ -1830,6 +1854,10 @@ esp_err_t bb_adapter_stream_chunk_pcm(bb_stream_ctx_t* ctx, const uint8_t* pcm, 
   if (ctx == NULL || pcm == NULL || pcm_len == 0U) {
     return ESP_ERR_INVALID_ARG;
   }
+  /* bbwire/2: one BINARY mic frame (8-byte header + raw PCM16), no Ogg encode. */
+  if (bb_transport_is_v2()) {
+    return bb_bbwire2_send_mic_pcm16(ctx, pcm, pcm_len);
+  }
   if (!bb_transport_is_cloud_saas()) {
     return ESP_ERR_NOT_SUPPORTED;
   }
@@ -1868,7 +1896,7 @@ esp_err_t bb_adapter_stream_finish(const bb_stream_ctx_t* ctx, bb_finish_result_
   if (ctx == NULL || out_result == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
-  if (bb_transport_is_cloud_saas()) {
+  if (bb_transport_is_cloud_saas() || bb_transport_is_v2()) {
     return bb_adapter_stream_finish_stream(ctx, out_result, NULL, NULL);
   }
 
@@ -1905,6 +1933,11 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
                                           bb_finish_stream_event_cb_t on_event, void* user_ctx) {
   if (ctx == NULL || out_result == NULL) {
     return ESP_ERR_INVALID_ARG;
+  }
+
+  /* bbwire/2: ptt.stop + block until turn{idle}, streaming asr/reply/TTS. */
+  if (bb_transport_is_v2()) {
+    return bb_bbwire2_finish(ctx, out_result, on_event, user_ctx);
   }
 
   if (bb_transport_is_cloud_saas()) {
@@ -2509,6 +2542,13 @@ esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_
     return ESP_ERR_INVALID_ARG;
   }
   memset(out_audio, 0, sizeof(*out_audio));
+
+  /* bbwire/2 has no synthesize RPC — reply TTS arrives as downlink frames during
+   * a turn. An on-demand synthesize (notifications) is not supported on v2; fail
+   * cleanly rather than POST /v1/tts/synthesize at the (wrong) adapter origin. */
+  if (bb_transport_is_v2()) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
 
   char* cleaned = tts_sanitize_alloc(text);
   if (cleaned == NULL) {

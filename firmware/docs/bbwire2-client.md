@@ -32,9 +32,18 @@
 - `firmware/include/bb_config.h` — `BBCLAW_TRANSPORT_PROFILE "local_home_v2"` + `BBCLAW_ADAPTER_V2_BASE_URL` 宏。
 - `firmware/src/bb_transport.{c,h}` — `bb_transport_is_v2()` 谓词。
 
-## 增量 2（下一轮，需你 flash 验证）
+## 增量 2 ✅（已实现，本机编译通过，待 flash 验证）
 
-**WS 客户端 + bb_adapter_* 集成**(`firmware/src/bb_bbwire2.c` 新模块):
+**独立 WS 客户端 `firmware/src/bb_bbwire2.c`**(~440 行)+ 集成。`idf.py build` 成功。三视角对抗 review:协议逐帧对齐服务端、正常路径并发安全;修了 BLOCKING（异常路径 finish-wait 无锁 TOCTOU → UAF,改为锁内调 callback,镜像 cloud）+ MAJOR（TTS chunk leak;v2 的 tts_synthesize/healthz 误打旧 adapter URL → `active_base_url()` 对 v2 返回 adapter_v2 的 HTTP origin、synthesize 对 v2 返回 NOT_SUPPORTED）。
+
+**已知限制(首验可接受,后续硬化)**:
+- 中途自动重连不重发 hello → 下一轮 `ensure_connected` 自愈(hello_ok 才是就绪门,非 BW_CONNECTED)。
+- 下行只处理 PCM16(codec 0x02),Opus(0x01)留待后续;`flags.final` 未用于多帧可播单元拼接(Phase A 每句一帧,无需)。
+- `turn_u`/`frame_seq` 跨任务无锁读(uint16 不撕裂 + 单任务串行写,实测安全)。
+
+### 实现细节
+
+**WS 客户端 + bb_adapter_* 集成**(`firmware/src/bb_bbwire2.c`):
 
 1. **WS 生命周期**:`esp_websocket_client` 连 `<BBCLAW_ADAPTER_V2_BASE_URL>/v2/dev/ws`(镜像 `ws_client_ensure_connected`:TLS bundle、15s ping、自动重连)。连上发 `{"t":"hello","proto":2,"dev":<id>,"mic":{"codec":"opus","rate":16000,"ch":1},"spk":{"codec":"pcm16","rate":16000}}`,等 `hello.ok`。
 2. **上行**:`bb_adapter_stream_start` → `ptt.start{u}`(u 单调递增);`bb_adapter_stream_chunk_pcm` → 现成 Ogg/Opus 编码帧前置 8 字节头(streamKind=0x01,codec=0x01)发二进制;`bb_adapter_stream_finish_stream` → `ptt.stop{u,frames}`,复用 WS 等待循环。

@@ -2,6 +2,7 @@ set(_bb_srcs
     "bb_identity.c"
     "bb_audio.c"
     "bb_adapter_client.c"
+    "bb_bbwire2.c"
     "bb_agent_client.c"
     "bb_agent_theme.c"
     "bb_button_test.c"
