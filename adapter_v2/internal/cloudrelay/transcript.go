@@ -22,8 +22,13 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	if deviceID == "" {
 		deviceID = "cloud-anon"
 	}
+	// Log the conversation IN (the cloud's ASR transcript). The cloud does ASR/TTS,
+	// so this transcript + the reply below are the full I/O visible to adapter_v2 —
+	// the primary signal for debugging a relayed voice turn.
+	r.log("cloudrelay: ◀ asr device=%s text=%q", deviceID, text)
+	started := time.Now()
 	if text == "" {
-		// Nothing to say — return a clean empty reply rather than poke the CLI.
+		r.log("cloudrelay: ▶ reply device=%s (empty transcript — skipped, no CLI turn)", deviceID)
 		return write(Envelope{
 			Type: "reply", MessageID: env.MessageID, DeviceID: env.DeviceID,
 			HomeSiteID: r.cfg.HomeSiteID, Kind: "voice.reply",
@@ -62,13 +67,19 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	case <-time.After(r.cfg.ReplyWait):
 		timedOut = true
 	case <-ctx.Done():
+		r.log("cloudrelay: ✗ turn device=%s cancelled after %s (connection dropped?)", deviceID, time.Since(started).Round(time.Millisecond))
 		return ctx.Err()
 	}
 
+	reply := cb.ev.reply()
+	// Log the conversation OUT (the reply text the cloud will TTS). A blank reply
+	// here is the signal that extraction returned nothing for this turn.
+	r.log("cloudrelay: ▶ reply device=%s elapsed=%s timedOut=%v text=%q",
+		deviceID, time.Since(started).Round(time.Millisecond), timedOut, reply)
 	return write(Envelope{
 		Type: "reply", MessageID: env.MessageID, DeviceID: env.DeviceID,
 		HomeSiteID: r.cfg.HomeSiteID, Kind: "voice.reply",
-		Payload: map[string]any{"ok": true, "text": cb.ev.reply(), "replyWaitTimedOut": timedOut},
+		Payload: map[string]any{"ok": true, "text": reply, "replyWaitTimedOut": timedOut},
 	})
 }
 
