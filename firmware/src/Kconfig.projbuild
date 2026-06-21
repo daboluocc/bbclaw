@@ -43,12 +43,29 @@ config BBCLAW_TRANSPORT_PROFILE_CLOUD_SAAS
         Send firmware traffic to BBClaw Cloud. Cloud terminates audio and ASR,
         then relays transcript/reply through Home Adapter.
 
+config BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME_V2
+    bool "local_home_v2 (bbwire/2)"
+    help
+        Directly connect firmware to the local adapter_v2 over the bbwire/2
+        WebSocket protocol (/v2/dev/ws): one socket, opcode-typed frames, binary
+        audio with no base64. Coexists with local_home (v1); pick per build until
+        the runtime adapter picker lands. See adapter_v2/docs/device-protocol.md.
+
 endchoice
 
 config BBCLAW_ADAPTER_BASE_URL
     string "Local Adapter Base URL"
     depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME
     default "http://192.168.10.26:18080"
+
+config BBCLAW_ADAPTER_V2_BASE_URL
+    string "Adapter v2 Base URL (bbwire/2)"
+    depends on BBCLAW_TRANSPORT_PROFILE_LOCAL_HOME_V2
+    default "ws://192.168.16.204:18090"
+    help
+        Base URL of the adapter_v2 server; the device dials <base>/v2/dev/ws.
+        Use ws:// on the LAN, wss:// through a TLS front. The default points at a
+        dev Mac running `make -C adapter_v2 run`.
 
 config BBCLAW_CLOUD_BASE_URL
     string "Cloud Base URL"
