@@ -93,7 +93,17 @@ const replyMarker = "⏺"
 // anchor on claude's "⏺" reply marker and take that block (#claude). Fallback for
 // CLIs without the marker: diff the visible content against the per-turn baseline
 // so only the newest lines survive.
+// extract returns the newest reply as clean, speakable text: it isolates the
+// reply block from the vt grid (extractRaw) and runs it through NormalizeReply
+// (the swappable "TTS rendering" step) to undo grid artifacts — wrapping, padding
+// spaces, continuation indent — that read badly aloud.
 func (e *Extractor) extract() string {
+	return NormalizeReply(e.extractRaw())
+}
+
+// extractRaw isolates the newest-reply text from the current screen, still
+// carrying vt-grid layout (NormalizeReply cleans it).
+func (e *Extractor) extractRaw() string {
 	visible := e.screen.VisibleText()
 	if reply, ok := extractMarkerBlock(visible); ok {
 		return reply
