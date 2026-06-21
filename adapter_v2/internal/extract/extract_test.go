@@ -230,3 +230,38 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// Regression for the SaaS voice bug: on the first turn of a fresh claude session
+// the screen is the boxed welcome banner (no "⏺" reply yet). The diff fallback
+// used to return that whole banner as the "reply", so the device spoke the
+// startup screen. isClaudeScreen must suppress it — empty until "⏺" appears —
+// while a genuinely marker-less CLI still gets the diff fallback.
+func TestExtractSuppressesClaudeChromeUntilMarker(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+
+	// claude welcome/idle chrome: boxed banner + "❯" prompt, no "⏺" reply.
+	s.Feed([]byte("\x1b[1;1H╭─── Claude Code v2.1.185 ──────────────────╮\r\n" +
+		"│            Welcome back mikas!             │\r\n" +
+		"╰────────────────────────────────────────────╯\r\n" +
+		"❯ Try \"edit main.go\"\r\n"))
+	if r, _ := ext.OnOutput(); strings.TrimSpace(r.Text) != "" {
+		t.Errorf("welcome chrome leaked as reply: %q", r.Text)
+	}
+
+	// claude emits its reply — now the "⏺" block is the reply.
+	s.Feed([]byte("\x1b[6;1H⏺ The answer is 42.\r\n"))
+	if r, _ := ext.OnOutput(); !strings.Contains(r.Text, "The answer is 42.") {
+		t.Errorf("reply not extracted once marker present: %q", r.Text)
+	}
+}
+
+func TestExtractFallbackStillWorksForMarkerlessCLI(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	// A plain marker-less CLI: no box-drawing, no "❯", no "⏺" — diff fallback applies.
+	s.Feed([]byte("\x1b[1;1Hplain assistant reply line\r\n"))
+	if r, _ := ext.OnOutput(); !strings.Contains(r.Text, "plain assistant reply line") {
+		t.Errorf("marker-less diff fallback regressed: %q", r.Text)
+	}
+}
