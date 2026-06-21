@@ -1,7 +1,6 @@
 package cloudrelay
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -53,27 +52,5 @@ func TestProxyAnswersSettingsKinds(t *testing.T) {
 	// An unknown kind is not our concern → false (caller no-ops).
 	if r.handleAgentProxy(func(Envelope) error { return nil }, Envelope{Kind: "something.else"}) {
 		t.Error("unknown kind should return false")
-	}
-}
-
-func TestVoicePromptScopedToClaude(t *testing.T) {
-	// claude CLI → voice persona appended.
-	got := withVoicePrompt([]string{"/usr/local/bin/claude"})
-	if len(got) != 3 || got[1] != "--append-system-prompt" || !strings.Contains(got[2], "简短") {
-		t.Errorf("claude argv not augmented: %v", got)
-	}
-	// Non-claude CLI (e.g. the e2e mockcli) → untouched, so other CLIs/tests are safe.
-	if base := withVoicePrompt([]string{"/tmp/mockcli"}); len(base) != 1 {
-		t.Errorf("non-claude argv should be untouched, got %v", base)
-	}
-	// Explicit empty env disables it.
-	t.Setenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "")
-	if off := withVoicePrompt([]string{"claude"}); len(off) != 1 {
-		t.Errorf("empty env should disable the prompt, got %v", off)
-	}
-	// Custom env overrides the default.
-	t.Setenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "be terse")
-	if cust := withVoicePrompt([]string{"claude"}); len(cust) != 3 || cust[2] != "be terse" {
-		t.Errorf("custom env not applied, got %v", cust)
 	}
 }

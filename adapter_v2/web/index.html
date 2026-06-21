@@ -85,24 +85,14 @@
     //   3. a fresh random id         (first ever visit)
     // Whatever we resolve is written back to BOTH localStorage and the URL
     // (without reloading) so a later refresh reconnects to the same session.
+    //   1. ?session=<id> in the URL  → that specific session (future session-browser)
+    //   2. (default) no id            → the server's shared "default active" session,
+    //                                    i.e. the one the BBClaw device is driving, so
+    //                                    opening the web UI joins the device's live
+    //                                    conversation. We send NO session param and let
+    //                                    the server resolve the default.
     function resolveSessionId() {
-      const params = new URLSearchParams(location.search);
-      let id = params.get("session");
-      if (!id) {
-        id = localStorage.getItem("bbclaw.session");
-      }
-      if (!id) {
-        // crypto.randomUUID is available in every browser that ships modern
-        // xterm.js; fall back to a timestamp+random id just in case.
-        id = (crypto.randomUUID && crypto.randomUUID()) ||
-          `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      }
-      localStorage.setItem("bbclaw.session", id);
-      if (params.get("session") !== id) {
-        params.set("session", id);
-        history.replaceState(null, "", `${location.pathname}?${params}`);
-      }
-      return id;
+      return new URLSearchParams(location.search).get("session") || "";
     }
 
     const sessionId = resolveSessionId();
@@ -201,7 +191,10 @@
 
     function wsURL() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      return `${proto}//${location.host}/ws?session=${encodeURIComponent(sessionId)}`;
+      const base = `${proto}//${location.host}/ws`;
+      // Empty sessionId → omit the param so the server joins the shared default
+      // (device) session; a non-empty id selects a specific session.
+      return sessionId ? `${base}?session=${encodeURIComponent(sessionId)}` : base;
     }
 
     function send(msg) {

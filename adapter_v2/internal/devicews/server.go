@@ -284,8 +284,12 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		deviceID = "dev-anon-" + strconv.FormatUint(anonSeq.Add(1), 10)
 	}
 
-	// 2. session + bridge (the bridge's sink AND events are this conn).
-	sess, err := s.mgr.GetOrCreate(deviceID, ptyhost.Config{
+	// 2. session + bridge (the bridge's sink AND events are this conn). The LAN
+	// device drives the shared DEFAULT session (the one the web terminal joins and
+	// the cloud relay also targets), not a per-device session — so device and web
+	// share one PTY. deviceID is kept for logging/echo only. (P1: single default
+	// session; per-device sessions are a later phase.)
+	sess, err := s.mgr.GetOrCreate(session.DefaultID, ptyhost.Config{
 		Argv:        s.argv,
 		Cwd:         s.cwd,
 		InitialSize: ptyhost.Size{Cols: uint16(s.cols), Rows: uint16(s.rows)},
@@ -302,6 +306,7 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		Rows:             s.rows,
 		StreamReplyDelta: s.streamDelta,
 		SegmentTTS:       s.segmentTTS,
+		Warmup:           true,
 	})
 	bridge.SetEvents(dc)
 	go bridge.Run(ctx)

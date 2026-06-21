@@ -147,6 +147,14 @@ type Config struct {
 	// cause a re-speak), so it is opt-in. Off → one-shot TTS of the full reply at
 	// turn end (the safe Phase A behaviour).
 	SegmentTTS bool
+
+	// Warmup makes Run drive the freshly-spawned claude past its startup — confirm
+	// the "trust this folder?" dialog and wait for the idle "❯" prompt — BEFORE the
+	// first turn is injected, so the first SubmitVoiceTurn isn't swallowed by the
+	// trust menu (which otherwise eats turn 1 → a 90s timeout, empty reply). The
+	// device paths (cloud relay, LAN) set it; tests that drive SubmitVoiceTurn
+	// without Run leave it off so they never block on the ready gate.
+	Warmup bool
 }
 
 const defaultPollInterval = 150 * time.Millisecond
@@ -185,6 +193,12 @@ type Bridge struct {
 	// policy (DESIGN.md §8): without it a barge-in's partial prior reply would
 	// stay in the baseline and leak into the next spoken turn.
 	rearm chan struct{}
+
+	// ready is closed once the session is ready for turns. With Config.Warmup it is
+	// closed by Run after warmup (trust cleared, idle prompt up); SubmitVoiceTurn
+	// blocks on it so the first turn isn't injected into claude's startup. Without
+	// Warmup it is closed at New, so SubmitVoiceTurn never waits.
+	ready chan struct{}
 }
 
 // New builds a device bridge over an existing session. asr/tts/sink supply the
@@ -194,7 +208,7 @@ func New(sess *session.Session, asr Recognizer, tts Synthesizer, sink DeviceSink
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
 	}
-	return &Bridge{
+	b := &Bridge{
 		sess:   sess,
 		asr:    asr,
 		tts:    tts,
@@ -202,7 +216,12 @@ func New(sess *session.Session, asr Recognizer, tts Synthesizer, sink DeviceSink
 		cfg:    cfg,
 		screen: vtscreen.New(cfg.Cols, cfg.Rows),
 		rearm:  make(chan struct{}, 1),
+		ready:  make(chan struct{}),
 	}
+	if !cfg.Warmup {
+		close(b.ready) // no warmup → SubmitVoiceTurn never gates
+	}
+	return b
 }
 
 // SetEvents attaches a turn-lifecycle observer. Call before Run. Passing nil
@@ -247,6 +266,10 @@ func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 	if isBlank(transcript) {
 		return nil
 	}
+	// Wait until the session is ready (warmup done: trust cleared, idle prompt up),
+	// so the first turn isn't swallowed by claude's startup. Closed at New when
+	// warmup is off, so this is a no-op for the non-device paths.
+	<-b.ready
 	// Interrupt ONLY a turn that is actually in flight (a barge-in). At an idle
 	// prompt there is nothing to abort, and a gratuitous ESC there is read as the
 	// start of an escape sequence that swallows the transcript's first character
@@ -313,6 +336,15 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 	b.screen.Feed(snapshot)
 
+	// Warmup: drive claude past startup (confirm the trust dialog, wait for the idle
+	// "❯" prompt) before accepting turns, then open the ready gate. Without it the
+	// first injected turn is swallowed by the trust menu. No-op (gate already open)
+	// when Config.Warmup is off.
+	if b.cfg.Warmup {
+		b.warmup(ctx, client)
+		close(b.ready)
+	}
+
 	ext := extract.New(b.screen)
 	det := &extract.Detector{}
 	ts := &turnStream{}
@@ -353,6 +385,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 			if !ok {
 				return ErrClosed // PTY exited; session closed the channel
 			}
+			b.reconcileMirrorSize()
 			b.screen.Feed(chunk)
 			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
@@ -378,6 +411,87 @@ func (b *Bridge) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+const (
+	// warmupTimeout bounds warmup so a CLI that never reaches an idle prompt can't
+	// wedge the device line; on timeout we open the gate and let the first turn try.
+	warmupTimeout = 20 * time.Second
+	// warmupMinWait is the minimum time before a "settled" screen counts as ready,
+	// so claude's trust dialog (which renders ~1-2s after spawn) has time to appear
+	// and be handled rather than being missed by an early settle.
+	warmupMinWait = 2500 * time.Millisecond
+	// warmupSettle is the quiet window (no new PTY bytes) that, for a CLI without
+	// claude's "❯" glyph, signals it has finished booting and is ready for input.
+	warmupSettle = 800 * time.Millisecond
+)
+
+// warmup consumes PTY output until the freshly-spawned CLI is ready for a turn.
+// claude shows a "trust this folder?" dialog the first time it runs in a new cwd;
+// left alone, the first injected transcript lands IN that menu (its Enter just
+// confirms trust) and the turn is lost to a 90s timeout. So warmup confirms the
+// dialog (Enter = the default "1. Yes, I trust") and waits until the CLI is at its
+// idle input prompt — detected by claude's "❯" glyph, or, for a generic CLI, by
+// output going quiet after a minimum wait. Bounded by warmupTimeout.
+func (b *Bridge) warmup(ctx context.Context, client *session.Client) {
+	start := time.Now()
+	deadline := time.After(warmupTimeout)
+	tick := time.NewTicker(b.cfg.PollInterval)
+	defer tick.Stop()
+	var lastByte time.Time
+	trustCleared := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			return // proceed anyway — an early turn beats a permanent wedge
+		case chunk, ok := <-client.Out:
+			if !ok {
+				return // PTY exited
+			}
+			b.screen.Feed(chunk)
+			lastByte = time.Now()
+		case <-tick.C:
+		}
+		visible := b.screen.VisibleText()
+		if isTrustPrompt(visible) {
+			if !trustCleared {
+				_ = b.sess.Write([]byte(enterKey)) // confirm the default "1. Yes, I trust"
+				trustCleared = true
+			}
+			continue // wait for the dialog to clear before declaring ready
+		}
+		if strings.Contains(visible, "❯") {
+			return // claude's idle input prompt is up → ready
+		}
+		if !lastByte.IsZero() && time.Since(start) > warmupMinWait && time.Since(lastByte) > warmupSettle {
+			return // generic CLI: booted and quiet → ready
+		}
+	}
+}
+
+// reconcileMirrorSize keeps the Bridge's private VT mirror the same size as the
+// shared session grid. The default session is shared: a web terminal client can
+// resize the PTY (termchan forwards resize regardless of write ownership), which
+// reflows claude's output. If the mirror stayed at its construction size the
+// reflowed bytes would wrap differently than the live PTY and corrupt extraction
+// (the "mirror != PTY" hazard). Called each loop before feeding new bytes.
+func (b *Bridge) reconcileMirrorSize() {
+	sz := b.sess.Size()
+	if sz.Cols == 0 || sz.Rows == 0 {
+		return
+	}
+	if cols, rows := b.screen.Size(); cols != int(sz.Cols) || rows != int(sz.Rows) {
+		b.screen.Resize(int(sz.Cols), int(sz.Rows))
+	}
+}
+
+// isTrustPrompt reports whether the screen is claude's first-run "trust this
+// folder?" safety dialog (matched on its stable option/body wording).
+func isTrustPrompt(visible string) bool {
+	return strings.Contains(visible, "trust this folder") ||
+		strings.Contains(visible, "trust the files")
 }
 
 // turnStream is Run's per-turn streaming state for Phase B: what reply text has

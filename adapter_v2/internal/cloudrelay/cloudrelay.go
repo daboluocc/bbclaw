@@ -31,6 +31,7 @@ import (
 	"nhooyr.io/websocket/wsjson"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -122,35 +123,13 @@ type Relay struct {
 	log     func(format string, args ...any)
 }
 
-// New builds a Relay. argv/cwd is the CLI each per-device PTY session drives
-// (same as the LAN device line). log is the line logger (e.g. log.Printf).
-func New(cfg Config, argv []string, cwd string, log func(string, ...any)) *Relay {
-	return &Relay{cfg: cfg, bridges: newBridgeManager(withVoicePrompt(argv), cwd), log: log}
-}
-
-// defaultVoicePrompt keeps cloud-relayed replies short and speakable. Raw claude
-// answers in full CLI prose (lists, code blocks, multi-paragraph), which the cloud
-// then reads aloud in full — far too much for a voice device. Override with
-// ADAPTER_V2_VOICE_SYSTEM_PROMPT; set it empty to disable.
-const defaultVoicePrompt = "你是通过语音设备对话的助手。回答必须简短、口语化，控制在1-2句话以内；不要使用列表、代码块、标题或长篇解释，直接说重点。"
-
-// withVoicePrompt appends the voice persona via claude's --append-system-prompt,
-// scoped to the cloud-relay PTYs only (the web terminal keeps full claude). Only
-// applied to a claude CLI — the flag is claude-specific — so other CLIs are left
-// untouched. An empty prompt (env set to "") disables it.
-func withVoicePrompt(argv []string) []string {
-	if len(argv) == 0 || !strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude") {
-		return argv
-	}
-	prompt := defaultVoicePrompt
-	if v, ok := os.LookupEnv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"); ok {
-		prompt = v
-	}
-	if strings.TrimSpace(prompt) == "" {
-		return argv
-	}
-	out := append([]string{}, argv...)
-	return append(out, "--append-system-prompt", prompt)
+// New builds a Relay sharing the given session.Manager (so the device's voice
+// turns drive the SAME default session the web terminal joins). argv/cwd is the
+// CLI the default session runs — caller passes it already persona-wrapped via
+// WithVoicePrompt so every entry point spawns the default session identically.
+// log is the line logger (e.g. log.Printf).
+func New(mgr *session.Manager, cfg Config, argv []string, cwd string, log func(string, ...any)) *Relay {
+	return &Relay{cfg: cfg, bridges: newBridgeManager(mgr, argv, cwd), log: log}
 }
 
 // Run connects to the cloud and serves relayed requests until ctx is cancelled,

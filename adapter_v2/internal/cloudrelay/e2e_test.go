@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -79,7 +81,7 @@ func TestE2ECloudRelayVoiceTurn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	relay := New(Config{
+	relay := New(session.NewManager(), Config{
 		CloudWSURL:     "ws" + strings.TrimPrefix(srv.URL, "http"),
 		HomeSiteID:     "11111111-1111-1111-1111-111111111111",
 		ReconnectDelay: time.Second,

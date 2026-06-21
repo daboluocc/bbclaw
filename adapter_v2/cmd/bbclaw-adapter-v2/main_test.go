@@ -63,7 +63,7 @@ func readReconnected(t *testing.T, conn *websocket.Conn) {
 // TestHealthz verifies the liveness probe returns 200 "ok".
 func TestHealthz(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -81,11 +81,41 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-// TestWSMissingSession rejects a /ws request with no session id (400) and does
-// not create a session.
-func TestWSMissingSession(t *testing.T) {
+// TestWSNoSessionJoinsDefault is the P1 core: a web terminal opened with no
+// ?session= attaches to the shared session.DefaultID (the one the device drives),
+// and an explicit ?session=default lands on the SAME session — so device and web
+// share one PTY.
+func TestWSNoSessionJoinsDefault(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	if mgr.Get(session.DefaultID) != nil {
+		t.Fatal("default session should not exist before any connection")
+	}
+	// No ?session= → resolves to the default session.
+	c1 := dialWS(t, wsURL+"/ws")
+	readReconnected(t, c1)
+	if mgr.Get(session.DefaultID) == nil {
+		t.Fatal("a no-session /ws connection must create/join the default session")
+	}
+	// Explicit ?session=default joins the very same session (no second spawn).
+	before := mgr.Get(session.DefaultID)
+	c2 := dialWS(t, wsURL+"/ws?session="+session.DefaultID)
+	readReconnected(t, c2)
+	if mgr.Get(session.DefaultID) != before {
+		t.Fatal("?session=default must join the existing default session, not spawn a new one")
+	}
+}
+
+// TestWSNonWebSocketRejected rejects a bare GET /ws (no WebSocket upgrade) with
+// 426 and, crucially, does NOT spawn a session — the upgrade is checked before
+// any GetOrCreate, so a probe can't start a CLI. (A missing ?session= is no
+// longer an error: it resolves to the shared default session.)
+func TestWSNonWebSocketRejected(t *testing.T) {
+	mgr := session.NewManager()
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/ws")
@@ -94,8 +124,11 @@ func TestWSMissingSession(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("status = %d, want 426", resp.StatusCode)
+	}
+	if mgr.Get(session.DefaultID) != nil {
+		t.Fatal("a non-WebSocket probe must not spawn the default session")
 	}
 }
 
@@ -104,7 +137,7 @@ func TestWSMissingSession(t *testing.T) {
 // the existing session rather than spawning a second process.
 func TestWSCreatesSessionOnce(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -143,7 +176,7 @@ func TestWSCreatesSessionOnce(t *testing.T) {
 // not swallow stray requests as the index page.
 func TestRouterUnknownPath(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -163,7 +196,7 @@ func TestRouterUnknownPath(t *testing.T) {
 // index.html can't silently drop the contract the server depends on.
 func TestWebClientServed(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/")
@@ -191,12 +224,12 @@ func TestWebClientServed(t *testing.T) {
 	}{
 		{"loads xterm.js", "xterm"},
 		{"loads the fit addon", "addon-fit"},
-		{"opens the session websocket", "/ws?session="},
+		{"opens the terminal websocket", "/ws"},
 		{"sends input frames", `"input"`},
 		{"sends resize frames", `"resize"`},
 		{"handles reconnected replay", "reconnected"},
 		{"writes output frames", "output"},
-		{"persists session id for refresh", "localStorage"},
+		{"resolves session from the query (default = shared session)", "URLSearchParams"},
 	}
 	for _, w := range wants {
 		t.Run(w.name, func(t *testing.T) {
@@ -212,7 +245,7 @@ func TestWebClientServed(t *testing.T) {
 // must dispatch those to their own handlers, not to the static index page.
 func TestSpecificRoutesWinOverWebRoot(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig()))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
 	t.Cleanup(srv.Close)
 
 	tests := []struct {
@@ -228,9 +261,9 @@ func TestSpecificRoutesWinOverWebRoot(t *testing.T) {
 			wantBody:   "ok",
 		},
 		{
-			name:       "ws without session still 400s",
+			name:       "ws claimed by ws handler (426, not web root)",
 			path:       "/ws",
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusUpgradeRequired,
 		},
 	}
 	for _, tt := range tests {
