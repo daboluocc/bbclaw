@@ -25,6 +25,14 @@ import (
 // transient write error.
 var ErrClosed = errors.New("session: pty closed")
 
+// DefaultID is the well-known id of the "default active" session that the device
+// takes over and the web terminal joins by default (no ?session=). The device
+// (LAN or cloud relay) and the web client resolve to this same id so they attach
+// to ONE shared PTY — the device extracts voice off it while the web client views
+// the raw terminal. (P1 of the unified session model: single default session;
+// per-logical-session ids and a web session-browser come later.)
+const DefaultID = "default"
+
 // detachTimeout is how long a session may sit with no clients before the GC
 // reaps it (and kills the child). Mirrors dinotty's 300s cleanup window.
 const detachTimeout = 5 * time.Minute

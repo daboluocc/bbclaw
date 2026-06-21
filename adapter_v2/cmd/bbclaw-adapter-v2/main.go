@@ -32,6 +32,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
@@ -56,9 +57,22 @@ func main() {
 	cfg := config.LoadFromEnv()
 	mgr := session.NewManager()
 
+	// The shared "default active" session is a butler session (ported from v1):
+	// claude runs IN the butler workspace (so it loads CLAUDE.md natively) with the
+	// device persona appended. The device (LAN + cloud relay) and the web terminal
+	// all spawn session.DefaultID with THIS exact argv + cwd, attaching to one
+	// identical PTY. ADAPTER_V2_CWD overrides the workspace dir; otherwise the
+	// dedicated ~/.bbclaw-adapter-v2/workspace is created + scaffolded.
+	defaultCwd, err := butler.EnsureWorkspace(cfg.Cwd)
+	if err != nil {
+		log.Fatalf("bbclaw-adapter-v2: butler workspace: %v", err)
+	}
+	defaultArgv := butler.AppendDevicePersona(cfg.Argv, defaultCwd)
+	log.Printf("bbclaw-adapter-v2: butler workspace %s", defaultCwd)
+
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg),
+		Handler: newRouter(mgr, cfg, defaultArgv, defaultCwd),
 	}
 
 	// Cloud relay (SaaS): when CLOUD_WS_URL is set, register with the BBClaw Cloud
@@ -72,7 +86,7 @@ func main() {
 		if rc, err := cloudrelay.LoadConfig(); err != nil {
 			log.Printf("bbclaw-adapter-v2: cloud relay disabled (config error): %v", err)
 		} else {
-			relay := cloudrelay.New(rc, cfg.Argv, cfg.Cwd, log.Printf)
+			relay := cloudrelay.New(mgr, rc, defaultArgv, defaultCwd, log.Printf)
 			go relay.Run(relayCtx)
 		}
 	}
@@ -114,9 +128,9 @@ func main() {
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, defaultArgv []string, defaultCwd string) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", wsHandler(mgr, cfg))
+	mux.HandleFunc("/ws", wsHandler(mgr, cfg, defaultArgv, defaultCwd))
 	mux.HandleFunc("/healthz", healthzHandler)
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
@@ -131,7 +145,7 @@ func newRouter(mgr *session.Manager, cfg config.Config) http.Handler {
 	streamDelta := envBool("ADAPTER_V2_STREAM_DELTA", true)
 	segmentTTS := envBool("ADAPTER_V2_SEGMENT_TTS", false)
 	log.Printf("bbclaw-adapter-v2: device line ASR=%s TTS=%s streamDelta=%v segmentTTS=%v", asrMode, ttsMode, streamDelta, segmentTTS)
-	devSrv := devicews.New(mgr, rec, syn, cfg.Argv, cfg.Cwd, devicews.Options{
+	devSrv := devicews.New(mgr, rec, syn, defaultArgv, defaultCwd, devicews.Options{
 		Decode:           voicekit.DecodeUplink,
 		StreamReplyDelta: streamDelta,
 		SegmentTTS:       segmentTTS,
@@ -169,37 +183,45 @@ func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 // the configured default CLI argv — so the first client to ask for an id starts
 // the CLI and every later client (or a reconnecting one) joins the same live
 // session and replays its screen.
-func wsHandler(mgr *session.Manager, cfg config.Config) http.HandlerFunc {
+func wsHandler(mgr *session.Manager, cfg config.Config, defaultArgv []string, defaultCwd string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// No ?session= → the shared default session (the one the device drives), so
+		// opening the web UI joins the device's live conversation. An explicit
+		// ?session=<id> selects another session (the future web session-browser);
+		// only the default session carries the butler persona + workspace cwd.
 		id := r.URL.Query().Get("session")
+		argv, cwd := cfg.Argv, cfg.Cwd
 		if id == "" {
-			http.Error(w, "missing session id", http.StatusBadRequest)
-			return
+			id = session.DefaultID
+		}
+		if id == session.DefaultID {
+			argv, cwd = defaultArgv, defaultCwd
 		}
 
-		// Create-if-absent, atomically: the first request for an id spawns the
-		// CLI; later requests for the same id (and any concurrent first request
-		// for the same id) attach to the same session. GetOrCreate serializes the
-		// race so two simultaneous first connections cannot each spawn a PTY and
-		// leak the loser.
-		sess, err := mgr.GetOrCreate(id, ptyhost.Config{
-			Argv: cfg.Argv,
-			Cwd:  cfg.Cwd,
-		})
-		if err != nil {
-			log.Printf("bbclaw-adapter-v2: create session %q: %v", id, err)
-			http.Error(w, "failed to start session", http.StatusInternalServerError)
-			return
-		}
-
-		// Accept the WebSocket only after we have a session to serve, so a failed
-		// spawn surfaces as an HTTP error rather than a confusing post-upgrade
-		// close. CompressionDisabled keeps the raw terminal byte stream verbatim.
+		// Accept the WebSocket upgrade FIRST, before touching the session, so a
+		// non-WebSocket probe (a bare GET /ws, a health check) is rejected with
+		// 426 and NEVER spawns a CLI. CompressionDisabled keeps the raw terminal
+		// byte stream verbatim.
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			CompressionMode: websocket.CompressionDisabled,
 		})
 		if err != nil {
 			// Accept already wrote the HTTP error response.
+			return
+		}
+
+		// Create-if-absent, atomically: the first connection for an id spawns the
+		// CLI; later connections for the same id attach to the same session.
+		// GetOrCreate serializes the race so two simultaneous first connections
+		// cannot each spawn a PTY and leak the loser. A spawn failure now closes
+		// the just-accepted WebSocket (we are past the HTTP response).
+		sess, err := mgr.GetOrCreate(id, ptyhost.Config{
+			Argv: argv,
+			Cwd:  cwd,
+		})
+		if err != nil {
+			log.Printf("bbclaw-adapter-v2: create session %q: %v", id, err)
+			conn.Close(websocket.StatusInternalError, "failed to start session")
 			return
 		}
 

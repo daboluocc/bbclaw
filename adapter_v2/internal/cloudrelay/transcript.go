@@ -135,17 +135,29 @@ type bridgeManager struct {
 	bridges map[string]*cloudBridge
 }
 
-func newBridgeManager(argv []string, cwd string) *bridgeManager {
-	return &bridgeManager{mgr: session.NewManager(), argv: argv, cwd: cwd, bridges: map[string]*cloudBridge{}}
+func newBridgeManager(mgr *session.Manager, argv []string, cwd string) *bridgeManager {
+	return &bridgeManager{mgr: mgr, argv: argv, cwd: cwd, bridges: map[string]*cloudBridge{}}
 }
 
+// get returns the cloud relay's bridge onto the shared DEFAULT session. The
+// deviceID is kept for logging/echo only; in P1 every relayed device drives the
+// single default session (the one the web terminal also joins), so the Bridge and
+// session are keyed on session.DefaultID, not the device id. (Per-device default
+// sessions are a later phase.)
 func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cb, ok := m.bridges[deviceID]; ok {
-		return cb, nil
+	if cb, ok := m.bridges[session.DefaultID]; ok {
+		// Reuse the cached bridge only if its session is still the live one. If the
+		// PTY exited, the Manager evicted that session (onExit), so Get no longer
+		// returns it — the cached bridge is dead (its Run returned, writes give
+		// ErrClosed). Drop it and rebuild below so voice recovers without a restart.
+		if m.mgr.Get(session.DefaultID) == cb.sess {
+			return cb, nil
+		}
+		delete(m.bridges, session.DefaultID)
 	}
-	sess, err := m.mgr.GetOrCreate(deviceID, ptyhost.Config{Argv: m.argv, Cwd: m.cwd})
+	sess, err := m.mgr.GetOrCreate(session.DefaultID, ptyhost.Config{Argv: m.argv, Cwd: m.cwd})
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +165,11 @@ func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 	// asr/tts/sink are nil: this path is text-only (cloud does ASR/TTS). The
 	// Bridge injects the transcript and extracts the reply; the events observer
 	// streams that reply text to the cloud. StreamReplyDelta on → live deltas.
-	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{StreamReplyDelta: true})
+	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{StreamReplyDelta: true, Warmup: true})
 	bridge.SetEvents(ev)
 	go bridge.Run(context.Background())
 	cb := &cloudBridge{sess: sess, bridge: bridge, ev: ev}
-	m.bridges[deviceID] = cb
+	m.bridges[session.DefaultID] = cb
 	return cb, nil
 }
 
