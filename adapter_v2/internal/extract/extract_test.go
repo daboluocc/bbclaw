@@ -265,3 +265,26 @@ func TestExtractFallbackStillWorksForMarkerlessCLI(t *testing.T) {
 		t.Errorf("marker-less diff fallback regressed: %q", r.Text)
 	}
 }
+
+// Regression: claude v2 lays out a multi-paragraph reply's later paragraphs at
+// column 0 (flush-left), not as 2-space-indented continuations. The extractor
+// must capture the WHOLE reply up to the "✻ … for Ns" completion summary, not
+// truncate at the first flush-left paragraph (the on-device bug where only
+// "你好你好,我在呢!" was spoken and the follow-up paragraph was dropped).
+func TestExtractMarkerBlockFlushLeftParagraphs(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"⏺ 你好你好,我在呢!\r\n" +
+		"\r\n" +
+		"对了,咱们还没正式认识——我该怎么称呼你?\r\n" + // flush-left 2nd paragraph
+		"✻ Worked for 2s\r\n" + // completion summary → reply ends here
+		"❯ \r\n"))
+	r, _ := ext.OnOutput()
+	if !strings.Contains(r.Text, "你好你好,我在呢!") || !strings.Contains(r.Text, "对了,咱们还没正式认识") {
+		t.Errorf("flush-left 2nd paragraph dropped: %q", r.Text)
+	}
+	if strings.Contains(r.Text, "Worked for") || strings.Contains(r.Text, "❯") {
+		t.Errorf("reply leaked the completion summary / prompt: %q", r.Text)
+	}
+}
