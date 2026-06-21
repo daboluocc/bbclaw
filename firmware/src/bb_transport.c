@@ -12,12 +12,20 @@ static int is_cloud_profile(void) {
   return strcasecmp(BBCLAW_TRANSPORT_PROFILE, "cloud_saas") == 0;
 }
 
+static int is_v2_profile(void) {
+  return strcasecmp(BBCLAW_TRANSPORT_PROFILE, "local_home_v2") == 0;
+}
+
 const char* bb_transport_profile_name(void) {
   return BBCLAW_TRANSPORT_PROFILE;
 }
 
 int bb_transport_is_cloud_saas(void) {
   return is_cloud_profile();
+}
+
+int bb_transport_is_v2(void) {
+  return is_v2_profile();
 }
 
 int bb_transport_supports_audio_streaming(void) {

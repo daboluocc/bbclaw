@@ -27,6 +27,9 @@ typedef struct {
 
 const char* bb_transport_profile_name(void);
 int bb_transport_is_cloud_saas(void);
+/** True when the build targets adapter_v2 over the bbwire/2 WS protocol
+ * (Transport Profile "local_home_v2"). See bb_bbwire2.h / adapter_v2 docs. */
+int bb_transport_is_v2(void);
 int bb_transport_supports_audio_streaming(void);
 int bb_transport_supports_tts(void);
 int bb_transport_supports_display(void);
