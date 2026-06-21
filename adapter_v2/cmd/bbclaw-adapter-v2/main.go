@@ -32,6 +32,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
@@ -60,6 +61,22 @@ func main() {
 		Handler: newRouter(mgr, cfg),
 	}
 
+	// Cloud relay (SaaS): when CLOUD_WS_URL is set, register with the BBClaw Cloud
+	// as a HomeAdapter so the device can pick adapter_v2 in its sites.list and have
+	// voice relayed here (cloud does ASR/TTS; we inject the transcript into a PTY
+	// and return the reply text). Runs alongside the LAN /v2/dev/ws device line.
+	// relayCtx is cancelled on shutdown so the relay stops dialing + closes its WS.
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	defer stopRelay()
+	if cloudrelay.Enabled() {
+		if rc, err := cloudrelay.LoadConfig(); err != nil {
+			log.Printf("bbclaw-adapter-v2: cloud relay disabled (config error): %v", err)
+		} else {
+			relay := cloudrelay.New(rc, cfg.Argv, cfg.Cwd, log.Printf)
+			go relay.Run(relayCtx)
+		}
+	}
+
 	// Run the listener in the background so main can block on signals and then
 	// drive a graceful shutdown. serveErr surfaces a startup failure (e.g. the
 	// port is already taken) so we don't hang waiting for a signal that the
@@ -82,6 +99,7 @@ func main() {
 	case s := <-sig:
 		log.Printf("bbclaw-adapter-v2: received %s, shutting down", s)
 	}
+	stopRelay() // stop the cloud relay's dial/reconnect loop and close its WS
 
 	// Graceful shutdown: stop accepting new connections and give in-flight
 	// handlers a bounded window to finish. Sessions themselves outlive the
