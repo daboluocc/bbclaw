@@ -19,6 +19,14 @@ CURDIR  ?= $(shell pwd)
 BIN_DIR ?= $(CURDIR)/bin
 BIN_NAME ?= bbclaw-adapter-v2
 
+# Version stamps injected via -ldflags -X (matches v1's adapter Makefile). The
+# tag comes from `git describe` locally; release CI overrides BBCLAW_BUILD_TAG
+# with the release version (the v* git tag).
+REPO_ROOT         ?= $(abspath $(CURDIR)/..)
+BBCLAW_BUILD_TAG  ?= $(shell git -C "$(REPO_ROOT)" describe --tags --always --dirty 2>/dev/null || echo dev)
+BBCLAW_BUILD_TIME ?= $(shell date -u +%Y%m%d-%H%M)
+GO_LDFLAGS := -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
+
 # `make run` knobs (all overridable):
 #   ADDR  listen address           (default :18090)
 #   CLI   CLI to drive under a PTY  (default claude; auto-resolves the install)
@@ -43,7 +51,7 @@ help:
 
 build:
 	@mkdir -p "$(BIN_DIR)"
-	$(GO) build -o "$(BIN_DIR)/$(BIN_NAME)" ./cmd/bbclaw-adapter-v2
+	$(GO) build -trimpath -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/$(BIN_NAME)" ./cmd/bbclaw-adapter-v2
 
 # Build then run the server in the foreground (Ctrl-C to stop). Open
 # http://localhost$(ADDR) in a browser to take over the CLI's real terminal;

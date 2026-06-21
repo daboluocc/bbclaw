@@ -30,12 +30,13 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/termchan"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/voicekit"
 	"github.com/daboluocc/bbclaw/adapter_v2/web"
 )
 
@@ -44,6 +45,12 @@ import (
 const shutdownTimeout = 5 * time.Second
 
 func main() {
+	if buildinfo.ShouldPrintVersion(os.Args[1:]) {
+		log.SetFlags(0)
+		log.Println(buildinfo.String("bbclaw-adapter-v2"))
+		return
+	}
+
 	cfg := config.LoadFromEnv()
 	mgr := session.NewManager()
 
@@ -94,12 +101,14 @@ func newRouter(mgr *session.Manager, cfg config.Config) http.Handler {
 	mux.HandleFunc("/healthz", healthzHandler)
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
-	// Real ASR/TTS (with codec negotiation) arrive with the shared voice module;
-	// until then a placeholder recognizer (fixed transcript) + the codec-correct
-	// SilentSynthesizer (pcm16) keep the endpoint live so a device or the sim
-	// script can exercise the transport end to end. NB: we deliberately do NOT use
-	// SayTTS here — it emits WAV, which the Phase A sink would mislabel as pcm16.
-	devSrv := devicews.New(mgr, deviceapi.StaticRecognizer{Text: "你好"}, deviceapi.SilentSynthesizer{}, cfg.Argv, cfg.Cwd, devicews.Options{})
+	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var
+	// names as v1: ASR_PROVIDER / TTS_PROVIDER / …). With nothing configured it
+	// falls back to a fixed-transcript recognizer + macOS `say` (or silent) TTS, so
+	// the endpoint is always live for the sim script / a device. Opus mic audio is
+	// decoded to PCM16 before ASR (ffmpeg).
+	rec, syn, asrMode, ttsMode := voicekit.FromEnv()
+	log.Printf("bbclaw-adapter-v2: device line ASR=%s TTS=%s", asrMode, ttsMode)
+	devSrv := devicews.New(mgr, rec, syn, cfg.Argv, cfg.Cwd, devicews.Options{Decode: voicekit.DecodeUplink})
 	mux.HandleFunc("/v2/dev/ws", devSrv.Handler())
 	// The embedded web client at "/". ServeMux prefers the more specific "/ws"
 	// and "/healthz" patterns over this catch-all, so the file server only sees

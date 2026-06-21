@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/daboluocc/bbclaw/voice v0.0.0
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
@@ -17,3 +18,5 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 )
+
+replace github.com/daboluocc/bbclaw/voice => ../voice

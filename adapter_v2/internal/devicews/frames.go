@@ -168,5 +168,6 @@ const (
 	codeASRTimeout = "ASR_TIMEOUT"
 	codeTTSFailed  = "TTS_FAILED"
 	codeBadProto   = "BAD_PROTO"
-	codeBusy       = "BUSY" // a ptt.start arrived while a turn was still in flight
+	codeBusy       = "BUSY"       // a ptt.start arrived while a turn was still in flight
+	codeBadAudio   = "BAD_AUDIO"  // uplink codec unsupported / decode failed (not an ASR timeout)
 )

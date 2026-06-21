@@ -19,6 +19,14 @@ import (
 // maxFrame bounds a single inbound WS frame (mic audio frames can be a few KB).
 const maxFrame = 1 << 20
 
+// Canonical ASR audio spec. Uplink is normalised to this (16 kHz mono PCM16)
+// before recognition, matching the fixed metadata the voicekit recognizer reports
+// — so a non-16 kHz mic (e.g. 48 kHz opus) is resampled, not mislabelled.
+const (
+	asrRate  = 16000
+	asrChans = 1
+)
+
 // anonSeq names sessions for hello frames that omit a device id.
 var anonSeq atomic.Uint64
 
@@ -33,14 +41,15 @@ type wsConn interface {
 // Server serves the bbwire/2 device protocol (Phase A) at one HTTP route. One
 // WebSocket connection = one device = one PTY session driven via a deviceapi.Bridge.
 type Server struct {
-	mgr  *session.Manager
-	asr  deviceapi.Recognizer // batch ASR over the buffered PTT utterance
-	tts  deviceapi.Synthesizer
-	argv []string // default CLI to spawn under the PTY
-	cwd  string
-	auth string // shared secret; "" disables auth (dev/LAN)
-	cols int
-	rows int
+	mgr    *session.Manager
+	asr    deviceapi.Recognizer // batch ASR over the buffered PTT utterance
+	tts    deviceapi.Synthesizer
+	argv   []string // default CLI to spawn under the PTY
+	cwd    string
+	auth   string // shared secret; "" disables auth (dev/LAN)
+	cols   int
+	rows   int
+	decode func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
 }
 
 // Options carries the optional knobs for New.
@@ -48,6 +57,11 @@ type Options struct {
 	Auth string // shared secret expected in hello.auth; "" disables the check
 	Cols int    // PTY grid; defaults to 80
 	Rows int    // PTY grid; defaults to 24
+	// Decode, if set, converts a PTT utterance's mic audio to PCM16 before ASR
+	// (codec is the device's declared mic codec). nil means pcm16-passthrough
+	// only — an opus device then gets an ASR_TIMEOUT error. Wired to
+	// voicekit.DecodeUplink (which shells to ffmpeg for opus).
+	Decode func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
 }
 
 // New builds a device-WS server. asr/tts are the voice providers (a mock ASR and
@@ -59,7 +73,7 @@ func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesiz
 	if opt.Rows <= 0 {
 		opt.Rows = 24
 	}
-	return &Server{mgr: mgr, asr: asr, tts: tts, argv: argv, cwd: cwd, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows}
+	return &Server{mgr: mgr, asr: asr, tts: tts, argv: argv, cwd: cwd, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode}
 }
 
 // Handler upgrades GET /v2/dev/ws and runs one device session on it.
@@ -94,6 +108,7 @@ type deviceConn struct {
 	ctx  context.Context
 	conn wsConn
 	spk  audioSpec
+	mic  audioSpec // device's declared uplink mic spec (codec/rate/ch), for decode + ASR
 
 	writeMu sync.Mutex
 
@@ -207,7 +222,7 @@ func (c *deviceConn) TurnIdle() {
 func (s *Server) serve(parent context.Context, conn wsConn) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	dc := &deviceConn{ctx: ctx, conn: conn, spk: defaultSpk()}
+	dc := &deviceConn{ctx: ctx, conn: conn, spk: defaultSpk(), mic: defaultMic()}
 
 	// 1. hello handshake (first frame, TEXT).
 	typ, data, err := conn.Read(ctx)
@@ -235,6 +250,9 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 	}
 	if hello.Spk != nil && hello.Spk.Codec != "" {
 		dc.spk = *hello.Spk
+	}
+	if hello.Mic != nil && hello.Mic.Codec != "" {
+		dc.mic = *hello.Mic
 	}
 
 	deviceID := strings.TrimSpace(hello.Dev)
@@ -320,7 +338,28 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 func (s *Server) finishTurn(ctx context.Context, dc *deviceConn, bridge *deviceapi.Bridge, turnID string, audio []byte) bool {
 	var text string
 	if s.asr != nil && len(audio) > 0 {
-		t, err := s.asr.Transcribe(ctx, audio)
+		// Normalise mic audio to the canonical ASR rate (PCM16 16 kHz mono) before
+		// ASR — matching v1's normalize-before-ASR and the fixed spec the voicekit
+		// recognizer reports. Opus is decoded+resampled to asrRate/asrChans by the
+		// configured decoder (ffmpeg); PCM16 passes through (the device contract is
+		// 16 kHz mono, so no resample is needed for it). The target is canonical, NOT
+		// the device's declared mic rate, so a 48 kHz opus mic still reaches ASR as
+		// 16 kHz — otherwise the recognizer's fixed 16 kHz metadata would lie.
+		pcm := audio
+		mic := strings.ToLower(strings.TrimSpace(dc.mic.Codec))
+		if mic != "" && mic != "pcm16" && mic != "pcm_s16le" {
+			if s.decode == nil {
+				_ = dc.writeCtrl(errFrame{T: "error", TurnID: turnID, Code: codeBadAudio, Detail: "no decoder for codec " + mic})
+				return false
+			}
+			d, err := s.decode(ctx, mic, asrRate, asrChans, audio)
+			if err != nil {
+				_ = dc.writeCtrl(errFrame{T: "error", TurnID: turnID, Code: codeBadAudio, Detail: "decode: " + err.Error()})
+				return false
+			}
+			pcm = d
+		}
+		t, err := s.asr.Transcribe(ctx, pcm)
 		if err != nil {
 			_ = dc.writeCtrl(errFrame{T: "error", TurnID: turnID, Code: codeASRTimeout, Detail: err.Error()})
 			return false
@@ -343,3 +382,7 @@ func (s *Server) finishTurn(ctx context.Context, dc *deviceConn, bridge *devicea
 
 // defaultSpk is the assumed device speaker stream when hello omits it.
 func defaultSpk() audioSpec { return audioSpec{Codec: "pcm16", Rate: 16000, Ch: 1} }
+
+// defaultMic is the assumed device mic stream when hello omits it (PCM16 16k mono,
+// so the no-codec path needs no decoder).
+func defaultMic() audioSpec { return audioSpec{Codec: "pcm16", Rate: 16000, Ch: 1} }

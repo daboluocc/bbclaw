@@ -20,15 +20,15 @@ import (
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/driverstate"
 	"github.com/daboluocc/bbclaw/adapter/internal/agent/logicalsession"
-	"github.com/daboluocc/bbclaw/adapter/internal/asr"
-	"github.com/daboluocc/bbclaw/adapter/internal/audio"
+	"github.com/daboluocc/bbclaw/voice/asr"
+	"github.com/daboluocc/bbclaw/voice/audio"
 	"github.com/daboluocc/bbclaw/adapter/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter/internal/config"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
 	"github.com/daboluocc/bbclaw/adapter/internal/openclaw"
 	"github.com/daboluocc/bbclaw/adapter/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter/internal/settingsstore"
-	"github.com/daboluocc/bbclaw/adapter/internal/tts"
+	"github.com/daboluocc/bbclaw/voice/tts"
 )
 
 type AppConfig struct {
