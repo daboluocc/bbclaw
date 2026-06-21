@@ -125,7 +125,32 @@ type Relay struct {
 // New builds a Relay. argv/cwd is the CLI each per-device PTY session drives
 // (same as the LAN device line). log is the line logger (e.g. log.Printf).
 func New(cfg Config, argv []string, cwd string, log func(string, ...any)) *Relay {
-	return &Relay{cfg: cfg, bridges: newBridgeManager(argv, cwd), log: log}
+	return &Relay{cfg: cfg, bridges: newBridgeManager(withVoicePrompt(argv), cwd), log: log}
+}
+
+// defaultVoicePrompt keeps cloud-relayed replies short and speakable. Raw claude
+// answers in full CLI prose (lists, code blocks, multi-paragraph), which the cloud
+// then reads aloud in full — far too much for a voice device. Override with
+// ADAPTER_V2_VOICE_SYSTEM_PROMPT; set it empty to disable.
+const defaultVoicePrompt = "你是通过语音设备对话的助手。回答必须简短、口语化，控制在1-2句话以内；不要使用列表、代码块、标题或长篇解释，直接说重点。"
+
+// withVoicePrompt appends the voice persona via claude's --append-system-prompt,
+// scoped to the cloud-relay PTYs only (the web terminal keeps full claude). Only
+// applied to a claude CLI — the flag is claude-specific — so other CLIs are left
+// untouched. An empty prompt (env set to "") disables it.
+func withVoicePrompt(argv []string) []string {
+	if len(argv) == 0 || !strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude") {
+		return argv
+	}
+	prompt := defaultVoicePrompt
+	if v, ok := os.LookupEnv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"); ok {
+		prompt = v
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return argv
+	}
+	out := append([]string{}, argv...)
+	return append(out, "--append-system-prompt", prompt)
 }
 
 // Run connects to the cloud and serves relayed requests until ctx is cancelled,
@@ -242,12 +267,12 @@ func (r *Relay) announceCode(env Envelope) {
 	r.log("cloudrelay: └──────────────────────────────────────────────┘")
 }
 
-// handleRequest dispatches a cloud request. Only voice.transcript is served (the
-// voice path); other kinds (agent-bus proxy features) are silently ignored, which
-// the cloud tolerates (v1's handleRequest default is a no-op too).
+// handleRequest dispatches a cloud request. voice.transcript is the voice path;
+// the agent.* / chat.* / menu kinds are the device settings-page proxy requests,
+// answered with minimal static replies so the settings UI doesn't hang. Anything
+// else is silently ignored (the cloud tolerates a no-op, like v1's default).
 func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, env Envelope) {
-	switch strings.ToLower(strings.TrimSpace(env.Kind)) {
-	case "voice.transcript":
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "voice.transcript") {
 		if err := r.handleTranscript(ctx, write, env); err != nil {
 			r.log("cloudrelay: transcript device=%s error: %v", env.DeviceID, err)
 			_ = write(Envelope{
@@ -256,9 +281,11 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 				Payload: map[string]any{"ok": false, "error": err.Error()},
 			})
 		}
-	default:
-		// Unsupported kind — ignore (cloud tolerates a silent no-op).
+		return
 	}
+	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a
+	// minimal static reply; unknown kinds fall through to a silent no-op.
+	r.handleAgentProxy(write, env)
 }
 
 // ── small helpers ───────────────────────────────────────────────────────────
