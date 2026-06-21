@@ -149,9 +149,12 @@ func extractMarkerBlock(visible string) (string, bool) {
 			block = append(block, "") // keep interior blanks (paragraph breaks)
 			continue
 		}
-		// A continuation line is indented; anything flush-left, or any noise line,
-		// ends the reply block (the "✻ … for Ns" summary, box rules, prompt, footer).
-		if isNoiseLine(l) || !strings.HasPrefix(raw[k], "  ") {
+		// The reply runs until the first NOISE line — claude's "✻ … for Ns"
+		// completion summary, the idle prompt, box rules, or the status footer. We do
+		// NOT stop at a flush-left line: claude v2 lays out later reply paragraphs at
+		// column 0 (not only as 2-space-indented continuations), so requiring
+		// indentation truncated multi-paragraph replies to just the first paragraph.
+		if isNoiseLine(l) {
 			break
 		}
 		block = append(block, l)
