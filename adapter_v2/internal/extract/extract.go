@@ -99,6 +99,16 @@ func (e *Extractor) extract() string {
 		return reply
 	}
 
+	// No "⏺" assistant block on screen. If this IS claude (its "❯" prompt or the
+	// working spinner is visible), the assistant simply hasn't emitted its reply
+	// yet — return nothing rather than leaking the welcome banner / status chrome
+	// as a "reply" (which the device would otherwise speak, e.g. the whole startup
+	// screen on the first turn of a fresh session). The baseline-diff fallback
+	// below exists ONLY for genuinely marker-less CLIs that never render a "⏺".
+	if isClaudeScreen(visible) {
+		return ""
+	}
+
 	lines := contentLines(visible)
 	// Keep only lines not already present in the baseline. A reply line that
 	// happens to duplicate baseline text verbatim is rare and harmless to drop;
@@ -150,6 +160,36 @@ func extractMarkerBlock(visible string) (string, bool) {
 		block = block[:len(block)-1]
 	}
 	return strings.Join(block, "\n"), true
+}
+
+// isClaudeScreen reports whether the visible grid carries claude's signature
+// chrome — its "❯" input-prompt glyph or the working spinner — meaning this is a
+// claude session whose reply (a "⏺" block) is simply not on screen yet. Used to
+// suppress the diff fallback for claude so the welcome banner / status bar never
+// leak into the reply. Keyed on "❯" specifically (not a generic ">") so a real
+// marker-less CLI still gets the diff fallback.
+func isClaudeScreen(visible string) bool {
+	for _, line := range strings.Split(visible, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		if isSpinnerLine(t) {
+			return true
+		}
+		// A line opening with a box-drawing border glyph is claude's TUI chrome
+		// (welcome banner, input box, status bar are all boxed); the assistant
+		// reply block is never boxed. With no "⏺" present, a boxed line is chrome.
+		if r := []rune(t); len(r) > 0 && isBoxDrawingRune(r[0]) {
+			return true
+		}
+		// claude's prompt glyph "❯" at the start of the (border-stripped) line,
+		// whether idle ("❯") or echoing the user's text ("❯ …" / "❯ …").
+		if s := strings.TrimSpace(strings.TrimLeft(t, "│|")); strings.HasPrefix(s, "❯") {
+			return true
+		}
+	}
+	return false
 }
 
 // stripReplyMarker removes claude's assistant-turn bullet ("⏺ ", U+23FA) from the
