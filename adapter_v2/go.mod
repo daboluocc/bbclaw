@@ -12,13 +12,11 @@ go 1.22
 require (
 	github.com/creack/pty v1.1.24
 	github.com/daboluocc/bbclaw/voice v0.0.0
+	github.com/google/uuid v1.6.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	nhooyr.io/websocket v1.8.17
 )
 
-require (
-	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
-)
+require github.com/gorilla/websocket v1.5.3 // indirect
 
 replace github.com/daboluocc/bbclaw/voice => ../voice
