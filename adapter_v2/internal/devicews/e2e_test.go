@@ -8,14 +8,16 @@
 //   - ASR is a StaticRecognizer (transcript = "hello") standing in for real ASR,
 //   - TTS is the SilentSynthesizer (zero-filled PCM16) standing in for real TTS,
 //   - the agent is cmd/mockcli, a real separately-compiled process under a PTY.
+//
 // Everything between — the protocol framing, session/Bridge wiring, inject, PTY
 // reply scrape, boundary, and the binary-audio downlink — is the production path.
 //
 // Asserts the round-trip the protocol promises:
-//   hello → hello.ok
-//   ptt.start + BINARY mic frames + ptt.stop
-//     → asr.final{"hello"} → reply.end (contains "ANSWER: hello")
-//     → ≥1 BINARY downlink frame (streamKind=tts, flags.final) → turn{idle}
+//
+//	hello → hello.ok
+//	ptt.start + BINARY mic frames + ptt.stop
+//	  → asr.final{"hello"} → reply.end (contains "ANSWER: hello")
+//	  → ≥1 BINARY downlink frame (streamKind=tts, flags.final) → turn{idle}
 //
 // Build-tagged `e2e` so plain `go test ./...` stays fast and dep-free; run via
 // `make -C adapter_v2 e2e`.
@@ -42,7 +44,9 @@ func TestE2EDeviceRoundTrip(t *testing.T) {
 	bin := buildMockCLI(t)
 
 	mgr := session.NewManager()
-	srv := New(mgr, deviceapi.StaticRecognizer{Text: "hello"}, deviceapi.SilentSynthesizer{}, []string{bin}, "", Options{})
+	// StreamReplyDelta on so the round-trip also exercises the Phase B live-subtitle
+	// path (reply.delta) ahead of the authoritative reply.end.
+	srv := New(mgr, deviceapi.StaticRecognizer{Text: "hello"}, deviceapi.SilentSynthesizer{}, []string{bin}, "", Options{StreamReplyDelta: true})
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/v2/dev/ws"
@@ -77,6 +81,7 @@ func TestE2EDeviceRoundTrip(t *testing.T) {
 	// Collect downlink frames until turn{idle} or the context expires.
 	var (
 		sawASR, sawReplyEnd, sawIdle bool
+		sawReplyDelta                bool
 		replyText                    string
 		ttsFinalFrames               int
 	)
@@ -100,6 +105,10 @@ func TestE2EDeviceRoundTrip(t *testing.T) {
 			if m["text"] == "hello" {
 				sawASR = true
 			}
+		case "reply.delta":
+			if s, _ := m["text"].(string); strings.Contains(s, "ANSWER") {
+				sawReplyDelta = true
+			}
 		case "reply.end":
 			if s, _ := m["text"].(string); s != "" {
 				replyText = s
@@ -119,6 +128,9 @@ func TestE2EDeviceRoundTrip(t *testing.T) {
 	}
 	if !sawReplyEnd || !strings.Contains(replyText, "ANSWER: hello") {
 		t.Errorf("reply.end text = %q, want a substring \"ANSWER: hello\"", replyText)
+	}
+	if !sawReplyDelta {
+		t.Errorf("StreamReplyDelta on but no reply.delta frame carrying the reply arrived")
 	}
 	if ttsFinalFrames == 0 {
 		t.Errorf("never received a downlink TTS binary frame with flags.final")

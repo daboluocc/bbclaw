@@ -41,15 +41,17 @@ type wsConn interface {
 // Server serves the bbwire/2 device protocol (Phase A) at one HTTP route. One
 // WebSocket connection = one device = one PTY session driven via a deviceapi.Bridge.
 type Server struct {
-	mgr    *session.Manager
-	asr    deviceapi.Recognizer // batch ASR over the buffered PTT utterance
-	tts    deviceapi.Synthesizer
-	argv   []string // default CLI to spawn under the PTY
-	cwd    string
-	auth   string // shared secret; "" disables auth (dev/LAN)
-	cols   int
-	rows   int
-	decode func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
+	mgr         *session.Manager
+	asr         deviceapi.Recognizer // batch ASR over the buffered PTT utterance
+	tts         deviceapi.Synthesizer
+	argv        []string // default CLI to spawn under the PTY
+	cwd         string
+	auth        string // shared secret; "" disables auth (dev/LAN)
+	cols        int
+	rows        int
+	decode      func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
+	streamDelta bool
+	segmentTTS  bool
 }
 
 // Options carries the optional knobs for New.
@@ -62,6 +64,13 @@ type Options struct {
 	// only — an opus device then gets an ASR_TIMEOUT error. Wired to
 	// voicekit.DecodeUplink (which shells to ffmpeg for opus).
 	Decode func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
+
+	// StreamReplyDelta (Phase B) streams live reply.delta frames as the reply
+	// grows. Safe to default on (reply.end stays authoritative).
+	StreamReplyDelta bool
+	// SegmentTTS (Phase B) speaks the reply sentence-by-sentence instead of once at
+	// turn end. Opt-in (higher risk). Off → one-shot TTS (Phase A behaviour).
+	SegmentTTS bool
 }
 
 // New builds a device-WS server. asr/tts are the voice providers (a mock ASR and
@@ -73,7 +82,7 @@ func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesiz
 	if opt.Rows <= 0 {
 		opt.Rows = 24
 	}
-	return &Server{mgr: mgr, asr: asr, tts: tts, argv: argv, cwd: cwd, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode}
+	return &Server{mgr: mgr, asr: asr, tts: tts, argv: argv, cwd: cwd, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
 }
 
 // Handler upgrades GET /v2/dev/ws and runs one device session on it.
@@ -116,7 +125,8 @@ type deviceConn struct {
 	fsm       int
 	curTurnID string
 	curU      uint16
-	dnSeq     uint16 // downlink frame counter, reset per turn
+	dnSeq     uint16 // downlink TTS frame counter, reset per turn
+	deltaSeq  uint16 // reply.delta sequence counter, reset per turn
 }
 
 // tryBeginCapture opens a new turn iff the connection is idle, recording its
@@ -128,7 +138,7 @@ func (c *deviceConn) tryBeginCapture(turnID string, u uint16) bool {
 		return false
 	}
 	c.fsm = connCapturing
-	c.curTurnID, c.curU, c.dnSeq = turnID, u, 0
+	c.curTurnID, c.curU, c.dnSeq, c.deltaSeq = turnID, u, 0, 0
 	return true
 }
 
@@ -183,9 +193,12 @@ func (c *deviceConn) writeBin(b []byte) error {
 	return c.conn.Write(c.ctx, websocket.MessageBinary, b)
 }
 
-// Play implements deviceapi.DeviceSink: send one reply's synthesized audio as a
-// BINARY downlink frame. Phase A is one-shot per reply, so this single frame is
-// marked final; per-segment streaming is Phase B.
+// Play implements deviceapi.DeviceSink: send one synthesized audio unit as a
+// BINARY downlink frame, marked final. "Final" means end-of-playable-unit, not
+// end-of-turn (see flagFinal): under one-shot TTS the unit is the whole reply;
+// under per-segment TTS (Phase B) the Bridge calls Play once per sentence, so each
+// sentence is its own final frame the device plays on arrival. Turn end is the
+// separate turn{idle} control frame.
 func (c *deviceConn) Play(_ context.Context, audio []byte, format string) error {
 	c.mu.Lock()
 	u, seq := c.curU, c.dnSeq
@@ -199,6 +212,17 @@ func (c *deviceConn) Play(_ context.Context, audio []byte, format string) error 
 		Flags:      flagFinal,
 	}
 	return c.writeBin(h.encode(audio))
+}
+
+// ReplyDelta implements deviceapi.Events: a live snapshot of the growing reply →
+// reply.delta. text is the full current reply (the device replaces its subtitle),
+// each tagged with an incrementing per-turn seq.
+func (c *deviceConn) ReplyDelta(text string) {
+	c.mu.Lock()
+	turnID, seq := c.curTurnID, c.deltaSeq
+	c.deltaSeq++
+	c.mu.Unlock()
+	_ = c.writeCtrl(replyDelta{T: "reply.delta", TurnID: turnID, Seq: seq, Text: text})
 }
 
 // ReplyComplete implements deviceapi.Events: the turn's final text → reply.end.
@@ -273,7 +297,12 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 	}
 	// asr is nil on the Bridge: the handler runs ASR itself (so it can emit
 	// asr.final between recognition and injection); the Bridge only needs tts+sink.
-	bridge := deviceapi.New(sess, nil, s.tts, dc, deviceapi.Config{Cols: s.cols, Rows: s.rows})
+	bridge := deviceapi.New(sess, nil, s.tts, dc, deviceapi.Config{
+		Cols:             s.cols,
+		Rows:             s.rows,
+		StreamReplyDelta: s.streamDelta,
+		SegmentTTS:       s.segmentTTS,
+	})
 	bridge.SetEvents(dc)
 	go bridge.Run(ctx)
 

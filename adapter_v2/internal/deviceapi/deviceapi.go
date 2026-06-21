@@ -39,6 +39,7 @@ package deviceapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -109,6 +110,13 @@ type DeviceSink interface {
 // → TurnIdle (the device may speak again). A nil Events (the default) is a no-op,
 // so the voice-only Bridge is unaffected. Optional; set via SetEvents.
 type Events interface {
+	// ReplyDelta reports the assistant reply text AS IT GROWS during a turn (Phase
+	// B streaming), so the device screen can update live before the turn ends. The
+	// text is the FULL current reply (a snapshot, not an append-delta): the device
+	// replaces its subtitle with it, which is robust to the TUI rewriting/reflowing
+	// the line. Only emitted when Config.StreamReplyDelta is set; ReplyComplete is
+	// always the authoritative final text. The transport emits its reply.delta frame.
+	ReplyDelta(text string)
 	// ReplyComplete reports the final reply text of a turn, before it is spoken.
 	// The transport emits its reply.end frame here.
 	ReplyComplete(text string)
@@ -127,6 +135,18 @@ type Config struct {
 	// chunks, so a turn that ends on a quiet screen (no final byte to wake us) is
 	// still detected promptly. Defaults to a fraction of extract.Quiet.
 	PollInterval time.Duration
+
+	// StreamReplyDelta (Phase B) emits Events.ReplyDelta as the reply grows, for a
+	// live device subtitle. Low risk — ReplyComplete remains authoritative — so
+	// it is safe to default on. Off → the device only sees the reply at turn end.
+	StreamReplyDelta bool
+
+	// SegmentTTS (Phase B) speaks the reply sentence-by-sentence as it streams, so
+	// the speaker starts on sentence 1 while sentence 2 is still being scraped.
+	// Higher risk (sentence segmentation of in-progress text; a TUI rewrite can
+	// cause a re-speak), so it is opt-in. Off → one-shot TTS of the full reply at
+	// turn end (the safe Phase A behaviour).
+	SegmentTTS bool
 }
 
 const defaultPollInterval = 150 * time.Millisecond
@@ -295,9 +315,26 @@ func (b *Bridge) Run(ctx context.Context) error {
 
 	ext := extract.New(b.screen)
 	det := &extract.Detector{}
+	ts := &turnStream{}
 
 	ticker := time.NewTicker(b.cfg.PollInterval)
 	defer ticker.Stop()
+
+	// rebaseline starts a fresh turn: a new Extractor baselined on the current
+	// screen, a reset Detector, and cleared streaming state. It also captures the
+	// reply currently on screen as the turn's `seed`: claude's extractor surfaces
+	// the LAST "⏺" reply block regardless of baseline, so the PRIOR turn's reply is
+	// still extracted until this turn paints its own. onProgress suppresses its
+	// streaming side-effects while the extracted text equals that seed, so a new
+	// turn (or a barge-in) never streams/speaks the previous turn's answer — the
+	// Phase B analogue of the rearm guard in DESIGN.md §8. The boundary path
+	// (maybeSpeak) is unaffected, so an identical repeated reply is still spoken.
+	rebaseline := func() {
+		ext = extract.New(b.screen)
+		det.Reset()
+		seed, _ := ext.OnOutput()
+		*ts = turnStream{seed: seed.Text}
+	}
 
 	for {
 		select {
@@ -309,20 +346,23 @@ func (b *Bridge) Run(ctx context.Context) error {
 			// Re-baseline on the current screen — which, after the injected ESC, has
 			// the interrupted prior reply cleared back toward the idle prompt — so
 			// extract() excludes it, and restart the Detector's settle clock so the
-			// boundary fires on THIS turn, not the partial we just interrupted. This
-			// is the same re-arm maybeSpeak runs after a completed turn.
-			ext = extract.New(b.screen)
-			det.Reset()
+			// boundary fires on THIS turn, not the partial we just interrupted.
+			rebaseline()
 
 		case chunk, ok := <-client.Out:
 			if !ok {
 				return ErrClosed // PTY exited; session closed the channel
 			}
 			b.screen.Feed(chunk)
-			ext.OnOutput() // advance extracted text; we read it at boundary time
+			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
-			if err := b.maybeSpeak(ctx, det, &ext); err != nil {
+			if err := b.onProgress(ctx, reply.Text, ts); err != nil {
 				return err
+			}
+			if spoke, err := b.maybeSpeak(ctx, det, reply.Text, ts); err != nil {
+				return err
+			} else if spoke {
+				rebaseline()
 			}
 
 		case <-ticker.C:
@@ -330,31 +370,71 @@ func (b *Bridge) Run(ctx context.Context) error {
 			// screen (the settle window elapsing after the last chunk) is still
 			// detected without waiting for the next unrelated chunk.
 			det.Observe(time.Now(), b.screen, false)
-			if err := b.maybeSpeak(ctx, det, &ext); err != nil {
+			reply, _ := ext.OnOutput()
+			if spoke, err := b.maybeSpeak(ctx, det, reply.Text, ts); err != nil {
 				return err
+			} else if spoke {
+				rebaseline()
 			}
 		}
 	}
 }
 
-// maybeSpeak checks the turn boundary and, if the turn just completed, speaks the
-// extracted reply and re-arms the extractor for the next turn. extP points at the
-// caller's Extractor slot so a fresh Extractor (re-baselined on the current
-// screen) replaces it once the turn is consumed.
-func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, extP **extract.Extractor) error {
-	if !det.TurnEnded(time.Now()) {
+// turnStream is Run's per-turn streaming state for Phase B: what reply text has
+// been pushed as a delta, and what text has already been spoken sentence-by-
+// sentence. Reset at the start of every turn.
+type turnStream struct {
+	seed      string // the prior turn's reply, still on screen until this turn paints; suppressed by onProgress
+	lastDelta string // last full reply text emitted via Events.ReplyDelta
+	spoken    string // reply prefix already synthesised by per-segment TTS
+}
+
+// onProgress runs the Phase B streaming side-effects on each extraction advance:
+// emit a live reply.delta (snapshot of the full current reply) and, if per-
+// segment TTS is on, speak any newly-completed sentence. Both are no-ops under
+// the safe defaults (StreamReplyDelta off → no delta; SegmentTTS off → all audio
+// happens once at turn end in maybeSpeak).
+func (b *Bridge) onProgress(ctx context.Context, text string, ts *turnStream) error {
+	// Suppress while the screen still shows the PRIOR turn's reply (the seed): this
+	// turn hasn't produced its own output yet, so streaming it would leak the
+	// previous answer (or, on a barge-in, the just-interrupted one). Once this turn
+	// paints distinct text the guard clears for the rest of the turn.
+	if text == ts.seed {
 		return nil
+	}
+	if b.cfg.StreamReplyDelta && text != ts.lastDelta {
+		ts.lastDelta = text
+		if b.events != nil && !isBlank(text) {
+			b.events.ReplyDelta(text)
+		}
+	}
+	if b.cfg.SegmentTTS {
+		// Append-only segmentation: only speak a sentence when the new text extends
+		// what we've already spoken (a TUI rewrite that breaks the prefix is left
+		// for the turn-end speak in maybeSpeak, avoiding mid-turn double audio).
+		if rest, ok := strings.CutPrefix(text, ts.spoken); ok {
+			seg, consumed := nextSentence(rest)
+			if seg != "" && !isBlank(seg) {
+				ts.spoken += consumed
+				if err := b.speak(ctx, seg); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// maybeSpeak checks the turn boundary and, if the turn just completed, speaks the
+// reply (or its unspoken tail under per-segment TTS) and reports spoke=true so the
+// caller re-baselines for the next turn. text is the latest extracted reply.
+func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, text string, ts *turnStream) (bool, error) {
+	if !det.TurnEnded(time.Now()) {
+		return false, nil
 	}
 	// The turn the user injected is done; a later barge-in now has nothing to
 	// interrupt, so the next SubmitVoiceTurn injects cleanly without an ESC.
 	b.inFlight.Store(false)
-	reply, _ := (*extP).OnOutput()
-	text := reply.Text
-	// Re-arm for the next turn regardless of whether this one had speakable text:
-	// a fresh Extractor baselines the just-finished reply so it is excluded next
-	// time, and the Detector forgets this turn's settle clock.
-	*extP = extract.New(b.screen)
-	det.Reset()
 
 	if isBlank(text) {
 		// A completed turn with no speakable text (e.g. a tool-only turn) still
@@ -362,20 +442,61 @@ func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, extP **e
 		if b.events != nil {
 			b.events.TurnIdle()
 		}
-		return nil
+		return true, nil
 	}
-	// Emit the final text (transport sends reply.end) before synthesising, so the
-	// device screen shows the answer ahead of the audio; then speak; then idle.
+	// Emit the authoritative final text (transport sends reply.end) before any
+	// remaining audio, so the device screen shows the full answer.
 	if b.events != nil {
 		b.events.ReplyComplete(text)
 	}
-	if err := b.speak(ctx, text); err != nil {
-		return err
+	// Speak the part not already spoken. Under per-segment TTS this is just the
+	// trailing sentence; otherwise (the default) it is the whole reply (one-shot).
+	tail := text
+	if b.cfg.SegmentTTS {
+		if rest, ok := strings.CutPrefix(text, ts.spoken); ok {
+			tail = rest // speak only the unspoken remainder
+		}
+		// If the prefix broke (a rewrite), tail stays the full text — re-speak the
+		// reply rather than leave the device with a half-spoken answer.
+	}
+	if !isBlank(tail) {
+		if err := b.speak(ctx, tail); err != nil {
+			return true, err
+		}
 	}
 	if b.events != nil {
 		b.events.TurnIdle()
 	}
-	return nil
+	return true, nil
+}
+
+// sentenceEnders terminate a spoken segment for per-segment TTS — Latin and CJK
+// full stops, exclamation, question marks, plus the newline that separates a
+// finished line of reply.
+const sentenceEnders = ".!?。！？\n"
+
+// nextSentence returns the first complete sentence at the start of s (up to and
+// including its terminator) and the exact text consumed (so the caller can
+// advance its spoken prefix). It returns ("","") when s holds no terminator yet
+// — i.e. the sentence is still streaming in, so we wait rather than speak a
+// fragment. Trailing whitespace after the terminator is included in `consumed`
+// so the next sentence starts clean.
+func nextSentence(s string) (sentence, consumed string) {
+	idx := strings.IndexAny(s, sentenceEnders)
+	if idx < 0 {
+		return "", ""
+	}
+	end := idx + 1 // include the terminator rune's first byte position
+	// Advance past a multi-byte terminator rune (。！？ are 3 bytes in UTF-8).
+	for end < len(s) && s[end]&0xC0 == 0x80 {
+		end++
+	}
+	consumed = s[:end]
+	// Swallow following spaces/newlines into consumed so the next segment is clean.
+	for end < len(s) && (s[end] == ' ' || s[end] == '\n' || s[end] == '\t') {
+		end++
+	}
+	return strings.TrimSpace(consumed), s[:end]
 }
 
 // speak synthesises one reply and hands the audio to the device sink. A nil
