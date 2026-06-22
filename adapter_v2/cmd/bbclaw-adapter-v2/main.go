@@ -62,7 +62,7 @@ func main() {
 	// device persona appended. The device (LAN + cloud relay) and the web terminal
 	// all spawn session.DefaultID with THIS exact argv + cwd, attaching to one
 	// identical PTY. ADAPTER_V2_CWD overrides the workspace dir; otherwise the
-	// dedicated ~/.bbclaw-adapter-v2/workspace is created + scaffolded.
+	// shared ~/.bbclaw-adapter/workspace (v1's) is used, keeping the user's memory.
 	defaultCwd, err := butler.EnsureWorkspace(cfg.Cwd)
 	if err != nil {
 		log.Fatalf("bbclaw-adapter-v2: butler workspace: %v", err)
