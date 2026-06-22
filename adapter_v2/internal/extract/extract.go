@@ -144,9 +144,18 @@ func extractMarkerBlock(visible string) (string, bool) {
 	raw := strings.Split(visible, "\n")
 	last := -1
 	for i, l := range raw {
-		if strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
-			last = i
+		if !strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
+			continue
 		}
+		// A "⏺ <chrome>" line is NOT a reply marker: claude re-renders status
+		// blocks with a leading bullet on --resume — "⏺ [Opus 4.8 (1M context)] │
+		// workspace", "⏺ ⏵⏵ bypass permissions on … ← for agents". Their content is
+		// noise (isStatusLine), so anchoring on them would speak the model/usage
+		// footer instead of the reply. Skip them; the last REAL reply marker wins.
+		if isNoiseLine(stripReplyMarker(strings.TrimRight(l, " \t"))) {
+			continue
+		}
+		last = i
 	}
 	if last < 0 {
 		return "", false
@@ -155,6 +164,13 @@ func extractMarkerBlock(visible string) (string, bool) {
 	block := []string{stripReplyMarker(strings.TrimRight(raw[last], " \t"))}
 	for k := last + 1; k < len(raw); k++ {
 		l := strings.TrimRight(raw[k], " \t")
+		// A later "⏺" line starts a NEW assistant block (a following segment, or a
+		// resume status/chrome block) — the current reply ends here. Without this
+		// the block would absorb a trailing "⏺ [Opus …] │ workspace" status line,
+		// whose "⏺" prefix hides it from the isNoiseLine check below.
+		if strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
+			break
+		}
 		if l == "" {
 			block = append(block, "") // keep interior blanks (paragraph breaks)
 			continue
