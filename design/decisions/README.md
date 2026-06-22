@@ -49,3 +49,4 @@
 | [ADR-029](ADR-029-conversation-page-structured-parts.md) | 对话页结构化 parts——thinking / text / tool / dispatch 分段回放 | 2026-06-13 | 已接受 |
 | [ADR-030](ADR-030-device-execution-steps.md) | 设备端执行步骤——display-only step 通道（说主结果、显步骤） | 2026-06-17 | 已接受 |
 | [ADR-031](ADR-031-opencode-as-canonical-backend.md) | OpenCode 作为 canonical 后端——收敛 driver 动物园，serve + SDK 取代 scrape-CLI | 2026-06-17 | 草案（方向已定，1 个 spike 闸门） |
+| [ADR-032](ADR-032-adapter-v2-conversation-sessions.md) | adapter_v2 会话生命周期——默认续接 / 新对话 / 历史选择 / 按会话隔离 | 2026-06-23 | 提议（P1 续接 + PTT 退出已落地，P2/P3 待实现） |
