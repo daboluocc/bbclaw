@@ -41,10 +41,22 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 		return err
 	}
 
-	// One turn at a time per device: serialise, then arm the events observer with
-	// this request's write/env, inject, and wait for the turn to complete.
+	// Barge-in (ADR-028): a newer transcript preempts the in-flight turn. Cancel
+	// the running turn's wait BEFORE taking turnMu so its handler releases the lock;
+	// then SubmitVoiceTurn's ESC below aborts the CLI's now-stale generation. This
+	// is the natural turn-taking of voice — "stop, do THIS instead" — rather than
+	// queueing a now-stale answer ahead of what the user just said.
+	cb.preempt()
 	cb.turnMu.Lock()
 	defer cb.turnMu.Unlock()
+
+	// Register this turn so a later transcript can preempt it; turnCtx fires when
+	// that happens.
+	turnCtx, cancelTurn := context.WithCancel(ctx)
+	defer cancelTurn()
+	h := cb.arm(cancelTurn)
+	defer cb.disarm(h)
+
 	done := cb.ev.begin(write, env, r.cfg.HomeSiteID)
 	defer cb.ev.end()
 
@@ -64,6 +76,18 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	timedOut := false
 	select {
 	case <-done:
+	case <-turnCtx.Done():
+		// Preempted by a newer transcript (barge-in). With final-only TTS nothing
+		// was spoken for this turn yet, so return a clean empty reply to complete
+		// the cloud's request for THIS messageID; the newer transcript carries its
+		// own reply (and its SubmitVoiceTurn ESC-aborted this turn's CLI work).
+		r.log("cloudrelay: ⊘ reply device=%s superseded by newer transcript (barge-in) after %s",
+			deviceID, time.Since(started).Round(time.Millisecond))
+		return write(Envelope{
+			Type: "reply", MessageID: env.MessageID, DeviceID: env.DeviceID,
+			HomeSiteID: r.cfg.HomeSiteID, Kind: "voice.reply",
+			Payload: map[string]any{"ok": true, "text": "", "superseded": true},
+		})
 	case <-time.After(r.cfg.ReplyWait):
 		timedOut = true
 	case <-ctx.Done():
@@ -117,11 +141,50 @@ type cloudBridge struct {
 	sess   *session.Session
 	bridge *deviceapi.Bridge
 	ev     *cloudEvents
-	// turnMu serialises turns for this device. The cloud already waits for each
-	// voice.reply before relaying the next transcript, so same-device turns don't
-	// overlap in practice — this guards against a future pipelining cloud and
-	// keeps the single-turn cloudEvents observer correct.
+	// turnMu serialises turns for this device so the single-turn cloudEvents
+	// observer stays correct. Barge-in does not skip it: a newer transcript first
+	// preempt()s the running turn (which then releases turnMu), then takes it.
 	turnMu sync.Mutex
+
+	// actMu guards active, the cancel handle of the turn currently holding turnMu.
+	// preempt() cancels it so a barging-in transcript doesn't block behind it.
+	actMu  sync.Mutex
+	active *turnHandle
+}
+
+// turnHandle identifies one in-flight turn for preemption. Pointer identity (not
+// the un-comparable CancelFunc) lets disarm clear only its own turn.
+type turnHandle struct{ cancel context.CancelFunc }
+
+// arm records h as the in-flight turn and returns it (for disarm).
+func (cb *cloudBridge) arm(cancel context.CancelFunc) *turnHandle {
+	h := &turnHandle{cancel: cancel}
+	cb.actMu.Lock()
+	cb.active = h
+	cb.actMu.Unlock()
+	return h
+}
+
+// disarm clears the active turn iff it is still h (a newer turn may have replaced
+// it via arm already).
+func (cb *cloudBridge) disarm(h *turnHandle) {
+	cb.actMu.Lock()
+	if cb.active == h {
+		cb.active = nil
+	}
+	cb.actMu.Unlock()
+}
+
+// preempt cancels the in-flight turn (if any) so its handler returns and releases
+// turnMu. No-op when nothing is in flight (the common sequential case).
+func (cb *cloudBridge) preempt() {
+	cb.actMu.Lock()
+	h := cb.active
+	cb.active = nil
+	cb.actMu.Unlock()
+	if h != nil {
+		h.cancel()
+	}
 }
 
 // bridgeManager lazily creates one cloudBridge per device id and keeps its
