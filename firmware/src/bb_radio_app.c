@@ -560,6 +560,7 @@ static int agent_chat_voice_capture_active(void) {
  * only thing on screen.
  * ───────────────────────────────────────────────────────────────────── */
 static volatile int s_settings_active;
+static volatile int s_settings_ptt_exit_req; /* PTT pressed while in settings → exit to chat */
 static lv_obj_t* s_settings_root;
 
 /* settings_overlay_enter: entry point for the SETTINGS overlay.
@@ -877,9 +878,15 @@ static void on_ptt_changed(int pressed) {
   bb_state_dispatch_simple(new_pressed ? BB_EVT_PTT_DOWN : BB_EVT_PTT_UP);
 
   if (s_settings_active) {
-    /* SSoT 那边已经记了 reason=page_settings；这里再补一条贴近 PTT 子系统的
-     * INFO 方便老日志格式 grep。 */
-    ESP_LOGI(TAG, "ptt: dropped (settings overlay active) pressed=%d", new_pressed);
+    /* PTT while the settings overlay is up = quick exit back to chat (a big,
+     * always-reachable "get me out" button). Request it on the DOWN edge and
+     * wake the main loop (bump the version); the actual teardown runs there, on
+     * the same task as the nav-driven exit, so LVGL/state work is serialised. */
+    if (new_pressed) {
+      s_settings_ptt_exit_req = 1;
+      s_ptt_change_version++;
+    }
+    ESP_LOGI(TAG, "ptt: settings overlay active -> request exit pressed=%d", new_pressed);
     return;
   }
   s_ptt_pressed = new_pressed;
@@ -2187,6 +2194,23 @@ static void stream_task(void* arg) {
         vTaskDelay(pdMS_TO_TICKS(20));
         continue;
       }
+    }
+
+    /* PTT pressed while the settings overlay is up → exit settings back to chat.
+     * Runs on this (stream) task, same as the nav-driven exit, so the LVGL +
+     * state-transition work is serialised. Handled before the normal PTT consume
+     * so the edge becomes an "exit", not a chat record. */
+    if (s_settings_ptt_exit_req) {
+      s_settings_ptt_exit_req = 0;
+      ptt_handled_version = s_ptt_change_version; /* consume the edge */
+      if (s_settings_active) {
+        settings_overlay_exit();
+        set_radio_app_state(BBCLAW_STATE_CHAT);
+        if (!radio_app_is_locked()) agent_chat_enter();
+        ESP_LOGI(TAG, "SETTINGS: PTT -> CHAT");
+      }
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
     }
 
     unsigned ptt_version = s_ptt_change_version;
