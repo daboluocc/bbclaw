@@ -256,6 +256,45 @@ func TestExtractSuppressesClaudeChromeUntilMarker(t *testing.T) {
 	}
 }
 
+// Regression for the on-device SaaS bug (TTS spoke "[Opus 4.8 (1M context)] │
+// workspace" / "⏵⏵ bypass permissions on …"): on --resume claude re-renders its
+// model/usage status as "⏺ <chrome>" blocks AFTER the real reply. The last-"⏺"
+// scan anchored on those, so the device spoke claude's status footer. The marker
+// scan must skip "⏺ <noise>" lines and anchor on the last REAL reply.
+func TestExtractSkipsResumeStatusMarkerBlocks(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"⏺ 好的,我在。\r\n" + // the REAL reply
+		"\r\n" +
+		"⏺ [Opus 4.8 (1M context)] │ workspace\r\n" + // resume status chrome (a later "⏺")
+		"  Context ░░░░░░░░░░ 3% │ Usage █░░░░░░░░░ 9% (resets in 4h 20m)\r\n" +
+		"⏺ ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\r\n" + // bypass footer as "⏺"
+		"❯ \r\n"))
+	r, _ := ext.OnOutput()
+	if !strings.Contains(r.Text, "好的,我在。") {
+		t.Errorf("real reply not extracted: %q", r.Text)
+	}
+	if strings.Contains(r.Text, "Opus 4.8") || strings.Contains(r.Text, "bypass permissions") || strings.Contains(r.Text, "context)") {
+		t.Errorf("resume status chrome leaked into reply: %q", r.Text)
+	}
+}
+
+// And when the ONLY "⏺" lines are status chrome (no real reply on screen yet —
+// e.g. right after --resume, before the new turn's reply renders), nothing is
+// extracted, rather than speaking the chrome.
+func TestExtractStatusOnlyMarkersYieldNothing(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"⏺ [Opus 4.8 (1M context)] │ workspace\r\n" +
+		"  Context ░░░░░░░░░░ 3% │ Usage █░░░░░░░░░ 9%\r\n" +
+		"❯ \r\n"))
+	if r, _ := ext.OnOutput(); strings.TrimSpace(r.Text) != "" {
+		t.Errorf("status-only chrome leaked as reply: %q", r.Text)
+	}
+}
+
 func TestExtractFallbackStillWorksForMarkerlessCLI(t *testing.T) {
 	s := vtscreen.New(80, 24)
 	ext := New(s)
