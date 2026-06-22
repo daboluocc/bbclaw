@@ -318,6 +318,24 @@ func (m *Manager) Get(id string) *Session {
 	return m.sessions[id]
 }
 
+// Remove kills the session for id (terminating its CLI child) and drops it from
+// the map, so the next GetOrCreate spawns a fresh one. Used to respawn the shared
+// default session when switching conversations (new / resume a different id):
+// killing it closes the client channels, so an attached Bridge's Run returns
+// ErrClosed and a web terminal sees a clean disconnect + reconnect. No-op if the
+// id isn't live.
+func (m *Manager) Remove(id string) {
+	m.mu.Lock()
+	s := m.sessions[id]
+	if s != nil {
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	if s != nil {
+		s.kill()
+	}
+}
+
 // GetOrCreate returns the live session for id, spawning one with cfg if absent.
 // It is the atomic create-if-absent the /ws handler needs: two near-simultaneous
 // first connections to the same id (a phone and a web page opening the same

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 
 	"nhooyr.io/websocket"
@@ -81,12 +82,13 @@ func TestE2ECloudRelayVoiceTurn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	relay := New(session.NewManager(), Config{
+	mgr := session.NewManager()
+	relay := New(mgr, butler.NewDeviceSession(mgr, []string{bin}, ""), Config{
 		CloudWSURL:     "ws" + strings.TrimPrefix(srv.URL, "http"),
 		HomeSiteID:     "11111111-1111-1111-1111-111111111111",
 		ReconnectDelay: time.Second,
 		ReplyWait:      20 * time.Second,
-	}, []string{bin}, "", func(string, ...any) {})
+	}, func(string, ...any) {})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

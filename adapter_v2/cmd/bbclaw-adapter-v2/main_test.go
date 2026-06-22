@@ -12,6 +12,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
@@ -63,7 +64,7 @@ func readReconnected(t *testing.T, conn *websocket.Conn) {
 // TestHealthz verifies the liveness probe returns 200 "ok".
 func TestHealthz(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -87,7 +88,7 @@ func TestHealthz(t *testing.T) {
 // share one PTY.
 func TestWSNoSessionJoinsDefault(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -115,7 +116,7 @@ func TestWSNoSessionJoinsDefault(t *testing.T) {
 // longer an error: it resolves to the shared default session.)
 func TestWSNonWebSocketRejected(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/ws")
@@ -137,7 +138,7 @@ func TestWSNonWebSocketRejected(t *testing.T) {
 // the existing session rather than spawning a second process.
 func TestWSCreatesSessionOnce(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -176,7 +177,7 @@ func TestWSCreatesSessionOnce(t *testing.T) {
 // not swallow stray requests as the index page.
 func TestRouterUnknownPath(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -196,7 +197,7 @@ func TestRouterUnknownPath(t *testing.T) {
 // index.html can't silently drop the contract the server depends on.
 func TestWebClientServed(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/")
@@ -245,7 +246,7 @@ func TestWebClientServed(t *testing.T) {
 // must dispatch those to their own handlers, not to the static index page.
 func TestSpecificRoutesWinOverWebRoot(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), testConfig().Argv, testConfig().Cwd))
+	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
 	t.Cleanup(srv.Close)
 
 	tests := []struct {

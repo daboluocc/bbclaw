@@ -11,6 +11,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
@@ -44,9 +45,8 @@ type Server struct {
 	mgr         *session.Manager
 	asr         deviceapi.Recognizer // batch ASR over the buffered PTT utterance
 	tts         deviceapi.Synthesizer
-	argv        []string // default CLI to spawn under the PTY
-	cwd         string
-	auth        string // shared secret; "" disables auth (dev/LAN)
+	dev         *butler.DeviceSession // default conversation's spawn config (ADR-032)
+	auth        string                // shared secret; "" disables auth (dev/LAN)
 	cols        int
 	rows        int
 	decode      func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
@@ -74,15 +74,16 @@ type Options struct {
 }
 
 // New builds a device-WS server. asr/tts are the voice providers (a mock ASR and
-// local TTS suffice for Phase A); argv/cwd is the CLI each device session drives.
-func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesizer, argv []string, cwd string, opt Options) *Server {
+// local TTS suffice for Phase A); dev supplies the default conversation's spawn
+// config (the LAN device line drives the same default session as the cloud relay).
+func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesizer, dev *butler.DeviceSession, opt Options) *Server {
 	if opt.Cols <= 0 {
 		opt.Cols = 80
 	}
 	if opt.Rows <= 0 {
 		opt.Rows = 24
 	}
-	return &Server{mgr: mgr, asr: asr, tts: tts, argv: argv, cwd: cwd, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
+	return &Server{mgr: mgr, asr: asr, tts: tts, dev: dev, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
 }
 
 // Handler upgrades GET /v2/dev/ws and runs one device session on it.
@@ -289,11 +290,9 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 	// the cloud relay also targets), not a per-device session — so device and web
 	// share one PTY. deviceID is kept for logging/echo only. (P1: single default
 	// session; per-device sessions are a later phase.)
-	sess, err := s.mgr.GetOrCreate(session.DefaultID, ptyhost.Config{
-		Argv:        s.argv,
-		Cwd:         s.cwd,
-		InitialSize: ptyhost.Size{Cols: uint16(s.cols), Rows: uint16(s.rows)},
-	})
+	pcfg := s.dev.Config()
+	pcfg.InitialSize = ptyhost.Size{Cols: uint16(s.cols), Rows: uint16(s.rows)}
+	sess, err := s.mgr.GetOrCreate(session.DefaultID, pcfg)
 	if err != nil {
 		_ = dc.writeCtrl(errFrame{T: "error", Code: codeBadProto, Detail: "session create failed"})
 		conn.Close(websocket.StatusInternalError, "session")

@@ -31,6 +31,7 @@ import (
 	"nhooyr.io/websocket/wsjson"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
 )
@@ -119,17 +120,18 @@ func (c Config) dialURL() string {
 // Relay is the running cloud-relay client. It owns the device→PTY bridges.
 type Relay struct {
 	cfg     Config
-	bridges *bridgeManager // per-device PTY session + Bridge
+	dev     *butler.DeviceSession // active-conversation lifecycle (ADR-032)
+	bridges *bridgeManager        // PTY session + Bridge onto session.DefaultID
 	log     func(format string, args ...any)
 }
 
 // New builds a Relay sharing the given session.Manager (so the device's voice
-// turns drive the SAME default session the web terminal joins). argv/cwd is the
-// CLI the default session runs — caller passes it already persona-wrapped via
-// WithVoicePrompt so every entry point spawns the default session identically.
-// log is the line logger (e.g. log.Printf).
-func New(mgr *session.Manager, cfg Config, argv []string, cwd string, log func(string, ...any)) *Relay {
-	return &Relay{cfg: cfg, bridges: newBridgeManager(mgr, argv, cwd), log: log}
+// turns drive the SAME default session the web terminal joins). dev owns the
+// default conversation's spawn config (persona + permissions + the active
+// conversation's resume flag) and the new/list/resume operations. log is the line
+// logger (e.g. log.Printf).
+func New(mgr *session.Manager, dev *butler.DeviceSession, cfg Config, log func(string, ...any)) *Relay {
+	return &Relay{cfg: cfg, dev: dev, bridges: newBridgeManager(mgr, dev), log: log}
 }
 
 // Run connects to the cloud and serves relayed requests until ctx is cancelled,

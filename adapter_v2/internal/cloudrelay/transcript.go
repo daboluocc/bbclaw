@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
 
@@ -127,16 +127,15 @@ type cloudBridge struct {
 // bridgeManager lazily creates one cloudBridge per device id and keeps its
 // Bridge.Run goroutine alive for the process lifetime.
 type bridgeManager struct {
-	mgr  *session.Manager
-	argv []string
-	cwd  string
+	mgr *session.Manager
+	dev *butler.DeviceSession // supplies the default session's spawn config
 
 	mu      sync.Mutex
 	bridges map[string]*cloudBridge
 }
 
-func newBridgeManager(mgr *session.Manager, argv []string, cwd string) *bridgeManager {
-	return &bridgeManager{mgr: mgr, argv: argv, cwd: cwd, bridges: map[string]*cloudBridge{}}
+func newBridgeManager(mgr *session.Manager, dev *butler.DeviceSession) *bridgeManager {
+	return &bridgeManager{mgr: mgr, dev: dev, bridges: map[string]*cloudBridge{}}
 }
 
 // get returns the cloud relay's bridge onto the shared DEFAULT session. The
@@ -157,7 +156,7 @@ func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 		}
 		delete(m.bridges, session.DefaultID)
 	}
-	sess, err := m.mgr.GetOrCreate(session.DefaultID, ptyhost.Config{Argv: m.argv, Cwd: m.cwd})
+	sess, err := m.mgr.GetOrCreate(session.DefaultID, m.dev.Config())
 	if err != nil {
 		return nil, err
 	}

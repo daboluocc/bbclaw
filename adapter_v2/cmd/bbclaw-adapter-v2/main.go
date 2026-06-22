@@ -67,12 +67,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("bbclaw-adapter-v2: butler workspace: %v", err)
 	}
-	defaultArgv := butler.DeviceClaudeArgs(cfg.Argv, defaultCwd)
-	log.Printf("bbclaw-adapter-v2: butler workspace %s", defaultCwd)
+	baseArgv := butler.DeviceClaudeArgs(cfg.Argv, defaultCwd)
+	// DeviceSession owns the default conversation's lifecycle (ADR-032): it appends
+	// the resume flag (--resume <active>/--continue/--session-id) to baseArgv, so
+	// every entry point spawns session.DefaultID identically and resume / new /
+	// switch stay coherent. Loads the persisted active conversation on boot.
+	devSess := butler.NewDeviceSession(mgr, baseArgv, defaultCwd)
+	log.Printf("bbclaw-adapter-v2: butler workspace %s (active session %q)", defaultCwd, devSess.ActiveID())
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg, defaultArgv, defaultCwd),
+		Handler: newRouter(mgr, cfg, devSess),
 	}
 
 	// Cloud relay (SaaS): when CLOUD_WS_URL is set, register with the BBClaw Cloud
@@ -86,7 +91,7 @@ func main() {
 		if rc, err := cloudrelay.LoadConfig(); err != nil {
 			log.Printf("bbclaw-adapter-v2: cloud relay disabled (config error): %v", err)
 		} else {
-			relay := cloudrelay.New(mgr, rc, defaultArgv, defaultCwd, log.Printf)
+			relay := cloudrelay.New(mgr, devSess, rc, log.Printf)
 			go relay.Run(relayCtx)
 		}
 	}
@@ -128,9 +133,9 @@ func main() {
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config, defaultArgv []string, defaultCwd string) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", wsHandler(mgr, cfg, defaultArgv, defaultCwd))
+	mux.HandleFunc("/ws", wsHandler(mgr, cfg, devSess))
 	mux.HandleFunc("/healthz", healthzHandler)
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
@@ -145,7 +150,7 @@ func newRouter(mgr *session.Manager, cfg config.Config, defaultArgv []string, de
 	streamDelta := envBool("ADAPTER_V2_STREAM_DELTA", true)
 	segmentTTS := envBool("ADAPTER_V2_SEGMENT_TTS", false)
 	log.Printf("bbclaw-adapter-v2: device line ASR=%s TTS=%s streamDelta=%v segmentTTS=%v", asrMode, ttsMode, streamDelta, segmentTTS)
-	devSrv := devicews.New(mgr, rec, syn, defaultArgv, defaultCwd, devicews.Options{
+	devSrv := devicews.New(mgr, rec, syn, devSess, devicews.Options{
 		Decode:           voicekit.DecodeUplink,
 		StreamReplyDelta: streamDelta,
 		SegmentTTS:       segmentTTS,
@@ -183,19 +188,20 @@ func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 // the configured default CLI argv — so the first client to ask for an id starts
 // the CLI and every later client (or a reconnecting one) joins the same live
 // session and replays its screen.
-func wsHandler(mgr *session.Manager, cfg config.Config, defaultArgv []string, defaultCwd string) http.HandlerFunc {
+func wsHandler(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// No ?session= → the shared default session (the one the device drives), so
 		// opening the web UI joins the device's live conversation. An explicit
 		// ?session=<id> selects another session (the future web session-browser);
-		// only the default session carries the butler persona + workspace cwd.
+		// only the default session carries the butler persona + workspace cwd +
+		// the active-conversation resume flag (from DeviceSession).
 		id := r.URL.Query().Get("session")
-		argv, cwd := cfg.Argv, cfg.Cwd
-		if id == "" {
+		var cfgPty ptyhost.Config
+		if id == "" || id == session.DefaultID {
 			id = session.DefaultID
-		}
-		if id == session.DefaultID {
-			argv, cwd = defaultArgv, defaultCwd
+			cfgPty = devSess.Config()
+		} else {
+			cfgPty = ptyhost.Config{Argv: cfg.Argv, Cwd: cfg.Cwd}
 		}
 
 		// Accept the WebSocket upgrade FIRST, before touching the session, so a
@@ -215,10 +221,7 @@ func wsHandler(mgr *session.Manager, cfg config.Config, defaultArgv []string, de
 		// GetOrCreate serializes the race so two simultaneous first connections
 		// cannot each spawn a PTY and leak the loser. A spawn failure now closes
 		// the just-accepted WebSocket (we are past the HTTP response).
-		sess, err := mgr.GetOrCreate(id, ptyhost.Config{
-			Argv: argv,
-			Cwd:  cwd,
-		})
+		sess, err := mgr.GetOrCreate(id, cfgPty)
 		if err != nil {
 			log.Printf("bbclaw-adapter-v2: create session %q: %v", id, err)
 			conn.Close(websocket.StatusInternalError, "failed to start session")

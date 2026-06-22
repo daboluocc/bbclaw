@@ -75,10 +75,10 @@ func EnsureWorkspace(dir string) (string, error) {
 //     ADAPTER_V2_SKIP_PERMISSIONS=0 (then tool turns will hang on the prompt).
 //  2. Appends the walkie-talkie device persona via --append-system-prompt. Override
 //     the whole prompt with ADAPTER_V2_VOICE_SYSTEM_PROMPT, or set it empty to skip.
-//  3. Resumes the most recent conversation (--continue) so the assistant picks up
-//     where it left off across adapter restarts, instead of starting fresh every
-//     boot. Disable with ADAPTER_V2_RESUME=0. (A future "new conversation" /
-//     history-pick feature will spawn without --continue, or with --resume <id>.)
+//
+// It builds the BASE argv only — persona + permissions, NO resume flag. The resume
+// flag (--continue / --resume <id> / --session-id <id>) is owned by DeviceSession
+// (ADR-032), which appends it per the active conversation.
 func DeviceClaudeArgs(argv []string, cwd string) []string {
 	if len(argv) == 0 || !strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude") {
 		return argv
@@ -86,9 +86,6 @@ func DeviceClaudeArgs(argv []string, cwd string) []string {
 	out := append([]string{}, argv...)
 	if envBool("ADAPTER_V2_SKIP_PERMISSIONS", true) {
 		out = append(out, "--dangerously-skip-permissions")
-	}
-	if envBool("ADAPTER_V2_RESUME", true) {
-		out = append(out, "--continue")
 	}
 	prompt := DeviceSystemPrompt(cwd, "")
 	if v, ok := os.LookupEnv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"); ok {
