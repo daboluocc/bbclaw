@@ -60,20 +60,43 @@ func EnsureWorkspace(dir string) (string, error) {
 	return dir, nil
 }
 
-// AppendDevicePersona appends claude's --append-system-prompt <DeviceSystemPrompt>
-// to argv, scoped to a claude CLI (the flag is claude-specific; other CLIs are
-// left untouched). The persona text can be overridden whole via
-// ADAPTER_V2_VOICE_SYSTEM_PROMPT, or disabled by setting it empty.
-func AppendDevicePersona(argv []string, cwd string) []string {
+// DeviceClaudeArgs builds the claude argv for the device/voice session. It does
+// two device-specific things (scoped to a claude CLI; other CLIs pass through):
+//
+//  1. Bypasses permission prompts (--dangerously-skip-permissions). A voice device
+//     has NO way to answer claude's "Do you want to proceed? 1.Yes 2.No" tool
+//     dialogs, so a Bash/edit tool call would hang the turn forever. The butler
+//     runs in its own controlled workspace, and the user opted into an autonomous
+//     voice assistant, so bypassing is the right tradeoff. Disable with
+//     ADAPTER_V2_SKIP_PERMISSIONS=0 (then tool turns will hang on the prompt).
+//  2. Appends the walkie-talkie device persona via --append-system-prompt. Override
+//     the whole prompt with ADAPTER_V2_VOICE_SYSTEM_PROMPT, or set it empty to skip.
+func DeviceClaudeArgs(argv []string, cwd string) []string {
 	if len(argv) == 0 || !strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude") {
 		return argv
+	}
+	out := append([]string{}, argv...)
+	if envBool("ADAPTER_V2_SKIP_PERMISSIONS", true) {
+		out = append(out, "--dangerously-skip-permissions")
 	}
 	prompt := DeviceSystemPrompt(cwd, "")
 	if v, ok := os.LookupEnv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"); ok {
 		prompt = v
 	}
-	if strings.TrimSpace(prompt) == "" {
-		return argv
+	if strings.TrimSpace(prompt) != "" {
+		out = append(out, "--append-system-prompt", prompt)
 	}
-	return append(append([]string{}, argv...), "--append-system-prompt", prompt)
+	return out
+}
+
+// envBool reads a boolean env var (1/true/yes/on vs 0/false/no/off), returning def
+// when unset or unrecognised.
+func envBool(name string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
 }
