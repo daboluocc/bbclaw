@@ -87,3 +87,28 @@ esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz);
  * @return ESP_OK if task spawned (NVS write happens asynchronously).
  */
 esp_err_t bb_session_store_save_active_driver(const char* driver_name);
+
+/**
+ * Read the cached active adapter home_site_id (the SaaS adapter the user last
+ * selected in Settings). Populated by preload_nvs at boot and refreshed by
+ * save_active_site. Pure memory read — safe from any task.
+ *
+ * Lets the Settings page show the last-chosen adapter immediately, before (or
+ * even without) a fresh sites.list round-trip — which can fail/time out right
+ * after boot if the cloud WS isn't ready yet. Routing is server-side, so this is
+ * for the device's own default/display.
+ *
+ * @param out_id  Output buffer; empty string when no cache entry.
+ * @param sz      Buffer size; recommend 40 (UUID + NUL).
+ * @return ESP_OK on cache hit, ESP_ERR_NVS_NOT_FOUND when empty.
+ */
+esp_err_t bb_session_store_load_active_site(char* out_id, size_t sz);
+
+/**
+ * Persist the active adapter home_site_id to NVS (deferred write, same pattern
+ * as save_active_driver). "" erases the entry.
+ *
+ * @param site_id  home_site_id (UUID); "" clears it.
+ * @return ESP_OK if the persist task spawned (write happens asynchronously).
+ */
+esp_err_t bb_session_store_save_active_site(const char* site_id);

@@ -308,8 +308,10 @@ static const char* current_model_label(const bb_agent_driver_info_t* d) {
 
 static int main_visible_rows(main_row_t* out) {
   int n = 0;
-  out[n++] = MAIN_ROW_DRIVER;
-  out[n++] = MAIN_ROW_MODEL;
+  /* Driver/Model are intentionally NOT shown: the agent backend (driver + model)
+   * is configured on the adapter side now, not per-device. The picker/fetch code
+   * is left in place (harmless, and the driver fetch still drives the post-switch
+   * chat re-sync) but is simply unreachable from the menu. */
   if (bb_transport_is_cloud_saas()) {
     out[n++] = MAIN_ROW_ADAPTER;
   }
@@ -752,13 +754,21 @@ static void on_site_fetch_done(void* user_data) {
     int total = r->count > BB_SETTINGS_SITE_CACHE_MAX ? BB_SETTINGS_SITE_CACHE_MAX : r->count;
     memcpy(s_st.site_cache, r->sites, sizeof(r->sites[0]) * (size_t)total);
     s_st.site_cache_count = total;
-    /* Seed active_site_id from the reply's active flag if we don't have one. */
+    /* Seed active_site_id from the reply's active flag (cloud truth). */
+    char prev_active[sizeof(s_st.active_site_id)];
+    strncpy(prev_active, s_st.active_site_id, sizeof(prev_active) - 1);
+    prev_active[sizeof(prev_active) - 1] = '\0';
     for (int i = 0; i < total; ++i) {
       if (r->sites[i].active) {
         strncpy(s_st.active_site_id, r->sites[i].home_site_id, sizeof(s_st.active_site_id) - 1);
         s_st.active_site_id[sizeof(s_st.active_site_id) - 1] = '\0';
         break;
       }
+    }
+    /* Persist when the cloud's active differs from what we had (covers a binding
+     * set from another device/web), so the NVS default stays in sync. */
+    if (s_st.active_site_id[0] != '\0' && strcmp(s_st.active_site_id, prev_active) != 0) {
+      bb_session_store_save_active_site(s_st.active_site_id);
     }
     ESP_LOGI(TAG, "site fetch ok: %d sites active='%s'", total, s_st.active_site_id);
   }
@@ -939,6 +949,12 @@ static void commit_task(void* arg) {
     err = bb_adapter_sites_activate(p->site_id, active_id, sizeof(active_id), err_code, sizeof(err_code));
     ESP_LOGI(TAG, "commit adapter site='%s' -> %s (active='%s' code='%s')",
              p->site_id, esp_err_to_name(err), active_id, err_code);
+    if (err == ESP_OK) {
+      /* Remember the chosen adapter so next boot's Settings shows it as default
+       * even before/without a fresh sites.list (save_active_site spawns its own
+       * internal-stack writer, safe to call from this PSRAM commit task). */
+      bb_session_store_save_active_site(active_id[0] != '\0' ? active_id : p->site_id);
+    }
     if (lvgl_port_lock(200)) {
       lv_async_call(err == ESP_OK ? on_adapter_activated : on_adapter_activate_failed, NULL);
       lvgl_port_unlock();
@@ -1123,9 +1139,14 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     return;
   }
 
-  /* Initialise level + cursor before any LVGL work. */
+  /* Initialise level + cursor before any LVGL work. Driver/Model are hidden now,
+   * so start the cursor on the first VISIBLE row rather than MAIN_ROW_DRIVER. */
   s_st.level = LEVEL_MAIN;
-  s_st.sel = MAIN_ROW_DRIVER;
+  {
+    main_row_t vrows[MAIN_ROW_ID_COUNT];
+    int vn = main_visible_rows(vrows);
+    s_st.sel = vn > 0 ? vrows[0] : MAIN_ROW_VOLUME;
+  }
   /* Load current volume from persisted config. */
   s_st.volume_pct = bb_device_config_get()->volume_pct;
   s_st.volume_dirty = 0;
@@ -1135,6 +1156,13 @@ void bb_ui_settings_show(lv_obj_t* parent) {
    * shows something sensible even before the async fetch lands. */
   if (s_st.active_driver[0] == '\0') {
     bb_session_store_load_active_driver(s_st.active_driver, sizeof(s_st.active_driver));
+  }
+  /* Seed the active adapter from NVS too, so the "Adapter:" row shows the last
+   * selected machine immediately — even if the sites.list fetch is slow or fails
+   * right after boot (routing is server-side; this is for display/default). The
+   * fetch refreshes it (incl. live on/offline) when it lands. */
+  if (s_st.active_site_id[0] == '\0') {
+    bb_session_store_load_active_site(s_st.active_site_id, sizeof(s_st.active_site_id));
   }
 
   s_st.root = lv_obj_create(parent);
