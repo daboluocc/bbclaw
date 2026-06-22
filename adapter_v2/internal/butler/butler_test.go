@@ -13,18 +13,13 @@ func TestDeviceClaudeArgs(t *testing.T) {
 	if !containsArg(got, "--dangerously-skip-permissions") {
 		t.Errorf("missing permission bypass (voice device can't answer prompts): %v", got)
 	}
-	if !containsArg(got, "--continue") {
-		t.Errorf("missing --continue (default resume of the previous conversation): %v", got)
-	}
 	if i := argIndex(got, "--append-system-prompt"); i < 0 || i+1 >= len(got) || !strings.Contains(got[i+1], "对讲机") {
 		t.Errorf("device persona not appended: %v", got)
 	}
-	// Resume is default-on but disableable.
-	t.Setenv("ADAPTER_V2_RESUME", "0")
-	if containsArg(DeviceClaudeArgs([]string{"claude"}, ""), "--continue") {
-		t.Errorf("ADAPTER_V2_RESUME=0 should drop --continue")
+	// The resume flag is NOT part of the base argv — DeviceSession owns it.
+	if containsArg(got, "--continue") || containsArg(got, "--resume") {
+		t.Errorf("base argv must not carry a resume flag (DeviceSession adds it): %v", got)
 	}
-	t.Setenv("ADAPTER_V2_RESUME", "1")
 	// Non-claude CLI (e.g. the e2e mockcli) → untouched.
 	if base := DeviceClaudeArgs([]string{"/tmp/mockcli"}, "/ws"); len(base) != 1 {
 		t.Errorf("non-claude argv should be untouched, got %v", base)

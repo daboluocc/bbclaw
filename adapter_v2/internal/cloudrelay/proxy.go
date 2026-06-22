@@ -3,6 +3,8 @@ package cloudrelay
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 )
 
 // proxyDriver is the single logical driver adapter_v2 advertises to the device's
@@ -46,12 +48,44 @@ func (r *Relay) handleAgentProxy(write func(Envelope) error, env Envelope) bool 
 			"messages": []any{}, "total": 0, "hasMore": false,
 		})
 	case "agent.sessions", "agent.sessions.list.logical":
-		return reply("agent.sessions.reply", map[string]any{"sessions": []any{}})
+		// Real conversation history (ADR-032): the workspace's claude .jsonl files,
+		// most-recent first, with the active one flagged.
+		active := r.devActiveID()
+		sessions := []map[string]any{}
+		for _, s := range r.devList() {
+			sessions = append(sessions, map[string]any{
+				"id": s.ID, "title": s.Title, "lastUsedAt": s.ModUnixSec,
+				"active": s.ID == active,
+			})
+		}
+		return reply("agent.sessions.reply", map[string]any{"sessions": sessions, "active": active})
 	case "agent.sessions.create":
+		// Start a fresh conversation: respawn the default session with a new id.
+		id := ""
+		if r.dev != nil {
+			id = r.dev.New()
+		}
+		r.log("cloudrelay: session.new device=%s id=%s", env.DeviceID, id)
 		return reply("agent.sessions.create.reply", map[string]any{"session": map[string]any{
-			"id": "ls-default", "driver": proxyDriver, "cwd": "", "title": "",
-			"createdAt": "1970-01-01T00:00:00Z", "lastUsedAt": "1970-01-01T00:00:00Z",
+			"id": id, "driver": proxyDriver, "title": "新对话", "active": true,
 		}})
+	case "agent.sessions.activate", "agent.sessions.select":
+		// Resume an existing conversation: respawn with --resume <id>.
+		var p struct {
+			SessionID string `json:"sessionId"`
+			ID        string `json:"id"`
+		}
+		raw, _ := json.Marshal(env.Payload)
+		_ = json.Unmarshal(raw, &p)
+		id := strings.TrimSpace(p.SessionID)
+		if id == "" {
+			id = strings.TrimSpace(p.ID)
+		}
+		if id != "" && r.dev != nil {
+			r.dev.Resume(id)
+			r.log("cloudrelay: session.resume device=%s id=%s", env.DeviceID, id)
+		}
+		return reply("agent.sessions.activate.reply", map[string]any{"ok": id != "", "active": r.devActiveID()})
 	case "agent.cwd_pool":
 		return reply("agent.cwd_pool.reply", map[string]any{"pool": []any{}})
 	case "agent.active_driver.set":
@@ -69,6 +103,22 @@ func (r *Relay) handleAgentProxy(write func(Envelope) error, env Envelope) bool 
 	default:
 		return false
 	}
+}
+
+// devList returns the device session's conversation list (empty on nil/error).
+func (r *Relay) devList() []butler.ConversationInfo {
+	if r.dev == nil {
+		return nil
+	}
+	list, _ := r.dev.List()
+	return list
+}
+
+func (r *Relay) devActiveID() string {
+	if r.dev == nil {
+		return ""
+	}
+	return r.dev.ActiveID()
 }
 
 func driverCaps() map[string]any {

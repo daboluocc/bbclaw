@@ -10,6 +10,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
@@ -99,7 +100,7 @@ func TestTurnFSM(t *testing.T) {
 }
 
 func TestServeRejectsBadFirstFrame(t *testing.T) {
-	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, []string{"cat"}, "", Options{})
+	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, butler.NewDeviceSession(session.NewManager(), []string{"cat"}, ""), Options{})
 	f := newFakeConn(inFrame{typ: websocket.MessageBinary, data: []byte{0x01, 0x02, 0x03}})
 
 	runServe(srv, f)
@@ -110,7 +111,7 @@ func TestServeRejectsBadFirstFrame(t *testing.T) {
 }
 
 func TestServeRejectsBadAuth(t *testing.T) {
-	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, []string{"cat"}, "", Options{Auth: "s3cret"})
+	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, butler.NewDeviceSession(session.NewManager(), []string{"cat"}, ""), Options{Auth: "s3cret"})
 	hello, _ := json.Marshal(map[string]any{"t": "hello", "proto": Proto, "auth": "wrong"})
 	f := newFakeConn(inFrame{typ: websocket.MessageText, data: hello})
 
@@ -123,7 +124,7 @@ func TestServeRejectsBadAuth(t *testing.T) {
 }
 
 func TestServeHelloOK(t *testing.T) {
-	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, []string{"cat"}, "", Options{})
+	srv := New(session.NewManager(), deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, butler.NewDeviceSession(session.NewManager(), []string{"cat"}, ""), Options{})
 	hello, _ := json.Marshal(map[string]any{"t": "hello", "proto": Proto, "dev": "unit"})
 	f := newFakeConn(inFrame{typ: websocket.MessageText, data: hello})
 
