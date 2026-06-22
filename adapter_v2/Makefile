@@ -28,24 +28,27 @@ BBCLAW_BUILD_TIME ?= $(shell date -u +%Y%m%d-%H%M)
 GO_LDFLAGS := -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
 
 # `make run` knobs (all overridable):
-#   ADDR  listen address           (default :18090)
-#   CLI   CLI to drive under a PTY  (default claude; auto-resolves the install)
-#   CWD   working dir for that CLI  (default: inherit; set to a project root)
-ADDR ?= :18090
-CLI  ?= claude
-CWD  ?=
+#   ADDR          listen address           (default :18090)
+#   CLI           CLI to drive under a PTY (default claude; auto-resolves the install)
+#   CWD           working dir for that CLI (default: the butler workspace)
+#   CLOUD_WS_URL  BBClaw Cloud relay URL   (default: SaaS prod; set empty for LAN-only)
+ADDR         ?= :18090
+CLI          ?= claude
+CWD          ?=
+CLOUD_WS_URL ?= wss://bbclaw.daboluo.cc/ws
 
 .PHONY: help build run test e2e clean
 
 help:
 	@echo "BBClaw adapter_v2"
 	@echo ""
-	@echo "  make run     # build + start the server, then open http://localhost$(ADDR)"
+	@echo "  make run     # build + start in SaaS mode (cloud relay), open http://localhost$(ADDR)"
 	@echo "  make build   # build $(BIN_DIR)/$(BIN_NAME)"
 	@echo "  make test    # go test ./... (fast, no external deps)"
 	@echo "  make e2e     # device end-to-end voice round-trip smoke"
 	@echo "  make clean   # remove build artifacts"
 	@echo ""
+	@echo "  CLOUD_WS_URL= make run                    # LAN-only (no cloud relay)"
 	@echo "  make run CLI=bash CWD=~/proj ADDR=:9000   # drive a shell instead of claude"
 	@echo "  Override the Go toolchain: make test GO=/path/to/go"
 
@@ -66,9 +69,10 @@ run: build
 		CLI_BIN="$$HOME/.claude/local/claude"; \
 	fi; \
 	[ -n "$$CLI_BIN" ] || CLI_BIN="$(CLI)"; \
-	echo "▶ adapter_v2  →  http://localhost$(ADDR)   (open it, then type to drive the CLI; refresh = reconnect)"; \
-	echo "  CLI=$$CLI_BIN   CWD=$${CWD:-<inherit>}"; \
-	ADAPTER_V2_ADDR="$(ADDR)" ADAPTER_V2_CLI="$$CLI_BIN" ADAPTER_V2_CWD="$(CWD)" "$(BIN_DIR)/$(BIN_NAME)"
+	MODE="SaaS (relay → $(CLOUD_WS_URL))"; [ -n "$(CLOUD_WS_URL)" ] || MODE="LAN only (/v2/dev/ws)"; \
+	echo "▶ adapter_v2  →  http://localhost$(ADDR)   mode: $$MODE"; \
+	echo "  CLI=$$CLI_BIN   CWD=$${CWD:-<butler workspace>}"; \
+	CLOUD_WS_URL="$(CLOUD_WS_URL)" ADAPTER_V2_ADDR="$(ADDR)" ADAPTER_V2_CLI="$$CLI_BIN" ADAPTER_V2_CWD="$(CWD)" "$(BIN_DIR)/$(BIN_NAME)"
 
 # Fast suite: every package's unit + integration tests, no process-spawn smoke.
 test:
