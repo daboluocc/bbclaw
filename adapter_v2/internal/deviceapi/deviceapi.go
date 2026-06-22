@@ -39,6 +39,8 @@ package deviceapi
 import (
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -47,6 +49,25 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
 )
+
+// debugExtract, when ADAPTER_V2_DEBUG_EXTRACT is set, logs what the boundary
+// extracted plus the tail of the VT mirror at that moment — to diagnose why a
+// turn can extract a stale (previous-turn) reply.
+var debugExtract = os.Getenv("ADAPTER_V2_DEBUG_EXTRACT") != ""
+
+// tailLines returns the last n non-empty lines of s, for compact debug logging.
+func tailLines(s string, n int) string {
+	var kept []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) > n {
+		kept = kept[len(kept)-n:]
+	}
+	return strings.Join(kept, "\n")
+}
 
 // ErrClosed is returned by SubmitVoiceTurn / Run when the underlying session's
 // PTY has already exited.
@@ -546,9 +567,28 @@ func (b *Bridge) maybeSpeak(ctx context.Context, det *extract.Detector, text str
 	if !det.TurnEnded(time.Now()) {
 		return false, nil
 	}
+	// Stale-guard (the "device replays the previous answer" bug): a multi-step /
+	// tool-using turn has QUIET GAPS between tool calls where the spinner clears, so
+	// the boundary can look "ended" BEFORE this turn's reply has rendered. At that
+	// moment the newest "⏺" block on screen is still the PREVIOUS turn's reply — the
+	// seed captured at rebaseline. Firing now would (re)speak that stale reply. So
+	// while the extraction is still exactly the seed, the turn is not really done:
+	// wait for the new reply to diverge from it. (A blank/tool-only turn falls
+	// through below to hand control back; an identical consecutive reply is the rare
+	// case that waits for the cloud's reply timeout.)
+	if !isBlank(text) && text == ts.seed {
+		if debugExtract {
+			log.Printf("deviceapi: boundary suppressed — extract still == seed (awaiting this turn's reply)")
+		}
+		return false, nil
+	}
 	// The turn the user injected is done; a later barge-in now has nothing to
 	// interrupt, so the next SubmitVoiceTurn injects cleanly without an ESC.
 	b.inFlight.Store(false)
+
+	if debugExtract {
+		log.Printf("deviceapi: boundary extract=%q\n--- mirror tail ---\n%s\n--- end ---", text, tailLines(b.screen.VisibleText(), 12))
+	}
 
 	if isBlank(text) {
 		// A completed turn with no speakable text (e.g. a tool-only turn) still
