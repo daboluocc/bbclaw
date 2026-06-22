@@ -18,13 +18,17 @@ var memoryFiles = map[string]string{
 	"decisions.md":   "# 关键决策\n\n（敲定的重要决策 + 原因，一条一句）\n",
 }
 
-// DefaultWorkspaceDir returns ~/.bbclaw-adapter-v2/workspace — the butler's home.
+// DefaultWorkspaceDir returns ~/.bbclaw-adapter/workspace — SHARED with v1's
+// butler. v2 deliberately reuses v1's workspace so the assistant keeps the user's
+// accumulated memory (name, preferences, projects) across the v1→v2 move; on a
+// machine that already ran v1, EnsureWorkspace finds CLAUDE.md + MEMORY/ present
+// and leaves them untouched, so v1's curated persona and memory carry over as-is.
 func DefaultWorkspaceDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("user home: %w", err)
 	}
-	return filepath.Join(home, ".bbclaw-adapter-v2", "workspace"), nil
+	return filepath.Join(home, ".bbclaw-adapter", "workspace"), nil
 }
 
 // EnsureWorkspace creates the butler workspace at dir (if empty, the default) and
