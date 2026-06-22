@@ -162,10 +162,19 @@ func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 		return nil, err
 	}
 	ev := &cloudEvents{}
-	// asr/tts/sink are nil: this path is text-only (cloud does ASR/TTS). The
-	// Bridge injects the transcript and extracts the reply; the events observer
-	// streams that reply text to the cloud. StreamReplyDelta on → live deltas.
-	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{StreamReplyDelta: true, Warmup: true})
+	// asr/tts/sink are nil: this path is text-only (cloud does ASR/TTS). The Bridge
+	// injects the transcript and extracts the reply; the events observer forwards
+	// that reply text to the cloud, which TTSs it.
+	//
+	// StreamReplyDelta is OFF: the cloud TTSs the voice.reply.delta stream, but our
+	// deltas are NormalizeReply'd snapshots of a still-growing reply, and
+	// normalization (wrap-rejoin / space-collapse) is non-monotonic as text grows —
+	// so streamed snapshots desync the cloud's append-only diff and it speaks the
+	// wrong text. Instead we forward ONE delta with the final, clean reply at turn
+	// end (cloudEvents.ReplyComplete → forwardDelta), so the cloud TTSs exactly the
+	// text the device extracted. (Streaming sentence-level TTS can return later with
+	// a normalization-aware, monotonic delta stream.)
+	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{Warmup: true})
 	bridge.SetEvents(ev)
 	go bridge.Run(context.Background())
 	cb := &cloudBridge{sess: sess, bridge: bridge, ev: ev}
