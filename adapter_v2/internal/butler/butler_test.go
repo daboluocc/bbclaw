@@ -7,26 +7,41 @@ import (
 	"testing"
 )
 
-func TestAppendDevicePersona(t *testing.T) {
-	// claude CLI → device persona appended via --append-system-prompt.
-	got := AppendDevicePersona([]string{"/usr/local/bin/claude"}, "/ws")
-	if len(got) != 3 || got[1] != "--append-system-prompt" || !strings.Contains(got[2], "对讲机") {
-		t.Errorf("claude argv not augmented: %v", got)
+func TestDeviceClaudeArgs(t *testing.T) {
+	// claude CLI → bypass-permissions flag + device persona appended.
+	got := DeviceClaudeArgs([]string{"/usr/local/bin/claude"}, "/ws")
+	if !containsArg(got, "--dangerously-skip-permissions") {
+		t.Errorf("missing permission bypass (voice device can't answer prompts): %v", got)
+	}
+	if i := argIndex(got, "--append-system-prompt"); i < 0 || i+1 >= len(got) || !strings.Contains(got[i+1], "对讲机") {
+		t.Errorf("device persona not appended: %v", got)
 	}
 	// Non-claude CLI (e.g. the e2e mockcli) → untouched.
-	if base := AppendDevicePersona([]string{"/tmp/mockcli"}, "/ws"); len(base) != 1 {
+	if base := DeviceClaudeArgs([]string{"/tmp/mockcli"}, "/ws"); len(base) != 1 {
 		t.Errorf("non-claude argv should be untouched, got %v", base)
 	}
-	// Explicit empty env disables the prompt.
-	t.Setenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "")
-	if off := AppendDevicePersona([]string{"claude"}, ""); len(off) != 1 {
-		t.Errorf("empty env should disable the persona, got %v", off)
+	// Permission bypass can be turned off for safety.
+	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "0")
+	if off := DeviceClaudeArgs([]string{"claude"}, ""); containsArg(off, "--dangerously-skip-permissions") {
+		t.Errorf("ADAPTER_V2_SKIP_PERMISSIONS=0 should drop the bypass flag: %v", off)
 	}
-	// Custom env overrides the default whole prompt.
+	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "1")
+	// Custom persona env overrides the default whole prompt.
 	t.Setenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "be terse")
-	if cust := AppendDevicePersona([]string{"claude"}, ""); len(cust) != 3 || cust[2] != "be terse" {
-		t.Errorf("custom env not applied, got %v", cust)
+	got = DeviceClaudeArgs([]string{"claude"}, "")
+	if i := argIndex(got, "--append-system-prompt"); i < 0 || got[i+1] != "be terse" {
+		t.Errorf("custom persona env not applied: %v", got)
 	}
+}
+
+func containsArg(args []string, want string) bool { return argIndex(args, want) >= 0 }
+func argIndex(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestEnsureWorkspaceScaffoldsAndIsIdempotent(t *testing.T) {

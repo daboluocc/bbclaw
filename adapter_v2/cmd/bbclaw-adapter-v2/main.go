@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("bbclaw-adapter-v2: butler workspace: %v", err)
 	}
-	defaultArgv := butler.AppendDevicePersona(cfg.Argv, defaultCwd)
+	defaultArgv := butler.DeviceClaudeArgs(cfg.Argv, defaultCwd)
 	log.Printf("bbclaw-adapter-v2: butler workspace %s", defaultCwd)
 
 	srv := &http.Server{
