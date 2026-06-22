@@ -18,6 +18,13 @@ static const char* TAG = "bb_session_store";
  * namespace; max 23 chars + NUL covers every current driver id. */
 #define BB_SESSION_NVS_KEY_ACTIVE_DRIVER "drv/active"
 
+/* Active adapter home_site_id (the SaaS adapter the user last selected). A
+ * UUID (36 chars) + NUL. Persisted so Settings can show the last adapter
+ * immediately without waiting on a sites.list fetch that may fail right after
+ * boot; routing itself is server-side. */
+#define BB_SESSION_NVS_KEY_ACTIVE_SITE "site/active"
+#define BB_ACTIVE_SITE_CACHE_SZ 40
+
 /* Driver name → NVS key short prefix mapping (ADR-014: ls/ prefix) */
 typedef struct {
   const char* driver_name;
@@ -180,10 +187,13 @@ static void persist_task(void* arg) {
 static char s_active_driver_cache[BB_ACTIVE_DRIVER_CACHE_SZ] = {0};
 static int  s_active_driver_loaded = 0;
 
+static char s_active_site_cache[BB_ACTIVE_SITE_CACHE_SZ] = {0};
+
 void bb_session_store_preload_nvs(void) {
   if (s_active_driver_loaded) return;
   s_active_driver_loaded = 1;
   s_active_driver_cache[0] = '\0';
+  s_active_site_cache[0] = '\0';
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READONLY, &h);
   if (err != ESP_OK) {
@@ -193,7 +203,6 @@ void bb_session_store_preload_nvs(void) {
   }
   size_t sz = sizeof(s_active_driver_cache);
   err = nvs_get_str(h, BB_SESSION_NVS_KEY_ACTIVE_DRIVER, s_active_driver_cache, &sz);
-  nvs_close(h);
   if (err == ESP_OK) {
     ESP_LOGI(TAG, "preload_nvs: active_driver='%s'", s_active_driver_cache);
   } else if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -202,6 +211,85 @@ void bb_session_store_preload_nvs(void) {
     ESP_LOGW(TAG, "preload_nvs: active_driver read failed (%s)", esp_err_to_name(err));
     s_active_driver_cache[0] = '\0';
   }
+  size_t ssz = sizeof(s_active_site_cache);
+  err = nvs_get_str(h, BB_SESSION_NVS_KEY_ACTIVE_SITE, s_active_site_cache, &ssz);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "preload_nvs: active_site='%s'", s_active_site_cache);
+  } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+    s_active_site_cache[0] = '\0';
+  }
+  nvs_close(h);
+}
+
+esp_err_t bb_session_store_load_active_site(char* out_id, size_t sz) {
+  if (out_id == NULL || sz == 0) return ESP_ERR_INVALID_ARG;
+  out_id[0] = '\0';
+  if (!s_active_driver_loaded) {
+    bb_session_store_preload_nvs();
+  }
+  if (s_active_site_cache[0] == '\0') {
+    return ESP_ERR_NVS_NOT_FOUND;
+  }
+  strncpy(out_id, s_active_site_cache, sz - 1);
+  out_id[sz - 1] = '\0';
+  return ESP_OK;
+}
+
+typedef struct {
+  char site_id[BB_ACTIVE_SITE_CACHE_SZ];
+} active_site_payload_t;
+
+static void active_site_persist_task(void* arg) {
+  active_site_payload_t* p = (active_site_payload_t*)arg;
+  if (p == NULL) {
+    vTaskDelete(NULL);
+    return;
+  }
+  nvs_handle_t h;
+  esp_err_t err = nvs_open(BB_SESSION_NVS_NS, NVS_READWRITE, &h);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "active_site persist: nvs_open failed (%s)", esp_err_to_name(err));
+    free(p);
+    vTaskDelete(NULL);
+    return;
+  }
+  if (p->site_id[0] == '\0') {
+    err = nvs_erase_key(h, BB_SESSION_NVS_KEY_ACTIVE_SITE);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
+  } else {
+    err = nvs_set_str(h, BB_SESSION_NVS_KEY_ACTIVE_SITE, p->site_id);
+    if (err == ESP_OK) {
+      err = nvs_commit(h);
+      ESP_LOGI(TAG, "active_site persist: '%s'", p->site_id);
+    }
+  }
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "active_site persist: write failed (%s)", esp_err_to_name(err));
+  }
+  nvs_close(h);
+  free(p);
+  vTaskDelete(NULL);
+}
+
+esp_err_t bb_session_store_save_active_site(const char* site_id) {
+  if (site_id == NULL) return ESP_ERR_INVALID_ARG;
+  s_active_driver_loaded = 1;  /* cache is now authoritative */
+  strncpy(s_active_site_cache, site_id, sizeof(s_active_site_cache) - 1);
+  s_active_site_cache[sizeof(s_active_site_cache) - 1] = '\0';
+
+  active_site_payload_t* p = (active_site_payload_t*)calloc(1, sizeof(*p));
+  if (p == NULL) return ESP_ERR_NO_MEM;
+  strncpy(p->site_id, site_id, sizeof(p->site_id) - 1);
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreate(active_site_persist_task, "site_persist",
+                              BB_SESSION_PERSIST_TASK_STACK, p,
+                              BB_SESSION_PERSIST_TASK_PRIO, &t);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "save_active_site: xTaskCreate failed");
+    free(p);
+    return ESP_FAIL;
+  }
+  return ESP_OK;
 }
 
 esp_err_t bb_session_store_load_active_driver(char* out_name, size_t sz) {
