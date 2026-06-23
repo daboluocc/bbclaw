@@ -25,6 +25,10 @@ func TestIsNoiseLine(t *testing.T) {
 		{"spinner glyph dropped by emulator", "Cogitating… (3s · esc to interrupt)", true},
 		{"api retry wait", "Waiting for API response · will retry in 2m 26s · check your network", true},
 		{"api retry short", "· will retry in 30s ·", true},
+		{"token counter tail", "38 tokens)", true},
+		{"token counter with arrow", "↑ 1.2k tokens", true},
+		{"token counter with sep", "38 tokens · esc to interrupt", true},
+		{"reply mentioning tokens (not chrome)", "你的余额还有 100 tokens 可用", false},
 
 		{"box top border", "╭──────────────╮", true},
 		{"box bottom border", "╰──────────────╯", true},
