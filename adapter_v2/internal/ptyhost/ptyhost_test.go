@@ -120,6 +120,32 @@ func TestWriteThenRead(t *testing.T) {
 	}
 }
 
+// TestSpawnStartupInput verifies Config.StartupInput is replayed into the PTY
+// after spawn — the mechanism that auto-dismisses claude's first-run upsell. An
+// interactive shell echoes+executes the injected line, so the marker proves the
+// bytes reached the child's stdin without any explicit Write from the caller.
+func TestSpawnStartupInput(t *testing.T) {
+	p, err := Spawn(Config{
+		Argv: []string{"sh", "-i"},
+		StartupInput: []StartupChunk{
+			{Delay: 10 * time.Millisecond, Data: []byte("echo marker_startup\n")},
+			{Delay: 10 * time.Millisecond, Data: []byte("exit\n")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer p.Close()
+
+	out := string(readAll(t, p))
+	if !strings.Contains(out, "marker_startup") {
+		t.Errorf("startup input not replayed; output %q lacks marker", out)
+	}
+	if code, err := p.Wait(); err != nil || code != 0 {
+		t.Errorf("Wait = (%d, %v), want (0, nil)", code, err)
+	}
+}
+
 // TestResize covers two things: a bare Resize call must not error, and the new
 // dimensions must actually reach the kernel PTY — verified by having the shell
 // print `stty size` (rows cols) after we resize.

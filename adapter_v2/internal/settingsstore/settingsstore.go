@@ -104,6 +104,10 @@ type CLISettings struct {
 	SkipPermissions   bool   `json:"skipPermissions"`   // ADAPTER_V2_SKIP_PERMISSIONS (default true)
 	VoiceSystemPrompt string `json:"voiceSystemPrompt"` // ADAPTER_V2_VOICE_SYSTEM_PROMPT
 	Addr              string `json:"addr"`              // ADAPTER_V2_ADDR (default ":18090")
+	// ClaudeAutoEnter auto-sends a few Enters after a claude session spawns to
+	// dismiss its first-run "Try the new fullscreen renderer?" upsell, which would
+	// otherwise block the shared TUI (the voice/device path can't answer it).
+	ClaudeAutoEnter bool `json:"claudeAutoEnter"` // ADAPTER_V2_CLAUDE_AUTO_ENTER (default true)
 }
 
 // CloudSettings groups the cloud-relay knobs (cloudrelay.go).
@@ -176,6 +180,7 @@ func FromEnv() Settings {
 			SkipPermissions:   envBool("ADAPTER_V2_SKIP_PERMISSIONS", true),
 			VoiceSystemPrompt: os.Getenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"), // may be set-empty on purpose
 			Addr:              envOr("ADAPTER_V2_ADDR", ":18090"),
+			ClaudeAutoEnter:   envBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", true),
 		},
 		AI: AISettings{
 			AnthropicBaseURL:   strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
@@ -394,6 +399,7 @@ func (s *Store) ExportEnv() {
 	setBool("ADAPTER_V2_SKIP_PERMISSIONS", c.SkipPermissions)
 	setStr("ADAPTER_V2_VOICE_SYSTEM_PROMPT", c.VoiceSystemPrompt)
 	setStr("ADAPTER_V2_ADDR", c.Addr)
+	setBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", c.ClaudeAutoEnter)
 
 	ai := snap.AI
 	// Blank ⇒ skipped, so an unconfigured endpoint never shadows a token the
