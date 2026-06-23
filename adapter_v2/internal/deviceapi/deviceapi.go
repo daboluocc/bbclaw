@@ -315,6 +315,27 @@ func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 	return nil
 }
 
+// Interrupt aborts the in-flight turn without starting a new one — the explicit
+// barge-in/cancel path (the device's turn.cancel), as opposed to SubmitVoiceTurn's
+// interrupt-then-inject. It sends claude's ESC ("esc to interrupt") so the CLI
+// drops the current turn and returns to its idle prompt, clears the in-flight flag
+// (so a following SubmitVoiceTurn injects cleanly with no gratuitous second ESC),
+// and re-baselines so the interrupted partial never leaks into the next turn.
+// No-op when nothing is in flight (a cancel at an idle prompt must NOT emit a
+// stray ESC — it would corrupt the next keystroke; see SubmitVoiceTurn).
+func (b *Bridge) Interrupt() error {
+	if !b.inFlight.Load() {
+		return nil
+	}
+	if err := b.sess.Write([]byte(interruptKey)); err != nil {
+		return mapErr(err)
+	}
+	time.Sleep(interruptSettle)
+	b.inFlight.Store(false)
+	b.signalRearm()
+	return nil
+}
+
 // signalRearm performs a non-blocking poke of the rearm channel: if Run has not
 // yet consumed a prior signal, the buffer is already full and we drop this one
 // (coalescing), since one re-baseline against the latest screen covers any burst

@@ -264,6 +264,15 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 		}
 		return
 	}
+	// turn.cancel is the device's barge-in/abort signal (PTT pressed during a
+	// reply). Interrupt the in-flight turn so a stuck/slow turn (e.g. a long tool
+	// call, or claude stuck on an API retry) doesn't run until ReplyWait — before
+	// this the cancel was ignored ("no handler") and the device sat in "waiting"
+	// until the turn timed out.
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "turn.cancel") {
+		r.handleTurnCancel(write, env)
+		return
+	}
 	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a
 	// minimal static reply; unknown kinds fall through to a silent no-op. Log either
 	// way so the device's settings-page traffic is visible while debugging.

@@ -455,6 +455,59 @@ func TestSubmitVoiceTurnInterruptsInFlight(t *testing.T) {
 	}
 }
 
+// TestInterruptEscOnlyWhenInFlight covers Bridge.Interrupt (the turn.cancel /
+// barge-in abort path): a no-op at an idle prompt (no stray ESC to corrupt the
+// next keystroke), and an ESC + in-flight clear when a turn IS running — so the
+// CLI drops the current turn and the next submitted line carries no second ESC.
+func TestInterruptEscOnlyWhenInFlight(t *testing.T) {
+	m := session.NewManager()
+	s, err := m.Create("probe-int", ptyhost.Config{
+		Argv:        []string{"bash", "-c", interruptProbeCLI},
+		InitialSize: ptyhost.Size{Cols: 80, Rows: 24},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	client, _, _ := s.Attach()
+	defer s.Detach(client)
+	br := b(s)
+
+	// (a) Idle: Interrupt is a no-op — nothing in flight, no ESC emitted.
+	if err := br.Interrupt(); err != nil {
+		t.Fatalf("Interrupt(idle): %v", err)
+	}
+	if br.inFlight.Load() {
+		t.Fatal("Interrupt at idle must not set inFlight")
+	}
+	// (b) Idle submit confirms no ESC is pending ahead of it.
+	if err := br.SubmitVoiceTurn("first"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if !drainContains(client.Out, "NO_ESC:first", 3*time.Second) {
+		t.Fatal("no ESC should precede the first (idle) turn")
+	}
+
+	// (c) A turn is now in flight (SubmitVoiceTurn set it). Interrupt emits ESC and
+	// clears the flag.
+	if !br.inFlight.Load() {
+		t.Fatal("SubmitVoiceTurn should have set inFlight")
+	}
+	if err := br.Interrupt(); err != nil {
+		t.Fatalf("Interrupt(in-flight): %v", err)
+	}
+	if br.inFlight.Load() {
+		t.Fatal("Interrupt must clear inFlight")
+	}
+	// (d) The next submit adds no ESC of its own (inFlight now false), so the ESC the
+	// probe sees ahead of this line came from Interrupt.
+	if err := br.SubmitVoiceTurn("second"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if !drainContains(client.Out, "SAW_ESC:second", 3*time.Second) {
+		t.Fatal("Interrupt's ESC must land ahead of the next submitted line")
+	}
+}
+
 // TestSayTTSSynthesizesWav exercises the real macOS `say` Synthesizer end to end:
 // it must produce a non-empty RIFF/WAVE buffer. Skipped where `say` is absent
 // (non-macOS CI), since SayTTS is the documented local-only stopgap.
