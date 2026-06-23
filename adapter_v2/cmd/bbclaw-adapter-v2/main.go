@@ -201,6 +201,8 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 		SegmentTTS:       segmentTTS,
 	})
 	mux.HandleFunc("/v2/dev/ws", devSrv.Handler())
+	// Local HTTP session browser for the web SPA: list / view transcript / switch.
+	agentSessionsRoutes(mux, devSess)
 	// The embedded web client at "/". ServeMux prefers the more specific "/ws"
 	// and "/healthz" patterns over this catch-all, so the file server only sees
 	// requests those two don't claim.

@@ -1,0 +1,206 @@
+/* ── dot-matrix / Nothing-style tokens (design/UI_DESIGN_LANGUAGE.md) ──────
+   Single source of truth for the BBClaw visual language, ported from
+   adapter/web/src/theme.css. Only reference the variables below — no bare hex
+   except the semantic ok/err colors. */
+:root {
+  --bg: #070b0e; /* the one background color (incl. overlays) */
+  --lit: #dfeaec; /* lit dot / primary text (cool white) */
+  --ghost: #152128; /* ghost dot / divider / secondary surface */
+  --dim: #6e8a93; /* secondary text (cool blue-grey) */
+  --wordmark: #4f6f67; /* footer wordmark (dim teal-grey) */
+  --accent: #2ec4a0; /* the single accent teal */
+  --ok: #4cd964; /* success / online (semantic) */
+  --err: #e66f6f; /* error / danger (semantic) */
+  --pitch: 9px; /* dot-matrix base pitch */
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font: 13px/1.55 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
+  color: var(--lit);
+  background: var(--bg);
+  background-image: radial-gradient(var(--ghost) 1px, transparent 1px);
+  background-size: var(--pitch) var(--pitch);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ── header ──────────────────────────────────────────────────────────── */
+.hdr {
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--ghost);
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  background: rgba(7, 11, 14, 0.85);
+  backdrop-filter: blur(2px);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.wordmark {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.32em;
+  color: var(--lit);
+  border-bottom: 2px dotted var(--accent);
+  padding-bottom: 3px;
+  white-space: nowrap;
+}
+.hdr .sub {
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: 8px;
+}
+.tab {
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--ghost);
+  color: var(--dim);
+  border-radius: 7px;
+  padding: 6px 16px;
+  letter-spacing: 0.05em;
+}
+.tab:hover {
+  color: var(--lit);
+  border-color: var(--dim);
+}
+.tab.on {
+  color: #04110f;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.hdr .spacer {
+  margin-left: auto;
+}
+.adminlink {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--ghost);
+  border-radius: 7px;
+  padding: 6px 14px;
+  color: var(--dim);
+  letter-spacing: 0.05em;
+}
+.adminlink:hover {
+  color: var(--accent);
+  border-color: #1f4d47;
+  text-decoration: none;
+}
+
+/* ── shell / views ───────────────────────────────────────────────────── */
+.view {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── buttons ─────────────────────────────────────────────────────────── */
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 7px;
+  padding: 8px 15px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #04110f;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.ghost {
+  background: transparent;
+  color: var(--dim);
+  border-color: var(--ghost);
+  font-weight: 500;
+}
+button.ghost:hover:not(:disabled) {
+  color: var(--lit);
+  border-color: var(--dim);
+}
+button.small {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+/* ── card / generic ──────────────────────────────────────────────────── */
+.card h2 {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+.card h2::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 9px 0 0 var(--ghost), 18px 0 0 var(--ghost);
+  margin-right: 18px;
+  display: inline-block;
+}
+
+.dim {
+  color: var(--dim);
+}
+.muted {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+/* ── toast ───────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: var(--bg);
+  border: 1px solid var(--ghost);
+  box-shadow: 0 0 0 1px rgba(46, 196, 160, 0.1), 0 12px 40px rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 12px;
+  color: var(--lit);
+  letter-spacing: 0.03em;
+}
+.toast.err {
+  color: var(--err);
+}
