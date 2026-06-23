@@ -60,6 +60,76 @@ func TestDeviceSessionConfigResumeModes(t *testing.T) {
 	}
 }
 
+func TestDeviceSessionMessages(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/Users/x/.bbclaw-adapter/workspace"
+	dir := claudeProjectDir(cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mixed rows: a plain user turn, a user tool_result (no text → dropped), an
+	// assistant text turn, and an assistant thinking-only turn (dropped).
+	lines := []string{
+		`{"type":"user","timestamp":"2026-06-23T00:00:01Z","message":{"role":"user","content":"问题一"}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"junk"}]}}`,
+		`{"type":"assistant","timestamp":"2026-06-23T00:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"回答一"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}`,
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "conv-1.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := NewDeviceSession(session.NewManager(), []string{"claude"}, cwd)
+	msgs, err := d.Messages("conv-1")
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 speakable messages (tool_result + thinking dropped), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "问题一" || msgs[0].Seq != 0 {
+		t.Errorf("msg0 wrong: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "回答一" || msgs[1].Seq != 1 {
+		t.Errorf("msg1 wrong: %+v", msgs[1])
+	}
+	if msgs[1].Timestamp != "2026-06-23T00:00:02Z" {
+		t.Errorf("timestamp not parsed: %q", msgs[1].Timestamp)
+	}
+	// Missing conversation → empty page, not an error.
+	if m, err := d.Messages("nope"); err != nil || len(m) != 0 {
+		t.Errorf("missing conversation should be empty: %v %v", m, err)
+	}
+}
+
+func TestPageMessages(t *testing.T) {
+	mk := func(n int) []ConversationMessage {
+		out := make([]ConversationMessage, n)
+		for i := range out {
+			out[i] = ConversationMessage{Seq: i}
+		}
+		return out
+	}
+	all := mk(10)
+	// Newest page (before<=0): last `limit`.
+	page, total, more := PageMessages(all, 0, 4)
+	if total != 10 || len(page) != 4 || page[0].Seq != 6 || !more {
+		t.Errorf("newest page wrong: total=%d len=%d first=%d more=%v", total, len(page), page[0].Seq, more)
+	}
+	// Backward page ending before seq 6 → seqs 2..5.
+	page, _, more = PageMessages(all, 6, 4)
+	if len(page) != 4 || page[0].Seq != 2 || page[3].Seq != 5 || !more {
+		t.Errorf("backward page wrong: %+v more=%v", page, more)
+	}
+	// Reaching the start → no more.
+	page, _, more = PageMessages(all, 3, 10)
+	if len(page) != 3 || page[0].Seq != 0 || more {
+		t.Errorf("start page wrong: %+v more=%v", page, more)
+	}
+}
+
 func TestDeviceSessionList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

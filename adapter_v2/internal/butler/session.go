@@ -136,6 +136,107 @@ func (d *DeviceSession) List() ([]ConversationInfo, error) {
 	return listConversations(d.cwd)
 }
 
+// ConversationMessage is one rendered turn for the device/web history view
+// (agent.messages). content is plain text — rows that carry only a tool_use /
+// tool_result / thinking block (no speakable text) are dropped.
+type ConversationMessage struct {
+	Role      string // "user" | "assistant"
+	Content   string // plain text
+	Timestamp string // RFC3339 if the .jsonl row has one
+	Seq       int    // chronological index (0-based) over the kept messages
+}
+
+// messageContentMax caps a single message's text (rune-safe) for the small device
+// screen / PSRAM.
+const messageContentMax = 4096
+
+// Messages parses a conversation's claude .jsonl into rendered messages, in
+// chronological order. A missing file (or unknown encoding) yields an empty slice,
+// not an error — the device shows a blank history rather than failing.
+func (d *DeviceSession) Messages(id string) ([]ConversationMessage, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	dir := claudeProjectDir(d.cwd)
+	if dir == "" {
+		return nil, nil
+	}
+	f, err := os.Open(filepath.Join(dir, id+".jsonl"))
+	if err != nil {
+		return nil, nil // missing conversation => empty page
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // assistant turns can be large
+	var out []ConversationMessage
+	for sc.Scan() {
+		var rec struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) != nil {
+			continue
+		}
+		role := rec.Message.Role
+		if role == "" {
+			role = rec.Type
+		}
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		// firstText returns "" for tool_result / tool_use / thinking-only content,
+		// so reusing it drops exactly the non-speakable rows.
+		text := firstText(rec.Message.Content)
+		if text == "" {
+			continue
+		}
+		out = append(out, ConversationMessage{
+			Role:      role,
+			Content:   capRunes(text, messageContentMax),
+			Timestamp: rec.Timestamp,
+			Seq:       len(out),
+		})
+	}
+	return out, nil
+}
+
+// PageMessages returns a backward page of msgs (0-indexed chronological): before<=0
+// is the newest page (ending at total); else end=min(before,total), start=
+// max(0,end-limit). hasMore reports older messages remain. limit is clamped to
+// [1,200] (default 50).
+func PageMessages(all []ConversationMessage, before, limit int) (page []ConversationMessage, total int, hasMore bool) {
+	total = len(all)
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	end := total
+	if before > 0 && before < total {
+		end = before
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	return all[start:end], total, start > 0
+}
+
+// capRunes hard-caps s to n runes (rune-safe).
+func capRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
 // ConversationInfo is one claude conversation for the device's history picker.
 type ConversationInfo struct {
 	ID         string // claude session uuid
