@@ -107,6 +107,33 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	})
 }
 
+// handleTurnCancel aborts the in-flight turn on the device's barge-in/abort
+// (turn.cancel). It preempts the waiting handleTranscript (so it returns and frees
+// turnMu, completing its own request) and sends the CLI an ESC to drop the running
+// generation. No-op when nothing is in flight. Always acks so the cloud's
+// turn.cancel request completes.
+func (r *Relay) handleTurnCancel(write func(Envelope) error, env Envelope) {
+	deviceID := strings.TrimSpace(env.DeviceID)
+	if deviceID == "" {
+		deviceID = "cloud-anon"
+	}
+	if cb := r.bridges.peek(); cb != nil {
+		cb.preempt() // the in-flight handleTranscript returns superseded, frees turnMu
+		if err := cb.bridge.Interrupt(); err != nil {
+			r.log("cloudrelay: turn.cancel device=%s interrupt error: %v", deviceID, err)
+		} else {
+			r.log("cloudrelay: ⊘ turn.cancel device=%s — interrupted in-flight turn", deviceID)
+		}
+	} else {
+		r.log("cloudrelay: turn.cancel device=%s — nothing in flight", deviceID)
+	}
+	_ = write(Envelope{
+		Type: "reply", MessageID: env.MessageID, DeviceID: env.DeviceID,
+		HomeSiteID: r.cfg.HomeSiteID, Kind: "turn.cancel",
+		Payload: map[string]any{"ok": true},
+	})
+}
+
 // heartbeatInterval is well under the cloud's ReplyIdleWait (default 120s) so a
 // silent turn never trips HOME_ADAPTER_TIMEOUT.
 const heartbeatInterval = 15 * time.Second
@@ -199,6 +226,18 @@ type bridgeManager struct {
 
 func newBridgeManager(mgr *session.Manager, dev *butler.DeviceSession) *bridgeManager {
 	return &bridgeManager{mgr: mgr, dev: dev, bridges: map[string]*cloudBridge{}}
+}
+
+// peek returns the live default bridge without creating one — for turn.cancel,
+// which must abort an EXISTING turn, never spawn a CLI. nil when no live bridge
+// (nothing to cancel).
+func (m *bridgeManager) peek() *cloudBridge {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cb, ok := m.bridges[session.DefaultID]; ok && m.mgr.Get(session.DefaultID) == cb.sess {
+		return cb
+	}
+	return nil
 }
 
 // get returns the cloud relay's bridge onto the shared DEFAULT session. The
