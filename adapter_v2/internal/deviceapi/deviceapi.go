@@ -141,6 +141,11 @@ type Events interface {
 	// ReplyComplete reports the final reply text of a turn, before it is spoken.
 	// The transport emits its reply.end frame here.
 	ReplyComplete(text string)
+	// ToolStep reports a NEW tool invocation claude started mid-turn (Bash, Edit,
+	// …) for DISPLAY-ONLY device progress (ADR-030): a dimmed "Bash: …" chip. It is
+	// NEVER spoken — TTS is driven solely by the prose reply. Emitted at most once
+	// per distinct {name,hint} per turn (deduped in Run). nil Events: no-op.
+	ToolStep(name, hint string)
 	// TurnIdle reports the turn is fully done (spoken) and the device may PTT
 	// again. The transport emits its turn{idle} frame here.
 	TurnIdle()
@@ -451,6 +456,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 			dismissSurvey()
 			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
+			b.emitToolSteps(ts) // display-only tool progress (ADR-030); only on a new paint
 			if err := b.onProgress(ctx, reply.Text, ts); err != nil {
 				return err
 			}
@@ -572,9 +578,31 @@ func isTrustPrompt(visible string) bool {
 // been pushed as a delta, and what text has already been spoken sentence-by-
 // sentence. Reset at the start of every turn.
 type turnStream struct {
-	seed      string // the prior turn's reply, still on screen until this turn paints; suppressed by onProgress
-	lastDelta string // last full reply text emitted via Events.ReplyDelta
-	spoken    string // reply prefix already synthesised by per-segment TTS
+	seed      string              // the prior turn's reply, still on screen until this turn paints; suppressed by onProgress
+	lastDelta string              // last full reply text emitted via Events.ReplyDelta
+	spoken    string              // reply prefix already synthesised by per-segment TTS
+	steps     map[string]struct{} // tool steps already emitted this turn (dedup); reset per turn via rebaseline
+}
+
+// emitToolSteps scans the screen for claude's tool-step bullets and emits a
+// DISPLAY-ONLY ToolStep for each NEW {name,hint} this turn (deduped via ts.steps).
+// No audio — progress only. Called per PTY paint; the dedup makes repeated repaints
+// of the same step emit once.
+func (b *Bridge) emitToolSteps(ts *turnStream) {
+	if b.events == nil {
+		return
+	}
+	for _, st := range extract.ScanToolSteps(b.screen.VisibleText()) {
+		key := st.Name + "\x00" + st.Hint
+		if ts.steps == nil {
+			ts.steps = map[string]struct{}{}
+		}
+		if _, seen := ts.steps[key]; seen {
+			continue
+		}
+		ts.steps[key] = struct{}{}
+		b.events.ToolStep(st.Name, st.Hint)
+	}
 }
 
 // onProgress runs the Phase B streaming side-effects on each extraction advance:

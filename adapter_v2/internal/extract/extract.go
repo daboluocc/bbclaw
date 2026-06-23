@@ -152,7 +152,9 @@ func extractMarkerBlock(visible string) (string, bool) {
 		// workspace", "⏺ ⏵⏵ bypass permissions on … ← for agents". Their content is
 		// noise (isStatusLine), so anchoring on them would speak the model/usage
 		// footer instead of the reply. Skip them; the last REAL reply marker wins.
-		if isNoiseLine(stripReplyMarker(strings.TrimRight(l, " \t"))) {
+		// Likewise a "⏺ Name(args)" TOOL step is not prose — anchoring on it would
+		// speak "Bash curl …" (it's surfaced separately as display-only progress).
+		if isNoiseLine(stripReplyMarker(strings.TrimRight(l, " \t"))) || isToolStep(l) {
 			continue
 		}
 		last = i

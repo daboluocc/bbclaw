@@ -128,6 +128,7 @@ type deviceConn struct {
 	curU      uint16
 	dnSeq     uint16 // downlink TTS frame counter, reset per turn
 	deltaSeq  uint16 // reply.delta sequence counter, reset per turn
+	toolSeq   uint16 // tool.step sequence counter, reset per turn (independent of deltaSeq)
 }
 
 // tryBeginCapture opens a new turn iff the connection is idle, recording its
@@ -139,7 +140,7 @@ func (c *deviceConn) tryBeginCapture(turnID string, u uint16) bool {
 		return false
 	}
 	c.fsm = connCapturing
-	c.curTurnID, c.curU, c.dnSeq, c.deltaSeq = turnID, u, 0, 0
+	c.curTurnID, c.curU, c.dnSeq, c.deltaSeq, c.toolSeq = turnID, u, 0, 0, 0
 	return true
 }
 
@@ -230,6 +231,16 @@ func (c *deviceConn) ReplyDelta(text string) {
 func (c *deviceConn) ReplyComplete(text string) {
 	turnID, _ := c.turn()
 	_ = c.writeCtrl(replyEnd{T: "reply.end", TurnID: turnID, Text: text})
+}
+
+// ToolStep implements deviceapi.Events: a display-only tool-progress frame
+// (tool.step). Shown as a dimmed chip on the device; never spoken.
+func (c *deviceConn) ToolStep(name, hint string) {
+	c.mu.Lock()
+	turnID, seq := c.curTurnID, c.toolSeq
+	c.toolSeq++
+	c.mu.Unlock()
+	_ = c.writeCtrl(toolStep{T: "tool.step", TurnID: turnID, Seq: seq, Name: name, Hint: hint})
 }
 
 // TurnIdle implements deviceapi.Events: the turn is fully spoken → turn{idle},

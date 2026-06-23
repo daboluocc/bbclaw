@@ -149,6 +149,17 @@ type replyDelta struct {
 	Text   string `json:"text"`
 }
 
+// toolStep is a DISPLAY-ONLY tool-progress frame (ADR-030): the device shows it as
+// a dimmed "name: hint" chip and never plays it as audio. Its own per-turn seq,
+// independent of reply.delta's.
+type toolStep struct {
+	T      string `json:"t"`
+	TurnID string `json:"turnId"`
+	Seq    uint16 `json:"seq"`
+	Name   string `json:"name"`
+	Hint   string `json:"hint,omitempty"`
+}
+
 type replyEnd struct {
 	T      string `json:"t"`
 	TurnID string `json:"turnId"`
