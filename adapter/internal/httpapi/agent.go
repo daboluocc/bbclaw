@@ -170,9 +170,10 @@ type agentCancelRequest struct {
 
 // handleAgentCancel aborts the device's in-flight agent turn: kills the CLI
 // subprocess via the driver's Interrupter capability while keeping the
-// session resumable, and records an interruption note for the next turn.
-// Responds 200 with data.cancelled=false when no turn is in flight (the
-// device may just be stopping local TTS playback — still worth the note).
+// session resumable. Per ADR-028 §2.5.1 (撤回语义) the interrupt is treated as
+// "withdrawn, as if it never happened" — no interruption note is injected into
+// the next turn. Responds 200 with data.cancelled=false when no turn is in
+// flight (the device may just be stopping local TTS playback).
 func (s *Server) handleAgentCancel(w http.ResponseWriter, r *http.Request) {
 	if s.inflight == nil {
 		writeJSON(w, http.StatusNotImplemented, response{OK: false, Error: "CANCEL_NOT_CONFIGURED"})
@@ -187,12 +188,10 @@ func (s *Server) handleAgentCancel(w http.ResponseWriter, r *http.Request) {
 	if deviceID == "" {
 		deviceID = strings.TrimSpace(r.URL.Query().Get("deviceId"))
 	}
-	found, err := s.inflight.Cancel(deviceID, req.PlayedText)
-	if !found {
-		// No agent turn running — the device interrupted local playback only.
-		// Record the note anyway so the next turn knows the reply was cut off.
-		s.inflight.NoteInterruption(deviceID, req.PlayedText)
-	}
+	// ADR-028 §2.5.1 修订(撤回语义):打断 = 撤回当前回合,当没发生过。只杀回合
+	// 子进程,不再记录备注注入下一轮。found=false 表示没有 in-flight turn(设备
+	// 只是在停本地 TTS 播放),无需任何额外动作。
+	found, err := s.inflight.Cancel(deviceID)
 	if err != nil {
 		s.log.Warnf("agent: cancel device=%q found=%v err=%v", deviceID, found, err)
 		writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"cancelled": false, "detail": err.Error()}})

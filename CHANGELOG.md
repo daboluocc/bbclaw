@@ -29,6 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   重启生效。`config.OpencodeServeEnabled()` web override 优先、回落 env(env 转为首次 bootstrap
   种子)。沿用 `CloudRelayOverride` 同款「web 设置覆盖 env」链路(settingsstore FromConfig/ApplyTo)。
 
+### Changed
+- **PTT 打断改为「撤回」语义：撤掉被打断的回合，不注入打断备注（ADR-028 §2.5.1 修订）**：
+  对齐 Claude TUI「Esc 取消 → 已发内容撤回到输入栏、当没发生过」的心智模型。
+  手势（前提：后台还在处理中）——**单击 PTT 无音频 = 撤销**（不发送，并把刚发出、
+  正在处理的那条提问 + 它的半截回复从屏幕和缓存撤掉，保留更早的完成对话）;
+  **按住重说 = 撤销之前的 + 把现在这句重新处理**（旧轮先撤，新轮正常 append）。
+  - **adapter**：`turn.cancel` 原先会在下一回合 `claude -p --resume` 的 prompt 前注入
+    `[系统提示：你上一条回复在「…」处被打断…]` 备注;现改为 **只杀回合子进程
+    （保留 session/resumeID），不记录、不注入任何备注**。`InflightRegistry` 删
+    `notes`/`NoteInterruption`/`ConsumePromptNote`、`Cancel(deviceID)` 去掉 `playedText`
+    入参;`engine.go` 删 prompt 注入块;`POST /v1/agent/cancel` 与 homeadapter
+    `turn.cancel` 同步;e2e 测试改判第二轮为干净用户文本。
+  - **firmware**：新增 `bb_chat_transcript_withdraw_last_turn()`（按 `s_last_user_bubble`
+    锚点删被打断那一轮的全部 bubble）+ `bb_chat_cache_drop_last_turn()`（截断缓存到最后
+    一条 user 之前，避免休眠/重进会话又冒出来）;barge-in 取消的两个安全点触发——
+    语音→agent 路 `ABORTED_BY_USER`、本地 agent 路 `agent_task` 丢弃结果时,经
+    `safe_lv_async_call` 排到 LVGL 任务 FIFO 末尾执行（迟到的 chunk 一并清掉）。
+    「没音频不发送」沿用既有 VAD 阈值门（松手 `skip_finish`）。
+  - **底层限制**：Claude Code 增量持久化 JSONL 仍留半截 assistant 输出，`--resume` 时
+    模型能看到截断的自己（彻底「当没发生过」需 JSONL 手术，未做）。
+  - 含 firmware + adapter 改动,**需 tag 才随发布出固件 OTA + 适配器二进制**;
+    barge-in 三场景按惯例须真机验证后再打 tag。
+
 ### Fixed
 - **按键自测任务偷内部 RAM 致 PTT 录音流的 WebSocket 建不起来、语音识别失效**：
   `bb_button_test` 任务用普通 `xTaskCreate` 申请 3072B **内部** RAM 栈,而 bbclaw 板

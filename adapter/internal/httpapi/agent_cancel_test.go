@@ -82,7 +82,8 @@ func (b *blockingDriver) receivedTexts() []string {
 // TestHandleAgentCancel_EndToEnd drives the full barge-in chain over HTTP:
 // an in-flight /v1/agent/message turn is aborted by POST /v1/agent/cancel,
 // the NDJSON stream ends with turn_cancelled + turn_end, and the NEXT turn's
-// prompt carries the injected interruption note with the played text.
+// prompt is the user's CLEAN text — per ADR-028 §2.5.1 (撤回语义) the interrupt
+// is "withdrawn, as if it never happened", so NO interruption note is injected.
 func TestHandleAgentCancel_EndToEnd(t *testing.T) {
 	drv := newBlockingDriver()
 	srv := NewServer(AppConfig{}, nil, nil, nil, nil, obs.NewLogger(), obs.NewMetrics())
@@ -201,13 +202,12 @@ collect:
 	if len(texts) != 2 {
 		t.Fatalf("want 2 sends, got %d: %v", len(texts), texts)
 	}
+	// ADR-028 §2.5.1 修订(撤回语义):打断 = 当没发生过。两轮都必须是用户的
+	// 原始文本,第二轮不得携带任何"打断/已播内容"备注。
 	if strings.Contains(texts[0], "打断") {
-		t.Error("first turn must not carry a note")
+		t.Errorf("first turn must be clean user text, got %q", texts[0])
 	}
-	if !strings.Contains(texts[1], "今天天气晴。") || !strings.Contains(texts[1], "打断") {
-		t.Errorf("second turn must carry interruption note with played text, got %q", texts[1])
-	}
-	if !strings.Contains(texts[1], "继续") {
-		t.Errorf("second turn must still contain the user's text, got %q", texts[1])
+	if texts[1] != "继续" {
+		t.Errorf("second turn must be the clean user text with no injected note, got %q", texts[1])
 	}
 }

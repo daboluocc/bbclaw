@@ -107,7 +107,7 @@ stream_task 内 `arming/streaming/session_busy` 本地标志。UI 一律读快�
 | L1 输入 | 转移表新增规则：`{*, BUSY|SPEAKING|WAIT, PTT_DOWN} → cancel_turn + LISTENING`。任何状态 PTT 都有效，废除 cloud_wait 吞键 | 按下→状态切换 < 20ms |
 | L2 音频 | audio_out 收 CANCEL：停止当前 write（播放块从 256-sample 降到 64-sample，≈4ms 粒度）→ drain 队列并释放 chunk → `i2s_channel_disable` + DMA flush → 回 PLAYBACK_STOPPED 事件 | 按下→静音 < 50ms |
 | L3 协议 | 新帧 `turn.cancel {turnId}`（见 §2.5）。adapter 收到后：中断 finish 流写出、`drv.Stop(sid)`、终止 TTS 合成、回 `turn.cancelled` | 不阻塞新 turn |
-| L4 UI | 当前朗读句标记"已打断"（截断样式），transcript 保留已播部分；状态立即显示 LISTENING | 与 L1 同步 |
+| L4 UI | **撤回语义（2026-06 修订，见 §2.5.1）**：把被打断的回合从 transcript + 缓存撤掉（不再"保留已播部分 + 截断标记"）；状态立即显示 LISTENING | 与 L1 同步 |
 
 边界（明确不做）：**语音打断（说话即打断）暂不支持**。bbclaw 硬件
 INMP441 + MAX98357A 为半双工共用 I2S，无 AEC；播放时无法可靠收音。
@@ -172,15 +172,40 @@ claude-code 驱动的事实（`adapter/internal/agent/claudecode/driver.go`）�
    2s 宽限 → SIGKILL（设置 `cmd.Cancel` / `WaitDelay`，给 CLI 机会 flush
    JSONL）。被杀回合向设备 emit `turn.cancelled {turnId}` 后正常 `EvTurnEnd`。
 2. **打断记录（resume 可见）**：设备发 `turn.cancel` 时附带播放进度
-   `{playedSeq, playedText}`（audio_out 知道实际播到哪句）。adapter 把打断
-   作为会话事实记两处：
-   - adapter 会话历史/chat cache 记 `turn.interrupted` 事件（设备 transcript
-     显示截断标记的数据来源）；
-   - **下一回合的 prompt 前注入打断上下文**，随 `claude -p --resume` 带给模型，
-     形如：`[系统提示：你上一条回复在「<playedText 末句>」处被用户按键打断，
-     其后的内容用户没有听到；若有正在执行的任务已被终止。]`
-     这样 resume 后的 AI 明确知道发生过打断、用户听到了多少、执行被截断在哪，
-     而不是把半截输出当作已完整送达。
+   `{playedSeq, playedText}`（audio_out 知道实际播到哪句），adapter 据此打日志。
+
+   > **修订（2026-06，撤回语义，已落地）**：原设计在「下一回合 prompt 前注入打断
+   > 上下文」，让 resume 后的模型知道被打断、用户听到多少。实测体验后改为
+   > **打断 = 撤回上一回合，当没发生过**（对齐 Claude TUI「Esc 取消 → 已发内容
+   > 撤回到输入栏」的心智模型）：
+   > - `InflightRegistry.Cancel` **只杀回合子进程**（保留 session/resumeID），
+   >   **不再记录/注入任何「你被打断了」备注**。下一轮有新语音时直接
+   >   `--resume` 干净续接，模型不被告知发生过打断。
+   > - 纯打断（用户只想让 buddy 闭嘴、不再说话）→ 没有下一轮，什么都不注入。
+   > - 有新语音 → 正常 `--resume` + 用户新文本，无备注前缀。
+   >
+   > **设备侧手势 + 清屏（撤回的可见行为）**：前提是后台还在处理中（in-flight turn）。
+   > - **单击 PTT 无音频 = 撤销**：发 `turn.cancel`（杀后台）+ 本地 unblock；松手走
+   >   VAD 阈值门（`BBCLAW_VAD_MIN_DURATION_MS`/`MEAN_ABS`）不达标 `skip_finish` →
+   >   不发送；并把被打断的回合从 transcript + 缓存撤掉。
+   > - **按住重说 = 撤销之前的 + 重新处理现在的**：旧轮先撤，新轮正常 append。
+   > - 实现：`bb_chat_transcript_withdraw_last_turn()`（按 `s_last_user_bubble` 锚点删
+   >   被打断那一轮的全部 bubble）+ `bb_chat_cache_drop_last_turn()`（截断缓存到最后
+   >   一条 user 之前，免休眠/重进会话复现）；barge-in 取消的两个安全点触发——语音
+   >   →agent 路 `ABORTED_BY_USER`、本地 agent 路 `agent_task` 丢弃结果时,经
+   >   `safe_lv_async_call` 排到 LVGL 任务 FIFO 末尾执行（迟到 chunk 一并清掉，无竞态）。
+   >   只撤被打断的**在途**回合；TTS 播放期（回复已完整、仅在念）不触发撤回。
+   >
+   > **底层限制**：Claude Code 增量持久化 JSONL，被杀回合的半截 assistant 输出
+   > 仍留在会话文件里，`--resume` 时模型能看到截断的自己。彻底「当没发生过」需要
+   > JSONL 手术（脆弱，未做）；当前「撤回」=adapter 不注入备注 + 设备撤掉屏上/缓存的
+   > 那一轮。实现：`internal/butler/inflight.go`、`internal/butler/engine.go`（删注入块）、
+   > 两处 cancel handler（`httpapi/agent.go`、`homeadapter/adapter.go`）；firmware
+   > `bb_chat_transcript.c`/`bb_chat_cache.c`/`bb_ui_agent_chat.c`/`bb_radio_app.c`。
+
+   ~~（原设计，已废弃）下一回合的 prompt 前注入打断上下文，随 `claude -p --resume`
+   带给模型，形如：`[系统提示：你上一条回复在「<playedText 末句>」处被用户按键
+   打断…]`~~
 3. **边界**：`turn.cancel` 杀的是**当前回合**的 CLI 进程。butler 经
    `mcp__bbclaw__dispatch` 派发出去的 worker 任务是独立进程，不随回合进程
    终止（dispatch cancel 仍为 §2.5 表外的 P2，需 OpenClaw gateway 配合）；
@@ -256,6 +281,7 @@ M4/M5 是延迟与可维护性收益。每阶段固件 + adapter 同 tag 发布�
 | `508c042` | firmware 修回归：溢出队列泵从惰性 lv_timer 改 esp_timer 周期任务 |
 | `1dcb9e5` | firmware：`BB_WS_EVENT_ABORT` 本地中断 finish 等待——PTT 不再依赖服务端 cancel 即可立刻重录（error_code=ABORTED_BY_USER 静默收尾） |
 | `70c1a8d` | firmware：状态事件投递改**专用 drain 任务**（prio 7>LVGL 6，信号量唤醒，阻塞等锁）——视觉滞后 ~300ms→~1 渲染周期；dispatch 首试锁 50→5ms |
+| _(撤回语义修订)_ | **打断 = 撤回当前回合，当没发生过**（§2.5.1 修订）。**adapter**：移除打断备注注入——`InflightRegistry` 删 notes/`NoteInterruption`/`ConsumePromptNote`，`Cancel(deviceID)` 只杀回合保 session；`engine.go` 删注入块；两处 cancel handler 同步；e2e 改判「第二轮 = 干净用户文本」。**firmware**：单击撤销/按住重说——`bb_chat_transcript_withdraw_last_turn()` + `bb_chat_cache_drop_last_turn()` 撤掉被打断那一轮（屏 + 缓存），两个安全点经 `safe_lv_async_call` 触发；没音频不发送沿用 VAD `skip_finish` |
 
 ### 5.2 真机验证暴露的关键教训（M3 务必继承）
 

@@ -43,6 +43,11 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 
 static lv_obj_t* s_transcript;
 static lv_obj_t* s_active_assistant;  /* current streaming bubble, NULL after finalize */
+/* ADR-028 §2.5.1 (撤回语义) — anchor to the most recent *live* user bubble
+ * (set by append_user, NOT history replay). withdraw_last_turn deletes from
+ * here to the tail. NULL when there is no live turn to withdraw; reset on
+ * create/clear/destroy so it never dangles past a transcript rebuild. */
+static lv_obj_t* s_last_user_bubble;
 /* Issue #169 — TTS subtitle bar. Overlay label sitting just above (or over)
  * the transcript area; created lazily on first set_subtitle call.
  * Positioned at the bottom of the transcript zone so it doesn't obscure
@@ -219,6 +224,7 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   lv_obj_set_style_pad_right(s_transcript, 1, LV_PART_SCROLLBAR);
 
   s_active_assistant = NULL;
+  s_last_user_bubble = NULL;
   s_subtitle_label = NULL;
   /* Fresh transcript starts in follow mode. */
   s_follow_tail = 1;
@@ -230,6 +236,7 @@ void bb_chat_transcript_destroy(void) {
    * so do NOT lv_obj_del(s_transcript) here — it would double-free. */
   s_transcript = NULL;
   s_active_assistant = NULL;
+  s_last_user_bubble = NULL;
   s_subtitle_label = NULL;
   s_transcript_parent = NULL;
   s_transcript_y = 0;
@@ -257,6 +264,9 @@ void bb_chat_transcript_append_user(const char* text) {
   if (lbl == NULL) return;
   lv_label_set_text(lbl, text);
   s_active_assistant = NULL;
+  /* ADR-028 §2.5.1 — anchor the (new) live turn for a possible barge-in
+   * withdraw. Only live user lines set this; history replay uses append_history. */
+  s_last_user_bubble = lbl;
   bb_chat_cache_append_user(text);
   /* A new *live* user turn means the user is driving the conversation again.
    * Rejoin the live tail even if they had scrolled up to read history (which
@@ -467,9 +477,34 @@ void bb_chat_transcript_clear(void) {
   if (s_transcript == NULL) return;
   lv_obj_clean(s_transcript);
   s_active_assistant = NULL;
+  s_last_user_bubble = NULL;
   s_pending_assistant_len = 0;
   s_pending_assistant[0] = '\0';
   s_history_last_ts_ms = 0;
+}
+
+void bb_chat_transcript_withdraw_last_turn(void) {
+  /* ADR-028 §2.5.1 (撤回语义) — PTT barge-in withdraws the cancelled turn:
+   * delete the most recent live user bubble and every bubble that came after
+   * it (the in-flight reply / tool / error of the cancelled turn), keeping
+   * earlier completed turns. No-op when there is no live turn to withdraw. */
+  if (s_transcript == NULL || s_last_user_bubble == NULL) return;
+  /* Render any text deferred while reading so it isn't stranded mid-delete. */
+  s_pending_assistant_len = 0;
+  s_pending_assistant[0] = '\0';
+  uint32_t start = lv_obj_get_index(s_last_user_bubble);
+  uint32_t cnt = lv_obj_get_child_count(s_transcript);
+  /* Delete from the tail backward so sibling indices stay valid as we go. */
+  for (uint32_t i = cnt; i > start; --i) {
+    lv_obj_t* child = lv_obj_get_child(s_transcript, i - 1);
+    if (child != NULL) lv_obj_del(child);
+  }
+  s_last_user_bubble = NULL;
+  s_active_assistant = NULL;
+  /* Drop the same turn from the persistence cache so it doesn't reappear on
+   * wake / history replay. */
+  bb_chat_cache_drop_last_turn();
+  follow_tail_if_active();
 }
 
 void bb_chat_transcript_finalize_assistant(void) {

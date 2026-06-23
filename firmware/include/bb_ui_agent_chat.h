@@ -189,6 +189,15 @@ void bb_ui_agent_chat_cancel(void);
 void bb_ui_agent_chat_request_cancel(void);
 
 /**
+ * ADR-028 §2.5.1 (撤回语义) — withdraw the cancelled in-flight turn from the
+ * transcript: removes the most recent live user line and its (cut-off) reply,
+ * keeping earlier completed turns, and drops the same turn from the cache.
+ * Dispatched onto the LVGL task, so safe to call from worker tasks /
+ * esp_timer / stream_task. No-op when there is no live turn to withdraw.
+ */
+void bb_ui_agent_chat_withdraw_last_turn(void);
+
+/**
  * ADR-028 §2.5.1 — copy the last TTS sentence that actually started playing
  * (the current subtitle) into dst. Empty string when nothing played this
  * turn. Safe to call from any task.

@@ -2765,6 +2765,11 @@ static void stream_task(void* arg) {
           ESP_LOGI(TAG, "phase=finish_aborted_by_user stream=%s (barge-in, starting new turn)",
                    stream.stream_id);
           agent_chat_voice_post_error(NULL); /* 仅清 listening 提示 */
+          /* ADR-028 §2.5.1 (撤回语义):把这条被打断的回合从 transcript + cache
+           * 撤掉(刚发出、正在处理的提问 + 它的半截回复)。单击撤销→屏幕回到
+           * 上一轮;按住重说→旧轮先撤,稍后新轮正常 append。finish_stream 已
+           * 返回,不会再有本 turn 的渲染入队,撤回安全。 */
+          bb_ui_agent_chat_withdraw_last_turn();
         } else {
           ESP_LOGE(TAG,
                    "phase=finish_failed esp=%s http_status=%d error_code=%s stream=%s reply_wait_timed_out=%d",

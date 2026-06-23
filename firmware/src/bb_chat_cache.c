@@ -441,6 +441,27 @@ void bb_chat_cache_clear(void) {
   schedule_persist();
 }
 
+void bb_chat_cache_drop_last_turn(void) {
+  /* ADR-028 §2.5.1 (撤回语义) — drop the cancelled turn from the cache. */
+  /* 1) discard any in-flight (un-finalized) assistant text. */
+  if (s_pending != NULL) { s_pending[0] = '\0'; s_pending_len = 0; }
+  /* 2) find the byte offset of the LAST user record and truncate to it,
+   *    removing that user line + every record that followed it this turn. */
+  size_t off = 0;
+  size_t last_user_off = (size_t)-1;
+  while (off + 3 <= s_buf_used) {
+    uint8_t role = s_buf[off];
+    uint16_t len = (uint16_t)s_buf[off + 1] | ((uint16_t)s_buf[off + 2] << 8);
+    if (off + 3 + len > s_buf_used) break;
+    if (role == (uint8_t)BB_CHAT_CACHE_ROLE_USER) last_user_off = off;
+    off += 3 + len;
+  }
+  if (last_user_off == (size_t)-1) return;  /* no user record → nothing to drop */
+  s_buf_used = last_user_off;
+  s_dirty = 1;
+  schedule_persist();
+}
+
 int bb_chat_cache_has_data(void) {
   return s_buf_used > 0 ? 1 : 0;
 }

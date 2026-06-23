@@ -854,6 +854,10 @@ static void agent_task(void* arg) {
   }
   if (s_chat.agent_cancel_requested) {
     ESP_LOGI(TAG, "agent_task: turn was cancelled, discarding result");
+    /* ADR-028 §2.5.1 (撤回语义) — withdraw the cancelled turn from the UI +
+     * cache. Queued onto the LVGL task; the agent stream has ended here so no
+     * further reply chunks will be appended after the withdraw runs. */
+    bb_ui_agent_chat_withdraw_last_turn();
   }
 
   free(args->text);
@@ -2276,6 +2280,20 @@ void bb_ui_agent_chat_request_cancel(void) {
   if (any) {
     ESP_LOGI(TAG, "cancel: barge-in flags set (ptt edge)");
   }
+}
+
+/* ADR-028 §2.5.1 (撤回语义) — runs on the LVGL task via safe_lv_async_call;
+ * deletes the cancelled turn's bubbles + drops it from the cache. */
+static void withdraw_last_turn_cb(void* unused) {
+  (void)unused;
+  bb_chat_transcript_withdraw_last_turn();
+  ESP_LOGI(TAG, "withdraw: cancelled turn removed from transcript (barge-in)");
+}
+
+void bb_ui_agent_chat_withdraw_last_turn(void) {
+  /* Queued FIFO behind any pending render dispatches for the cancelled turn,
+   * so it runs after the last stray reply chunk lands and removes it too. */
+  safe_lv_async_call(withdraw_last_turn_cb, NULL);
 }
 
 void bb_ui_agent_chat_scroll(int lines) {
