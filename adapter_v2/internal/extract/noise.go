@@ -81,6 +81,11 @@ func isStatusLine(t string) bool {
 		return true // "[Opus 4.8 (1M context)] │ …" model status
 	case strings.Contains(t, "for agents"):
 		return true // "… ← for agents" footer hint
+	case strings.Contains(t, "tokens") && (strings.HasSuffix(t, "tokens)") ||
+		strings.ContainsRune(t, '↑') || strings.ContainsRune(t, '↓') || strings.Contains(t, "·")):
+		return true // token-counter fragment ("38 tokens)", "↑ 1.2k tokens · …") —
+		// the completion summary's counter wraps onto its own flush-left line and
+		// would otherwise leak onto the end of the spoken reply.
 	}
 	return false
 }
