@@ -56,6 +56,16 @@
 
 static const char* TAG = "bb_ui_settings";
 
+/* CJK-capable UI font — the same font every other CJK-rendering page binds
+ * (chat / locked / task_list / apconfig / ...). The default theme font is
+ * montserrat (ASCII-only), so any label that can hold Chinese — the live
+ * session titles in the Sessions picker (user conversation first-messages) —
+ * renders as tofu boxes unless we bind this explicitly. The static menu
+ * labels are English now, but the font also carries 0x20-0x7F so those rows
+ * (Driver / Volume / Voice / ...) stay correct too. */
+extern const lv_font_t lv_font_bbclaw_cjk;
+static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
+
 #define BB_SETTINGS_NVS_NS         "bbclaw"
 #define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
 #define BB_SETTINGS_DRIVER_CACHE_MAX 6
@@ -271,7 +281,12 @@ static void build_rows_box(int row_count) {
     lv_obj_set_style_pad_top(row, 4, 0);
     lv_obj_set_style_radius(row, 3, 0);
     lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_font(row, ui_font(), 0);
+    /* SCROLL (marquee) so long Chinese session titles in the picker scroll
+     * instead of being truncated with "...". The row has a bounded width
+     * (lv_pct(100) above), so LVGL only animates when the text overflows;
+     * short static menu rows (Driver/Volume/...) stay put. */
+    lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_SCROLL);
     s_st.rows[i] = row;
   }
   s_st.rows_used = row_count;
@@ -396,9 +411,11 @@ static void render_main(void) {
         snprintf(buf, sizeof(buf), "Adapter: %s", current_site_label());
         break;
       case MAIN_ROW_SESSIONS:
-        /* Static label — the live list lives in the picker. CJK matches the
-         * chat labels (which already render CJK), so it's font-safe. */
-        snprintf(buf, sizeof(buf), "对话");
+        /* Static label — the live list (Chinese session titles from
+         * session_cache) lives in the picker; this row is just the English
+         * menu entry. build_rows_box still binds lv_font_bbclaw_cjk to every
+         * row so the picker's CJK titles render. */
+        snprintf(buf, sizeof(buf), "Sessions");
         break;
       case MAIN_ROW_VOLUME: {
         int pct = s_st.volume_pct;
@@ -414,11 +431,11 @@ static void render_main(void) {
         }
         mini[ci++] = ']';
         mini[ci] = '\0';
-        snprintf(buf, sizeof(buf), "Vol: %s %d%%", mini, pct);
+        snprintf(buf, sizeof(buf), "Volume: %s %d%%", mini, pct);
         break;
       }
       case MAIN_ROW_TTS:
-        snprintf(buf, sizeof(buf), "TTS: %s", s_st.tts_enabled ? "On" : "Off");
+        snprintf(buf, sizeof(buf), "Voice: %s", s_st.tts_enabled ? "on" : "off");
         break;
       case MAIN_ROW_BACK:
         snprintf(buf, sizeof(buf), "Back");
@@ -437,7 +454,7 @@ static void render_main(void) {
    * destroy_rows on the next render / level change. */
   s_st.hint_lbl = lv_label_create(s_st.root);
   lv_obj_set_style_text_color(s_st.hint_lbl, lv_color_hex(BB_UI_TEXT_DIM), 0);
-  lv_label_set_text(s_st.hint_lbl, "hold to go back");
+  lv_label_set_text(s_st.hint_lbl, "Hold to exit");
   lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
 }
 
@@ -475,7 +492,7 @@ static void render_adapter_picker(void) {
 
   if (s_st.site_fetch_pending && s_st.site_cache_count == 0) {
     build_rows_box(1);
-    lv_label_set_text(s_st.rows[0], "Loading...");
+    lv_label_set_text(s_st.rows[0], "loading...");
     highlight_selected();
     return;
   }
@@ -508,19 +525,24 @@ static void render_adapter_picker(void) {
 
 /* ── Render: Sessions picker (adapter_v2 P2 — HTTP list-sessions, async) ──
  *
- * Row 0 is a synthetic "+ 新对话" (new conversation). Rows 1..N are the cached
+ * Row 0 is a synthetic "+ New" (new conversation). Rows 1..N are the cached
  * sessions; the one whose id matches the chat's current session is marked "*".
- * Mirrors render_adapter_picker's loading/empty handling. */
+ * Mirrors render_adapter_picker's loading/empty handling.
+ *
+ * NB: the session TITLES below are dynamic content from session_cache (the
+ * user's real conversation first-messages, usually Chinese) — they stay as-is
+ * and rely on the CJK font bound to every row in build_rows_box. Only the
+ * static chrome (header, "+ New", loading) is English. */
 
 static void render_session_picker(void) {
   if (s_st.root == NULL) return;
-  lv_label_set_text(s_st.header_lbl, "对话");
+  lv_label_set_text(s_st.header_lbl, "Sessions");
 
   if (s_st.session_fetch_pending && s_st.session_cache_count == 0) {
     /* Still loading the first page — show the New row + a Loading hint. */
     build_rows_box(2);
-    lv_label_set_text(s_st.rows[0], "+ 新对话");
-    lv_label_set_text(s_st.rows[1], "Loading...");
+    lv_label_set_text(s_st.rows[0], "+ New");
+    lv_label_set_text(s_st.rows[1], "loading...");
     highlight_selected();
     return;
   }
@@ -528,7 +550,7 @@ static void render_session_picker(void) {
   const char* cur = bb_ui_agent_chat_get_current_session();
   int rows = s_st.session_cache_count + 1; /* +1 synthetic New row */
   build_rows_box(rows);
-  lv_label_set_text(s_st.rows[0], "+ 新对话");
+  lv_label_set_text(s_st.rows[0], "+ New");
   for (int i = 0; i < s_st.session_cache_count && s_st.rows[i + 1] != NULL; ++i) {
     char buf[80];
     const bb_agent_session_info_t* s = &s_st.session_cache[i];
@@ -649,6 +671,7 @@ static void render_volume_adjust(void) {
   /* Percentage label */
   lv_obj_t* pct_lbl = lv_label_create(s_st.rows_box);
   lv_obj_set_style_text_color(pct_lbl, lv_color_hex(BB_UI_DOT_LIT), 0);
+  lv_obj_set_style_text_font(pct_lbl, ui_font(), 0);
   char buf[16];
   snprintf(buf, sizeof(buf), "%d%%", pct);
   lv_label_set_text(pct_lbl, buf);
@@ -658,7 +681,8 @@ static void render_volume_adjust(void) {
   /* Hint label */
   lv_obj_t* hint = lv_label_create(s_st.rows_box);
   lv_obj_set_style_text_color(hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
-  lv_label_set_text(hint, "UP/DOWN adjust  OK save & back");
+  lv_obj_set_style_text_font(hint, ui_font(), 0);
+  lv_label_set_text(hint, "Up/Down adjust  OK to save");
   lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + 20);
 }
 
@@ -913,7 +937,7 @@ static void on_session_fetch_done(void* user_data) {
     ESP_LOGW(TAG, "session fetch failed (%s) count=%d", esp_err_to_name(r->err), r->count);
     s_st.session_cache_count = 0;
   } else {
-    /* Cap to 15 so the synthetic "+ 新对话" row + sessions fit the 16-slot
+    /* Cap to 15 so the synthetic "+ New" row + sessions fit the 16-slot
      * rows[] LVGL label array (rows[16] would be NULL → crash). */
     int total = r->count > 15 ? 15 : r->count;
     memcpy(s_st.session_cache, r->sessions, sizeof(r->sessions[0]) * (size_t)total);
@@ -1335,6 +1359,7 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   lv_obj_set_size(s_st.header_lbl, lv_pct(100), HEADER_H);
   lv_obj_align(s_st.header_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
   lv_obj_set_style_text_color(s_st.header_lbl, lv_color_hex(UI_HEADER_FG), 0);
+  lv_obj_set_style_text_font(s_st.header_lbl, ui_font(), 0);
   lv_obj_set_style_pad_left(s_st.header_lbl, 6, 0);
   lv_obj_set_style_pad_top(s_st.header_lbl, 4, 0);
 
@@ -1401,7 +1426,7 @@ void bb_ui_settings_handle_rotate(int delta) {
       row_count = (s_st.site_cache_count > 0) ? s_st.site_cache_count : 1;
       break;
     case LEVEL_SESSION_PICKER:
-      /* +1 for the synthetic "+ 新对话" row at index 0. */
+      /* +1 for the synthetic "+ New" row at index 0. */
       row_count = s_st.session_cache_count + 1;
       break;
     case LEVEL_MODEL_PICKER: {
@@ -1518,7 +1543,7 @@ int bb_ui_settings_handle_click(void) {
       return 0;
 
     case LEVEL_SESSION_PICKER: {
-      /* Row 0 = synthetic "+ 新对话"; rows 1..N = session_cache[sel-1].
+      /* Row 0 = synthetic "+ New"; rows 1..N = session_cache[sel-1].
        * Both bb_ui_agent_chat_* do LVGL work; handle_click already runs under
        * the LVGL context (other cases call rerender directly), so direct calls
        * are fine. We return 1 so bb_radio_app tears down Settings → shows chat

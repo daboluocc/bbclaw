@@ -469,6 +469,10 @@ static void theme_show_toast(const char* preview) {
   s_st.toast_lbl = lv_label_create(s_st.root);
   lv_obj_set_size(s_st.toast_lbl, lv_pct(96), LV_SIZE_CONTENT);
   lv_obj_align(s_st.toast_lbl, LV_ALIGN_BOTTOM_MID, 0, -2);
+  /* Pushed notification previews (server "下发") are typically Chinese; bind
+   * the CJK font (same idiom as every other label in this theme) so they don't
+   * render as tofu boxes under the ASCII-only default montserrat. */
+  lv_obj_set_style_text_font(s_st.toast_lbl, theme_font(), 0);
   lv_obj_set_style_bg_color(s_st.toast_lbl, lv_color_hex(0x2ec4a0), 0);
   lv_obj_set_style_bg_opa(s_st.toast_lbl, LV_OPA_COVER, 0);
   lv_obj_set_style_text_color(s_st.toast_lbl, lv_color_hex(0x0a0e0c), 0);

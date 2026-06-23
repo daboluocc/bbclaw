@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_ota.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -189,6 +190,18 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_obj_set_style_text_font(mark, small_font, 0);
   lv_label_set_text(mark, "bbclaw");
   lv_obj_set_pos(mark, 14, FB_Y - 3);
+
+  /* Firmware version — small + dim, centered just above the footer row so it
+   * never collides with the wordmark (left) or battery (right). Unobtrusive
+   * build stamp so the running version is visible at a glance from the idle
+   * screen. ASCII only (e.g. "v0.5.6"), so the small montserrat font is fine. */
+  lv_obj_t* ver = lv_label_create(s_view);
+  lv_obj_set_style_text_color(ver, lv_color_hex(UI_WORDMARK), 0);
+  lv_obj_set_style_text_font(ver, small_font, 0);
+  lv_obj_set_width(ver, DISP_W);
+  lv_obj_set_style_text_align(ver, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(ver, bb_ota_get_current_version());
+  lv_obj_set_pos(ver, 0, FB_Y - 22);
 
   /* __APPEND_CREATE__ */
 
