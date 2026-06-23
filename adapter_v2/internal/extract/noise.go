@@ -27,6 +27,15 @@ import "strings"
 // all churn, but the "esc to interrupt" affordance is stable while busy.
 const promptInterruptHint = "esc to interrupt"
 
+// apiRetryHints mark claude's network/API retry wait — "Waiting for API response
+// · will retry in Ns · check your network". In this state claude drops the
+// "esc to interrupt" affordance, but the turn is NOT finished: it will retry.
+// The boundary detector must treat it as still-working, else it completes the
+// turn early and clears the in-flight flag — so a barge-in then TYPES into the
+// input box (claude queues it: "Press up to edit queued messages") instead of
+// ESC-aborting. These substrings are the stable markers of that state.
+var apiRetryHints = []string{"will retry", "Waiting for API response"}
+
 // isNoiseLine reports whether a visible line is UI chrome rather than reply
 // content. The input line is whitespace-insensitive: callers pass a raw grid
 // row (already plain text, no ANSI).
@@ -105,12 +114,21 @@ func isPromptLine(t string) bool {
 	return false
 }
 
-// isSpinnerLine matches the working/progress status line. The "esc to interrupt"
-// affordance is claude's stable marker; we also catch the rare frame where only
-// the elapsed-time / token counter is present by checking for the interrupt
-// hint, which is what makes spinner redraws collapse to nothing in the reply.
+// isSpinnerLine matches the working/progress status line — claude is busy and the
+// turn is in flight. The "esc to interrupt" affordance is the stable marker of the
+// normal working spinner; the API-retry wait (no "esc to interrupt" but still
+// working — see apiRetryHints) is the other busy state. Both keep the boundary
+// detector from ending the turn (and keep barge-in's in-flight ESC armed).
 func isSpinnerLine(t string) bool {
-	return strings.Contains(t, promptInterruptHint)
+	if strings.Contains(t, promptInterruptHint) {
+		return true
+	}
+	for _, h := range apiRetryHints {
+		if strings.Contains(t, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // isBoxDrawingOnly reports whether a line consists solely of box-drawing /

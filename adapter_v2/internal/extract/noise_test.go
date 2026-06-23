@@ -23,6 +23,8 @@ func TestIsNoiseLine(t *testing.T) {
 		{"spinner full", "✶ Cogitating… (3s · ↑ 240 tokens · esc to interrupt)", true},
 		{"spinner minimal", "  ✻ Working… (12s · esc to interrupt)", true},
 		{"spinner glyph dropped by emulator", "Cogitating… (3s · esc to interrupt)", true},
+		{"api retry wait", "Waiting for API response · will retry in 2m 26s · check your network", true},
+		{"api retry short", "· will retry in 30s ·", true},
 
 		{"box top border", "╭──────────────╮", true},
 		{"box bottom border", "╰──────────────╯", true},
