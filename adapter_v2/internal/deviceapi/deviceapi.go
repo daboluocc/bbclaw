@@ -394,6 +394,25 @@ func (b *Bridge) Run(ctx context.Context) error {
 	ticker := time.NewTicker(b.cfg.PollInterval)
 	defer ticker.Stop()
 
+	// dismissSurvey clears claude's input-blocking session-feedback overlay the
+	// moment it appears, pressing "0: Dismiss". Single-shot per appearance (armed
+	// again only after the overlay leaves the screen) so we never spam the key into
+	// the prompt if it's already gone.
+	surveyArmed := true
+	dismissSurvey := func() {
+		if strings.Contains(b.screen.VisibleText(), surveyMarker) {
+			if surveyArmed {
+				surveyArmed = false
+				if debugExtract {
+					log.Printf("deviceapi: dismissing claude session-feedback overlay")
+				}
+				_ = b.sess.Write([]byte(surveyDismissKey))
+			}
+			return
+		}
+		surveyArmed = true
+	}
+
 	// rebaseline starts a fresh turn: a new Extractor baselined on the current
 	// screen, a reset Detector, and cleared streaming state. It also captures the
 	// reply currently on screen as the turn's `seed`: claude's extractor surfaces
@@ -429,6 +448,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 			}
 			b.reconcileMirrorSize()
 			b.screen.Feed(chunk)
+			dismissSurvey()
 			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
 			if err := b.onProgress(ctx, reply.Text, ts); err != nil {
@@ -444,6 +464,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 			// No new bytes: re-check the boundary so a turn that ended on a quiet
 			// screen (the settle window elapsing after the last chunk) is still
 			// detected without waiting for the next unrelated chunk.
+			dismissSurvey()
 			det.Observe(time.Now(), b.screen, false)
 			reply, _ := ext.OnOutput()
 			if spoke, err := b.maybeSpeak(ctx, det, reply.Text, ts); err != nil {
@@ -454,6 +475,17 @@ func (b *Bridge) Run(ctx context.Context) error {
 		}
 	}
 }
+
+// surveyMarker is claude's periodic, input-BLOCKING session-feedback overlay
+// ("● How is Claude doing this session? (optional) / 1: Bad 2: Fine 3: Good
+// 0: Dismiss"). Left up it eats the next injected transcript, so the turn never
+// runs and the device gets no reply / no TTS (observed: it wedged the line for
+// minutes until every turn timed out). surveyDismissKey is its "0: Dismiss"
+// option; we press it whenever the overlay appears so the prompt stays clear.
+const (
+	surveyMarker     = "How is Claude doing this session"
+	surveyDismissKey = "0"
+)
 
 const (
 	// warmupTimeout bounds warmup so a CLI that never reaches an idle prompt can't
