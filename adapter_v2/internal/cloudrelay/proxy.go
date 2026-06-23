@@ -43,9 +43,33 @@ func (r *Relay) handleAgentProxy(write func(Envelope) error, env Envelope) bool 
 			"drivers": []map[string]any{{"name": proxyDriver, "capabilities": driverCaps()}},
 		})
 	case "agent.messages":
-		// Empty history — the PTY is the source of truth, not a message store.
+		// Real conversation history (ADR-032 P3): parse the requested session's
+		// claude .jsonl. Empty sessionId defaults to the active conversation. The
+		// firmware/web reads content as a STRING under key "content".
+		var p struct {
+			SessionID string `json:"sessionId"`
+			Before    int    `json:"before"`
+			Limit     int    `json:"limit"`
+		}
+		raw, _ := json.Marshal(env.Payload)
+		_ = json.Unmarshal(raw, &p)
+		sid := strings.TrimSpace(p.SessionID)
+		if sid == "" {
+			sid = r.devActiveID()
+		}
+		var all []butler.ConversationMessage
+		if r.dev != nil && sid != "" {
+			all, _ = r.dev.Messages(sid)
+		}
+		page, total, hasMore := butler.PageMessages(all, p.Before, p.Limit)
+		msgs := make([]map[string]any, 0, len(page))
+		for _, m := range page {
+			msgs = append(msgs, map[string]any{
+				"role": m.Role, "content": m.Content, "timestamp": m.Timestamp, "seq": m.Seq,
+			})
+		}
 		return reply("agent.messages.reply", map[string]any{
-			"messages": []any{}, "total": 0, "hasMore": false,
+			"messages": msgs, "total": total, "hasMore": hasMore,
 		})
 	case "agent.sessions", "agent.sessions.list.logical":
 		// Real conversation history (ADR-032): the workspace's claude .jsonl files,
