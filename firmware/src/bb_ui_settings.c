@@ -102,6 +102,7 @@ typedef enum {
   LEVEL_DRIVER_PICKER,
   LEVEL_MODEL_PICKER,
   LEVEL_ADAPTER_PICKER,
+  LEVEL_SESSION_PICKER,
   LEVEL_VOLUME_ADJUST,
 } settings_level_t;
 
@@ -113,6 +114,7 @@ typedef enum {
   MAIN_ROW_DRIVER = 0,
   MAIN_ROW_MODEL,
   MAIN_ROW_ADAPTER,
+  MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
   MAIN_ROW_TTS,
   MAIN_ROW_BACK,
@@ -156,6 +158,13 @@ typedef struct {
   volatile uint32_t site_fetch_generation;
   char active_site_id[40]; /* optimistic active selection for snappy UI */
   int pending_chat_sync;   /* 1 = re-sync chat driver/session after site switch */
+
+  /* adapter_v2 P2: Sessions picker catalog. Populated async (HTTP list-sessions
+   * for the chat's current driver) when the Sessions picker is entered. */
+  bb_agent_session_info_t session_cache[16];
+  int session_cache_count;
+  volatile int session_fetch_pending;
+  volatile uint32_t session_fetch_generation;
 
   int tts_enabled;
 
@@ -314,6 +323,7 @@ static int main_visible_rows(main_row_t* out) {
    * chat re-sync) but is simply unreachable from the menu. */
   if (bb_transport_is_cloud_saas()) {
     out[n++] = MAIN_ROW_ADAPTER;
+    out[n++] = MAIN_ROW_SESSIONS;
   }
   out[n++] = MAIN_ROW_VOLUME;
   out[n++] = MAIN_ROW_TTS;
@@ -384,6 +394,11 @@ static void render_main(void) {
         break;
       case MAIN_ROW_ADAPTER:
         snprintf(buf, sizeof(buf), "Adapter: %s", current_site_label());
+        break;
+      case MAIN_ROW_SESSIONS:
+        /* Static label — the live list lives in the picker. CJK matches the
+         * chat labels (which already render CJK), so it's font-safe. */
+        snprintf(buf, sizeof(buf), "对话");
         break;
       case MAIN_ROW_VOLUME: {
         int pct = s_st.volume_pct;
@@ -487,6 +502,49 @@ static void render_adapter_picker(void) {
              is_active ? "  *" : "",
              s_st.site_cache[i].online ? "[on]" : "[offline]");
     lv_label_set_text(s_st.rows[i], buf);
+  }
+  highlight_selected();
+}
+
+/* ── Render: Sessions picker (adapter_v2 P2 — HTTP list-sessions, async) ──
+ *
+ * Row 0 is a synthetic "+ 新对话" (new conversation). Rows 1..N are the cached
+ * sessions; the one whose id matches the chat's current session is marked "*".
+ * Mirrors render_adapter_picker's loading/empty handling. */
+
+static void render_session_picker(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "对话");
+
+  if (s_st.session_fetch_pending && s_st.session_cache_count == 0) {
+    /* Still loading the first page — show the New row + a Loading hint. */
+    build_rows_box(2);
+    lv_label_set_text(s_st.rows[0], "+ 新对话");
+    lv_label_set_text(s_st.rows[1], "Loading...");
+    highlight_selected();
+    return;
+  }
+
+  const char* cur = bb_ui_agent_chat_get_current_session();
+  int rows = s_st.session_cache_count + 1; /* +1 synthetic New row */
+  build_rows_box(rows);
+  lv_label_set_text(s_st.rows[0], "+ 新对话");
+  for (int i = 0; i < s_st.session_cache_count && s_st.rows[i + 1] != NULL; ++i) {
+    char buf[80];
+    const bb_agent_session_info_t* s = &s_st.session_cache[i];
+    char shortid[9];
+    const char* label;
+    if (s->title[0] != '\0') {
+      label = s->title;
+    } else {
+      /* No title — use the first 8 chars of the id. */
+      strncpy(shortid, s->id, sizeof(shortid) - 1);
+      shortid[sizeof(shortid) - 1] = '\0';
+      label = shortid;
+    }
+    int is_active = (cur != NULL && cur[0] != '\0' && strcmp(s->id, cur) == 0);
+    snprintf(buf, sizeof(buf), "%s%s", label, is_active ? "  *" : "");
+    lv_label_set_text(s_st.rows[i + 1], buf);
   }
   highlight_selected();
 }
@@ -625,6 +683,7 @@ static void rerender(void) {
     case LEVEL_DRIVER_PICKER:  render_driver_picker(); break;
     case LEVEL_MODEL_PICKER:   render_model_picker(); break;
     case LEVEL_ADAPTER_PICKER: render_adapter_picker(); break;
+    case LEVEL_SESSION_PICKER: render_session_picker(); break;
     case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
   }
 }
@@ -829,6 +888,95 @@ static void spawn_site_fetch_task(void) {
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_site_fetch_task: xTaskCreateWithCaps failed");
     s_st.site_fetch_pending = 0;
+    free(r);
+  }
+}
+
+/* ── Session fetch (adapter_v2 P2 — HTTP list-sessions, async) ── */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  int count;
+  bb_agent_session_info_t sessions[16];
+} session_fetch_result_t;
+
+static void on_session_fetch_done(void* user_data) {
+  session_fetch_result_t* r = (session_fetch_result_t*)user_data;
+  if (r == NULL) return;
+  s_st.session_fetch_pending = 0;
+  if (!s_st.active || r->gen != s_st.session_fetch_generation) {
+    free(r);
+    return;
+  }
+  if (r->err != ESP_OK || r->count <= 0) {
+    ESP_LOGW(TAG, "session fetch failed (%s) count=%d", esp_err_to_name(r->err), r->count);
+    s_st.session_cache_count = 0;
+  } else {
+    /* Cap to 15 so the synthetic "+ 新对话" row + sessions fit the 16-slot
+     * rows[] LVGL label array (rows[16] would be NULL → crash). */
+    int total = r->count > 15 ? 15 : r->count;
+    memcpy(s_st.session_cache, r->sessions, sizeof(r->sessions[0]) * (size_t)total);
+    s_st.session_cache_count = total;
+    ESP_LOGI(TAG, "session fetch ok: %d sessions (capped from %d)", total, r->count);
+  }
+  if (s_st.level == LEVEL_SESSION_PICKER) {
+    rerender();
+  }
+  free(r);
+}
+
+static void session_fetch_task(void* arg) {
+  session_fetch_result_t* r = (session_fetch_result_t*)arg;
+  if (r == NULL) {
+    s_st.session_fetch_pending = 0;
+    vTaskDeleteWithCaps(NULL); /* stack is PSRAM-allocated (xTaskCreateWithCaps) */
+    return;
+  }
+  r->err = bb_agent_list_sessions(bb_ui_agent_chat_get_current_driver(), r->sessions, 16, &r->count);
+  /* Hand the result back on the LVGL thread. Retry the lock a few times; if we
+   * still can't get it, clear the pending flag directly so the picker is never
+   * wedged on "Loading..." forever (a stuck pending flag would also block every
+   * future refresh — spawn early-returns while pending). */
+  int delivered = 0;
+  for (int attempt = 0; attempt < 3 && !delivered; ++attempt) {
+    if (lvgl_port_lock(200)) {
+      lv_async_call(on_session_fetch_done, r);
+      lvgl_port_unlock();
+      delivered = 1;
+    }
+  }
+  if (!delivered) {
+    ESP_LOGW(TAG, "session fetch: lvgl lock unavailable, clearing pending");
+    s_st.session_fetch_pending = 0;
+    free(r);
+  }
+  vTaskDeleteWithCaps(NULL);
+}
+
+static void spawn_session_fetch_task(void) {
+  if (!bb_transport_is_cloud_saas()) return;
+  if (s_st.session_fetch_pending) return;
+  s_st.session_fetch_pending = 1;
+  uint32_t gen = ++s_st.session_fetch_generation;
+
+  session_fetch_result_t* r = (session_fetch_result_t*)calloc(1, sizeof(*r));
+  if (r == NULL) {
+    ESP_LOGE(TAG, "spawn_session_fetch_task: calloc failed");
+    s_st.session_fetch_pending = 0;
+    return;
+  }
+  r->gen = gen;
+  TaskHandle_t t = NULL;
+  /* PSRAM stack — internal DRAM is too fragmented in Settings to spare 8KB,
+   * and list-sessions is network I/O only (HTTPS, no NVS) so PSRAM is safe. */
+  BaseType_t ok = xTaskCreateWithCaps(session_fetch_task, "sess_fetch",
+                                      BB_SETTINGS_FETCH_TASK_STACK, r,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_session_fetch_task: xTaskCreateWithCaps failed");
+    s_st.session_fetch_pending = 0;
     free(r);
   }
 }
@@ -1121,6 +1269,16 @@ static void enter_adapter_picker(void) {
   rerender();
 }
 
+/* adapter_v2 P2: open the Sessions picker. Cursor lands on the synthetic New
+ * row; the list arrives async (HTTP list-sessions for the chat's current
+ * driver). */
+static void enter_session_picker(void) {
+  s_st.level = LEVEL_SESSION_PICKER;
+  s_st.sel = 0;
+  spawn_session_fetch_task();
+  rerender();
+}
+
 static void return_to_main(main_row_t row) {
   s_st.level = LEVEL_MAIN;
   s_st.sel = main_row_to_index(row);
@@ -1199,6 +1357,7 @@ void bb_ui_settings_hide(void) {
   s_st.active = 0;
   s_st.driver_fetch_generation++;
   s_st.site_fetch_generation++;
+  s_st.session_fetch_generation++;
   destroy_rows();
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
@@ -1241,6 +1400,10 @@ void bb_ui_settings_handle_rotate(int delta) {
     case LEVEL_ADAPTER_PICKER:
       row_count = (s_st.site_cache_count > 0) ? s_st.site_cache_count : 1;
       break;
+    case LEVEL_SESSION_PICKER:
+      /* +1 for the synthetic "+ 新对话" row at index 0. */
+      row_count = s_st.session_cache_count + 1;
+      break;
     case LEVEL_MODEL_PICKER: {
       const bb_agent_driver_info_t* d = active_driver_entry();
       row_count = (d != NULL && d->model_count > 0) ? d->model_count : 1;
@@ -1280,6 +1443,9 @@ int bb_ui_settings_handle_click(void) {
         }
         case MAIN_ROW_ADAPTER:
           enter_adapter_picker();
+          break;
+        case MAIN_ROW_SESSIONS:
+          enter_session_picker();
           break;
         case MAIN_ROW_VOLUME:
           /* Enter volume adjust sub-level */
@@ -1351,6 +1517,29 @@ int bb_ui_settings_handle_click(void) {
       return_to_main(MAIN_ROW_ADAPTER);
       return 0;
 
+    case LEVEL_SESSION_PICKER: {
+      /* Row 0 = synthetic "+ 新对话"; rows 1..N = session_cache[sel-1].
+       * Both bb_ui_agent_chat_* do LVGL work; handle_click already runs under
+       * the LVGL context (other cases call rerender directly), so direct calls
+       * are fine. We return 1 so bb_radio_app tears down Settings → shows chat
+       * (the user just selected/created the conversation they want to be in). */
+      if (s_st.sel == 0) {
+        bb_ui_agent_chat_start_new_session();
+        ESP_LOGI(TAG, "session picker -> new chat");
+        return 1;
+      }
+      int idx = s_st.sel - 1;
+      if (idx >= 0 && idx < s_st.session_cache_count) {
+        bb_ui_agent_chat_switch_session(s_st.session_cache[idx].id,
+                                        s_st.session_cache[idx].title);
+        ESP_LOGI(TAG, "session picker -> '%s'", s_st.session_cache[idx].id);
+        return 1;
+      }
+      /* Out-of-range (e.g. list emptied under us) — just go back to main. */
+      return_to_main(MAIN_ROW_SESSIONS);
+      return 0;
+    }
+
     case LEVEL_MODEL_PICKER: {
       const bb_agent_driver_info_t* d = active_driver_entry();
       if (d == NULL || d->model_count <= 0) {
@@ -1406,6 +1595,9 @@ int bb_ui_settings_handle_back(void) {
       return 0;
     case LEVEL_ADAPTER_PICKER:
       return_to_main(MAIN_ROW_ADAPTER);
+      return 0;
+    case LEVEL_SESSION_PICKER:
+      return_to_main(MAIN_ROW_SESSIONS);
       return 0;
     case LEVEL_MODEL_PICKER:
       return_to_main(MAIN_ROW_MODEL);

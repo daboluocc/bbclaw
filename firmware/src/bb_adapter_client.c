@@ -825,6 +825,98 @@ esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
   return ESP_OK;
 }
 
+/* ── adapter_v2 P2: device-driven session switch / create (cloud_saas only) ──
+ * Voice always runs the adapter's DEFAULT session, so when the device selects
+ * or creates a conversation it must tell the adapter to respawn to that session
+ * via a WS request (the adapter handles agent.sessions.activate / .create and
+ * the cloud relays them pass-through). Same fire-and-forget pattern as
+ * turn.cancel: build the JSON, ws_send on a one-shot PSRAM-stack task, one
+ * in-flight at a time per kind. */
+
+static volatile int s_session_activate_inflight;
+static volatile int s_session_new_inflight;
+
+static void session_activate_task(void* arg) {
+  char* session_id = (char*)arg; /* heap copy, non-NULL */
+  char* escaped = json_escape_alloc(session_id != NULL ? session_id : "");
+  char body[256];
+  snprintf(body, sizeof(body),
+           "{\"type\":\"request\",\"kind\":\"agent.sessions.activate\",\"messageId\":\"sact-%lld\","
+           "\"deviceId\":\"%s\",\"payload\":{\"sessionId\":\"%s\"}}",
+           (long long)bb_now_ms(), BBCLAW_DEVICE_ID, escaped != NULL ? escaped : "");
+  esp_err_t err = ws_client_ensure_connected();
+  if (err == ESP_OK) {
+    err = ws_send_text_message(body);
+  }
+  ESP_LOGI(TAG, "phase=session_activate_sent err=%s sid='%s'", esp_err_to_name(err),
+           session_id != NULL ? session_id : "");
+  free(escaped);
+  free(session_id);
+  s_session_activate_inflight = 0;
+  vTaskDeleteWithCaps(NULL);
+}
+
+esp_err_t bb_adapter_request_session_activate(const char* session_id) {
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_OK; /* HTTP path switches sessions per-turn, not via WS */
+  }
+  if (session_id == NULL || session_id[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_session_activate_inflight) {
+    return ESP_OK; /* one in-flight activate is enough */
+  }
+  s_session_activate_inflight = 1;
+  char* copy = strdup(session_id);
+  if (copy == NULL) {
+    s_session_activate_inflight = 0;
+    return ESP_ERR_NO_MEM;
+  }
+  /* PSRAM stack — internal DRAM is fragmented in Settings/chat; network IO
+   * runs fine on a PSRAM stack (same rationale as turn_cancel). */
+  if (xTaskCreateWithCaps(session_activate_task, "bb_sess_act", 8192, copy, 5, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "session_activate: task spawn failed (no mem) — not sent");
+    free(copy);
+    s_session_activate_inflight = 0;
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
+}
+
+static void session_new_task(void* arg) {
+  (void)arg;
+  char body[192];
+  snprintf(body, sizeof(body),
+           "{\"type\":\"request\",\"kind\":\"agent.sessions.create\",\"messageId\":\"snew-%lld\","
+           "\"deviceId\":\"%s\",\"payload\":{}}",
+           (long long)bb_now_ms(), BBCLAW_DEVICE_ID);
+  esp_err_t err = ws_client_ensure_connected();
+  if (err == ESP_OK) {
+    err = ws_send_text_message(body);
+  }
+  ESP_LOGI(TAG, "phase=session_new_sent err=%s", esp_err_to_name(err));
+  s_session_new_inflight = 0;
+  vTaskDeleteWithCaps(NULL);
+}
+
+esp_err_t bb_adapter_request_session_new(void) {
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_OK;
+  }
+  if (s_session_new_inflight) {
+    return ESP_OK;
+  }
+  s_session_new_inflight = 1;
+  if (xTaskCreateWithCaps(session_new_task, "bb_sess_new", 8192, NULL, 5, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "session_new: task spawn failed (no mem) — not sent");
+    s_session_new_inflight = 0;
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
+}
+
 static esp_err_t ws_send_binary_message(const uint8_t* data, size_t len) {
   if (data == NULL || len == 0U) {
     return ESP_ERR_INVALID_ARG;
