@@ -130,6 +130,37 @@ func TestPageMessages(t *testing.T) {
 	}
 }
 
+func TestListSkipsV1PoolNoopProbes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/Users/x/.bbclaw-adapter/workspace"
+	dir := claudeProjectDir(cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	noop := `{"type":"user","message":{"role":"user","content":"respond with the single word: ready"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ready"}]}}` + "\n"
+	real := `{"type":"user","message":{"role":"user","content":"记住我叫周老板,我做硬件"}}` + "\n"
+	for _, n := range []string{"noop-aaaa", "noop-bbbb", "noop-cccc"} {
+		if err := os.WriteFile(filepath.Join(dir, n+".jsonl"), []byte(noop), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real-1.jsonl"), []byte(real), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := NewDeviceSession(session.NewManager(), []string{"claude"}, cwd)
+	list, _ := d.List()
+	if len(list) != 1 || list[0].ID != "real-1" {
+		t.Fatalf("List must drop v1 pool noop probes, keep only the real conversation; got %+v", list)
+	}
+	// The active-pick must land on the real conversation, not a noop probe.
+	if d.ActiveID() != "real-1" {
+		t.Errorf("active session should be the real conversation, got %q", d.ActiveID())
+	}
+}
+
 func TestDeviceSessionList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

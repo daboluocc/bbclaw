@@ -276,29 +276,43 @@ func listConversations(cwd string) ([]ConversationInfo, error) {
 			continue
 		}
 		id := strings.TrimSuffix(name, ".jsonl")
+		// Skip the v1 claude-code pool's warm-up probe conversations. v1 and v2
+		// SHARE this workspace (#231), so the pool's noop ("respond with the single
+		// word: ready", adapter/internal/agent/claudecode/pool.go) litters the dir
+		// with thousands of throwaway .jsonl — they are NOT real sessions, and the
+		// most-recent one would otherwise be picked as the active conversation,
+		// shadowing the user's real butler memory.
+		first := firstUserText(filepath.Join(dir, name))
+		if strings.HasPrefix(strings.TrimSpace(first), v1PoolNoopProbe) {
+			continue
+		}
 		info, err := e.Info()
 		var mod int64
 		if err == nil {
 			mod = info.ModTime().Unix()
 		}
-		out = append(out, ConversationInfo{
-			ID:         id,
-			Title:      conversationTitle(filepath.Join(dir, name), id),
-			ModUnixSec: mod,
-		})
+		title := truncateTitle(first)
+		if title == "" {
+			title = shortID(id)
+		}
+		out = append(out, ConversationInfo{ID: id, Title: title, ModUnixSec: mod})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ModUnixSec > out[j].ModUnixSec })
 	return out, nil
 }
 
-// conversationTitle reads the first user message from a conversation .jsonl as a
-// human label, falling back to the id. claude writes one JSON object per line;
-// a user turn is {"type":"user","message":{"role":"user","content":...}} where
-// content is a string or an array of {type:"text",text:...} blocks.
-func conversationTitle(path, id string) string {
+// v1PoolNoopProbe is v1's claude-code pool warm-up prompt; conversations that start
+// with it are throwaway health probes, not real sessions (see listConversations).
+const v1PoolNoopProbe = "respond with the single word: ready"
+
+// firstUserText returns the first user message of a conversation .jsonl (full, not
+// truncated), or "" if none. claude writes one JSON object per line; a user turn is
+// {"type":"user","message":{"role":"user","content":...}} where content is a string
+// or an array of {type:"text",text:...} blocks.
+func firstUserText(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
-		return shortID(id)
+		return ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -318,10 +332,10 @@ func conversationTitle(path, id string) string {
 			continue
 		}
 		if t := firstText(rec.Message.Content); t != "" {
-			return truncateTitle(t)
+			return t
 		}
 	}
-	return shortID(id)
+	return ""
 }
 
 // firstText extracts text from a claude content field (string, or []{type,text}).
