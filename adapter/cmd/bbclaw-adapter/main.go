@@ -329,29 +329,9 @@ var k_driver_registry = []driverReg{
 	{
 		name: "claude-code",
 		construct: func(cfg config.Config, logger *obs.Logger) (agent.Driver, error) {
-			// WarmCwd: prefer BBCLAW_DEFAULT_CWD, fall back to CwdPool[0].Path.
-			// Empty when neither is configured — warm spawns then inherit the
-			// adapter's cwd, which is the legacy behaviour for unconfigured
-			// deployments.
-			warmCwd := cfg.DefaultCwd
-			if warmCwd == "" && len(cfg.CwdPool) > 0 {
-				warmCwd = cfg.CwdPool[0].Path
-			}
-			// Butler workspace (ADR-021 §3): warm it alongside the project cwd
-			// so the per-device butler session, which always runs cwd=workspace,
-			// hits a pre-warmed claude session every round. Best-effort — a
-			// resolution failure just disables butler pre-warming.
-			butlerCwd := ""
-			if dir, derr := workspace.Dir(); derr == nil {
-				butlerCwd = dir
-			}
 			opts := claudecode.Options{
-				PoolSize:           cfg.ClaudePoolSize,
-				PoolIdleTTL:        cfg.ClaudePoolIdleTTL,
-				ExtraArgs:          parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
-				WarmCwd:            warmCwd,
-				ButlerWorkspaceCwd: butlerCwd,
-				Env:                map[string]string{},
+				ExtraArgs: parseArgList(os.Getenv("AGENT_CLAUDE_CODE_EXTRA_ARGS")),
+				Env:       map[string]string{},
 				// AGENT_THINKING (default on): surface the butler's extended
 				// thinking on the admin conversation page (ADR-029 §2.2).
 				Thinking: envEnabledDefault(os.Getenv("AGENT_THINKING")),

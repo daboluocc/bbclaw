@@ -43,7 +43,6 @@ type Driver struct {
 	log   *obs.Logger
 	extra []string
 	env   map[string]string // driver-level env overrides (e.g. ANTHROPIC_BASE_URL)
-	pool  *WarmPool
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
@@ -64,30 +63,10 @@ type Options struct {
 	// "claude-sonnet-4-6"). Do not include `-p` or `--output-format` —
 	// the driver sets those itself.
 	ExtraArgs []string
-	// PoolSize is the number of pre-warmed sessions to maintain. 0 disables
-	// the pool (default cold-spawn behaviour). Corresponds to
-	// BBCLAW_CLAUDE_POOL_SIZE.
-	PoolSize int
-	// PoolIdleTTL is how long a pre-warmed entry is kept before being
-	// discarded. Corresponds to BBCLAW_CLAUDE_POOL_IDLE_TTL.
-	PoolIdleTTL time.Duration
 	// Env holds extra environment variables injected into every claude
 	// subprocess. Keys here override the inherited process environment.
 	// Intended for ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN overrides.
 	Env map[string]string
-	// WarmCwd is the working directory used for pre-warming pool entries.
-	// Each warm entry is stamped with this cwd and Acquire strict-matches
-	// against it. Pass the canonical project path (typically
-	// BBCLAW_DEFAULT_CWD or CwdPool[0].Path); empty means "inherit adapter
-	// cwd", which is the legacy behaviour and only safe when CWD_POOL is
-	// unset.
-	WarmCwd string
-	// ButlerWorkspaceCwd is the per-device butler workspace directory (ADR-021
-	// §3). When non-empty it is warmed alongside WarmCwd so the butler session,
-	// which always runs with cwd=workspace, hits a pre-warmed session every
-	// round instead of paying the cold-start penalty. Empty disables butler
-	// pre-warming (the butler still works, just cold the first turn).
-	ButlerWorkspaceCwd string
 	// Thinking enables Claude Code's extended thinking so the stream-json
 	// carries `thinking` content blocks (surfaced as EvThinking for the admin
 	// conversation page, ADR-029 §2.2). Implemented by injecting
@@ -111,10 +90,6 @@ func New(opts Options, log *obs.Logger) *Driver {
 		bin = resolved
 		log.Infof("claude-code: resolved binary %q", bin)
 	}
-	idleTTL := opts.PoolIdleTTL
-	if idleTTL <= 0 {
-		idleTTL = 10 * time.Minute
-	}
 	extra := append([]string(nil), opts.ExtraArgs...)
 	// Fall back to the catalog's factory-default model (claudeCodeModels[0])
 	// when the operator hasn't pinned a --model via AGENT_CLAUDE_CODE_EXTRA_ARGS,
@@ -126,26 +101,13 @@ func New(opts Options, log *obs.Logger) *Driver {
 	}
 	// Enable extended thinking so stream-json emits `thinking` content blocks
 	// (ADR-029 §2.2). Skipped when the operator already pinned --settings via
-	// ExtraArgs. Shared into both the warm pool and per-turn args because extra
-	// flows through NewWarmPool and sessionFlags(d.extra).
+	// ExtraArgs. Flows into the per-turn args through sessionFlags(d.extra).
 	if opts.Thinking && !hasFlag(extra, "--settings") {
 		extra = append(extra, "--settings", `{"alwaysThinkingEnabled":true}`)
 	}
 	driverEnv := make(map[string]string, len(opts.Env))
 	for k, v := range opts.Env {
 		driverEnv[k] = v
-	}
-	// Warm the configured project cwd plus the butler workspace (ADR-021 §3) so
-	// both a regular session and the per-device butler session hit a pre-warmed
-	// claude session. dedupeCwds (inside NewWarmPool) collapses overlaps and
-	// falls back to a single inherited-cwd slot when both are empty.
-	warmCwds := []string{opts.WarmCwd}
-	if opts.ButlerWorkspaceCwd != "" {
-		warmCwds = append(warmCwds, opts.ButlerWorkspaceCwd)
-	}
-	pool := NewWarmPool(bin, extra, driverEnv, warmCwds, opts.PoolSize, idleTTL, log)
-	if opts.PoolSize > 0 {
-		log.Infof("claude-code: warm pool enabled size=%d idle_ttl=%s warm_cwd=%q butler_cwd=%q", opts.PoolSize, idleTTL, opts.WarmCwd, opts.ButlerWorkspaceCwd)
 	}
 	if baseURL, ok := driverEnv["ANTHROPIC_BASE_URL"]; ok {
 		log.Infof("claude-code: ANTHROPIC_BASE_URL=%s", baseURL)
@@ -158,7 +120,6 @@ func New(opts Options, log *obs.Logger) *Driver {
 		log:      log,
 		extra:    extra,
 		env:      driverEnv,
-		pool:     pool,
 		sessions: make(map[agent.SessionID]*session),
 	}
 }
@@ -258,16 +219,11 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 
 	// Determine session args. Priority:
 	//   1. Session already has a resumeID from a prior turn → --resume.
-	//   2. No resumeID yet → try the warm pool for a pre-warmed session ID → --resume.
-	//   3. Pool miss → first turn: use --session-id so the CLI writes to the
-	//      same UUID we already handed to the device. No TrimPrefix needed
+	//   2. No resumeID yet → first turn: use --session-id so the CLI writes to
+	//      the same UUID we already handed to the device. No TrimPrefix needed
 	//      because adapter IDs are now plain UUIDs.
 	if s.resumeID != "" {
 		args = append(args, "--resume", s.resumeID)
-	} else if warmID, ok := d.pool.Acquire(s.cwd); ok {
-		s.setResumeID(warmID)
-		d.log.Infof("claude-code: pool hit sid=%s cliSession=%s cwd=%q", sid, warmID, s.cwd)
-		args = append(args, "--resume", warmID)
 	} else {
 		// First turn, new session: tell the CLI which UUID to use so adapter
 		// id == CLI session id == JSONL filename from the very first turn.
@@ -318,10 +274,6 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	d.log.Infof("claude-code: input sid=%s text=%q", sid, truncate(text, 200))
 	d.log.Infof("claude-code: spawned sid=%s resume=%q model=%q pid=%d",
 		sid, s.resumeID, s.model, cmd.Process.Pid)
-
-	// After a successful spawn, signal the pool to backfill so the next
-	// request can benefit from a pre-warmed session.
-	d.pool.signalReplenish()
 
 	// Capture stderr while logging it: if claude-code refuses to resume a
 	// locked session, we want to surface SESSION_BUSY to the device rather
@@ -440,12 +392,6 @@ func (d *Driver) Stop(sid agent.SessionID) error {
 	s.mu.Unlock()
 	close(s.events)
 	return nil
-}
-
-// Shutdown drains the warm pool and stops its background goroutine. Should be
-// called once during adapter graceful shutdown to avoid orphan claude processes.
-func (d *Driver) Shutdown() {
-	d.pool.Drain()
 }
 
 // ─── session ────────────────────────────────────────────────────────────
