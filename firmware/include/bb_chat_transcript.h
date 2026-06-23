@@ -62,6 +62,13 @@ void bb_chat_transcript_finalize_assistant(void);
  * arrives and the cached preview needs to be replaced wholesale. */
 void bb_chat_transcript_clear(void);
 
+/* ADR-028 §2.5.1 (撤回语义) — withdraw the last live turn: delete the most
+ * recent user bubble (set by append_user, not history replay) and everything
+ * after it (the cancelled turn's in-flight reply/tool/error), and drop the
+ * same turn from the persistence cache. Keeps earlier completed turns. No-op
+ * when there is no live turn. Must run on the LVGL task (mutates objects). */
+void bb_chat_transcript_withdraw_last_turn(void);
+
 /* ADR-017 v2 — nav fast-path. Stream task can't poll UP/DOWN during TTS
  * playback (i2s write keeps it busy), so on_nav_event posts scroll
  * requests directly into this queue. A dedicated worker reads the queue

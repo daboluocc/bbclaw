@@ -77,5 +77,13 @@ void bb_chat_cache_replay(bb_chat_cache_replay_cb cb, void* user);
  * history that should replace the cached tail. */
 void bb_chat_cache_clear(void);
 
+/* ADR-028 §2.5.1 (撤回语义) — withdraw the last turn: discard any in-flight
+ * (un-finalized) assistant text and truncate the buffer back to just before
+ * the most recent USER message, removing that user line and every
+ * assistant/tool/error record that followed it. No-op when there is no user
+ * record. Keeps earlier completed turns. Used on PTT barge-in cancel so the
+ * cancelled turn doesn't reappear on wake / history replay. */
+void bb_chat_cache_drop_last_turn(void);
+
 /* True when the cache has buffered messages for the bound session. */
 int bb_chat_cache_has_data(void);

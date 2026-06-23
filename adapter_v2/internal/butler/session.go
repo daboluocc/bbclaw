@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
@@ -75,7 +76,8 @@ func (d *DeviceSession) Config() ptyhost.Config {
 	// The resume flags (--continue / --resume / --session-id) are claude-specific;
 	// don't append them to another CLI (e.g. a test's `cat`, which would treat
 	// "--continue" as a filename and exit).
-	if len(out) > 0 && strings.Contains(strings.ToLower(filepath.Base(out[0])), "claude") {
+	isClaude := len(out) > 0 && strings.Contains(strings.ToLower(filepath.Base(out[0])), "claude")
+	if isClaude {
 		switch {
 		case d.activeID == "":
 			out = append(out, "--continue") // no known id yet → resume the latest
@@ -85,7 +87,35 @@ func (d *DeviceSession) Config() ptyhost.Config {
 			out = append(out, "--resume", d.activeID) // resume a specific conversation
 		}
 	}
-	return ptyhost.Config{Argv: out, Cwd: d.cwd}
+	cfg := ptyhost.Config{Argv: out, Cwd: d.cwd}
+	if isClaude {
+		cfg.StartupInput = claudeStartupKeys()
+	}
+	return cfg
+}
+
+// claudeStartupKeys returns the keystrokes injected after a claude PTY spawns to
+// auto-dismiss its first-run "Try the new fullscreen renderer?" upsell (driven by
+// fullscreenUpsellSeenCount in ~/.claude.json) and any similar blocking prompt:
+// a few Enters, each picking the highlighted default, staggered so they land
+// after the TUI has painted (claude can take a second or two, longer when it
+// --resumes a conversation). The voice/device path has no human to answer it, so
+// without this the shared session hangs on the upsell. Extra Enters that land on
+// the empty main prompt are harmless no-ops. Disable with
+// ADAPTER_V2_CLAUDE_AUTO_ENTER=0; returns nil when disabled.
+func claudeStartupKeys() []ptyhost.StartupChunk {
+	if !envBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", true) {
+		return nil
+	}
+	// First Enter waits out claude's startup paint; the rest follow on a steady
+	// cadence to cover a slow/late-painting prompt (~1.8s, 3.3s, 4.8s, 6.3s).
+	const gap = 1500 * time.Millisecond
+	delays := []time.Duration{1800 * time.Millisecond, gap, gap, gap}
+	keys := make([]ptyhost.StartupChunk, 0, len(delays))
+	for _, d := range delays {
+		keys = append(keys, ptyhost.StartupChunk{Delay: d, Data: []byte("\r")})
+	}
+	return keys
 }
 
 // ActiveID returns the active conversation id (may be "" before the first spawn

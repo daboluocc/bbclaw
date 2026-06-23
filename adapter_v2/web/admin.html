@@ -154,7 +154,7 @@
     function render(data) {
       const s = data.settings || {};
       const v = s.voice || {}, asr = v.asr || {}, tts = v.tts || {};
-      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {};
+      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {}, ai = s.ai || {};
       const d = data.derived || {};
 
       const derivedCard = `<section class="card"><h2>状态 / 只读</h2>
@@ -201,7 +201,15 @@
         inputField("ADAPTER_V2_ADDR", "cli.addr", cli.addr, {hint:"监听地址，如 :18090"}) +
         inputField("ADAPTER_V2_CWD", "cli.cwd", cli.cwd, {wide:true, hint:"留空则用共享 butler workspace"}) +
         boolField("跳过权限确认 (SKIP_PERMISSIONS)", "cli.skipPermissions", cli.skipPermissions) +
+        boolField("自动跳过 claude 首启提示 (CLAUDE_AUTO_ENTER)", "cli.claudeAutoEnter", cli.claudeAutoEnter) +
         areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
+      );
+
+      const aiCard = card("Claude 端点 (三方 / 代理)",
+        inputField("ANTHROPIC_BASE_URL", "ai.anthropicBaseUrl", ai.anthropicBaseUrl,
+          {wide:true, placeholder:"https://your-proxy.example.com", hint:"留空用 claude 官方登录态；走第三方 / 兼容端点才填。改动需重启生效。"}) +
+        inputField("ANTHROPIC_AUTH_TOKEN", "ai.anthropicAuthToken", ai.anthropicAuthToken,
+          {password:true, wide:true, placeholder:"sk-...", hint:"第三方端点的鉴权 token"})
       );
 
       const cloudCard = card("云 (Cloud Relay)",
@@ -210,7 +218,7 @@
         inputField("HOME_SITE_ID", "cloud.homeSiteId", cloud.homeSiteId, {hint:"留空用持久化身份 identity.json"})
       );
 
-      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + cloudCard;
+      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + aiCard + cloudCard;
       $("save").disabled = false;
     }
 

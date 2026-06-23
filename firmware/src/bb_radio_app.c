@@ -2765,6 +2765,11 @@ static void stream_task(void* arg) {
           ESP_LOGI(TAG, "phase=finish_aborted_by_user stream=%s (barge-in, starting new turn)",
                    stream.stream_id);
           agent_chat_voice_post_error(NULL); /* 仅清 listening 提示 */
+          /* ADR-028 §2.5.1 (撤回语义):把这条被打断的回合从 transcript + cache
+           * 撤掉(刚发出、正在处理的提问 + 它的半截回复)。单击撤销→屏幕回到
+           * 上一轮;按住重说→旧轮先撤,稍后新轮正常 append。finish_stream 已
+           * 返回,不会再有本 turn 的渲染入队,撤回安全。 */
+          bb_ui_agent_chat_withdraw_last_turn();
         } else {
           ESP_LOGE(TAG,
                    "phase=finish_failed esp=%s http_status=%d error_code=%s stream=%s reply_wait_timed_out=%d",
@@ -3556,7 +3561,13 @@ esp_err_t bb_radio_app_start(void) {
     ESP_LOGE(TAG, "wifi init failed err=%s", esp_err_to_name(wifi_err));
     bb_page_netconn_dismiss();
     show_status_error(BB_STATUS_WIFI_ERR);
-    return wifi_err;
+    /* 不向 app_main 抛错:app_main 对本函数用 ESP_ERROR_CHECK(),返回非 OK 会
+     * abort 整机 → 无限 boot loop。没网首次配网时尤其致命——配网 httpd task
+     * 因内部 RAM 碎片/不足创建失败(ESP_ERR_HTTPD_TASK),每次启动必 abort,设备
+     * 变砖循环(真机实锤)。UI 此时已起,停在 WiFi 错误页让用户看到并重启/换网,
+     * 远胜无限重启。配网 httpd 的内存根因(同 #252 P2 的 internal RAM 紧张)需
+     * 单独优化;此处先消除 boot loop。 */
+    return ESP_OK;
   }
   if (bb_wifi_is_provisioning_mode()) {
     bb_page_netconn_dismiss();

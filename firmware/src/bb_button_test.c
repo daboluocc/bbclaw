@@ -2,6 +2,7 @@
 
 #include "bb_config.h"
 #include "driver/gpio.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -59,7 +60,10 @@ esp_err_t bb_button_test_start(void) {
   ESP_LOGI(TAG, "button test gpio=%d pull=%s interval_ms=%d（与 PTT 独立）", gpio,
            BBCLAW_BUTTON_TEST_PULL_UP ? "up" : "down", BBCLAW_BUTTON_TEST_INTERVAL_MS);
 
-  BaseType_t ok = xTaskCreate(button_test_task, "bb_button_test", 3072, NULL, 3, NULL);
+  /* PSRAM 栈：内部 RAM 零占用——别把内部堆最大连续块挤到 adapter ws 任务
+   * 所需的 8192B 以下（对齐 bb_uart_cmd 的 7899e19 修复，避免 dev 自测任务
+   * 偷走内部 RAM 导致 PTT 录音流的 WebSocket 建不起来）。 */
+  BaseType_t ok = xTaskCreateWithCaps(button_test_task, "bb_button_test", 3072, NULL, 3, NULL, MALLOC_CAP_SPIRAM);
   return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

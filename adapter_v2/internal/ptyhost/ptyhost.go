@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -51,6 +52,22 @@ type Config struct {
 	Env map[string]string
 	// InitialSize is the starting grid; clients resize later via PTY.Resize.
 	InitialSize Size
+	// StartupInput is written into the PTY shortly after spawn, one chunk at a
+	// time with each chunk's inter-write Delay. It exists to auto-dismiss a CLI's
+	// first-run onboarding prompts that would otherwise block an interactive
+	// viewer — e.g. claude's "Try the new fullscreen renderer?" upsell: a couple
+	// of staggered Enters pick the highlighted default and move on. The playback
+	// runs in its own goroutine, so Spawn still returns immediately. Empty ⇒ no
+	// injection. Write errors are ignored (the child may have already exited).
+	StartupInput []StartupChunk
+}
+
+// StartupChunk is one delayed write replayed into a freshly spawned PTY. Delay
+// is measured from the previous chunk (or from spawn, for the first), so a slice
+// plays back as a simple cadence without absolute clocks.
+type StartupChunk struct {
+	Delay time.Duration
+	Data  []byte
 }
 
 // PTY is a live pseudo-terminal wrapping one CLI process. Read returns the
@@ -121,7 +138,26 @@ func Spawn(cfg Config) (PTY, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ptySession{f: f, cmd: cmd}, nil
+	s := &ptySession{f: f, cmd: cmd}
+	if len(cfg.StartupInput) > 0 {
+		go playStartupInput(s, cfg.StartupInput)
+	}
+	return s, nil
+}
+
+// playStartupInput replays cfg.StartupInput into a freshly spawned PTY: it sleeps
+// each chunk's Delay, then writes its Data. Errors are intentionally ignored —
+// if the child has exited or closed the PTY there is nothing left to dismiss.
+// Runs in its own goroutine so Spawn returns without blocking on the cadence.
+func playStartupInput(p PTY, chunks []StartupChunk) {
+	for _, c := range chunks {
+		if c.Delay > 0 {
+			time.Sleep(c.Delay)
+		}
+		if len(c.Data) > 0 {
+			_, _ = p.Write(c.Data)
+		}
+	}
 }
 
 // buildEnv merges extra vars onto the parent environment and ensures TERM is

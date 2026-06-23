@@ -483,10 +483,9 @@ func (a *Adapter) handleTurnCancelRequest(write func(CloudEnvelope) error, env C
 	if v, ok := env.Payload["playedSeq"].(float64); ok {
 		playedSeq = int(v)
 	}
-	found, err := a.inflight.Cancel(env.DeviceID, playedText)
-	if !found {
-		a.inflight.NoteInterruption(env.DeviceID, playedText)
-	}
+	// ADR-028 §2.5.1 修订(撤回语义):打断 = 撤回当前回合,当没发生过。只杀回合
+	// 子进程,不再记录备注注入下一轮。playedText/playedSeq 仅用于日志。
+	found, err := a.inflight.Cancel(env.DeviceID)
 	if err != nil {
 		a.log.Warnf("turn.cancel device=%q found=%v err=%v", env.DeviceID, found, err)
 		return reply(map[string]any{"cancelled": false, "detail": err.Error()}, "")

@@ -60,6 +60,14 @@ CONFIG_LV_USE_CUSTOM_MALLOC=y
 # 不再把内部堆抽干到 xTaskCreate 失败的程度。
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
+# WiFi/LWIP 动态缓冲改从 PSRAM 分配（OCT PSRAM @80MHz，DMA-capable）。
+# 默认这些缓冲(DYNAMIC_RX/TX_BUFFER_NUM=32 各 ~1.6KB + LWIP mbox)全落内部 DRAM，
+# 几十块 1.6KB 把内部堆打碎，最大连续块卡在 ~8.7KB < adapter ws 任务 8192B 栈
+# → Error create websocket task → 语音流挂(button_test 修复后 largest 仅到 8704
+# 仍跨不过去，证明根因是 WiFi 缓冲的内部碎片)。挪去 PSRAM 后内部 RAM 腾出几十 KB、
+# 碎片消失，largest 回到 8192 以上。
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
 # 渲染性能（issue #149 Round 1）：-O2 + 240MHz + 1ms tick + 60fps 刷新上限。
 # LVGL 软渲染对优化级别极敏感；FREERTOS 100Hz 时 10ms 调度粒度会造成帧间抖动。
 CONFIG_COMPILER_OPTIMIZATION_PERF=y

@@ -172,18 +172,10 @@ func (e *Engine) RunTurn(turnCtx context.Context, req Request) (*Result, error) 
 	d := e.d
 	maxAttempts := d.Policy.maxAttempts()
 
-	// barge-in(ADR-028 §2.5.1):上一回合若被打断,把打断备注注入本轮 prompt,
-	// 让 --resume 后的模型知道用户听到了多少、执行截断在哪。auto-title 用原始
-	// 文本(titleText),不被注入段污染。
+	// barge-in(ADR-028 §2.5.1 修订,撤回语义):打断 = 撤回上一回合,当没发生过。
+	// 不再向本轮 prompt 注入"你被打断了"的备注——Cancel 已杀掉回合子进程并保留
+	// session/resumeID,本轮直接 --resume 干净续接。titleText 仍取用户原始文本。
 	titleText := req.Text
-	if d.Inflight != nil {
-		if note := d.Inflight.ConsumePromptNote(req.DeviceID); note != "" {
-			req.Text = note + "\n\n" + req.Text
-			if d.Log != nil {
-				d.Log.Infof("agent: injected interruption note device=%q", req.DeviceID)
-			}
-		}
-	}
 	// in-flight 登记的注销兜底:RunTurn 的任何退出路径(ctx done、客户端断开、
 	// 错误)都不能留下陈旧登记,否则下一次 cancel 会打到已结束的 turn。
 	var inflightTok uint64
