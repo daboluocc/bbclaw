@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   重启生效。`config.OpencodeServeEnabled()` web override 优先、回落 env(env 转为首次 bootstrap
   种子)。沿用 `CloudRelayOverride` 同款「web 设置覆盖 env」链路(settingsstore FromConfig/ApplyTo)。
 
+### Fixed
+- **按键自测任务偷内部 RAM 致 PTT 录音流的 WebSocket 建不起来、语音识别失效**：
+  `bb_button_test` 任务用普通 `xTaskCreate` 申请 3072B **内部** RAM 栈,而 bbclaw 板
+  `board_config.h` 把 `BBCLAW_BUTTON_TEST_GPIO` 设为 1 → 正式板也常驻该任务。内部堆本就
+  贴着 8KB 线(点阵 UI 数百小对象 + 近期 CJK 字体/Sessions 菜单加压),这 3KB 把最大连续块
+  挤到 7680B < adapter ws 任务所需 8192B → `Error create websocket task` / `ws start failed`
+  / `bb_adapter_stream_start failed ESP_FAIL` → 录音帧采到却送不出、服务端无音频、ASR 无输入、
+  agent 直接 DIZZY。把该任务栈改用 PSRAM(`xTaskCreateWithCaps`+`MALLOC_CAP_SPIRAM`),内部 RAM
+  零占用——与 `bb_uart_cmd` 的同类修复(7899e19)一致。
+
 ### Design
 - **ADR-031 — OpenCode 作为 canonical 后端**（草案，方向已定 + 1 个 spike 闸门）:
   把 adapter 的「每家 CLI 一个 scrape driver」动物园收敛为单一 canonical 后端
