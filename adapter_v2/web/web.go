@@ -14,11 +14,11 @@ import (
 	"net/http"
 )
 
-// staticFS holds the embedded static client tree (currently just index.html).
+// staticFS holds the embedded static client tree (index.html + admin.html).
 // The embed pattern is relative to this file, so the assets live alongside it
 // under adapter_v2/web/.
 //
-//go:embed index.html
+//go:embed index.html admin.html
 var staticFS embed.FS
 
 // Handler returns an http.Handler that serves the embedded web client. Mount it
@@ -39,4 +39,21 @@ func Handler() http.Handler {
 		panic("web: sub embedded FS: " + err.Error())
 	}
 	return http.FileServer(http.FS(sub))
+}
+
+// AdminHandler returns an http.Handler that serves the embedded admin/config
+// page (admin.html) for /admin and /admin/. Unlike the static file server it
+// serves the single page regardless of the trailing slash and sends
+// Cache-Control: no-store so a settings change is never masked by a cached page.
+// The admin route is loopback-gated by the caller (see adminapi.LocalOnly).
+func AdminHandler() http.Handler {
+	page, err := staticFS.ReadFile("admin.html")
+	if err != nil {
+		panic("web: read embedded admin.html: " + err.Error())
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(page)
+	})
 }

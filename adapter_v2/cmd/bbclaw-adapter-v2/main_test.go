@@ -12,10 +12,22 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/adminapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
+
+// testRouter builds the router with the web-first config plumbing wired to an
+// in-memory store (no settings.json on disk), so the existing routing tests are
+// unaffected by the admin surface added in ADR-025.
+func testRouter(mgr *session.Manager) http.Handler {
+	cfg := testConfig()
+	store, _ := settingsstore.Open("", settingsstore.Settings{})
+	derive := func() adminapi.Derived { return adminapi.Derived{} }
+	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, &adminapi.RestartFlag{}, derive)
+}
 
 // testConfig launches a trivial long-running CLI under the PTY so a created
 // session stays alive for the duration of a test. `cat` echoes stdin to stdout
@@ -64,7 +76,7 @@ func readReconnected(t *testing.T, conn *websocket.Conn) {
 // TestHealthz verifies the liveness probe returns 200 "ok".
 func TestHealthz(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -88,7 +100,7 @@ func TestHealthz(t *testing.T) {
 // share one PTY.
 func TestWSNoSessionJoinsDefault(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -116,7 +128,7 @@ func TestWSNoSessionJoinsDefault(t *testing.T) {
 // longer an error: it resolves to the shared default session.)
 func TestWSNonWebSocketRejected(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/ws")
@@ -138,7 +150,7 @@ func TestWSNonWebSocketRejected(t *testing.T) {
 // the existing session rather than spawning a second process.
 func TestWSCreatesSessionOnce(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -177,7 +189,7 @@ func TestWSCreatesSessionOnce(t *testing.T) {
 // not swallow stray requests as the index page.
 func TestRouterUnknownPath(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -197,7 +209,7 @@ func TestRouterUnknownPath(t *testing.T) {
 // index.html can't silently drop the contract the server depends on.
 func TestWebClientServed(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/")
@@ -246,7 +258,7 @@ func TestWebClientServed(t *testing.T) {
 // must dispatch those to their own handlers, not to the static index page.
 func TestSpecificRoutesWinOverWebRoot(t *testing.T) {
 	mgr := session.NewManager()
-	srv := httptest.NewServer(newRouter(mgr, testConfig(), butler.NewDeviceSession(mgr, testConfig().Argv, testConfig().Cwd)))
+	srv := httptest.NewServer(testRouter(mgr))
 	t.Cleanup(srv.Close)
 
 	tests := []struct {

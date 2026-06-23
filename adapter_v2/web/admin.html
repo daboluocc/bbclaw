@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>bbclaw adapter v2 · 配置</title>
+  <!--
+    Slim, loopback-only web admin/config page for adapter_v2 (ADR-025 "web-first
+    config", env-overlay variant). ONE static HTML file: inline <style> + vanilla
+    JS, NO Vue/Vite/build step — it embeds cleanly alongside index.html so
+    `go build` stays toolchain-free.
+
+    On load: GET /v1/settings → render the grouped form from the JSON.
+    Save:    PUT /v1/settings with the WHOLE doc → show the restart banner.
+    Restart: POST /v1/settings/restart → poll /healthz until 200 → reload.
+  -->
+  <style>
+    /* dot-matrix / Nothing-style tokens (design/UI_DESIGN_LANGUAGE.md) */
+    :root{
+      --bg:#070b0e; --lit:#dfeaec; --ghost:#152128; --dim:#6e8a93;
+      --accent:#2ec4a0; --ok:#4cd964; --err:#e66f6f; --pitch:9px;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100vh}
+    body{
+      font:13px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+      color:var(--lit); background:var(--bg);
+      background-image:radial-gradient(var(--ghost) 1px, transparent 1px);
+      background-size:var(--pitch) var(--pitch);
+    }
+    a{color:var(--accent)}
+    .hdr{padding:16px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:baseline;gap:14px;
+      background:rgba(7,11,14,.85);backdrop-filter:blur(2px);position:sticky;top:0;z-index:3;flex-wrap:wrap}
+    .wordmark{font-weight:700;font-size:15px;letter-spacing:.42em;color:var(--lit);
+      border-bottom:2px dotted var(--accent);padding-bottom:3px}
+    .hdr .sub{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
+    .hdr .actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+    main{max-width:980px;margin:0 auto;padding:22px}
+    @media (max-width:720px){ .hdr{padding:14px;gap:10px} .hdr .sub{display:none} main{padding:14px} }
+
+    .card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+    .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 14px;display:flex;align-items:center}
+    .card h2::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);
+      box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost);margin-right:18px;display:inline-block}
+
+    .form{display:grid;gap:13px;grid-template-columns:repeat(2,minmax(0,1fr))}
+    .form.one{grid-template-columns:1fr}
+    @media (max-width:560px){ .form{grid-template-columns:1fr} }
+    .field{display:grid;gap:5px;min-width:0}
+    .field.wide{grid-column:1 / -1}
+    .field>label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
+    .field input[type=text],.field input[type=password],.field select,.field textarea{
+      font:inherit;background:#05090c;color:var(--lit);border:1px solid var(--ghost);border-radius:7px;
+      padding:8px 10px;width:100%;min-width:0}
+    .field textarea{resize:vertical;min-height:64px}
+    .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent)}
+    .field .hint{font-size:10px;color:var(--dim)}
+    .switch{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+    .switch input{accent-color:var(--accent);width:15px;height:15px}
+    .switch span{font-size:12px;color:var(--lit)}
+
+    .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+    .status-grid .item{border:1px solid var(--ghost);border-radius:7px;padding:9px 11px;background:rgba(7,11,14,.5)}
+    .status-grid .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+    .status-grid .v{font-size:12px;color:var(--lit);word-break:break-all}
+
+    button{font:inherit;cursor:pointer;border-radius:7px;padding:8px 16px;border:1px solid var(--accent);
+      background:var(--accent);color:#04110f;font-weight:600;letter-spacing:.03em}
+    button:disabled{opacity:.45;cursor:default}
+    button.ghost{background:transparent;color:var(--dim);border-color:var(--ghost)}
+    button.ghost:hover:not(:disabled){color:var(--lit);border-color:var(--dim)}
+
+    .banner{position:sticky;bottom:0;z-index:4;margin:0 -22px -22px;padding:14px 22px;
+      border-top:1px solid var(--ghost);background:rgba(7,11,14,.94);backdrop-filter:blur(3px);
+      display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+    .banner .msg{flex:1;min-width:200px;font-size:12px;color:var(--lit)}
+    .banner.hide{display:none}
+    .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9;
+      background:#05090c;border:1px solid var(--ghost);border-radius:8px;padding:9px 16px;font-size:12px;
+      color:var(--lit);box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none}
+    .toast.show{opacity:1}
+    .toast.ok{border-color:#1f4d47;color:var(--ok)}
+    .toast.err{border-color:#3a2422;color:var(--err)}
+    .loading,.error{padding:40px 0;text-align:center;color:var(--dim)}
+    .error{color:var(--err)}
+  </style>
+</head>
+<body>
+  <header class="hdr">
+    <span class="wordmark">BBCLAW</span>
+    <span class="sub">adapter v2 · config</span>
+    <div class="actions">
+      <button id="save" class="" disabled>保存</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="root"><div class="loading">加载配置中…</div></div>
+  </main>
+
+  <div id="banner" class="banner hide">
+    <span class="msg">配置已保存。需要重启适配器使其生效。</span>
+    <button id="restart">重启并应用</button>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+  (function () {
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    let current = null;     // last-loaded full Settings doc
+    let restartPending = false;
+
+    function toast(msg, kind) {
+      const t = $("toast");
+      t.textContent = msg;
+      t.className = "toast show" + (kind ? " " + kind : "");
+      setTimeout(() => { t.className = "toast"; }, 2600);
+    }
+
+    function esc(s) { return String(s == null ? "" : s); }
+
+    // Build one text/password input field.
+    function inputField(label, path, value, opts) {
+      opts = opts || {};
+      const type = opts.password ? "password" : "text";
+      const wide = opts.wide ? " wide" : "";
+      const hint = opts.hint ? `<div class="hint">${esc(opts.hint)}</div>` : "";
+      const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : "";
+      return `<div class="field${wide}">
+        <label>${esc(label)}</label>
+        <input type="${type}" data-path="${path}" value="${esc(value).replace(/"/g, "&quot;")}"${ph} autocomplete="off" spellcheck="false" />
+        ${hint}</div>`;
+    }
+
+    function areaField(label, path, value, hint) {
+      return `<div class="field wide">
+        <label>${esc(label)}</label>
+        <textarea data-path="${path}" spellcheck="false">${esc(value)}</textarea>
+        ${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>`;
+    }
+
+    function boolField(label, path, value) {
+      return `<div class="field"><label class="switch">
+        <input type="checkbox" data-path="${path}" data-bool="1" ${value ? "checked" : ""} />
+        <span>${esc(label)}</span></label></div>`;
+    }
+
+    function card(title, bodyHTML, oneCol) {
+      return `<section class="card"><h2>${esc(title)}</h2>
+        <div class="form${oneCol ? " one" : ""}">${bodyHTML}</div></section>`;
+    }
+
+    function render(data) {
+      const s = data.settings || {};
+      const v = s.voice || {}, asr = v.asr || {}, tts = v.tts || {};
+      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {};
+      const d = data.derived || {};
+
+      const derivedCard = `<section class="card"><h2>状态 / 只读</h2>
+        <div class="status-grid">
+          <div class="item"><div class="k">version</div><div class="v">${esc(d.version)}</div></div>
+          <div class="item"><div class="k">home site id</div><div class="v">${esc(d.homeSiteId)}</div></div>
+          <div class="item"><div class="k">workspace</div><div class="v">${esc(d.workspace)}</div></div>
+          <div class="item"><div class="k">settings file</div><div class="v">${esc(d.settingsFile)}</div></div>
+        </div></section>`;
+
+      const asrCard = card("语音 · ASR (识别)",
+        inputField("ASR_PROVIDER", "voice.asr.provider", asr.provider, {hint:"local / openai_compatible / doubao_native （留空用内置模拟）"}) +
+        inputField("ASR_LANGUAGE", "voice.asr.language", asr.language) +
+        inputField("ASR_BASE_URL", "voice.asr.baseUrl", asr.baseUrl) +
+        inputField("ASR_API_KEY", "voice.asr.apiKey", asr.apiKey, {password:true}) +
+        inputField("ASR_MODEL", "voice.asr.model", asr.model) +
+        inputField("ASR_APP_ID", "voice.asr.appId", asr.appId) +
+        inputField("ASR_RESOURCE_ID", "voice.asr.resourceId", asr.resourceId) +
+        inputField("ASR_HOTWORDS", "voice.asr.hotwords", asr.hotwords, {hint:"逗号/空格分隔"}) +
+        inputField("ASR_LOCAL_BIN", "voice.asr.localBin", asr.localBin) +
+        inputField("ASR_LOCAL_ARGS", "voice.asr.localArgs", asr.localArgs) +
+        inputField("ASR_LOCAL_TEXT_PATH", "voice.asr.localTextPath", asr.localTextPath, {wide:true})
+      );
+
+      const ttsCard = card("语音 · TTS (合成)",
+        inputField("TTS_PROVIDER", "voice.tts.provider", tts.provider, {hint:"local / doubao_native （留空用内置 say/silent）"}) +
+        inputField("TTS_VOICE", "voice.tts.voice", tts.voice) +
+        inputField("TTS_BASE_URL", "voice.tts.baseUrl", tts.baseUrl) +
+        inputField("TTS_APP_ID", "voice.tts.appId", tts.appId) +
+        inputField("TTS_TOKEN", "voice.tts.token", tts.token, {password:true}) +
+        inputField("TTS_CLUSTER", "voice.tts.cluster", tts.cluster) +
+        inputField("TTS_LOCAL_BIN", "voice.tts.localBin", tts.localBin) +
+        inputField("TTS_LOCAL_ARGS", "voice.tts.localArgs", tts.localArgs) +
+        inputField("TTS_LOCAL_OUTPUT_FORMAT", "voice.tts.localOutputFormat", tts.localOutputFormat)
+      );
+
+      const deviceCard = card("设备线 (bbwire/2)",
+        boolField("流式回复增量 (STREAM_DELTA)", "device.streamDelta", dev.streamDelta) +
+        boolField("分段 TTS (SEGMENT_TTS)", "device.segmentTts", dev.segmentTts)
+      );
+
+      const cliCard = card("CLI / 管家",
+        inputField("ADAPTER_V2_CLI", "cli.cli", cli.cli, {hint:"空格分隔 argv，如 claude"}) +
+        inputField("ADAPTER_V2_ADDR", "cli.addr", cli.addr, {hint:"监听地址，如 :18090"}) +
+        inputField("ADAPTER_V2_CWD", "cli.cwd", cli.cwd, {wide:true, hint:"留空则用共享 butler workspace"}) +
+        boolField("跳过权限确认 (SKIP_PERMISSIONS)", "cli.skipPermissions", cli.skipPermissions) +
+        areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
+      );
+
+      const cloudCard = card("云 (Cloud Relay)",
+        inputField("CLOUD_WS_URL", "cloud.wsUrl", cloud.wsUrl, {wide:true, hint:"留空则不连云，仅 LAN"}) +
+        inputField("CLOUD_AUTH_TOKEN", "cloud.authToken", cloud.authToken, {password:true}) +
+        inputField("HOME_SITE_ID", "cloud.homeSiteId", cloud.homeSiteId, {hint:"留空用持久化身份 identity.json"})
+      );
+
+      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + cloudCard;
+      $("save").disabled = false;
+    }
+
+    // Set a nested value on an object by a dot path, creating objects as needed.
+    function setPath(obj, path, value) {
+      const parts = path.split(".");
+      let o = obj;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (o[parts[i]] == null || typeof o[parts[i]] !== "object") o[parts[i]] = {};
+        o = o[parts[i]];
+      }
+      o[parts[parts.length - 1]] = value;
+    }
+
+    // Collect the WHOLE doc: start from the last-loaded settings (preserves keys
+    // like version) and overlay every field's current value.
+    function collect() {
+      const doc = JSON.parse(JSON.stringify(current.settings || {}));
+      document.querySelectorAll("[data-path]").forEach((el) => {
+        const path = el.getAttribute("data-path");
+        const value = el.getAttribute("data-bool") ? !!el.checked : el.value;
+        setPath(doc, path, value);
+      });
+      return doc;
+    }
+
+    async function load() {
+      try {
+        const r = await fetch("/v1/settings", {headers: {Accept: "application/json"}});
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+        current = j.data;
+        restartPending = !!j.data.restartRequired;
+        render(j.data);
+        if (restartPending) showBanner();
+      } catch (e) {
+        $("root").innerHTML = `<div class="error">加载配置失败：${esc(e.message)}</div>`;
+      }
+    }
+
+    function showBanner() { $("banner").classList.remove("hide"); }
+
+    async function save() {
+      const doc = collect();
+      $("save").disabled = true;
+      try {
+        const r = await fetch("/v1/settings", {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(doc),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+        current.settings = doc;
+        restartPending = true;
+        toast("已保存", "ok");
+        showBanner();
+      } catch (e) {
+        toast("保存失败：" + e.message, "err");
+      } finally {
+        $("save").disabled = false;
+      }
+    }
+
+    async function pollHealth(then) {
+      // After re-exec the port is briefly down; poll until /healthz answers 200.
+      for (let i = 0; i < 60; i++) {
+        try {
+          const r = await fetch("/healthz", {cache: "no-store"});
+          if (r.ok) { then(); return; }
+        } catch (e) { /* server still restarting */ }
+        await new Promise((res) => setTimeout(res, 500));
+      }
+      toast("重启超时，请手动刷新", "err");
+    }
+
+    async function restart() {
+      $("restart").disabled = true;
+      $("restart").textContent = "重启中…";
+      try {
+        await fetch("/v1/settings/restart", {method: "POST"});
+      } catch (e) { /* the connection drops as the process re-execs — expected */ }
+      // Give the old process a moment to exec, then poll the new one.
+      setTimeout(() => pollHealth(() => location.reload()), 800);
+    }
+
+    $("save").addEventListener("click", save);
+    $("restart").addEventListener("click", restart);
+    load();
+  })();
+  </script>
+</body>
+</html>

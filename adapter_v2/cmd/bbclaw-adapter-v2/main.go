@@ -20,17 +20,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/adminapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
@@ -38,6 +41,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/termchan"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/voicekit"
 	"github.com/daboluocc/bbclaw/adapter_v2/web"
@@ -53,6 +57,25 @@ func main() {
 		log.Println(buildinfo.String("bbclaw-adapter-v2"))
 		return
 	}
+
+	// Web-first config (ADR-025, env-overlay variant). This MUST run before the
+	// config/voicekit/cloudrelay readers below: it seeds settings.json from the
+	// environment on first boot, then exports the file's values back into the
+	// process env so the EXISTING FromEnv/LoadFromEnv/LoadConfig readers see the
+	// file-sourced configuration with ZERO changes to those packages.
+	seed := settingsstore.FromEnv()
+	settingsPath := filepath.Join(settingsstore.DataDir(), "settings.json")
+	if err := settingsstore.Bootstrap(settingsPath, seed); err != nil {
+		log.Printf("bbclaw-adapter-v2: settings bootstrap failed (continuing on env): %v", err)
+	}
+	store, err := settingsstore.Open(settingsPath, seed)
+	if err != nil {
+		// Corrupt/unreadable file: Open still returns a usable store holding the
+		// env-derived base, so we log and continue rather than blocking startup.
+		log.Printf("bbclaw-adapter-v2: settings load error (using env defaults): %v", err)
+	}
+	store.ExportEnv() // env now reflects settings.json; the readers below pick it up
+	restartFlag := &adminapi.RestartFlag{}
 
 	cfg := config.LoadFromEnv()
 	mgr := session.NewManager()
@@ -75,10 +98,25 @@ func main() {
 	devSess := butler.NewDeviceSession(mgr, baseArgv, defaultCwd)
 	log.Printf("bbclaw-adapter-v2: butler workspace %s (active session %q)", defaultCwd, devSess.ActiveID())
 
+	// derive supplies the read-only block the admin page shows (build version,
+	// resolved home_site_id, workspace, settings file). homeSiteId is resolved the
+	// same way cloudrelay does: the HOME_SITE_ID env (now reflecting settings.json)
+	// or the persisted identity.json — computed per-request so a just-saved id shows.
+	derive := func() adminapi.Derived {
+		return adminapi.Derived{
+			Version:      buildinfo.Tag,
+			HomeSiteID:   resolveHomeSiteID(),
+			Workspace:    defaultCwd,
+			SettingsFile: store.Path(),
+		}
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg, devSess),
+		Handler: newRouter(mgr, cfg, devSess, store, restartFlag, derive),
 	}
+	log.Printf("bbclaw-adapter-v2: settings file %s", store.Path())
+	log.Printf("bbclaw-adapter-v2: admin at http://127.0.0.1%s/admin", cfg.Addr)
 
 	// Cloud relay (SaaS): when CLOUD_WS_URL is set, register with the BBClaw Cloud
 	// as a HomeAdapter so the device can pick adapter_v2 in its sites.list and have
@@ -133,10 +171,17 @@ func main() {
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(mgr, cfg, devSess))
 	mux.HandleFunc("/healthz", healthzHandler)
+
+	// Web-first config admin surface (ADR-025), loopback-only. Registered before
+	// the "/" catch-all so ServeMux's longest-prefix match routes these first.
+	mux.HandleFunc("/admin", adminapi.LocalOnly(web.AdminHandler().ServeHTTP))
+	mux.HandleFunc("/admin/", adminapi.LocalOnly(web.AdminHandler().ServeHTTP))
+	mux.HandleFunc("/v1/settings", adminapi.LocalOnly(adminapi.Settings(store, restart, derive)))
+	mux.HandleFunc("/v1/settings/restart", adminapi.LocalOnly(adminapi.Restart()))
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
 	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var
@@ -174,6 +219,34 @@ func envBool(name string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// resolveHomeSiteID reports the home_site_id the cloud relay would use, for the
+// admin page's read-only block: the HOME_SITE_ID env (which now reflects
+// settings.json after ExportEnv), else the UUID persisted in
+// ~/.bbclaw-adapter-v2/identity.json. It only READS — never creates the file
+// (cloudrelay owns that on first cloud connect), so a LAN-only adapter shows the
+// env value or "(none)" without minting an identity it never uses.
+func resolveHomeSiteID() string {
+	if id := strings.TrimSpace(os.Getenv("HOME_SITE_ID")); id != "" {
+		return id
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "(none)"
+	}
+	path := filepath.Join(home, ".bbclaw-adapter-v2", "identity.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "(none)"
+	}
+	var f struct {
+		HomeSiteID string `json:"homeSiteId"`
+	}
+	if json.Unmarshal(raw, &f) == nil && strings.TrimSpace(f.HomeSiteID) != "" {
+		return strings.TrimSpace(f.HomeSiteID)
+	}
+	return "(none)"
 }
 
 // healthzHandler is the liveness probe.
