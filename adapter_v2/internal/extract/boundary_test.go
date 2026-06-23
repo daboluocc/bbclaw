@@ -188,6 +188,40 @@ func TestMidReplyPauseDoesNotEnd(t *testing.T) {
 	}
 }
 
+// TestApiRetryWaitDoesNotEnd: claude's network/API retry state ("Waiting for API
+// response · will retry in Ns · check your network") drops the "esc to interrupt"
+// affordance, but the turn is NOT over — it will retry. Treating it as idle ended
+// the turn early and cleared the in-flight flag, so a barge-in typed into the box
+// (claude queued it) instead of ESC-aborting. The detector must keep it in flight.
+func TestApiRetryWaitDoesNotEnd(t *testing.T) {
+	s := vtscreen.New(fixtureCols, fixtureRows)
+	s.Feed([]byte("\x1b[2J\x1b[H"))
+
+	var d Detector
+	t0 := time.Unix(5_500_000, 0)
+
+	// A spinner appeared — the turn started working.
+	s.Feed([]byte("\x1b[3;1H⏺ working on it"))
+	s.Feed([]byte("\x1b[21;1H✶ Seasoning… (3s · ↑ 12 tokens · esc to interrupt)"))
+	d.Observe(t0, s, true)
+
+	// The API call fails; claude drops the "esc to interrupt" spinner and shows the
+	// retry wait instead.
+	t1 := t0.Add(time.Second)
+	s.Feed([]byte("\x1b[21;1H\x1b[2K")) // esc-to-interrupt spinner gone
+	s.Feed([]byte("\x1b[22;1HWaiting for API response · will retry in 2m 26s · check your network"))
+	d.Observe(t1, s, true)
+
+	// Output is settled well past Quiet, but the turn is NOT over (it will retry),
+	// so the detector must keep reporting in-flight — otherwise inFlight clears and
+	// the next barge-in can't ESC.
+	for _, gap := range []time.Duration{Quiet, 5 * time.Second, 30 * time.Second} {
+		if d.TurnEnded(t1.Add(gap)) {
+			t.Fatalf("API-retry wait falsely reported turn ended after %v", gap)
+		}
+	}
+}
+
 // TestNeverSpeakingGuard covers the false-negative end: a spinner-less / very
 // fast CLI whose reply finishes without ever painting a spinner must still end
 // on prompt-return + quiet, so the device is never stuck silent.
