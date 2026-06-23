@@ -3,6 +3,8 @@
 > 文档位置：`design/adapter_v2_blocking_prompt_confirm.md`，配套新增 `design/decisions/ADR-033-adapter-v2-blocking-prompt-device-confirm.md`。
 > 本文是 `adapter_v2/DESIGN.md` **§9（Phase 3 — tool 审批 scrape，issue #213）** 的正式扩写与泛化：把"仅 tool 审批"扩展为"**所有阻塞式 claude TUI 弹窗**"。§9 列的地基（`vtscreen.VisibleText()` / `extract/noise.go` 分类器 / `session.Write` / `extract/boundary.go`）全部沿用；本文在其上补全分类、状态机、协议、设备 UX，并修正 §9 一处关键勘误。
 
+> **决策状态（2026-06-24）**：① 方案采纳「混合（配置压制 + screen-scrape），不嵌 SDK / 不用 `-p`」（§13）。② 安全默认**已采纳**（§11）：超时 / 无设备 → 破坏性权限弹窗一律 auto-DENY；破坏性动作只走按键确认、关语音 yes/no；设备「OK」≠ 直接接受 claude 高亮默认。③ 推进节奏：**先做两个 P0 探针**（§15）再决定是否铺 P0 adapter 核心。摘要见 [[ADR-033-adapter-v2-blocking-prompt-device-confirm]]。
+
 ---
 
 ## 0. 关键勘误（正确性前置，必须先记下）

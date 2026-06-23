@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+- **ADR-033 / 设计：adapter_v2 阻塞式交互弹窗 → 设备确认**（`design/adapter_v2_blocking_prompt_confirm.md`
+  + `design/decisions/ADR-033-...`）。把 DESIGN.md §9（tool 审批 scrape）泛化为「所有阻塞式
+  claude TUI 弹窗」：截屏识别权限 / 工具确认弹窗 → 转发 `{问题, 选项}` 到设备 → 选择注入回 PTY；
+  装饰类弹窗（upsell / 打分 / trust / onboarding）走配置压制。含一处正确性勘误（boundary 把弹窗
+  误判成 turn 结束 → 播空白 / 脏音频）、单一 `promptPending` 门协调既有注入器、cloud parked-turn、
+  安全不变量（破坏性动作超时 / 无设备 auto-DENY、只按键确认）。状态：提议，两个 P0 探针待真机验证、
+  代码未实现。(docs-only，不打 tag)
+
 ### Added
 - **opencode serve+SDK 后端（ADR-031，opt-in `AGENT_OPENCODE_SERVE=1`）**:opencode driver
   新增一条经 `opencode serve`(OpenAPI/官方 Go SDK)驱动的后端,取代「每轮 spawn
