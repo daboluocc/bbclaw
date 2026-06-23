@@ -79,9 +79,9 @@ func ParsePrompt(visible string) (Prompt, bool)
 - `TurnEnded`（L122）在 **L137 `sawSpinner` 短路之前**插入：`if d.awaitingPromptOnScreen { return false }`。
 - 弹窗被选择注入后框消失，`refresh` 自然复位该位。
 
-### 3.3 vtscreen（按需，由 spike 门控）
+### 3.3 vtscreen（spike 已判定：不需要）
 
-仅当 §11 spike 判定 claude 菜单**只接受箭头+Enter**（不接受数字直提）时，给 `vtscreen` 暴露 `HighlightedRow() int`（读 `g.Mode&attrReverse`，`sgrOf` 已具备能力，vtscreen.go:512）。digit-submit 可行则不需要，MVP 靠指针字形。
+**P0 spike 结论（2026-06-24，claude 2.1.186）：数字直提成立**，注入单个数字即提交。故 `vtscreen.HighlightedRow()` **不需要**，本节取消；default 选项识别只需读 `❯`/`›` 指针字形（`VisibleText` 可见），无需 reverse 属性。
 
 ---
 
@@ -179,8 +179,8 @@ PromptSpec {
 
 ## 10. 选择注入回 PTY
 
-- **数字菜单**：`session.Write([]byte("1"))`（已被 `dismissSurvey` 注入 `0`，deviceapi.go:407-419 证明 claude 编号菜单按数字即提交）。
-- **箭头菜单**：注入 `\x1b[B`/`\x1b[A` × N + `\r`。**本仓库无任何箭头转义注入先例**——`grep` 仅见 ESC（deviceapi.go:82,306,335）。需 §11 spike 真机抓包确认 claude 这些 Ink 菜单接受数字还是只接受箭头；若只接受箭头，则需 `HighlightedRow()`（§3.3）算出从当前高亮到目标的 N 次按键。
+- **数字菜单（已确认走这条）**：`session.Write([]byte("1"))`。**P0 spike 真机验证**：对权限菜单注入单个数字（无 CR、无箭头）即立即选中提交、工具随即执行；与 `dismissSurvey` 注入 `0`（deviceapi.go:407-419）一致。
+- **箭头菜单（已排除）**：spike 判定 digit-submit 成立，无需箭头转义 / `HighlightedRow()`。保留备忘：若未来某弹窗只吃箭头，再注入 `\x1b[B` × N + `\r`。
 - **注入前后不前置 ESC**；落地后 adapter 主动 re-baseline extract、清 pending、emit `PromptClosed{answered}` + `TurnIdle`（若 turn 因此结束）。
 
 ---
@@ -209,7 +209,7 @@ PromptSpec {
 
 - 权限处置改为**三态**（替代单一 `SkipPermissions` bool）：
   - `bypass`（默认，今天行为）：butler 追加 `--dangerously-skip-permissions`，类 2/3 永不渲染。
-  - `forward-to-device`：**不追加**该 flag，类 2/3 渲染 → scrape → 转发设备 → 注入（**前提：§9 能力协商通过**）。
+  - `forward-to-device`：**不追加** `--dangerously-skip-permissions`，**并显式追加 `--permission-mode default`**（P0 spike 证实：仅去掉 skip flag 不够，会被用户持久化的 auto-accept 模式吞掉、仍不弹），类 2/3 才渲染 → scrape → 转发设备 → 注入（**前提：§9 能力协商通过**）。
   - `blind-enter`：无设备部署，blind Enter 兜底。
 - 新增 `PromptTimeoutSec` + 每类默认策略（deny vs default）。
 - web admin 暴露上述开关。

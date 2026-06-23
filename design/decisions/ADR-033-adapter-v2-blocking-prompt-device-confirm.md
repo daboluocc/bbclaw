@@ -1,7 +1,7 @@
 # ADR-033: adapter_v2 阻塞式交互弹窗 → 设备确认（截屏识别 + 转发选择）
 
 - **日期**: 2026-06-24
-- **状态**: 提议（设计已定稿；两个 P0 探针待真机验证；代码未实现）
+- **状态**: 提议（设计已定稿；两个 P0 探针**已真机验证 2026-06-24**：数字直提成立、需显式 `--permission-mode default` 才弹；代码未实现）
 - **关联**:
   - 完整设计：[`design/adapter_v2_blocking_prompt_confirm.md`](../adapter_v2_blocking_prompt_confirm.md)（本 ADR 是其决策摘要）
   - `adapter_v2/DESIGN.md §9`（Phase 3 — tool 审批 scrape，issue #213）—— 本特性是它从「仅 tool 审批」到「**所有阻塞式弹窗**」的泛化
@@ -45,12 +45,22 @@ adapter_v2 用一根常驻 PTY 跑交互式 `claude` TUI（弃 `claude -p`，保
 
 `DeviceSession.New/Resume` respawn PTY 时，旧 promptId 指向已死进程。`respawn()` 作废所有 pending promptId（emit `PromptClosed{reason:"respawn"}`）；下游对未知 / 失效 promptId 的 select 当安全 no-op（ack-and-drop）。
 
-## 两个 gating 探针（待真机验证，结论回填本 ADR）
+## 两个 gating 探针（已真机验证 2026-06-24，claude 2.1.186）
 
-两者都廉价、都能否定大段设计，必须先做：
+1. **注入机制 → 数字直提（digit-submit）成立。** 对权限菜单注入单个数字 `1`（**无 CR、无箭头**）即立即选中并提交该项，工具随即执行。因此注入机制 = `session.Write([]byte("<digit>"))`；**不需要箭头转义序列，也不需要给 vtscreen 加 `HighlightedRow()`**（设计 §3.3 取消，§10 走 digit 路径）。与既有 `dismissSurvey` 注入 `0` 一致。
+2. **可达性 → 默认环境不弹，必须显式配置才可达。** 用户 `~/.claude/settings.json` 仅 `allow: Bash(ls:*)`，但**裸跑（无 flag）`echo` 仍自动执行不弹窗**——因持久化默认权限模式是 auto-accept（`~/.claude.json` 的 `autoPermissionsNotificationCount` / `hasSeenAutoModeEntryWarning` 等键）。只有显式 `--permission-mode default` + 非 allowlist 工具（`cat /etc/hostname`）才弹出真菜单：
 
-1. **注入机制**：真机抓包 claude Ink 编号菜单是接受数字直提（`session.Write("1")`，`dismissSurvey` 注入 `0` 暗示可行）还是只接受箭头 + Enter。后者需给 vtscreen 加 `HighlightedRow()`（读 `attrReverse`）算箭头次数。→ 结论：_待填_
-2. **可达性**：在预 trust 的 butler workspace 里关掉 `--dangerously-skip-permissions` 跑真 claude，确认哪些动作真弹窗。多数工具可能因预授权仍不弹，本 headline 特性在默认部署里**可能很少触发**。→ 结论：_待填_
+   ```
+   Bash command: cat /etc/hostname  /  Read system hostname file
+   Do you want to proceed?
+   ❯ 1. Yes
+     2. Yes, allow reading from etc/ from this project   ← 上下文相关、文案/数量会变
+     3. No
+   Esc to cancel · Tab to amend · ctrl+e to explain
+   ```
+
+   **推论（设计修订）**：`forward-to-device` 模式必须**显式追加 `--permission-mode default`**——仅去掉 `--dangerously-skip-permissions` 不够，会被持久化的 auto-accept 模式吞掉。特性确认可达，但**默认部署几乎不触发**，必须显式配置（且部署需关 auto-accept）→ P1/P2 投入前以此为准。
+   该弹窗 `❯` 高亮 option1（=Yes）、`Esc` 取消（印证「注入不前置 ESC」「设备 OK ≠ 默认 Yes」两条不变量），option2 文案随上下文变（印证「label 子串锚定 + signature 变即 supersede」）。
 
 ## 分期（adapter-first）
 

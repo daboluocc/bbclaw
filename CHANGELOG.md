@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claude TUI 弹窗」：截屏识别权限 / 工具确认弹窗 → 转发 `{问题, 选项}` 到设备 → 选择注入回 PTY；
   装饰类弹窗（upsell / 打分 / trust / onboarding）走配置压制。含一处正确性勘误（boundary 把弹窗
   误判成 turn 结束 → 播空白 / 脏音频）、单一 `promptPending` 门协调既有注入器、cloud parked-turn、
-  安全不变量（破坏性动作超时 / 无设备 auto-DENY、只按键确认）。状态：提议，两个 P0 探针待真机验证、
-  代码未实现。(docs-only，不打 tag)
+  安全不变量（破坏性动作超时 / 无设备 auto-DENY、只按键确认）。状态：提议，两个 P0 探针**已真机验证**
+  （注入=数字直提，无需箭头 / HighlightedRow；权限菜单需显式 `--permission-mode default` 才弹，默认
+  部署的 auto-accept 会吞掉），代码未实现。(docs-only，不打 tag)
 
 ### Added
 - **opencode serve+SDK 后端（ADR-031，opt-in `AGENT_OPENCODE_SERVE=1`）**:opencode driver
