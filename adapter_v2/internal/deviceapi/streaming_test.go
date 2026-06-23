@@ -4,7 +4,34 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
 )
+
+// TestEmitToolStepsDedupAndDisplayOnly: tool-step bullets on screen produce one
+// display-only ToolStep per distinct {name,hint} per turn (deduped across repaints),
+// and never enter the reply/audio path.
+func TestEmitToolStepsDedupAndDisplayOnly(t *testing.T) {
+	ev := &recordingEvents{}
+	b := &Bridge{screen: vtscreen.New(80, 24), events: ev}
+	ts := &turnStream{}
+
+	b.screen.Feed([]byte("\x1b[3;1H⏺ Bash(df -h)\r\n"))
+	b.emitToolSteps(ts)
+	b.emitToolSteps(ts) // same screen repaint → deduped, no second emit
+	if len(ev.tools) != 1 || ev.tools[0] != "Bash|df -h" {
+		t.Fatalf("want one ToolStep Bash|df -h, got %v", ev.tools)
+	}
+
+	b.screen.Feed([]byte("\x1b[4;1H⏺ Read(main.go)\r\n"))
+	b.emitToolSteps(ts)
+	if len(ev.tools) != 2 || ev.tools[1] != "Read|main.go" {
+		t.Fatalf("want second ToolStep Read|main.go, got %v", ev.tools)
+	}
+	if len(ev.deltas) != 0 || len(ev.complete) != 0 {
+		t.Errorf("tool steps must not touch the reply/audio path: deltas=%v complete=%v", ev.deltas, ev.complete)
+	}
+}
 
 func TestNextSentence(t *testing.T) {
 	cases := []struct {
@@ -33,12 +60,18 @@ type recordingEvents struct {
 	mu       sync.Mutex
 	deltas   []string
 	complete []string
+	tools    []string // "name|hint" per ToolStep
 	idles    int
 }
 
 func (e *recordingEvents) ReplyDelta(text string)    { e.mu.Lock(); e.deltas = append(e.deltas, text); e.mu.Unlock() }
 func (e *recordingEvents) ReplyComplete(text string) { e.mu.Lock(); e.complete = append(e.complete, text); e.mu.Unlock() }
-func (e *recordingEvents) TurnIdle()                 { e.mu.Lock(); e.idles++; e.mu.Unlock() }
+func (e *recordingEvents) ToolStep(name, hint string) {
+	e.mu.Lock()
+	e.tools = append(e.tools, name+"|"+hint)
+	e.mu.Unlock()
+}
+func (e *recordingEvents) TurnIdle() { e.mu.Lock(); e.idles++; e.mu.Unlock() }
 
 // TestOnProgressStreamsDeltas: with StreamReplyDelta on, each new reply snapshot
 // fires one ReplyDelta; unchanged text does not; blank text is suppressed.

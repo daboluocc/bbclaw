@@ -367,6 +367,26 @@ func (e *cloudEvents) forwardDelta(text string) {
 // ReplyDelta streams the growing reply as a monotonic voice.reply.delta.
 func (e *cloudEvents) ReplyDelta(text string) { e.forwardDelta(text) }
 
+// ToolStep forwards a DISPLAY-ONLY tool_call event to the cloud, which relays it to
+// the device as a dimmed progress chip (ADR-030) — never TTS'd. Discrete events:
+// no prefix-monotonic gate (unlike forwardDelta) and no dedup (the Bridge already
+// deduped per turn). The same active/write guard as forwardDelta drops a late step
+// after end().
+func (e *cloudEvents) ToolStep(name, hint string) {
+	e.mu.Lock()
+	if !e.active || e.write == nil {
+		e.mu.Unlock()
+		return
+	}
+	w, env, home := e.write, e.env, e.homeSite
+	e.mu.Unlock()
+	_ = w(Envelope{
+		Type: "event", MessageID: env.MessageID, DeviceID: env.DeviceID,
+		HomeSiteID: home, Kind: "tool_call",
+		Payload: map[string]any{"type": "tool_call", "name": name, "hint": hint},
+	})
+}
+
 // ReplyComplete records the authoritative final reply text and forwards the final
 // tail when it extends the last snapshot (covering the whole reply in the common
 // append-only case; see the `sent` field doc for the mid-string-divergence
