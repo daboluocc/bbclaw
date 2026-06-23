@@ -47,12 +47,13 @@ CLI          ?= claude
 CWD          ?=
 CLOUD_WS_URL ?= wss://bbclaw.daboluo.cc/ws
 
-.PHONY: help web build run test e2e clean
+.PHONY: help web build run kill-port test e2e clean
 
 help:
 	@echo "BBClaw adapter_v2"
 	@echo ""
-	@echo "  make run     # build + start in SaaS mode (cloud relay), open http://localhost$(ADDR)"
+	@echo "  make run       # build + free $(ADDR) + start in SaaS mode (cloud relay), open http://localhost$(ADDR)"
+	@echo "  make kill-port # kill whatever is LISTENing on $(ADDR) (run does this automatically)"
 	@echo "  make web     # build the web SPA into web/dist (needs Node/npm)"
 	@echo "  make build   # build $(BIN_DIR)/$(BIN_NAME)"
 	@echo "  make test    # go test ./... (fast, no external deps)"
@@ -82,7 +83,25 @@ build:
 # CLI is resolved to a real binary: PATH first, then the standard Claude Code
 # local install (~/.claude/local/claude), else used verbatim — so `make run`
 # works even though `claude` is often only a shell alias.
-run: build
+# Free the listen port before launching. A previous `make run` left in the
+# foreground (or backgrounded) still holds $(ADDR), so a re-run would die with
+# "bind: address already in use". Kill whatever is LISTENing on that port first
+# (SIGTERM, then SIGKILL if it lingers). No-op when the port is already free.
+kill-port:
+	@PORT='$(ADDR)'; PORT="$${PORT##*:}"; \
+	[ -n "$$PORT" ] || { echo "kill-port: no port in ADDR='$(ADDR)'"; exit 0; }; \
+	PIDS="$$(lsof -nP -iTCP:$$PORT -sTCP:LISTEN -t 2>/dev/null || true)"; \
+	if [ -z "$$PIDS" ]; then echo "✓ port $$PORT free"; exit 0; fi; \
+	echo "⚠ port $$PORT busy (pid $$(echo $$PIDS | tr '\n' ' '))— killing stale listener"; \
+	kill $$PIDS 2>/dev/null || true; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 0.3; \
+		lsof -nP -iTCP:$$PORT -sTCP:LISTEN -t >/dev/null 2>&1 || { echo "✓ port $$PORT freed"; exit 0; }; \
+	done; \
+	STILL="$$(lsof -nP -iTCP:$$PORT -sTCP:LISTEN -t 2>/dev/null || true)"; \
+	if [ -n "$$STILL" ]; then echo "  still bound — SIGKILL $$(echo $$STILL | tr '\n' ' ')"; kill -9 $$STILL 2>/dev/null || true; sleep 0.5; fi
+
+run: build kill-port
 	@CLI_BIN="$$(command -v $(CLI) 2>/dev/null || true)"; \
 	if [ -z "$$CLI_BIN" ] && [ -x "$$HOME/.claude/local/claude" ] && [ "$(CLI)" = "claude" ]; then \
 		CLI_BIN="$$HOME/.claude/local/claude"; \
