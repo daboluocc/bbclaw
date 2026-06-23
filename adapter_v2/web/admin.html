@@ -154,7 +154,7 @@
     function render(data) {
       const s = data.settings || {};
       const v = s.voice || {}, asr = v.asr || {}, tts = v.tts || {};
-      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {};
+      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {}, ai = s.ai || {};
       const d = data.derived || {};
 
       const derivedCard = `<section class="card"><h2>状态 / 只读</h2>
@@ -204,13 +204,20 @@
         areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
       );
 
+      const aiCard = card("Claude 端点 (三方 / 代理)",
+        inputField("ANTHROPIC_BASE_URL", "ai.anthropicBaseUrl", ai.anthropicBaseUrl,
+          {wide:true, placeholder:"https://your-proxy.example.com", hint:"留空用 claude 官方登录态；走第三方 / 兼容端点才填。改动需重启生效。"}) +
+        inputField("ANTHROPIC_AUTH_TOKEN", "ai.anthropicAuthToken", ai.anthropicAuthToken,
+          {password:true, wide:true, placeholder:"sk-...", hint:"第三方端点的鉴权 token"})
+      );
+
       const cloudCard = card("云 (Cloud Relay)",
         inputField("CLOUD_WS_URL", "cloud.wsUrl", cloud.wsUrl, {wide:true, hint:"留空则不连云，仅 LAN"}) +
         inputField("CLOUD_AUTH_TOKEN", "cloud.authToken", cloud.authToken, {password:true}) +
         inputField("HOME_SITE_ID", "cloud.homeSiteId", cloud.homeSiteId, {hint:"留空用持久化身份 identity.json"})
       );
 
-      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + cloudCard;
+      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + aiCard + cloudCard;
       $("save").disabled = false;
     }
 

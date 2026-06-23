@@ -155,6 +155,12 @@ func TestExportEnv(t *testing.T) {
 	}
 	t.Setenv("ADAPTER_V2_STREAM_DELTA", "1")
 	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "1")
+	// A dev shell may export this (they run claude); force-unset so the
+	// "blank token stays unset" assertion is deterministic. t.Setenv restores it.
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	if err := os.Unsetenv("ANTHROPIC_AUTH_TOKEN"); err != nil {
+		t.Fatalf("unset ANTHROPIC_AUTH_TOKEN: %v", err)
+	}
 
 	s := Settings{Version: currentVersion}
 	s.Voice.ASR.Provider = "doubao_native"
@@ -163,7 +169,9 @@ func TestExportEnv(t *testing.T) {
 	s.Device.StreamDelta = false
 	s.Device.SegmentTTS = true
 	s.CLI.SkipPermissions = false
-	s.Cloud.HomeSiteID = "" // empty ⇒ must NOT shadow identity.json
+	s.AI.AnthropicBaseURL = "https://proxy.example.com"
+	s.AI.AnthropicAuthToken = "" // empty ⇒ must NOT be exported
+	s.Cloud.HomeSiteID = ""      // empty ⇒ must NOT shadow identity.json
 
 	st := &Store{path: filepath.Join(t.TempDir(), "s.json"), s: s}
 	st.ExportEnv()
@@ -189,6 +197,14 @@ func TestExportEnv(t *testing.T) {
 	}
 	if got := os.Getenv("ADAPTER_V2_SKIP_PERMISSIONS"); got != "0" {
 		t.Errorf("ADAPTER_V2_SKIP_PERMISSIONS = %q, want 0 (false must override env)", got)
+	}
+	// Third-party Claude endpoint: base URL exported, blank token left unset so
+	// `claude` falls back to its own login rather than an empty auth token.
+	if got := os.Getenv("ANTHROPIC_BASE_URL"); got != "https://proxy.example.com" {
+		t.Errorf("ANTHROPIC_BASE_URL = %q, want https://proxy.example.com", got)
+	}
+	if _, ok := os.LookupEnv("ANTHROPIC_AUTH_TOKEN"); ok {
+		t.Errorf("empty ANTHROPIC_AUTH_TOKEN should not be exported, but it is set")
 	}
 }
 

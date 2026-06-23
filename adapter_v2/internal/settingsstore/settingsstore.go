@@ -40,7 +40,20 @@ type Settings struct {
 	Voice   VoiceSettings  `json:"voice"`
 	Device  DeviceSettings `json:"device"`
 	CLI     CLISettings    `json:"cli"`
+	AI      AISettings     `json:"ai"`
 	Cloud   CloudSettings  `json:"cloud"`
+}
+
+// AISettings holds the third-party / proxy Claude endpoint, injected into the
+// spawned claude CLI through the standard ANTHROPIC_* env vars. v2 has no
+// separate "driver" layer like v1 — it just runs the `claude` TUI under a PTY,
+// and ptyhost.buildEnv seeds the child from os.Environ(), so exporting these two
+// is all it takes for `claude` to talk to a compatible endpoint. Leave both
+// blank to use claude's own login state (the official Anthropic endpoint). This
+// restores v1's "配置第三方 claude" capability on the v2 admin page.
+type AISettings struct {
+	AnthropicBaseURL   string `json:"anthropicBaseUrl"`   // ANTHROPIC_BASE_URL
+	AnthropicAuthToken string `json:"anthropicAuthToken"` // ANTHROPIC_AUTH_TOKEN
 }
 
 // VoiceSettings groups the ASR and TTS provider configuration. The env-var names
@@ -163,6 +176,10 @@ func FromEnv() Settings {
 			SkipPermissions:   envBool("ADAPTER_V2_SKIP_PERMISSIONS", true),
 			VoiceSystemPrompt: os.Getenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"), // may be set-empty on purpose
 			Addr:              envOr("ADAPTER_V2_ADDR", ":18090"),
+		},
+		AI: AISettings{
+			AnthropicBaseURL:   strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+			AnthropicAuthToken: strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
 		},
 		Cloud: CloudSettings{
 			WsURL:      strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
@@ -377,6 +394,12 @@ func (s *Store) ExportEnv() {
 	setBool("ADAPTER_V2_SKIP_PERMISSIONS", c.SkipPermissions)
 	setStr("ADAPTER_V2_VOICE_SYSTEM_PROMPT", c.VoiceSystemPrompt)
 	setStr("ADAPTER_V2_ADDR", c.Addr)
+
+	ai := snap.AI
+	// Blank ⇒ skipped, so an unconfigured endpoint never shadows a token the
+	// operator exported in the shell, and `claude` falls back to its own login.
+	setStr("ANTHROPIC_BASE_URL", ai.AnthropicBaseURL)
+	setStr("ANTHROPIC_AUTH_TOKEN", ai.AnthropicAuthToken)
 
 	cl := snap.Cloud
 	setStr("CLOUD_WS_URL", cl.WsURL)
