@@ -183,10 +183,11 @@ func TestWSCreatesSessionOnce(t *testing.T) {
 	}
 }
 
-// TestRouterUnknownPath confirms the mux 404s paths it does not serve. An
-// unknown path is handled by the embedded web file server (mounted at "/"),
-// which has no such file and therefore returns 404 — proving the catch-all does
-// not swallow stray requests as the index page.
+// TestRouterUnknownPath confirms an unknown path is handled by the embedded web
+// SPA (mounted at "/"), which serves its index.html shell as a single-page-app
+// fallback (200) so client-side routes / deep links always load the app. This
+// is the SPA contract introduced when the static index.html was replaced by the
+// Vue/Vite build (web/web.go).
 func TestRouterUnknownPath(t *testing.T) {
 	mgr := session.NewManager()
 	srv := httptest.NewServer(testRouter(mgr))
@@ -197,16 +198,22 @@ func TestRouterUnknownPath(t *testing.T) {
 		t.Fatalf("get /nope: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `id="app"`) {
+		t.Fatalf("SPA fallback did not serve the app shell")
 	}
 }
 
-// TestWebClientServed verifies the embedded xterm.js client is reachable at "/"
-// and carries the wiring issue #208 requires: it loads xterm.js, opens the
-// /ws?session= socket, and handles the reconnect/snapshot protocol. The
-// table-driven substring checks pin those load-bearing pieces so a refactor of
-// index.html can't silently drop the contract the server depends on.
+// TestWebClientServed verifies the embedded Vue/Vite SPA is reachable at "/"
+// and that its bundled JS carries the terminal wiring the server depends on: it
+// uses xterm + the fit addon, opens the /ws socket, drives the input/resize
+// frames, and handles the reconnect/snapshot protocol. The shell ("/") only
+// holds the #app mount + the hashed asset reference, so the protocol substring
+// checks run against the JS bundle the shell loads — pinning the contract across
+// SPA rebuilds (asset names are content-hashed, so we discover the path).
 func TestWebClientServed(t *testing.T) {
 	mgr := session.NewManager()
 	srv := httptest.NewServer(testRouter(mgr))
@@ -230,13 +237,18 @@ func TestWebClientServed(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 	html := string(body)
+	if !strings.Contains(html, `id="app"`) {
+		t.Fatalf("served shell is not the SPA (missing #app mount)")
+	}
+
+	// Discover the hashed JS bundle the shell loads, then fetch it.
+	bundle := fetchScriptBundle(t, srv.URL, html)
 
 	wants := []struct {
 		name    string
 		snippet string
 	}{
-		{"loads xterm.js", "xterm"},
-		{"loads the fit addon", "addon-fit"},
+		{"uses xterm", "xterm"},
 		{"opens the terminal websocket", "/ws"},
 		{"sends input frames", `"input"`},
 		{"sends resize frames", `"resize"`},
@@ -246,11 +258,52 @@ func TestWebClientServed(t *testing.T) {
 	}
 	for _, w := range wants {
 		t.Run(w.name, func(t *testing.T) {
-			if !strings.Contains(html, w.snippet) {
-				t.Errorf("served index.html missing %q (%s)", w.snippet, w.name)
+			if !strings.Contains(bundle, w.snippet) {
+				t.Errorf("served JS bundle missing %q (%s)", w.snippet, w.name)
 			}
 		})
 	}
+}
+
+// fetchScriptBundle parses the first /assets/*.js URL out of the SPA shell and
+// returns the body of that bundle served by the same server.
+func fetchScriptBundle(t *testing.T, base, shell string) string {
+	t.Helper()
+	const marker = "/assets/"
+	i := strings.Index(shell, marker)
+	if i < 0 {
+		t.Fatalf("shell references no /assets/ bundle:\n%s", shell)
+	}
+	rest := shell[i:]
+	end := strings.IndexAny(rest, `"'`)
+	if end < 0 {
+		t.Fatalf("could not parse asset path from shell")
+	}
+	path := rest[:end]
+	if !strings.HasSuffix(path, ".js") {
+		// The first asset may be CSS; scan for a .js one.
+		for _, cand := range strings.Split(shell, marker)[1:] {
+			e := strings.IndexAny(cand, `"'`)
+			if e > 0 && strings.HasSuffix(cand[:e], ".js") {
+				path = marker[1:] + cand[:e]
+				path = "/" + path
+				break
+			}
+		}
+	}
+	resp, err := http.Get(base + path)
+	if err != nil {
+		t.Fatalf("get bundle %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bundle %s status = %d, want 200", path, resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read bundle %s: %v", path, err)
+	}
+	return string(b)
 }
 
 // TestSpecificRoutesWinOverWebRoot proves the catch-all web file server mounted

@@ -1,2 +1,13 @@
 # Build artifacts (produced by `make build`).
 /bin/
+
+# The web SPA's npm install and TS build cache are never committed.
+/web/spa/node_modules/
+/web/spa/tsconfig.tsbuildinfo
+
+# The repo-root .gitignore has a global `dist/` rule, but the built web SPA
+# bundle (web/dist) MUST be committed — `//go:embed all:dist` in web/web.go
+# needs it at compile time so a clean checkout builds without a Node toolchain.
+# Re-include it (negate the parent rule) here.
+!/web/dist/
+!/web/dist/**

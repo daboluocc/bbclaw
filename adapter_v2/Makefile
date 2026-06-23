@@ -3,9 +3,14 @@
 # Independent of adapter/ (v1): its own module, its own binary, its own Makefile.
 # Targets mirror v1's shape (build / test / e2e) so muscle memory carries over.
 #
+#   make web     # build the Vue/Vite web SPA into web/dist (needs Node/npm)
 #   make build   # compile the adapter-v2 binary into bin/
 #   make test    # go test ./...                 (fast, no external deps)
 #   make e2e     # device end-to-end voice round-trip smoke (issue #212)
+#
+# NOTE: web/dist is committed and embedded via `//go:embed all:dist` (web/web.go),
+# so `make build` works on a normal checkout without Node. Run `make web` only
+# after editing web/spa, then commit the regenerated web/dist.
 #
 # Go is not on PATH in the dev environment, so GO defaults to the Homebrew
 # location and is overridable:  make test GO=/usr/local/go/bin/go
@@ -27,6 +32,11 @@ BBCLAW_BUILD_TAG  ?= $(shell git -C "$(REPO_ROOT)" describe --tags --always --di
 BBCLAW_BUILD_TIME ?= $(shell date -u +%Y%m%d-%H%M)
 GO_LDFLAGS := -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.Tag=$(BBCLAW_BUILD_TAG) -X github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo.BuildTime=$(BBCLAW_BUILD_TIME)
 
+# Web SPA build knobs. Node is often not on the default PATH; NPM defaults to the
+# Homebrew install. Override with `make web NPM=/path/to/npm`.
+WEB_DIR ?= $(CURDIR)/web/spa
+NPM     ?= $(shell command -v npm 2>/dev/null || echo /opt/homebrew/bin/npm)
+
 # `make run` knobs (all overridable):
 #   ADDR          listen address           (default :18090)
 #   CLI           CLI to drive under a PTY (default claude; auto-resolves the install)
@@ -37,12 +47,13 @@ CLI          ?= claude
 CWD          ?=
 CLOUD_WS_URL ?= wss://bbclaw.daboluo.cc/ws
 
-.PHONY: help build run test e2e clean
+.PHONY: help web build run test e2e clean
 
 help:
 	@echo "BBClaw adapter_v2"
 	@echo ""
 	@echo "  make run     # build + start in SaaS mode (cloud relay), open http://localhost$(ADDR)"
+	@echo "  make web     # build the web SPA into web/dist (needs Node/npm)"
 	@echo "  make build   # build $(BIN_DIR)/$(BIN_NAME)"
 	@echo "  make test    # go test ./... (fast, no external deps)"
 	@echo "  make e2e     # device end-to-end voice round-trip smoke"
@@ -51,6 +62,14 @@ help:
 	@echo "  CLOUD_WS_URL= make run                    # LAN-only (no cloud relay)"
 	@echo "  make run CLI=bash CWD=~/proj ADDR=:9000   # drive a shell instead of claude"
 	@echo "  Override the Go toolchain: make test GO=/path/to/go"
+
+# Build the Vue 3 + Vite + TypeScript SPA (web/spa) into web/dist, which is
+# committed and embedded via `//go:embed all:dist` in web/web.go. This is a
+# PREREQUISITE for a clean-checkout `go build` only when web/spa changed — the
+# generated web/dist is committed, so a normal build does not run this. Node/npm
+# must be available (NPM defaults to the Homebrew install).
+web:
+	cd "$(WEB_DIR)" && "$(NPM)" install && "$(NPM)" run build
 
 build:
 	@mkdir -p "$(BIN_DIR)"
