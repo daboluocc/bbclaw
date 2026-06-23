@@ -3556,7 +3556,13 @@ esp_err_t bb_radio_app_start(void) {
     ESP_LOGE(TAG, "wifi init failed err=%s", esp_err_to_name(wifi_err));
     bb_page_netconn_dismiss();
     show_status_error(BB_STATUS_WIFI_ERR);
-    return wifi_err;
+    /* 不向 app_main 抛错:app_main 对本函数用 ESP_ERROR_CHECK(),返回非 OK 会
+     * abort 整机 → 无限 boot loop。没网首次配网时尤其致命——配网 httpd task
+     * 因内部 RAM 碎片/不足创建失败(ESP_ERR_HTTPD_TASK),每次启动必 abort,设备
+     * 变砖循环(真机实锤)。UI 此时已起,停在 WiFi 错误页让用户看到并重启/换网,
+     * 远胜无限重启。配网 httpd 的内存根因(同 #252 P2 的 internal RAM 紧张)需
+     * 单独优化;此处先消除 boot loop。 */
+    return ESP_OK;
   }
   if (bb_wifi_is_provisioning_mode()) {
     bb_page_netconn_dismiss();

@@ -297,11 +297,14 @@ static void highlight_selected(void) {
     lv_obj_t* row = s_st.rows[i];
     if (row == NULL) continue;
     if (i == s_st.sel) {
-      lv_obj_set_style_bg_color(row, lv_color_hex(UI_ROW_SEL_BG), 0);
-      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      /* 选中行：teal accent 半透明高亮——明显高于未选中行的透明背景。原来用
+       * DOT_GHOST(0x152128) COVER，和屏幕背景(0x070b0e)都极暗、对比几乎为零，
+       * 看不出选中。改 accent@40% + 左侧 accent 竖条加粗 + 亮白字，一眼可辨。 */
+      lv_obj_set_style_bg_color(row, lv_color_hex(BB_UI_ACCENT), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_40, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_SEL_FG), 0);
       lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_width(row, 4, 0);
       lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);

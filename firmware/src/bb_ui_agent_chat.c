@@ -1523,6 +1523,13 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
     if (bb_chat_cache_has_data() && theme->append_history_message != NULL) {
       replay_chat_cache_into_theme(theme);
     }
+    /* Resume: directly fetch the persisted session's history. session_id is
+     * persisted by switch_session / start_new_session, and adapter's active
+     * session always follows the device's activate — so the local sid IS the
+     * active one. (Earlier this spawned an adapter "resync" that pulled the
+     * MOST-RECENT session by mtime to "align" — that was wrong: an older active
+     * session has a stale mtime, so "most recent" aligned to the WRONG session
+     * and history came back empty. Reverted to a straight fetch.) */
     spawn_history_fetch_task(-1, /*is_initial=*/1);
   }
 }
@@ -1955,7 +1962,28 @@ static void history_fetch_task(void* arg) {
                                     args->before, page,
                                     &res->msgs, &res->count, &res->total, &res->has_more);
   free(args);
-  safe_lv_async_call(on_history_fetch_done, res);
+  /* 历史渲染是 one-shot——不像 async_post 那样对普通帧有重试兜底。
+   * safe_lv_async_call 只 lvgl_port_lock(200) 一次；LVGL 任务重负载时(buddy 动画
+   * 每帧持锁 + CJK 整段排版 + 200ms 滚动动画)锁可被连续持有 >200ms，投递偶发超时
+   * 被丢弃 → on_history_fetch_done 永不执行 → 历史明明拉到了(returned=N)却渲染不
+   * 出来(屏幕空、看起来像新会话)，且 res 泄漏(PSRAM) + history_fetch_pending 永久
+   * 卡 1(堵死 scroll 分页重试，只能退出重进才恢复)。这里多次重试投递；实在投不进
+   * 则显式释放 + 清 pending，避免泄漏与 wedge。(ADR 排查见 race-hunt workflow) */
+  int delivered = 0;
+  for (int i = 0; i < 6; i++) {
+    if (safe_lv_async_call(on_history_fetch_done, res) == LV_RESULT_OK) {
+      delivered = 1;
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  if (!delivered) {
+    ESP_LOGW(TAG, "history dispatch dropped after retries sid=%s count=%d",
+             res->session_id, res->count);
+    bb_agent_messages_free(res->msgs, res->count);
+    free(res);
+    s_chat.history_fetch_pending = 0; /* 防永久 wedge：否则下次 fetch/滚动重试被门控死锁 */
+  }
   vTaskDelete(NULL);
 }
 
@@ -1994,15 +2022,18 @@ static void spawn_history_fetch_task(int before, int is_initial) {
 static void on_history_fetch_done(void* user_data) {
   history_fetch_result_t* res = (history_fetch_result_t*)user_data;
   if (res == NULL) return;
-  s_chat.history_fetch_pending = 0;
 
-  /* Stale: user switched sessions before we got back. */
+  /* Stale: a newer fetch (session switch / resync) superseded this one. Do NOT
+   * clear history_fetch_pending here — it now belongs to that newer in-flight
+   * fetch; clearing it would let a concurrent spawn slip in a duplicate. Just
+   * drop our payload. */
   if (!s_chat.active || res->gen != s_chat.history_fetch_generation ||
       strcmp(res->session_id, s_chat.session_id) != 0) {
     bb_agent_messages_free(res->msgs, res->count);
     free(res);
     return;
   }
+  s_chat.history_fetch_pending = 0;
 
   if (res->err != ESP_OK) {
     if (res->err == ESP_ERR_NOT_SUPPORTED) {
@@ -2127,6 +2158,13 @@ static void history_state_reset(void) {
   s_chat.history_has_more = 0;
   /* bumping generation invalidates any in-flight fetch we don't want anymore */
   s_chat.history_fetch_generation++;
+  /* Also clear the in-flight guard: a session switch / resync must be able to
+   * spawn its own fetch even if a previous one is still in flight (or wedged).
+   * The generation bump makes the old fetch land stale and get dropped, so this
+   * fresh spawn can't be blocked by a stuck pending flag — THIS was the
+   * "switch session → history stays empty" bug: the prior fetch's pending=1
+   * made spawn_history_fetch_task() early-return silently (no load_messages). */
+  s_chat.history_fetch_pending = 0;
 }
 
 /* Session picker UI removed (ADR-021-firmware-ui v2, issue #103). */
@@ -2651,13 +2689,24 @@ static void on_adapter_resync_done(void* user_data) {
     return;
   }
   if (r->err == ESP_OK && r->session_id[0] != '\0') {
-    strncpy(s_chat.session_id, r->session_id, sizeof(s_chat.session_id) - 1);
-    s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
-    apply_session_switch_ui(s_chat.session_id, NULL);
-    history_state_reset();
-    spawn_history_fetch_task(-1, /*is_initial=*/1);
-    ESP_LOGI(TAG, "adapter resync: loaded recent session '%s' (driver '%s')",
-             r->session_id, r->driver_name);
+    if (strcmp(r->session_id, s_chat.session_id) == 0) {
+      /* adapter 的 active(最近)会话与本地一致：无需切换/清屏(否则会清掉进对话页
+       * 刚 replay 的本地 cache)，直接拉该会话历史即可。进对话页对齐路径常走这里；
+       * ADR-027 切机器时本地 sid 已被清空为"",不会命中此分支。 */
+      history_state_reset();
+      spawn_history_fetch_task(-1, /*is_initial=*/1);
+      ESP_LOGI(TAG, "session align: local sid '%s' already == adapter active — load history",
+               s_chat.session_id);
+    } else {
+      /* 不一致(含本地是 v1 遗留的 ls- 逻辑 id)：adapter active 是唯一真相,采用之。 */
+      strncpy(s_chat.session_id, r->session_id, sizeof(s_chat.session_id) - 1);
+      s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+      apply_session_switch_ui(s_chat.session_id, NULL);
+      history_state_reset();
+      spawn_history_fetch_task(-1, /*is_initial=*/1);
+      ESP_LOGI(TAG, "session align/resync: adopted adapter session '%s' (driver '%s')",
+               r->session_id, r->driver_name);
+    }
   } else {
     /* New machine has no sessions for this driver (or fetch failed) — the
      * transcript is already cleared; the next turn starts a fresh session. */
@@ -2809,10 +2858,19 @@ esp_err_t bb_ui_agent_chat_switch_session(const char* id, const char* title) {
    * (clears the ring) for a clean swap. */
   strncpy(s_chat.session_id, id, sizeof(s_chat.session_id) - 1);
   s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+  /* Persist the choice to NVS so a reboot resumes THIS session directly. We used
+   * to rely on the next agent turn's SESSION frame to persist it — but if no turn
+   * happens (voice unused / ASR fails), NVS keeps a stale/legacy id and the
+   * device resumes the wrong (or empty) session. bb_session_store_save picks a
+   * cache-safe write path regardless of the calling task's stack. */
+  {
+    const char* drv = s_chat.driver_name[0] != '\0' ? s_chat.driver_name : BB_CHAT_DRIVER_FALLBACK;
+    bb_session_store_save(drv, id);
+  }
   history_state_reset();
   apply_session_switch_ui(id, title);
   spawn_history_fetch_task(-1, /*is_initial=*/1);
-  ESP_LOGI(TAG, "switch_session: '%s' (title='%s') requested adapter.activate + history fetch",
+  ESP_LOGI(TAG, "switch_session: '%s' (title='%s') persisted + history fetch",
            id, title != NULL ? title : "");
   return ESP_OK;
 }
