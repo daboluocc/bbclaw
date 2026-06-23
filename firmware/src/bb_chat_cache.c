@@ -62,6 +62,45 @@ static const char* driver_to_key(const char* driver_name) {
   return NULL;
 }
 
+/* P3 (adapter_v2): the persisted NVS key must be sid-aware. With only a
+ * per-driver key ("cc/cc"), two same-driver conversations collide in NVS (last
+ * persisted wins; the other sid-mismatches on hydrate → boots blank). We append
+ * a 6-hex FNV-1a hash of the sid: "cc/cc/<6hex>".
+ *
+ * NVS key length budget (hard limit 15 incl. NUL → 15 usable chars): the
+ * per-driver prefix is 5 chars ("cc/cc") + "/" (1) + 6 hex = 12 chars. Fits.
+ * If a longer per-driver prefix is ever added, the hash width must shrink to
+ * stay <= 15 (asserted at runtime below). A hash (vs the raw sid tail) keeps
+ * the key NVS-char-safe regardless of the sid charset and works for short sids. */
+#define BB_CACHE_SID_HASH_HEX  6
+#define BB_CACHE_KEY_MAX       16  /* 15 usable + NUL */
+
+static uint32_t sid_fnv1a(const char* s) {
+  uint32_t h = 2166136261u;
+  for (; s != NULL && *s != '\0'; ++s) {
+    h ^= (uint8_t)(*s);
+    h *= 16777619u;
+  }
+  return h;
+}
+
+/* Build the sid-aware NVS key into out (>= BB_CACHE_KEY_MAX). Returns 0 on
+ * success, -1 when the driver is unknown or the key would overflow the NVS
+ * 15-char limit. */
+static int build_cache_key(const char* driver_name, const char* sid,
+                           char* out, size_t out_cap) {
+  const char* prefix = driver_to_key(driver_name);
+  if (prefix == NULL || out == NULL || out_cap < BB_CACHE_KEY_MAX) return -1;
+  uint32_t h = sid_fnv1a(sid != NULL ? sid : "");
+  /* "<prefix>/<6 hex of low 24 bits>" */
+  int n = snprintf(out, out_cap, "%s/%06x", prefix, (unsigned)(h & 0xFFFFFFu));
+  if (n < 0 || n > 15) {
+    /* Over the NVS 15-char limit — would be silently rejected by nvs_set_blob. */
+    return -1;
+  }
+  return 0;
+}
+
 /* Bound state. Mutated only on the LVGL task (transcript callbacks). */
 static char s_driver[24];
 static char s_sid[64];
@@ -205,7 +244,10 @@ static void persist_task(void* arg) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     persist_payload_t* p = &s_persist_buf;
-    const char* key = driver_to_key(p->driver);
+    /* P3: sid-aware key so two same-driver conversations don't collide. */
+    char keybuf[BB_CACHE_KEY_MAX];
+    const char* key = (build_cache_key(p->driver, p->sid, keybuf, sizeof(keybuf)) == 0)
+                          ? keybuf : NULL;
     if (key != NULL) {
       nvs_handle_t h;
       esp_err_t err = nvs_open(BB_CACHE_NVS_NS, NVS_READWRITE, &h);
@@ -246,8 +288,14 @@ static void schedule_persist(void) {
 /* Read NVS blob for `driver` into s_buf. On success, sets sid_out to the
  * cached sid. */
 static int load_blob(const char* driver, char* sid_out, size_t sid_cap) {
-  const char* key = driver_to_key(driver);
-  if (key == NULL) return -1;
+  /* P3: load the blob for the currently-bound (driver, sid). The bound sid is
+   * s_sid (set by bb_chat_cache_bind before hydrate). Keying by sid means a
+   * different conversation on the same driver lands on a different NVS slot
+   * instead of colliding. The in-blob sid is still checked by the caller's
+   * exact-match hydrate guard. */
+  char keybuf[BB_CACHE_KEY_MAX];
+  if (build_cache_key(driver, s_sid, keybuf, sizeof(keybuf)) != 0) return -1;
+  const char* key = keybuf;
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_CACHE_NVS_NS, NVS_READONLY, &h);
   if (err != ESP_OK) return -1;

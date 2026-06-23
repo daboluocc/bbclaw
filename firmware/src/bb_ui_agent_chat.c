@@ -2766,3 +2766,53 @@ esp_err_t bb_ui_agent_chat_resync_after_adapter_switch(const char* name) {
            s_chat.driver_name);
   return ESP_OK;
 }
+
+/* ── adapter_v2 P2: device-driven session select / create ──
+ *
+ * The device-side Sessions picker (bb_ui_settings) calls these to point the
+ * adapter (and thus voice, which always runs the adapter's DEFAULT session) at
+ * a specific conversation. The flow:
+ *   1. Fire the WS request → cloud relays pass-through → adapter respawns
+ *      (Resume(id) / New()) so voice now goes to that session.
+ *   2. Locally swap s_chat.session_id, clear the transcript cache, and (for a
+ *      switch) load + display that session's history.
+ *
+ * Both run under the LVGL lock (the caller — handle_click — already holds it).
+ * We must NOT write NVS here: handle_click runs on the stream_task PSRAM stack,
+ * where an NVS write panics (cache freeze). Persistence happens on the next
+ * SESSION frame (on_agent_event's bb_session_store_save path). */
+
+const char* bb_ui_agent_chat_get_current_session(void) {
+  return s_chat.session_id;
+}
+
+esp_err_t bb_ui_agent_chat_start_new_session(void) {
+  /* Tell the adapter to mint + activate a fresh session (New() = respawn). */
+  (void)bb_adapter_request_session_new();
+  /* Local: drop the current session id; the adapter mints the new id and the
+   * next turn's SESSION frame persists it. Clear the transcript cache via the
+   * shared UI-switch helper (apply_session_switch_ui rebinds the chat cache,
+   * which clears the ring). */
+  s_chat.session_id[0] = '\0';
+  history_state_reset();
+  apply_session_switch_ui("", NULL);
+  ESP_LOGI(TAG, "start_new_session: requested adapter.create, local transcript cleared");
+  return ESP_OK;
+}
+
+esp_err_t bb_ui_agent_chat_switch_session(const char* id, const char* title) {
+  if (id == NULL || id[0] == '\0') return ESP_ERR_INVALID_ARG;
+  /* Tell the adapter to Resume(id) → voice now routes to this session. */
+  (void)bb_adapter_request_session_activate(id);
+  /* Local: adopt the new session id, clear stale transcript, then load + show
+   * this session's history. apply_session_switch_ui rebinds the chat cache
+   * (clears the ring) for a clean swap. */
+  strncpy(s_chat.session_id, id, sizeof(s_chat.session_id) - 1);
+  s_chat.session_id[sizeof(s_chat.session_id) - 1] = '\0';
+  history_state_reset();
+  apply_session_switch_ui(id, title);
+  spawn_history_fetch_task(-1, /*is_initial=*/1);
+  ESP_LOGI(TAG, "switch_session: '%s' (title='%s') requested adapter.activate + history fetch",
+           id, title != NULL ? title : "");
+  return ESP_OK;
+}

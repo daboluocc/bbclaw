@@ -255,6 +255,34 @@ void bb_ui_agent_chat_post_session(const char* sid, const char* driver);
 const char* bb_ui_agent_chat_get_current_driver(void);
 
 /**
+ * adapter_v2 P2 — current session id (or "" when none).
+ * Used by the Sessions picker to mark the active conversation.
+ */
+const char* bb_ui_agent_chat_get_current_session(void);
+
+/**
+ * adapter_v2 P2 — start a brand-new conversation from the Sessions picker.
+ *
+ * Fires the WS agent.sessions.create request (adapter respawns to a fresh
+ * session so voice routes there), drops the local session id, and clears the
+ * transcript cache. The adapter mints the new id; the next turn's SESSION
+ * frame persists it. Caller must hold the LVGL lock.
+ */
+esp_err_t bb_ui_agent_chat_start_new_session(void);
+
+/**
+ * adapter_v2 P2 — switch the active conversation from the Sessions picker.
+ *
+ * Fires the WS agent.sessions.activate request (adapter Resume(id) → voice
+ * routes to this session), adopts the id locally, clears the transcript cache,
+ * and loads + displays this session's history. `title` is the picker's display
+ * title (may be NULL). Does NOT write NVS (handle_click runs on a PSRAM stack
+ * where that panics); persistence happens on the next SESSION frame. Caller
+ * must hold the LVGL lock. Returns ESP_ERR_INVALID_ARG on a null/empty id.
+ */
+esp_err_t bb_ui_agent_chat_switch_session(const char* id, const char* title);
+
+/**
  * Phase 4.9 — scroll the agent chat transcript by `lines`.
  * lines < 0 scrolls up, lines > 0 scrolls down.
  * Must be called inside the LVGL lock.

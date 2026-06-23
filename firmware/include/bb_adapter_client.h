@@ -136,6 +136,19 @@ esp_err_t bb_adapter_client_send_text(const char* payload);
  * Duplicate requests while one is still in flight are coalesced. */
 esp_err_t bb_adapter_request_turn_cancel(const char* played_text);
 
+/* adapter_v2 P2 — device-driven session switch / create (cloud_saas only).
+ *
+ * Voice always routes to the adapter's DEFAULT session. When the device
+ * selects or creates a conversation it must tell the adapter to respawn to
+ * that session via a WS request (kinds agent.sessions.activate /
+ * agent.sessions.create, relayed pass-through by the cloud; the adapter does
+ * Resume(id)/New() = respawn). Both are fire-and-forget: the WS send runs on a
+ * short-lived PSRAM-stack task so these are safe to call from the LVGL thread
+ * and never block. Duplicate requests while one is in flight are coalesced.
+ * No-op (returns ESP_OK) when not in cloud_saas mode. */
+esp_err_t bb_adapter_request_session_activate(const char* session_id);
+esp_err_t bb_adapter_request_session_new(void);
+
 /* ADR-028 §2.5.1 barge-in — abort the local finish-stream wait immediately.
  *
  * bb_adapter_stream_finish_stream() blocks up to BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
