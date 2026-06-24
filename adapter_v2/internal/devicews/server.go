@@ -15,6 +15,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
 
 // maxFrame bounds a single inbound WS frame (mic audio frames can be a few KB).
@@ -317,6 +318,10 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		StreamReplyDelta: s.streamDelta,
 		SegmentTTS:       s.segmentTTS,
 		Warmup:           true,
+		// ADR-033: when forward-to-device confirmation is on, the Bridge detects
+		// claude's permission menus and auto-denies on timeout. Rendering them on the
+		// device (PromptObserver on dc) is the P1 follow-up; the safety net engages now.
+		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
 	})
 	bridge.SetEvents(dc)
 	go bridge.Run(ctx)

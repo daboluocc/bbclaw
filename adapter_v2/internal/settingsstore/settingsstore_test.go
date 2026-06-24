@@ -170,6 +170,7 @@ func TestExportEnv(t *testing.T) {
 	s.Device.SegmentTTS = true
 	s.CLI.SkipPermissions = false
 	s.CLI.ClaudeAutoEnter = false // page-set false must override the default-true
+	s.CLI.ConfirmOnDevice = true  // page-set true must be exported as "1"
 	s.AI.AnthropicBaseURL = "https://proxy.example.com"
 	s.AI.AnthropicAuthToken = "" // empty ⇒ must NOT be exported
 	s.Cloud.HomeSiteID = ""      // empty ⇒ must NOT shadow identity.json
@@ -201,6 +202,9 @@ func TestExportEnv(t *testing.T) {
 	}
 	if got := os.Getenv("ADAPTER_V2_CLAUDE_AUTO_ENTER"); got != "0" {
 		t.Errorf("ADAPTER_V2_CLAUDE_AUTO_ENTER = %q, want 0 (false must override env)", got)
+	}
+	if got := os.Getenv("ADAPTER_V2_CONFIRM_ON_DEVICE"); got != "1" {
+		t.Errorf("ADAPTER_V2_CONFIRM_ON_DEVICE = %q, want 1", got)
 	}
 	// Third-party Claude endpoint: base URL exported, blank token left unset so
 	// `claude` falls back to its own login rather than an empty auth token.
@@ -263,7 +267,7 @@ func TestFromEnvDefaults(t *testing.T) {
 		"ASR_PROVIDER", "ASR_LANGUAGE", "TTS_LOCAL_OUTPUT_FORMAT",
 		"ADAPTER_V2_CLI", "ADAPTER_V2_ADDR", "ADAPTER_V2_STREAM_DELTA",
 		"ADAPTER_V2_SEGMENT_TTS", "ADAPTER_V2_SKIP_PERMISSIONS", "HOME_SITE_ID",
-		"ADAPTER_V2_CLAUDE_AUTO_ENTER",
+		"ADAPTER_V2_CLAUDE_AUTO_ENTER", "ADAPTER_V2_CONFIRM_ON_DEVICE",
 	} {
 		if err := os.Unsetenv(k); err != nil {
 			t.Fatalf("unset %s: %v", k, err)
@@ -287,6 +291,9 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 	if !s.CLI.ClaudeAutoEnter {
 		t.Errorf("ClaudeAutoEnter default = false, want true")
+	}
+	if s.CLI.ConfirmOnDevice {
+		t.Errorf("ConfirmOnDevice default = true, want false")
 	}
 	if s.Device.SegmentTTS {
 		t.Errorf("SegmentTTS default = true, want false")

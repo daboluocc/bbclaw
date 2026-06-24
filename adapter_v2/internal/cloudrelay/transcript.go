@@ -9,6 +9,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
 
 // handleTranscript runs one relayed voice turn: inject the cloud's transcript into
@@ -275,7 +276,13 @@ func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 	// end (cloudEvents.ReplyComplete → forwardDelta), so the cloud TTSs exactly the
 	// text the device extracted. (Streaming sentence-level TTS can return later with
 	// a normalization-aware, monotonic delta stream.)
-	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{Warmup: true})
+	// ConfirmPrompts (ADR-033): forward-to-device confirmation engages the Bridge's
+	// auto-deny safety net for the cloud path too; device-side rendering + cloud
+	// parked-turn handling are the P2 follow-up.
+	bridge := deviceapi.New(sess, nil, nil, nil, deviceapi.Config{
+		Warmup:         true,
+		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
+	})
 	bridge.SetEvents(ev)
 	go bridge.Run(context.Background())
 	cb := &cloudBridge{sess: sess, bridge: bridge, ev: ev}

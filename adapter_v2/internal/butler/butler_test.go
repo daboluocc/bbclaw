@@ -38,6 +38,21 @@ func TestDeviceClaudeArgs(t *testing.T) {
 	}
 }
 
+// TestDeviceClaudeArgsConfirmOnDevice: forward-to-device mode (ADR-033) drops the
+// bypass and forces --permission-mode default so claude renders its permission
+// menus (which the device confirms). It takes precedence over SKIP_PERMISSIONS.
+func TestDeviceClaudeArgsConfirmOnDevice(t *testing.T) {
+	t.Setenv("ADAPTER_V2_CONFIRM_ON_DEVICE", "1")
+	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "1") // ConfirmOnDevice must still win
+	got := DeviceClaudeArgs([]string{"claude"}, "")
+	if containsArg(got, "--dangerously-skip-permissions") {
+		t.Errorf("ConfirmOnDevice must NOT bypass permissions: %v", got)
+	}
+	if i := argIndex(got, "--permission-mode"); i < 0 || i+1 >= len(got) || got[i+1] != "default" {
+		t.Errorf("ConfirmOnDevice must add --permission-mode default: %v", got)
+	}
+}
+
 func containsArg(args []string, want string) bool { return argIndex(args, want) >= 0 }
 func argIndex(args []string, want string) int {
 	for i, a := range args {

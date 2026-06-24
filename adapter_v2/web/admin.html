@@ -202,6 +202,7 @@
         inputField("ADAPTER_V2_CWD", "cli.cwd", cli.cwd, {wide:true, hint:"留空则用共享 butler workspace"}) +
         boolField("跳过权限确认 (SKIP_PERMISSIONS)", "cli.skipPermissions", cli.skipPermissions) +
         boolField("自动跳过 claude 首启提示 (CLAUDE_AUTO_ENTER)", "cli.claudeAutoEnter", cli.claudeAutoEnter) +
+        boolField("设备端确认权限弹窗 (CONFIRM_ON_DEVICE，关 bypass)", "cli.confirmOnDevice", cli.confirmOnDevice) +
         areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
       );
 
