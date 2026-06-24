@@ -208,6 +208,44 @@ func TestBaselineIsolatesNewestTurn(t *testing.T) {
 	}
 }
 
+// Regression for the long-list-reply TTS-truncation bug: a reply TALLER than the
+// terminal grid scrolls its top — including claude's "⏺" anchor and the opening
+// lines — off the visible grid into scrollback. The marker scan used to read the
+// visible grid only, so it lost the anchor and surfaced just the visible tail (or
+// nothing), and the device spoke a truncated reply while the web terminal (which
+// replays scrollback) showed the whole thing. The scan must include scrollback so
+// the full reply is recovered. Uses a deliberately tiny grid to force the scroll
+// with a short fixture; the geometry, not the line count, is what triggers it.
+func TestExtractRecoversReplyTallerThanGrid(t *testing.T) {
+	s := vtscreen.New(40, 6) // 6 visible rows: an 8-item list overflows it
+	ext := New(s)
+
+	// Stream the reply as real newline-advanced lines (not absolute cursor moves),
+	// so feeding past the bottom row genuinely scrolls the top into scrollback —
+	// exactly how claude appends a long answer.
+	s.Feed([]byte(
+		"⏺ 行前清单:\r\n" +
+			"1. 精读年报\r\n" +
+			"2. 读两篇专访\r\n" +
+			"3. 备样章\r\n" +
+			"4. 备专利趋势图\r\n" +
+			"5. 录三段Demo\r\n" +
+			"6. 备一页案例集\r\n" +
+			"7. 打印目录样章\r\n" +
+			"8. 备安全合规页\r\n"))
+
+	r, _ := ext.OnOutput()
+	// The header (scrolled off first) AND every item — front, middle, and tail —
+	// must all survive, proving nothing was lost to the grid height.
+	for _, want := range []string{
+		"行前清单", "1. 精读年报", "2. 读两篇专访", "4. 备专利趋势图", "8. 备安全合规页",
+	} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("tall reply truncated — missing %q\nfull reply: %q", want, r.Text)
+		}
+	}
+}
+
 // itoa is a tiny dependency-free int→string for building spinner frames.
 func itoa(n int) string {
 	if n == 0 {

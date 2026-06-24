@@ -24,8 +24,17 @@
 //     `claude` session emits collapse to identical extracted text and produce no
 //     duplicate / jittering Replies.
 //
+// The marker path additionally scans recent scrollback ahead of the visible grid
+// (vtscreen.ScrollbackText), so a reply TALLER than the terminal — whose "⏺"
+// anchor has scrolled off the visible grid — is recovered whole rather than
+// truncated to its visible tail (case C9).
+//
 // Complete is intentionally left false here: deciding when the turn has ended is
 // boundary.go's job (#210). This package only proposes the content.
+//
+// Every screen state this package must handle is catalogued in CASES.md (one row
+// per branch, each tied to its test). Add a case there before extending the
+// extraction logic.
 package extract
 
 import (
@@ -101,11 +110,24 @@ func (e *Extractor) extract() string {
 	return NormalizeReply(e.extractRaw())
 }
 
+// markerScrollbackLines bounds how much scrolled-off history the marker path
+// scans ahead of the visible grid. A voice reply is short by design; 200 rows
+// covers even a long list reply that scrolls several screens, while keeping the
+// per-chunk scan cheap. Anchoring on the LAST "⏺" means any older turns swept in
+// from scrollback are ignored — they sit before the current reply's marker.
+const markerScrollbackLines = 200
+
 // extractRaw isolates the newest-reply text from the current screen, still
 // carrying vt-grid layout (NormalizeReply cleans it).
 func (e *Extractor) extractRaw() string {
 	visible := e.screen.VisibleText()
-	if reply, ok := extractMarkerBlock(visible); ok {
+	// Marker path runs over scrollback + visible, not the visible grid alone, so a
+	// reply TALLER than the terminal — whose "⏺" anchor and early lines have
+	// scrolled off the top of the visible grid — is recovered whole rather than
+	// truncated to its visible tail (the long-list-reply TTS-truncation bug). A
+	// reply that fits on screen is unaffected: scrollback then holds only older
+	// turns, which fall before the current reply's last "⏺" and are skipped.
+	if reply, ok := extractMarkerBlock(e.markerSource(visible)); ok {
 		return reply
 	}
 
@@ -131,6 +153,23 @@ func (e *Extractor) extractRaw() string {
 		kept = append(kept, l)
 	}
 	return strings.Join(kept, "\n")
+}
+
+// markerSource is the text the marker-block scan runs over: recent scrollback
+// (which holds the reply's top once it scrolls off the grid) joined ahead of the
+// visible grid. When the ring is empty (the common case — a reply that fits on
+// screen, or a fresh session) this is exactly the visible grid, so on-screen
+// replies extract identically to before.
+func (e *Extractor) markerSource(visible string) string {
+	sb := e.screen.ScrollbackText(markerScrollbackLines)
+	switch {
+	case sb == "":
+		return visible
+	case visible == "":
+		return sb
+	default:
+		return sb + "\n" + visible
+	}
 }
 
 // extractMarkerBlock isolates the newest claude assistant reply by anchoring on

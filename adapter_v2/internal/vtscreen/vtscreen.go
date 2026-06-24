@@ -444,6 +444,34 @@ func (s *Screen) VisibleText() string {
 	return strings.Join(lines[:end], "\n")
 }
 
+// ScrollbackText returns up to the last n scrollback rows as plain text (no
+// ANSI), oldest first, one row per line, trailing blank columns trimmed per row
+// — the scrollback counterpart of VisibleText. Package extract joins this ahead
+// of VisibleText so a reply TALLER than the visible grid (whose top, including
+// claude's "⏺" anchor, has scrolled off) is still recovered whole instead of
+// truncated to the visible tail. Returns "" on the alternate screen (which keeps
+// no history) or when the scrollback ring is empty.
+func (s *Screen) ScrollbackText(n int) string {
+	if n <= 0 || s.onAlternate() || len(s.scrollback) == 0 {
+		return ""
+	}
+	start := 0
+	if len(s.scrollback) > n {
+		start = len(s.scrollback) - n
+	}
+	rows := s.scrollback[start:]
+	lines := make([]string, len(rows))
+	for i, row := range rows {
+		last := lastContentColPlain(row)
+		var sb strings.Builder
+		for x := 0; x < last; x++ {
+			sb.WriteRune(glyphRune(row[x]))
+		}
+		lines[i] = sb.String()
+	}
+	return strings.Join(lines, "\n")
+}
+
 // glyphRune resolves a glyph to its display rune, mapping NUL/zero (a never-set
 // cell, or the trailing half of a wide char) to a space.
 func glyphRune(g vt10x.Glyph) rune {
