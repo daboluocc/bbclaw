@@ -104,6 +104,14 @@ func (d *DeviceSession) Config() ptyhost.Config {
 // the empty main prompt are harmless no-ops. Disable with
 // ADAPTER_V2_CLAUDE_AUTO_ENTER=0; returns nil when disabled.
 func claudeStartupKeys() []ptyhost.StartupChunk {
+	if envBool("ADAPTER_V2_CONFIRM_ON_DEVICE", false) {
+		// Forward-to-device mode runs claude with --permission-mode default, so a
+		// blind startup Enter could land on a permission menu and select its
+		// highlighted default (= "Yes") — silently AUTO-APPROVING a tool. That
+		// violates the ADR-033 safety invariant (never auto-approve), so the startup
+		// auto-Enter is disabled entirely in this mode; the device confirms prompts.
+		return nil
+	}
 	if !envBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", true) {
 		return nil
 	}

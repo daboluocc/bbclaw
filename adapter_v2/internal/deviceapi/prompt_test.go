@@ -150,6 +150,14 @@ func TestConfirmPromptForwardAndSelect(t *testing.T) {
 	if obs.closeCount() != before {
 		t.Error("stale select emitted an extra PromptClosed")
 	}
+
+	// The mock keeps the (answered) menu on screen — it never repaints. The
+	// closedSig guard must stop checkPrompt re-opening it as a "new" menu across the
+	// next several ticks (review finding #1).
+	time.Sleep(300 * time.Millisecond)
+	if n := obs.openCount(); n != 1 {
+		t.Errorf("answered menu re-opened: openCount = %d, want 1", n)
+	}
 }
 
 // TestConfirmPromptTimeoutAutoDeny: an unanswered menu auto-resolves the safe way

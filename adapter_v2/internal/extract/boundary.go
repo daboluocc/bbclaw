@@ -117,7 +117,15 @@ func (d *Detector) refresh(screen screenView) {
 	if spinner {
 		d.sawSpinner = true
 	}
-	_, d.awaitingPromptOnScreen = ParsePrompt(visible)
+	// Only a mid-TURN blocking menu (permission/tool confirm) suppresses turn-end.
+	// A startup/periodic upsell or trust dialog is not part of a reply turn and is
+	// dismissed elsewhere — keying off it here could wedge the turn forever (no
+	// dismisser in this loop). See IsTurnBlockingKind.
+	if p, ok := ParsePrompt(visible); ok && IsTurnBlockingKind(p.Kind) {
+		d.awaitingPromptOnScreen = true
+	} else {
+		d.awaitingPromptOnScreen = false
+	}
 }
 
 // TurnEnded reports whether, as of now, the current turn looks complete. All

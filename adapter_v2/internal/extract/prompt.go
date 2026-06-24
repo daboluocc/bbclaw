@@ -104,36 +104,40 @@ func ParsePrompt(visible string) (Prompt, bool) {
 	}
 
 	var opts []PromptOption
-	pointer := false
 	for _, ln := range lines[start:end] {
 		ptr, key, label, ok := parseOptionLine(ln)
 		if !ok {
 			continue
-		}
-		if ptr {
-			pointer = true
 		}
 		opts = append(opts, PromptOption{Key: key, Label: truncateRunes(label, promptLabelMax), Default: ptr})
 	}
 	if len(opts) < promptOptionMin {
 		return Prompt{}, false
 	}
+	pointerOnFirst := opts[0].Default // claude points "❯" at the highlighted row, always option 1
 
-	// Corroborate it is a real select-menu, not a prose numbered list: claude's
-	// highlight pointer on a row, or an "Esc to cancel" footer. Either is something
-	// a numbered prose list can never carry.
-	footer := hasCancelFooter(lines, end)
-	if !pointer && !footer {
+	// Corroborate this is a real claude select-menu, not prose that happens to hold a
+	// numbered list (and maybe an "Esc to cancel" sentence). The STRONGEST signal is
+	// claude's universal Yes…/No… confirm shape (label-anchored — design §2 ranks
+	// option labels most stable); failing that, the highlight pointer ON OPTION 1
+	// backed by the real "Esc to cancel" footer or a confirm question. A prose how-to
+	// list has none of these (its first item is not "Yes", its glyphs aren't ❯ on
+	// row 1), and a footer/pointer ALONE is too weak (a reply can quote either).
+	question := findQuestion(lines, start)
+	yesNo := optStartsWith(opts[0], "yes") && anyOptStartsWith(opts[1:], "no")
+	if !(yesNo || (pointerOnFirst && (hasCancelFooter(lines, end) || isConfirmQuestion(question)))) {
 		return Prompt{}, false
 	}
 
-	// claude always highlights option 1 by default; if the pointer glyph didn't
-	// survive the emulator, mark the first row so the device still shows a default.
-	if !pointer {
+	// Mark exactly one default for display: claude's pointer (option 1), or option 1
+	// as the fallback when the ❯ glyph didn't survive the emulator.
+	if !pointerOnFirst {
+		for i := range opts {
+			opts[i].Default = false
+		}
 		opts[0].Default = true
 	}
 
-	question := findQuestion(lines, start)
 	return Prompt{
 		Kind:      classifyPrompt(question, lines, start),
 		Question:  question,
@@ -143,15 +147,59 @@ func ParsePrompt(visible string) (Prompt, bool) {
 	}, true
 }
 
-// hasCancelFooter reports whether an "Esc to cancel" affordance sits within a few
-// lines below the option block — claude's footer on its blocking menus.
+// hasCancelFooter reports whether claude's blocking-menu footer sits within a few
+// lines below the options. Anchored on the full affordance ("esc to cancel" /
+// "to amend" / "to explain"), not a bare "to cancel" (which is common reply
+// prose). Only ever used in combination with a pointer-on-option-1, so even this
+// can't fire a menu on its own.
 func hasCancelFooter(lines []string, optEnd int) bool {
 	for k := optEnd; k < len(lines) && k < optEnd+4; k++ {
-		if strings.Contains(strings.ToLower(lines[k]), "to cancel") {
+		t := strings.ToLower(lines[k])
+		if strings.Contains(t, "esc to cancel") || strings.Contains(t, "to amend") || strings.Contains(t, "to explain") {
 			return true
 		}
 	}
 	return false
+}
+
+// optStartsWith reports whether the option's label begins with prefix (case- and
+// space-insensitive) — the label-anchored confirm-menu test.
+func optStartsWith(o PromptOption, prefix string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(o.Label)), prefix)
+}
+
+func anyOptStartsWith(opts []PromptOption, prefix string) bool {
+	for _, o := range opts {
+		if optStartsWith(o, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfirmQuestion reports whether q reads like claude's confirm header.
+func isConfirmQuestion(q string) bool {
+	q = strings.ToLower(q)
+	for _, s := range []string{"do you want", "proceed", "trust", "make this edit", "allow"} {
+		if strings.Contains(q, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTurnBlockingKind reports whether a prompt kind is a mid-TURN pause — a
+// tool/permission confirm that must NOT be read as turn-end (boundary.go keys off
+// this). upsell/trust are startup/periodic chrome, not part of a reply turn, and
+// are dismissed elsewhere, so they don't suppress the boundary. Mirrors
+// deviceapi.forwardablePromptKind.
+func IsTurnBlockingKind(k PromptKind) bool {
+	switch k {
+	case PromptPermission, PromptEditConfirm, PromptUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 // findQuestion returns the nearest content line above the options — claude's

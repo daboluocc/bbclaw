@@ -293,6 +293,13 @@ type Bridge struct {
 	// menu is currently forwarded.
 	promptMu      sync.Mutex
 	promptPending *pendingPrompt
+	// closedSig is the signature of the menu we JUST answered/denied. The digit we
+	// injected only clears the menu off the mirror after claude repaints (a PTY
+	// round-trip), so until then the same menu lingers on screen with promptPending
+	// already nil — without this guard the next checkPrompt would re-open it as a
+	// "new" menu (a fresh promptId + a spurious PromptOpen). Cleared once the menu
+	// leaves the screen. ADR-033 §6.
+	closedSig string
 
 	// promptSeq mints monotonic promptIds ("p1", "p2", …) so a stale select against
 	// a superseded/answered menu is recognised and dropped (§4/§6).
@@ -470,7 +477,8 @@ func (b *Bridge) checkPrompt(now time.Time) (pending bool) {
 	cur := b.promptPending
 
 	if !forward {
-		if cur != nil { // a pending menu left the screen by other means
+		b.closedSig = "" // the menu (if any) has left the screen
+		if cur != nil {  // a pending menu left the screen by other means
 			b.promptPending = nil
 			b.promptMu.Unlock()
 			b.notifyPromptClosed(cur.id, "cleared")
@@ -480,10 +488,18 @@ func (b *Bridge) checkPrompt(now time.Time) (pending bool) {
 		return false
 	}
 
+	// The menu we just answered/denied lingers on the mirror until claude repaints;
+	// keep suppressing speak but do NOT re-open it.
+	if cur == nil && p.Signature == b.closedSig {
+		b.promptMu.Unlock()
+		return true
+	}
+
 	if cur != nil && cur.sig == p.Signature { // same menu still waiting
 		if now.Sub(cur.openedAt) >= b.promptTimeout() {
 			deny, id := cur.denyKey, cur.id
 			b.promptPending = nil
+			b.closedSig = cur.sig // suppress re-open until the deny repaints it away
 			b.promptMu.Unlock()
 			b.injectDeny(deny) // safe option / ESC — never the default Yes
 			b.notifyPromptClosed(id, "timeout")
@@ -494,6 +510,7 @@ func (b *Bridge) checkPrompt(now time.Time) (pending bool) {
 	}
 
 	// New menu, or the option set changed under the same screen → supersede the old.
+	b.closedSig = "" // a genuinely different menu; drop the closing guard
 	superseded := ""
 	if cur != nil {
 		superseded = cur.id
@@ -532,6 +549,7 @@ func (b *Bridge) SelectPromptOption(promptID, key string) error {
 		return nil
 	}
 	b.promptPending = nil
+	b.closedSig = cur.sig // the menu lingers until claude repaints; don't re-open it
 	b.promptMu.Unlock()
 
 	if err := b.sess.Write([]byte(key)); err != nil {

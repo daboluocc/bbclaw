@@ -75,6 +75,18 @@ func TestParsePromptNegatives(t *testing.T) {
 		"idle pointer glyph": "⏺ Done.\n\n❯ \n",
 		// Single option is not a menu.
 		"single option": " Do you want to proceed?\n ❯ 1. Yes\n Esc to cancel",
+		// A prose how-to list followed by an "Esc to cancel" SENTENCE — no ❯ on row 1,
+		// not a Yes/No shape. The footer substring alone must NOT fake a menu (review
+		// finding #2): the genuine reply would otherwise never be spoken.
+		"prose list with esc-to-cancel sentence": "⏺ I found three issues:\n" +
+			"  1. The config is stale\n" +
+			"  2. The cache never clears\n" +
+			"  3. The retry loops\n\n" +
+			"Press Esc to cancel the running build first, then re-run.",
+		// A reply that QUOTES a ❯ pointer mid-list (not on option 1) and has no
+		// Yes/No labels — the lone glyph must not corroborate (review finding #3).
+		"quoted pointer mid-list": "⏺ The menu looked like:\n" +
+			"  1. Alpha\n ❯ 2. Beta\n  3. Gamma\n",
 	}
 	for name, screen := range cases {
 		if p, ok := ParsePrompt(screen); ok {
@@ -130,6 +142,41 @@ func TestParsePromptSignatureSupersede(t *testing.T) {
 	}
 	if a.Signature == b.Signature {
 		t.Errorf("signature should differ when an option label changes: %q", a.Signature)
+	}
+}
+
+// The fullscreen-renderer upsell has no Yes/No shape ("Yes, try it" / "Not now")
+// but is a real select-menu: the ❯ pointer on option 1 + the "Esc to cancel"
+// footer corroborate it. It parses as upsell — NOT forwarded, but boundary uses
+// the kind to decide it is not a mid-turn pause (see TestBoundaryUpsellNotBlocking).
+func TestParsePromptUpsell(t *testing.T) {
+	screen := " Try the new fullscreen renderer?\n" +
+		" ❯ 1. Yes, try it\n" +
+		"   2. Not now\n\n" +
+		" Enter to confirm · Esc to cancel"
+	p, ok := ParsePrompt(screen)
+	if !ok {
+		t.Fatal("upsell menu (pointer + footer) should parse")
+	}
+	if p.Kind != PromptUpsell {
+		t.Errorf("Kind = %q, want upsell", p.Kind)
+	}
+	if IsTurnBlockingKind(p.Kind) {
+		t.Error("upsell must NOT be a turn-blocking kind (it would wedge the turn)")
+	}
+}
+
+// Review finding #5: an upsell on screen must NOT suppress turn-end (it isn't a
+// mid-turn pause and has no dismisser in the Run loop), while a permission menu
+// must. boundary keys off IsTurnBlockingKind.
+func TestBoundaryUpsellNotBlocking(t *testing.T) {
+	upsell := " Try the new fullscreen renderer?\n ❯ 1. Yes, try it\n   2. Not now\n\n Esc to cancel"
+	d := &Detector{}
+	t0 := time.Now()
+	d.Observe(t0, fakeScreen{busyScreen}, true) // spinner this turn
+	d.Observe(t0.Add(50*time.Millisecond), fakeScreen{upsell}, true)
+	if !d.TurnEnded(t0.Add(50*time.Millisecond + 5*Quiet)) {
+		t.Error("an upsell must not suppress turn-end (only a permission/confirm menu does)")
 	}
 }
 

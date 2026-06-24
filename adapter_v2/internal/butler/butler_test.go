@@ -53,6 +53,22 @@ func TestDeviceClaudeArgsConfirmOnDevice(t *testing.T) {
 	}
 }
 
+// TestClaudeStartupKeysConfirmOnDevice (review finding #4, safety): in
+// forward-to-device mode the blind startup Enter is disabled, so it can never land
+// on a permission menu and auto-approve the highlighted "Yes".
+func TestClaudeStartupKeysConfirmOnDevice(t *testing.T) {
+	t.Setenv("ADAPTER_V2_CONFIRM_ON_DEVICE", "1")
+	t.Setenv("ADAPTER_V2_CLAUDE_AUTO_ENTER", "1") // even with auto-enter on, ConfirmOnDevice wins
+	if k := claudeStartupKeys(); k != nil {
+		t.Errorf("claudeStartupKeys must be nil in ConfirmOnDevice mode (blind Enter could auto-approve): %v", k)
+	}
+	// Off + auto-enter on → the upsell-dismiss Enters still fire.
+	t.Setenv("ADAPTER_V2_CONFIRM_ON_DEVICE", "0")
+	if k := claudeStartupKeys(); len(k) == 0 {
+		t.Error("claudeStartupKeys should fire when ConfirmOnDevice off + AUTO_ENTER on")
+	}
+}
+
 func containsArg(args []string, want string) bool { return argIndex(args, want) >= 0 }
 func argIndex(args []string, want string) int {
 	for i, a := range args {
