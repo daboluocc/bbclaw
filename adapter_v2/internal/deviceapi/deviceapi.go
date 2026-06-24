@@ -552,6 +552,10 @@ func (b *Bridge) SelectPromptOption(promptID, key string) error {
 	b.closedSig = cur.sig // the menu lingers until claude repaints; don't re-open it
 	b.promptMu.Unlock()
 
+	// Single small PTY write from this (transport) goroutine; Bridge.Run and the web
+	// terminal may also write the shared PTY, but each session.Write is one atomic
+	// os.File write of a 1-byte key, so keystrokes can't tear into each other. The
+	// promptMu CAS above already made double-answer (select vs timeout-deny) safe.
 	if err := b.sess.Write([]byte(key)); err != nil {
 		return mapErr(err)
 	}

@@ -55,7 +55,7 @@ bytes 8.. 原始音频
 {"t":"interrupted","turnId":"u7","atSeq":118}
 {"t":"prompt.open","turnId":"u7","promptId":"p1","kind":"permission","question":"Do you want to proceed?","options":[{"key":"1","label":"Yes","default":true},{"key":"2","label":"No"}],"mechanism":"digit"}  // 阻塞弹窗转发设备确认(ADR-033),设备回 prompt.select
 {"t":"prompt.close","turnId":"u7","promptId":"p1","reason":"answered|timeout|superseded|cleared|respawn"} // 关闭弹窗 UI
-{"t":"error","turnId":"u7","code":"ASR_EMPTY|ASR_TIMEOUT|TTS_FAILED|BUSY|UNAUTH","detail":"..."}
+{"t":"error","turnId":"u7","code":"ASR_EMPTY|ASR_TIMEOUT|TTS_FAILED|BUSY|UNAUTH|BAD_PROTO|BAD_AUDIO","detail":"..."}
 ```
 
 **阻塞弹窗确认(ADR-033,opt-in `ADAPTER_V2_CONFIRM_ON_DEVICE=1`)**:claude 的工具/权限菜单
@@ -64,6 +64,11 @@ bytes 8.. 原始音频
 (数字直提)。超时/无设备一律安全降级 auto-DENY(注入 No/ESC,绝不 auto-approve)。与
 `tool.step` 不同,`prompt.open` 有回路(是新的上行控制消息),菜单选项变化即 supersede
 (旧 `prompt.close{superseded}` + 新 `prompt.open`)。
+
+> **`promptId` 是唯一关联键,`turnId` 仅供参考。** 设备/web/cloud 共享同一根 PTY,弹窗可能由
+> 别的视图(如 web 终端)触发,此时 `prompt.open.turnId` 可能为空或是已 idle 的旧 turn。
+> 固件**必须**按 `promptId` 关联弹窗 UI 与 `prompt.select`(adapter 也只按 `promptId` 校验);
+> 不要假设 `turnId` 非空或对应当前 turn。
 
 ## PTT 一轮往返
 

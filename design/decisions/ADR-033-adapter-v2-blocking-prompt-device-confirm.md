@@ -45,6 +45,8 @@ adapter_v2 用一根常驻 PTY 跑交互式 `claude` TUI（弃 `claude -p`，保
 
 `DeviceSession.New/Resume` respawn PTY 时，旧 promptId 指向已死进程。`respawn()` 作废所有 pending promptId（emit `PromptClosed{reason:"respawn"}`）；下游对未知 / 失效 promptId 的 select 当安全 no-op（ack-and-drop）。
 
+**已知 gap（P1，可接受）**：设备在弹窗 pending 时**断线**，`Bridge.Run` 随 ctx 取消退出 → `closePendingPrompt` 清 pending 但**不注入 deny**（超时 auto-deny 的计时器在已退出的 Run 里，对这台 bridge 不再生效）。由于是**共享 PTY**，菜单仍留在屏上：可由 web 终端用户应答，或下次设备重连/新 bridge 重新检测后 90s auto-deny 收掉。安全不变量仍成立（绝不 auto-approve，菜单只是 blocked）。未主动 deny 是为避免多视图下把别人正要应答的菜单从下面 deny 掉。
+
 ## 两个 gating 探针（已真机验证 2026-06-24，claude 2.1.186）
 
 1. **注入机制 → 数字直提（digit-submit）成立。** 对权限菜单注入单个数字 `1`（**无 CR、无箭头**）即立即选中并提交该项，工具随即执行。因此注入机制 = `session.Write([]byte("<digit>"))`；**不需要箭头转义序列，也不需要给 vtscreen 加 `HighlightedRow()`**（设计 §3.3 取消，§10 走 digit 路径）。与既有 `dismissSurvey` 注入 `0` 一致。
