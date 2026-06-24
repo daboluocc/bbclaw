@@ -303,8 +303,9 @@ func TestWriterPolicy(t *testing.T) {
 }
 
 // TestPumpInputGatesByOwnership drives pumpInput with a fake conn to prove that
-// input from a non-owning (superseded) connection is dropped while resize is
-// always honoured, all without a real socket.
+// input from a non-owning (superseded) connection is dropped, and that a client
+// resize is IGNORED — the default session's PTY is a fixed grid (ADR-035), so a
+// browser viewer never reflows the shared PTY. All without a real socket.
 func TestPumpInputGatesByOwnership(t *testing.T) {
 	m := session.NewManager()
 	s, err := m.Create("gate", ptyhost.Config{
@@ -346,9 +347,10 @@ func TestPumpInputGatesByOwnership(t *testing.T) {
 		t.Fatalf("stale-owner input reached stdin; observed %q", out)
 	}
 
-	// The resize WAS honoured regardless of write ownership: the screen reflowed.
-	if got := s.Size(); got.Cols != 100 || got.Rows != 40 {
-		t.Fatalf("resize from observer not applied: size = %dx%d, want 100x40", got.Cols, got.Rows)
+	// The resize was IGNORED (fixed-grid design, ADR-035): the PTY keeps its spawn
+	// size, not the client-requested 100x40.
+	if got := s.Size(); got.Cols != 80 || got.Rows != 24 {
+		t.Fatalf("client resize should be ignored: size = %dx%d, want 80x24", got.Cols, got.Rows)
 	}
 }
 

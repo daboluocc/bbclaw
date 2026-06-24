@@ -33,6 +33,22 @@ var ErrClosed = errors.New("session: pty closed")
 // per-logical-session ids and a web session-browser come later.)
 const DefaultID = "default"
 
+// DefaultGridCols/Rows are the FIXED grid the default (device) session's PTY is
+// spawned at and pinned to for its whole life — it is never resized at runtime.
+//
+// Why fixed-and-generous: the device line screen-scrapes claude's TUI off this
+// grid (internal/extract). A reply taller than the visible grid scrolls its "⏺"
+// anchor off the top and the scrape loses it — the long-list-reply TTS-truncation
+// bug (extract/CASES.md C9, ADR-035). A tall grid keeps realistic replies on one
+// screen so extraction rarely has to lean on scrollback recovery. The web
+// terminal that joins this session is a FIXED-SIZE VIEWER (it frames this grid
+// with CSS, see web/spa TerminalView.vue) and deliberately does NOT drive the PTY
+// size — so a small browser viewport can never starve the device's extraction.
+const (
+	DefaultGridCols = 120
+	DefaultGridRows = 60
+)
+
 // detachTimeout is how long a session may sit with no clients before the GC
 // reaps it (and kills the child). Mirrors dinotty's 300s cleanup window.
 const detachTimeout = 5 * time.Minute

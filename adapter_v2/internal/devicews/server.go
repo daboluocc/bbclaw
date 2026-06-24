@@ -78,11 +78,15 @@ type Options struct {
 // local TTS suffice for Phase A); dev supplies the default conversation's spawn
 // config (the LAN device line drives the same default session as the cloud relay).
 func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesizer, dev *butler.DeviceSession, opt Options) *Server {
+	// Default to the shared FIXED device grid (session.DefaultGridCols×Rows) — a
+	// tall grid so the device line's screen-scrape never loses a long reply's top
+	// to scroll-off (ADR-035, extract/CASES.md C9). The cloud-relay path pins the
+	// same size via butler.DeviceSession.Config; both target the one default PTY.
 	if opt.Cols <= 0 {
-		opt.Cols = 80
+		opt.Cols = session.DefaultGridCols
 	}
 	if opt.Rows <= 0 {
-		opt.Rows = 24
+		opt.Rows = session.DefaultGridRows
 	}
 	return &Server{mgr: mgr, asr: asr, tts: tts, dev: dev, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
 }

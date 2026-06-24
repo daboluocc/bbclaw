@@ -88,6 +88,10 @@ func (d *DeviceSession) Config() ptyhost.Config {
 		}
 	}
 	cfg := ptyhost.Config{Argv: out, Cwd: d.cwd}
+	// Pin the default session to a FIXED, generous grid (never resized) so the
+	// device line's screen-scrape never loses a tall reply's top to scroll-off
+	// (session.DefaultGridCols×Rows; see ADR-035, extract/CASES.md C9).
+	cfg.InitialSize = ptyhost.Size{Cols: session.DefaultGridCols, Rows: session.DefaultGridRows}
 	if isClaude {
 		cfg.StartupInput = claudeStartupKeys()
 	}

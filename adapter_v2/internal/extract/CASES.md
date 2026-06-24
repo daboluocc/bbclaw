@@ -35,14 +35,16 @@
 
 **现象**：长清单回复（如 8 条行前清单），设备 TTS 只念了一部分，但 web 终端/会话页文字是全的。
 
-**根因**：
-- 默认会话 PTY 固定 80×24（[butler/session.go `DeviceSession.Config()`](../butler/session.go) 未设 `InitialSize` → [ptyhost 默认 24 行](../ptyhost/ptyhost.go)）。
+**根因**（当时）：
+- 默认会话 PTY 当时是 **80×24**（`DeviceSession.Config()` 未设 `InitialSize` → ptyhost 默认 24 行），且 web 终端一 resize 就把共享 PTY 压到浏览器视口大小。
 - claude 交互 TUI 里，回复一旦超过可视行数，顶部（含 `⏺` 锚点）滚出可视网格进入 scrollback。
 - 修复前 `extractMarkerBlock` 只读 `VisibleText()`（可视网格），找不到 `⏺` → 退化到 diff 兜底只拿到**可见尾部**，甚至返回 `""`。
 - 这段被截断的文本就是发给云端 TTS 的 `voice.reply`（[cloudrelay/transcript.go](../cloudrelay/transcript.go)）→ 设备只念到尾部几条。
 - web 会话页回放的是完整 PTY + scrollback（连 `✻ Brewed for Ns` 都在），所以**文字全、TTS 缺** —— 数据源不同。
 
-**修复**：marker 路径改读 `ScrollbackText(200) + VisibleText()`（[vtscreen.ScrollbackText](../vtscreen/vtscreen.go) 新增），锚定最后一个 `⏺`，把滚出去的回复头补回来。短回复不受影响（scrollback 此时只含旧轮，落在当前 `⏺` 之前被忽略）。
+**修复（两层，叠加）**：
+1. **抽取兜底**：marker 路径改读 `ScrollbackText(200) + VisibleText()`（[vtscreen.ScrollbackText](../vtscreen/vtscreen.go) 新增），锚定最后一个 `⏺`，把滚出去的回复头补回来。短回复不受影响（scrollback 此时只含旧轮，落在当前 `⏺` 之前被忽略）。
+2. **从源头少滚屏**（ADR-035）：默认会话 PTY 改为**固定大网格** `session.DefaultGridCols×Rows`（当前 **120×60**），且**不再支持运行时 resize**——web 终端是 CSS 框定的固定尺寸观看器（[termchan](../termchan/termchan.go) 忽略 resize、[TerminalView.vue](../../web/spa/src/views/TerminalView.vue) 按服务端报的网格定 xterm）。现实长度的回复基本一屏装下，根本不滚屏，第 1 层只在极端超长时才兜底。
 
 **边界与已知限制（后续 case 候选）**：
 - 只对 **primary screen** 生效：claude 走 alt-screen（`?1049h`）时 vtscreen 不留 scrollback（设计如此）。当前 claude 内联渲染走 primary，reconnect 历史也依赖这点。若未来某版 claude 改用 alt-screen，C9 失效 → 需新 case。
