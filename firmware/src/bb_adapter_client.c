@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "bb_bbwire2.h"
+#include "bb_prompt.h"
 #include "bb_device_config.h"
 #include "bb_notification.h"
 #include "bb_ogg_opus.h"
@@ -236,6 +237,42 @@ static void emit_tool_call_event(bb_finish_stream_event_cb_t cb, void* user_ctx,
       .dispatch = NULL,
   };
   cb(&event, user_ctx);
+}
+
+/* ADR-033: emit a PROMPT_OPEN/PROMPT_CLOSE event carrying the parsed menu. */
+static void emit_prompt_event(bb_finish_stream_event_cb_t cb, void* user_ctx,
+                              bb_finish_stream_event_type_t type, const bb_prompt_t* prompt) {
+  if (cb == NULL || prompt == NULL) return;
+  bb_finish_stream_event_t event = {
+      .type = type,
+      .phase = NULL,
+      .text = NULL,
+      .tts_chunk = NULL,
+      .reply_wait_timed_out = 0,
+      .dispatch = NULL,
+      .prompt = prompt,
+  };
+  cb(&event, user_ctx);
+}
+
+/* ADR-033: send the device's answer to a forwarded blocking menu over the cloud
+ * WS — a prompt.select request the cloud routes to the home adapter (same
+ * fire-and-forget envelope shape as agent.sessions.activate). */
+esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* option_key) {
+  if (prompt_id == NULL || option_key == NULL || prompt_id[0] == '\0' || option_key[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  char body[224];
+  snprintf(body, sizeof(body),
+           "{\"type\":\"request\",\"kind\":\"prompt.select\",\"messageId\":\"psel-%lld\","
+           "\"deviceId\":\"%s\",\"payload\":{\"promptId\":\"%s\",\"optionKey\":\"%s\"}}",
+           (long long)bb_now_ms(), BBCLAW_DEVICE_ID, prompt_id, option_key);
+  esp_err_t err = ws_client_ensure_connected();
+  if (err == ESP_OK) {
+    err = ws_send_text_message(body);
+  }
+  ESP_LOGI(TAG, "prompt.select sent err=%s id=%s key=%s", esp_err_to_name(err), prompt_id, option_key);
+  return err;
 }
 
 static int json_extract_int(const char* body, const char* key, int fallback) {
@@ -1220,6 +1257,20 @@ static void ws_handle_text_message(const char* msg) {
     if (s_ws.finish_on_event != NULL && name[0] != '\0') {
       emit_tool_call_event(s_ws.finish_on_event, s_ws.finish_user_ctx, name, hint);
     }
+  } else if (strcmp(kind, "voice.prompt.open") == 0) {
+    /* ADR-033: blocking permission/confirm menu forwarded for on-device approval. */
+    bb_prompt_t p;
+    if (bb_prompt_parse_open(msg, &p) && s_ws.finish_on_event != NULL) {
+      emit_prompt_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_PROMPT_OPEN, &p);
+    }
+  } else if (strcmp(kind, "voice.prompt.close") == 0) {
+    bb_prompt_t p;
+    memset(&p, 0, sizeof(p));
+    (void)json_extract_string(msg, "promptId", p.prompt_id, sizeof(p.prompt_id));
+    (void)json_extract_string(msg, "reason", p.reason, sizeof(p.reason));
+    if (s_ws.finish_on_event != NULL) {
+      emit_prompt_event(s_ws.finish_on_event, s_ws.finish_user_ctx, BB_FINISH_STREAM_EVENT_PROMPT_CLOSE, &p);
+    }
   } else if (strcmp(kind, "dispatch_status") == 0) {
     /* ADR-021-firmware-ui §1.2: butler dispatch progress via WS relay */
     if (s_ws.finish_on_event != NULL) {
@@ -1633,6 +1684,26 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
     if (accum->on_event != NULL) {
       emit_finish_stream_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_REPLY_DELTA, NULL, text, NULL,
                                0);
+    }
+    return;
+  }
+
+  if (strcmp(type, "prompt.open") == 0) {
+    /* ADR-033: blocking menu over the HTTP NDJSON stream (short type). */
+    bb_prompt_t p;
+    if (bb_prompt_parse_open(line, &p) && accum->on_event != NULL) {
+      emit_prompt_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_PROMPT_OPEN, &p);
+    }
+    return;
+  }
+
+  if (strcmp(type, "prompt.close") == 0) {
+    bb_prompt_t p;
+    memset(&p, 0, sizeof(p));
+    (void)json_extract_string(line, "promptId", p.prompt_id, sizeof(p.prompt_id));
+    (void)json_extract_string(line, "reason", p.reason, sizeof(p.reason));
+    if (accum->on_event != NULL) {
+      emit_prompt_event(accum->on_event, accum->user_ctx, BB_FINISH_STREAM_EVENT_PROMPT_CLOSE, &p);
     }
     return;
   }

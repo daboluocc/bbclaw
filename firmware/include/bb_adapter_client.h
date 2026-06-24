@@ -148,6 +148,10 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
 
+/* ADR-033: send the device's answer to a forwarded blocking menu over the cloud
+ * WS (a prompt.select request the cloud relays to the home adapter). */
+esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* option_key);
+
 /* ADR-028 §2.5.1 barge-in — fire-and-forget turn cancel.
  *
  * Tells the adapter to abort the device's in-flight agent turn (kills the

@@ -1307,7 +1307,13 @@ static void tts_stream_ui_shutdown(bb_reply_stream_ui_ctx_t* ui, int force_stop)
 /* ADR-033: the user's on-device decision for a forwarded blocking menu — send it
  * back to the adapter over bbwire/2 (LAN). option_key is the chosen/deny key. */
 static void on_prompt_decision(const char* prompt_id, const char* option_key) {
-  bb_bbwire2_send_prompt_select(prompt_id, option_key);
+  /* Answer over the SAME transport the turn runs on: bbwire/2 for LAN adapter_v2,
+   * the cloud WS for cloud_saas (ADR-033). */
+  if (bb_transport_is_v2()) {
+    bb_bbwire2_send_prompt_select(prompt_id, option_key);
+  } else {
+    bb_adapter_send_prompt_select(prompt_id, option_key);
+  }
 }
 
 /* Show/dismiss the blocking-prompt confirm page for a PROMPT_OPEN/CLOSE event.
