@@ -3755,11 +3755,18 @@ esp_err_t bb_radio_app_start(void) {
            BBCLAW_CAPTURE_RINGBUF_CHUNKS);
   log_heap_snapshot("after ringbuf");
 
-  /* 采集与 stream 同核，减少环缓冲跨核自旋锁与 LVGL(SPI) 争用导致的 INT WDT */
+  /* 采集与 stream 同核，减少环缓冲跨核自旋锁与 LVGL(SPI) 争用导致的 INT WDT。
+   * PSRAM 栈（同 stream_task）：capture_task 只读 I2S→ring（栈上仅 pcm_read_buf
+   * [1024]，不碰 NVS/flash，无 cache-disable 风险；16k 采集余量充裕，PSRAM 栈延迟
+   * 可忽略）。常驻不删，无需 vTaskDeleteWithCaps。改 WithCaps 是为了**别偷内部
+   * RAM**——内部堆贴着 8KB 线时，这 4KB 内部栈会把最大连续块挤到 adapter ws 任务
+   * 所需的 8192B 以下 → Error create websocket task / PTT 录到音发不出（见
+   * firmware/docs/debug/internal-ram-ws-task.md，对齐 c3d9c1d/7899e19）。 */
 #ifdef CONFIG_FREERTOS_UNICORE
-  BaseType_t ok = xTaskCreate(capture_task, "bb_capture_task", 4096, NULL, 7, NULL);
+  BaseType_t ok = xTaskCreateWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #else
-  BaseType_t ok = xTaskCreatePinnedToCore(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, 0);
+  BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, 0,
+                                                  BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #endif
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "capture task create failed stack=4096 free=%u largest=%u", (unsigned)esp_get_free_heap_size(),
