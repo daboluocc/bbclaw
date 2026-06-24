@@ -178,3 +178,17 @@ esp_err_t bb_device_config_set_volume_pct(int pct) {
   ESP_LOGI(TAG, "volume set locally pct=%d version=%d", pct, s_config.version);
   return persist_config();
 }
+
+esp_err_t bb_device_config_note_volume_pct(int pct) {
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  if (s_config.volume_pct == pct) return ESP_OK;
+  s_config.volume_pct = pct;
+  /* Deliberately do NOT bump version: this value originated at the cloud, so we
+   * are mirroring it locally, not asserting a new local config version. Bumping
+   * here would push s_config.version above the cloud's counter and make a later
+   * cloud config.update / welcome (for ANY field) be dropped by the
+   * `version <= current` gate. */
+  ESP_LOGI(TAG, "volume noted from cloud pct=%d version=%d (unchanged)", pct, s_config.version);
+  return persist_config();
+}

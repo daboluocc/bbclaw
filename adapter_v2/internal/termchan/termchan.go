@@ -27,7 +27,6 @@ import (
 
 	"nhooyr.io/websocket"
 
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
 
@@ -279,7 +278,14 @@ func pumpInput(ctx context.Context, conn wsConn, sess *session.Session, token ui
 				return err
 			}
 		case "resize":
-			_ = sess.Resize(ptyhost.Size{Cols: msg.Cols, Rows: msg.Rows})
+			// Ignored by design. The default session's PTY is a FIXED grid
+			// (session.DefaultGridCols×Rows), never resized at runtime: the device line
+			// screen-scrapes claude's TUI off it, and a browser-driven shrink would push a
+			// tall reply's top off the visible grid and starve extraction (ADR-035,
+			// extract/CASES.md C9). Web terminals are FIXED-SIZE VIEWERS that frame this
+			// grid with CSS (web/spa TerminalView.vue), so their resize requests are
+			// dropped instead of reflowing the shared PTY. msg.Cols/Rows stay in the
+			// protocol for backward compat; intentionally unused.
 		default:
 			// Unknown type: ignore for forward compatibility.
 		}

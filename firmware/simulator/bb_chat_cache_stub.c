@@ -25,3 +25,10 @@ void bb_chat_cache_replay(bb_chat_cache_replay_cb cb, void* user) {
 }
 void bb_chat_cache_clear(void) {}
 int bb_chat_cache_has_data(void) { return 0; }
+/* Added with the ADR-028 turn-withdrawal change (commit 9984acf), which the
+ * transcript module now references on the sim too. */
+void bb_chat_cache_drop_last_turn(void) {}
+
+/* bb_ota.c isn't compiled into the sim, but bb_chat_transcript.c references this
+ * for its version line; stub it here so the host link resolves. */
+const char* bb_ota_get_current_version(void) { return "vSIM"; }

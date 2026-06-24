@@ -12,6 +12,7 @@
 #include "bb_page_apconfig.h"
 #include "bb_page_netconn.h"
 #include "bb_page_ota_confirm.h"
+#include "bb_page_prompt_select.h"
 #include "bb_time.h"
 #include "lvgl.h"
 #include "src/drivers/sdl/lv_sdl_keyboard.h"
@@ -34,6 +35,7 @@ typedef enum {
   APP_MODE_LOCKED = 5,
   APP_MODE_APCONFIG = 6,
   APP_MODE_OTA_CONFIRM = 7,
+  APP_MODE_PROMPT_SELECT = 13, /* ADR-033 blocking-prompt confirm page */
   /* LED preview modes (issue #168): maps to v2 LED states */
   APP_MODE_LED_IDLE = 8,      /* 空闲：绿常亮 */
   APP_MODE_LED_LISTENING = 9, /* 倾听：橙常亮 */
@@ -133,6 +135,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_APCONFIG;
       } else if (strcmp(argv[i], "ota_confirm") == 0) {
         state->mode = APP_MODE_OTA_CONFIRM;
+      } else if (strcmp(argv[i], "prompt_select") == 0) {
+        state->mode = APP_MODE_PROMPT_SELECT;
       } else if (strcmp(argv[i], "error") == 0) {
         state->mode = APP_MODE_LED_ERROR;
       } else if (strcmp(argv[i], "worker") == 0) {
@@ -266,7 +270,7 @@ static void headless_flush_cb(lv_display_t* display, const lv_area_t* area, uint
 
 static void populate_preview_state(const app_state_t* state) {
   /* LED-only preview modes (issue #168): print LED state to stdout, skip LVGL */
-  if (state->mode >= APP_MODE_LED_IDLE) {
+  if (state->mode >= APP_MODE_LED_IDLE && state->mode <= APP_MODE_LED_ERROR) {
     led_state_t ls = led_state_for_mode(state->mode);
     printf("LED color=#%02X%02X%02X anim=%s period_ms=%u\n",
            ls.r, ls.g, ls.b, ls.anim, (unsigned)ls.period_ms);
@@ -314,6 +318,27 @@ static void populate_preview_state(const app_state_t* state) {
     return;
   }
 
+  if (state->mode == APP_MODE_PROMPT_SELECT) {
+    /* ADR-033 blocking-prompt confirm page preview (a real claude permission menu). */
+    bb_display_set_battery(1, 1, 82, 0, 0);
+    (void)bb_display_show_status("READY");
+    bb_prompt_t p;
+    memset(&p, 0, sizeof(p));
+    snprintf(p.prompt_id, sizeof(p.prompt_id), "p1");
+    snprintf(p.kind, sizeof(p.kind), "permission");
+    snprintf(p.question, sizeof(p.question), "Do you want to proceed?");
+    snprintf(p.options[0].key, sizeof(p.options[0].key), "1");
+    snprintf(p.options[0].label, sizeof(p.options[0].label), "Yes");
+    p.options[0].is_default = 1;
+    snprintf(p.options[1].key, sizeof(p.options[1].key), "2");
+    snprintf(p.options[1].label, sizeof(p.options[1].label), "Yes, allow reading etc/ this project");
+    snprintf(p.options[2].key, sizeof(p.options[2].key), "3");
+    snprintf(p.options[2].label, sizeof(p.options[2].label), "No");
+    p.n_options = 3;
+    bb_page_prompt_select_show(&p, NULL);
+    return;
+  }
+
   /* For speaking/active modes, always populate chat turns first */
   int turns = state->turn_den > 0 ? state->turn_den : 1;
   for (int i = 1; i < turns; ++i) {
@@ -352,7 +377,7 @@ int main(int argc, char** argv) {
   parse_args(&state, argc, argv);
 
   /* LED-only modes don't need LVGL or SDL — print and exit */
-  if (state.mode >= APP_MODE_LED_IDLE) {
+  if (state.mode >= APP_MODE_LED_IDLE && state.mode <= APP_MODE_LED_ERROR) {
     populate_preview_state(&state);
     return 0;
   }

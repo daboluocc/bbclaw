@@ -108,6 +108,14 @@ type CLISettings struct {
 	// dismiss its first-run "Try the new fullscreen renderer?" upsell, which would
 	// otherwise block the shared TUI (the voice/device path can't answer it).
 	ClaudeAutoEnter bool `json:"claudeAutoEnter"` // ADAPTER_V2_CLAUDE_AUTO_ENTER (default true)
+
+	// ConfirmOnDevice turns OFF the permission bypass and instead forwards claude's
+	// tool/permission menus to the device for confirmation (ADR-033). When set the
+	// butler spawns claude WITHOUT --dangerously-skip-permissions and WITH
+	// --permission-mode default (else the persisted auto-accept mode swallows the
+	// prompts — ADR-033 spike), and the device Bridge forwards them (auto-DENY on
+	// timeout / no-device). Default false = today's bypass behaviour, untouched.
+	ConfirmOnDevice bool `json:"confirmOnDevice"` // ADAPTER_V2_CONFIRM_ON_DEVICE (default false)
 }
 
 // CloudSettings groups the cloud-relay knobs (cloudrelay.go).
@@ -137,6 +145,13 @@ func envOr(name, def string) string {
 	}
 	return def
 }
+
+// ConfirmOnDeviceEnabled reports whether forward-to-device permission
+// confirmation is on (ADR-033), read from the ExportEnv-populated environment.
+// The device transports consult it to turn on Bridge prompt forwarding without
+// threading the whole settings doc through their constructors — the same
+// "readers read os.Getenv" pattern the rest of adapter_v2 uses.
+func ConfirmOnDeviceEnabled() bool { return envBool("ADAPTER_V2_CONFIRM_ON_DEVICE", false) }
 
 // FromEnv reads the SAME env vars the rest of adapter_v2 reads, producing the
 // seed/base snapshot. Defaults match the code defaults exactly so a zero-config
@@ -181,6 +196,7 @@ func FromEnv() Settings {
 			VoiceSystemPrompt: os.Getenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"), // may be set-empty on purpose
 			Addr:              envOr("ADAPTER_V2_ADDR", ":18090"),
 			ClaudeAutoEnter:   envBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", true),
+			ConfirmOnDevice:   envBool("ADAPTER_V2_CONFIRM_ON_DEVICE", false),
 		},
 		AI: AISettings{
 			AnthropicBaseURL:   strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
@@ -400,6 +416,7 @@ func (s *Store) ExportEnv() {
 	setStr("ADAPTER_V2_VOICE_SYSTEM_PROMPT", c.VoiceSystemPrompt)
 	setStr("ADAPTER_V2_ADDR", c.Addr)
 	setBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", c.ClaudeAutoEnter)
+	setBool("ADAPTER_V2_CONFIRM_ON_DEVICE", c.ConfirmOnDevice)
 
 	ai := snap.AI
 	// Blank ⇒ skipped, so an unconfigured endpoint never shadows a token the

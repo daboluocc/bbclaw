@@ -50,3 +50,6 @@
 | [ADR-030](ADR-030-device-execution-steps.md) | 设备端执行步骤——display-only step 通道（说主结果、显步骤） | 2026-06-17 | 已接受 |
 | [ADR-031](ADR-031-opencode-as-canonical-backend.md) | OpenCode 作为 canonical 后端——收敛 driver 动物园，serve + SDK 取代 scrape-CLI | 2026-06-17 | 草案（方向已定，1 个 spike 闸门） |
 | [ADR-032](ADR-032-adapter-v2-conversation-sessions.md) | adapter_v2 会话生命周期——默认续接 / 新对话 / 历史选择 / 按会话隔离 | 2026-06-23 | 提议（P1 续接 + PTT 退出已落地，P2/P3 待实现） |
+| [ADR-033](ADR-033-adapter-v2-blocking-prompt-device-confirm.md) | adapter_v2 阻塞式交互弹窗 → 设备确认（截屏识别 + 转发选择） | 2026-06-24 | 进行中（四端已实现，待真机端到端验证） |
+| [ADR-034](ADR-034-adapter-v2-task-list-channel.md) | adapter_v2 计划清单（TodoWrite）→ 设备 display-only `task.list` 通道 | 2026-06-25 | 草案（docs-only，待 P0 抓屏识别器闸门） |
+| [ADR-035](ADR-035-adapter-v2-interactive-pty-over-claude-p.md) | adapter_v2 跑交互式 PTY + 抓屏而非 `claude -p`——计费留在订阅内 + 多 CLI 无缝兼容 | 2026-06-25 | 已接受（追认既有架构） |

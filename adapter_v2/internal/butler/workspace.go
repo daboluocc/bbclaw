@@ -12,7 +12,7 @@ import (
 // built-in file tools (the persona in CLAUDE.md drives this). profile.md carries
 // the onboarding STATUS marker.
 var memoryFiles = map[string]string{
-	"profile.md": "# 用户档案\n\n<!-- STATUS: uninitialized -->\n\n- 称呼:\n- 角色 / 职业:\n- 现在主要在忙:\n",
+	"profile.md":     "# 用户档案\n\n<!-- STATUS: uninitialized -->\n\n- 称呼:\n- 角色 / 职业:\n- 现在主要在忙:\n",
 	"preferences.md": "# 用户偏好\n\n（用户表达稳定偏好时追加要点）\n",
 	"projects.md":    "# 项目与进展\n\n（用户提到的项目与进展线索追加在这里）\n",
 	"decisions.md":   "# 关键决策\n\n（敲定的重要决策 + 原因，一条一句）\n",
@@ -84,7 +84,13 @@ func DeviceClaudeArgs(argv []string, cwd string) []string {
 		return argv
 	}
 	out := append([]string{}, argv...)
-	if envBool("ADAPTER_V2_SKIP_PERMISSIONS", true) {
+	if envBool("ADAPTER_V2_CONFIRM_ON_DEVICE", false) {
+		// Forward-to-device mode (ADR-033): do NOT bypass; force the ask-prompt mode
+		// so claude renders its permission menus (merely dropping the skip flag is not
+		// enough — the persisted default is auto-accept, which swallows them; ADR-033
+		// spike). The device Bridge forwards/auto-denies them.
+		out = append(out, "--permission-mode", "default")
+	} else if envBool("ADAPTER_V2_SKIP_PERMISSIONS", true) {
 		out = append(out, "--dangerously-skip-permissions")
 	}
 	prompt := DeviceSystemPrompt(cwd, "")

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
 
 // proxyDriver is the single logical driver adapter_v2 advertises to the device's
@@ -147,8 +148,16 @@ func (r *Relay) devActiveID() string {
 
 func driverCaps() map[string]any {
 	return map[string]any{
-		"toolApproval": false, "resume": true, "streaming": true,
-		"maxInputBytes": 0, "butler": true,
+		// toolApproval advertises that this adapter forwards claude's permission
+		// menus for on-device confirmation (ADR-033). True ONLY when forward-to-device
+		// is enabled — the capability-negotiation gate (§9): a cloud/firmware seeing it
+		// false never renders a prompt UI, and the adapter only emits voice.prompt.*
+		// when it's on, so with it off the whole path is inert.
+		"toolApproval":  settingsstore.ConfirmOnDeviceEnabled(),
+		"resume":        true,
+		"streaming":     true,
+		"maxInputBytes": 0,
+		"butler":        true,
 	}
 }
 

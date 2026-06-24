@@ -78,6 +78,15 @@ type Detector struct {
 	// at all (a very fast or spinner-less CLI) still ends on prompt-return +
 	// quiet, so we never get stuck waiting for a spinner that will never show.
 	sawSpinner bool
+
+	// awaitingPromptOnScreen records whether a BLOCKING interactive menu (claude's
+	// "Do you want to proceed? ❯ 1. Yes …" permission/confirm popup) is on screen.
+	// In that state claude has CLEARED the spinner (it is waiting on the human, not
+	// the model) yet the turn is NOT over — it is parked on the menu. Without this,
+	// TurnEnded's sawSpinner short-circuit would mis-fire turn-end and the device
+	// would speak blank / stale text over the prompt (ADR-033 §0; the bug §9 wrongly
+	// claimed was "naturally" handled).
+	awaitingPromptOnScreen bool
 }
 
 // Observe records a PTY chunk: t is when the bytes arrived, screen is the
@@ -101,11 +110,21 @@ func (d *Detector) refresh(screen screenView) {
 	if screen == nil {
 		return
 	}
-	spinner, prompt := scanStatus(screen.VisibleText())
+	visible := screen.VisibleText()
+	spinner, prompt := scanStatus(visible)
 	d.spinnerOnScreen = spinner
 	d.idlePromptOnScreen = prompt
 	if spinner {
 		d.sawSpinner = true
+	}
+	// Only a mid-TURN blocking menu (permission/tool confirm) suppresses turn-end.
+	// A startup/periodic upsell or trust dialog is not part of a reply turn and is
+	// dismissed elsewhere — keying off it here could wedge the turn forever (no
+	// dismisser in this loop). See IsTurnBlockingKind.
+	if p, ok := ParsePrompt(visible); ok && IsTurnBlockingKind(p.Kind) {
+		d.awaitingPromptOnScreen = true
+	} else {
+		d.awaitingPromptOnScreen = false
 	}
 }
 
@@ -128,6 +147,13 @@ func (d *Detector) TurnEnded(now time.Time) bool {
 	}
 	if d.spinnerOnScreen {
 		return false // CLI is still working (e.g. a mid-reply network pause)
+	}
+	if d.awaitingPromptOnScreen {
+		// A blocking permission/confirm menu is up: claude cleared the spinner to
+		// wait on the human, but the turn is parked, NOT finished. Must precede the
+		// sawSpinner short-circuit below, which would otherwise mis-fire turn-end and
+		// speak blank/stale text over the menu (ADR-033 §0).
+		return false
 	}
 	// Output settled and the working spinner is gone. The primary completion
 	// signal is "the CLI was working this turn (a spinner appeared) and it is now
@@ -152,6 +178,7 @@ func (d *Detector) Reset() {
 	d.spinnerOnScreen = false
 	d.idlePromptOnScreen = false
 	d.sawSpinner = false
+	d.awaitingPromptOnScreen = false
 }
 
 // scanStatus inspects the plain-text visible grid for the two screen-derived

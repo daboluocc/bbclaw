@@ -11,3 +11,4 @@
 当前记录：
 
 - [INMP441 LR 板级异常排查](./inmp441-lr-board-notes.md)
+- [内部 RAM 碎片 → ws 任务建不起来（PTT 录到音发不出）](./internal-ram-ws-task.md)

@@ -124,6 +124,9 @@ type ctrlIn struct {
 	U      uint16     `json:"u,omitempty"`
 	Frames int        `json:"frames,omitempty"`
 	UpTo   uint16     `json:"upTo,omitempty"`
+	// prompt.select (ADR-033): the device's answer to a forwarded blocking menu.
+	PromptID  string `json:"promptId,omitempty"`
+	OptionKey string `json:"optionKey,omitempty"`
 }
 
 // Downlink (adapter → device) control objects. Each sets its own `t`.
@@ -170,6 +173,36 @@ type turnState struct {
 	T      string `json:"t"`
 	TurnID string `json:"turnId"`
 	State  string `json:"state"` // thinking | speaking | idle
+}
+
+// promptOption is one selectable row of a forwarded blocking menu (ADR-033).
+type promptOption struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Default bool   `json:"default,omitempty"`
+}
+
+// promptOpen (adapter → device) forwards claude's blocking permission/confirm
+// menu for on-device confirmation. The device shows {question, options} and
+// replies with a prompt.select carrying the chosen option's key. NOT display-only
+// — it has a reply loop (unlike tool.step), so it is its own uplink message kind.
+type promptOpen struct {
+	T         string         `json:"t"` // "prompt.open"
+	TurnID    string         `json:"turnId"`
+	PromptID  string         `json:"promptId"`
+	Kind      string         `json:"kind"`
+	Question  string         `json:"question"`
+	Options   []promptOption `json:"options"`
+	Mechanism string         `json:"mechanism"` // "digit"
+}
+
+// promptClose (adapter → device) tells the device to dismiss its prompt UI:
+// reason ∈ answered | timeout | superseded | cleared | respawn (ADR-033).
+type promptClose struct {
+	T        string `json:"t"` // "prompt.close"
+	TurnID   string `json:"turnId"`
+	PromptID string `json:"promptId"`
+	Reason   string `json:"reason"`
 }
 
 type errFrame struct {

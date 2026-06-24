@@ -35,6 +35,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_apconfig.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_ota.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_ota_confirm.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_prompt_select.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_locked.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_transcript.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_recording.c"

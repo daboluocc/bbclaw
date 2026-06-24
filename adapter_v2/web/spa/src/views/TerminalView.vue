@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from "vue";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 
-// Live terminal over the adapter's /ws endpoint. Ported faithfully from the old
-// web/index.html: fit addon, exponential-backoff reconnect, and the
-// "reconnected" snapshot-replay handshake.
+// Live terminal over the adapter's /ws endpoint.
+//
+// FIXED-SIZE VIEWER (ADR-035): the default session's PTY is pinned to a fixed,
+// generous grid (session.DefaultGridCols×Rows) and is NEVER resized at runtime —
+// the device line screen-scrapes claude's TUI off it, and a browser-driven
+// shrink would push a tall reply's top off the visible grid and starve
+// extraction (see extract/CASES.md C9). So this view does NOT fit/resize the
+// PTY to the browser: it sizes its xterm to the grid the server reports in the
+// "reconnected" frame, and the CSS frame (.term-wrap, overflow:auto) scrolls
+// that fixed-size terminal into the panel. No fit addon, no resize messages.
 //
 // Wire protocol (adapter_v2/internal/termchan/termchan.go):
-//   client → server : {type:"input",  data}            keystrokes (utf-8)
-//                      {type:"resize", cols, rows}      grid size
-//   server → client : {type:"reconnected", cols, rows}  first frame on (re)connect
-//                      {type:"output", data}            raw PTY bytes (ANSI)
+//   client → server : {type:"input",  data}             keystrokes (utf-8)
+//   server → client : {type:"reconnected", cols, rows}   grid size on (re)connect
+//                      {type:"output", data}             raw PTY bytes (ANSI)
 //
 // On (re)connect the server replays scrollback + a screen snapshot as a burst
 // of "output" frames; we reset() the terminal on "reconnected" so the ANSI
@@ -28,13 +33,10 @@ function resolveSessionId(): string {
 const sessionId = resolveSessionId();
 
 let term: Terminal | null = null;
-let fitAddon: FitAddon | null = null;
 let ws: WebSocket | null = null;
 let reconnectAttempts = 0;
 let reconnectTimer: number | null = null;
 let destroyed = false;
-let sentResize = { cols: 0, rows: 0 };
-let resizeObserver: ResizeObserver | null = null;
 
 function wsURL(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -48,20 +50,6 @@ function send(msg: unknown) {
   }
 }
 
-function fitAndResize(force: boolean) {
-  if (!term || !fitAddon) return;
-  try {
-    fitAddon.fit();
-  } catch {
-    return; // container not laid out yet
-  }
-  const { cols, rows } = term;
-  if (cols < 2 || rows < 2) return;
-  if (!force && cols === sentResize.cols && rows === sentResize.rows) return;
-  sentResize = { cols, rows };
-  send({ type: "resize", cols, rows });
-}
-
 function setStatus(text: string) {
   statusText.value = text;
 }
@@ -72,8 +60,8 @@ function connect() {
   ws.onopen = () => {
     reconnectAttempts = 0;
     setStatus("");
-    sentResize = { cols: 0, rows: 0 };
-    fitAndResize(true);
+    // No resize handshake: the server owns the (fixed) grid and announces it in
+    // the "reconnected" frame below.
   };
 
   ws.onmessage = (ev) => {
@@ -86,6 +74,8 @@ function connect() {
     switch (msg.type) {
       case "reconnected":
         term?.reset();
+        // Size our xterm to the server's FIXED grid (we never drive it the other
+        // way). The CSS frame scrolls it if it overflows the panel.
         if (msg.cols && msg.rows && msg.cols >= 2 && msg.rows >= 2) {
           term?.resize(msg.cols, msg.rows);
         }
@@ -156,23 +146,13 @@ onMounted(() => {
       brightWhite: "#ffffff",
     },
   });
-  fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
   term.open(termHost.value!);
 
   term.onData((data) => send({ type: "input", data }));
 
-  resizeObserver = new ResizeObserver(() => fitAndResize(false));
-  resizeObserver.observe(termHost.value!);
-  window.addEventListener("resize", onWindowResize);
-
   connect();
   term.focus();
 });
-
-function onWindowResize() {
-  fitAndResize(false);
-}
 
 onBeforeUnmount(() => {
   destroyed = true;
@@ -180,8 +160,6 @@ onBeforeUnmount(() => {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  window.removeEventListener("resize", onWindowResize);
-  resizeObserver?.disconnect();
   if (ws) {
     try {
       ws.close(1000);
@@ -197,6 +175,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="term-wrap">
     <div v-if="statusText" class="term-status">{{ statusText }}</div>
+    <!-- Fixed-size terminal; .term-wrap frames + scrolls it (ADR-035). -->
     <div ref="termHost" class="term-host"></div>
   </div>
 </template>
@@ -206,14 +185,14 @@ onBeforeUnmount(() => {
   position: relative;
   height: 100%;
   width: 100%;
+  overflow: auto; /* frame: scroll the fixed-size grid into view */
 }
 .term-host {
-  position: absolute;
-  inset: 0;
+  width: max-content; /* shrink-wrap to the terminal's natural grid width */
   padding: 8px 10px;
 }
 .term-status {
-  position: absolute;
+  position: sticky;
   top: 0;
   left: 0;
   right: 0;
@@ -225,11 +204,8 @@ onBeforeUnmount(() => {
   text-align: center;
   letter-spacing: 0.05em;
 }
-/* xterm fills its host; the dot-matrix bg shows in the padding gutter. */
-.term-host :deep(.xterm) {
-  height: 100%;
-}
 .term-host :deep(.xterm-viewport) {
   background: transparent !important;
+  overflow: visible !important; /* outer .term-wrap owns scrolling */
 }
 </style>

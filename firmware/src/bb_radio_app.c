@@ -24,6 +24,8 @@
 #include "bb_page_netconn.h"
 #include "bb_page_ota.h"
 #include "bb_page_ota_confirm.h"
+#include "bb_page_prompt_select.h"
+#include "bb_bbwire2.h"
 #include "bb_ui_theme.h"
 #include "bb_power.h"
 #include "bb_ptt.h"
@@ -1302,9 +1304,43 @@ static void tts_stream_ui_shutdown(bb_reply_stream_ui_ctx_t* ui, int force_stop)
   }
 }
 
+/* ADR-033: the user's on-device decision for a forwarded blocking menu — send it
+ * back to the adapter over bbwire/2 (LAN). option_key is the chosen/deny key. */
+static void on_prompt_decision(const char* prompt_id, const char* option_key) {
+  /* Answer over the SAME transport the turn runs on: bbwire/2 for LAN adapter_v2,
+   * the cloud WS for cloud_saas (ADR-033). */
+  if (bb_transport_is_v2()) {
+    bb_bbwire2_send_prompt_select(prompt_id, option_key);
+  } else {
+    bb_adapter_send_prompt_select(prompt_id, option_key);
+  }
+}
+
+/* Show/dismiss the blocking-prompt confirm page for a PROMPT_OPEN/CLOSE event.
+ * Shared by both finish-stream callbacks. Returns 1 if it consumed the event. */
+static int handle_prompt_event(const bb_finish_stream_event_t* event) {
+  if (event->type == BB_FINISH_STREAM_EVENT_PROMPT_OPEN && event->prompt != NULL) {
+    bb_page_prompt_select_show(event->prompt, on_prompt_decision);
+    return 1;
+  }
+  if (event->type == BB_FINISH_STREAM_EVENT_PROMPT_CLOSE && event->prompt != NULL) {
+    /* Only dismiss if THIS menu is the one on screen — a stale close must not
+     * tear down a newer prompt (promptId is the correlation key, ADR-033). */
+    if (bb_page_prompt_select_active_id_is(event->prompt->prompt_id)) {
+      bb_page_prompt_select_dismiss();
+    }
+    return 1;
+  }
+  return 0;
+}
+
 static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_ctx) {
   bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)user_ctx;
   if (event == NULL || ui == NULL) {
+    return;
+  }
+
+  if (handle_prompt_event(event)) {
     return;
   }
 
@@ -1447,6 +1483,10 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
 static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, void* user_ctx) {
   bb_reply_stream_ui_ctx_t* ui = (bb_reply_stream_ui_ctx_t*)user_ctx;
   if (event == NULL || ui == NULL) {
+    return;
+  }
+
+  if (handle_prompt_event(event)) {
     return;
   }
 
@@ -2012,6 +2052,21 @@ static void stream_task(void* arg) {
         bb_nav_event_t nav = (bb_nav_event_t)event;
 
         /* ADR-012 §3 button-routing table — each page owns its dispatch. */
+
+        /* Blocking-prompt confirm page (ADR-033) intercepts all nav when active
+         * (lv_layer_top): UP/DOWN move the selection, OK confirms, BACK denies. */
+        if (bb_page_prompt_select_active()) {
+          if (nav == BB_NAV_EVENT_UP) {
+            bb_page_prompt_select_nav_move(-1);
+          } else if (nav == BB_NAV_EVENT_DOWN) {
+            bb_page_prompt_select_nav_move(1);
+          } else if (nav == BB_NAV_EVENT_OK) {
+            bb_page_prompt_select_handle_nav(1);
+          } else if (nav == BB_NAV_EVENT_BACK) {
+            bb_page_prompt_select_handle_nav(0);
+          }
+          break;
+        }
 
         /* OTA confirm page intercepts OK/BACK when active (lv_layer_top).
          * All other nav events reset the 30 s timeout (keeps it fair). */
@@ -3219,6 +3274,12 @@ static void stream_task(void* arg) {
             } else if (state.cloud_volume_pct != s_applied_cloud_volume_pct) {
               s_applied_cloud_volume_pct = state.cloud_volume_pct;
               bb_audio_set_volume_pct(state.cloud_volume_pct);
+              /* Mirror the cloud value into the persisted config so the Settings
+               * menu (reads volume_pct on entry) and the next boot show what the
+               * cloud just applied — otherwise the audio changes but the menu
+               * keeps displaying the old percentage. No version bump: this is a
+               * cloud-originated value (see bb_device_config_note_volume_pct). */
+              bb_device_config_note_volume_pct(state.cloud_volume_pct);
             }
           }
           if (state.cloud_speaker_enabled >= 0) {
@@ -3363,6 +3424,13 @@ static void stream_task(void* arg) {
        * user gets the full BBCLAW_CHAT_IDLE_TIMEOUT_MS of quiet time before
        * the standby page comes in, never mid-sentence. */
       s_last_activity_ms = bb_now_ms();
+    }
+
+    /* The blocking-prompt confirm page (ADR-033) can appear MID-TURN, so poll its
+     * timeout regardless of streaming (unlike OTA confirm, which is never mid-turn).
+     * On timeout deny — the adapter's PromptTimeout is the further backstop. */
+    if (bb_page_prompt_select_timed_out()) {
+      bb_page_prompt_select_handle_nav(0);
     }
 
     if (!streaming) {
@@ -3687,11 +3755,18 @@ esp_err_t bb_radio_app_start(void) {
            BBCLAW_CAPTURE_RINGBUF_CHUNKS);
   log_heap_snapshot("after ringbuf");
 
-  /* 采集与 stream 同核，减少环缓冲跨核自旋锁与 LVGL(SPI) 争用导致的 INT WDT */
+  /* 采集与 stream 同核，减少环缓冲跨核自旋锁与 LVGL(SPI) 争用导致的 INT WDT。
+   * PSRAM 栈（同 stream_task）：capture_task 只读 I2S→ring（栈上仅 pcm_read_buf
+   * [1024]，不碰 NVS/flash，无 cache-disable 风险；16k 采集余量充裕，PSRAM 栈延迟
+   * 可忽略）。常驻不删，无需 vTaskDeleteWithCaps。改 WithCaps 是为了**别偷内部
+   * RAM**——内部堆贴着 8KB 线时，这 4KB 内部栈会把最大连续块挤到 adapter ws 任务
+   * 所需的 8192B 以下 → Error create websocket task / PTT 录到音发不出（见
+   * firmware/docs/debug/internal-ram-ws-task.md，对齐 c3d9c1d/7899e19）。 */
 #ifdef CONFIG_FREERTOS_UNICORE
-  BaseType_t ok = xTaskCreate(capture_task, "bb_capture_task", 4096, NULL, 7, NULL);
+  BaseType_t ok = xTaskCreateWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #else
-  BaseType_t ok = xTaskCreatePinnedToCore(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, 0);
+  BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, 0,
+                                                  BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #endif
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "capture task create failed stack=4096 free=%u largest=%u", (unsigned)esp_get_free_heap_size(),

@@ -53,6 +53,10 @@ typedef enum {
    * session id (in event->text) + driver (in event->phase) so the device can
    * persist the session for cache replay + history on CHAT re-entry. */
   BB_FINISH_STREAM_EVENT_SESSION,
+  /* ADR-033: a blocking permission/confirm menu was forwarded for on-device
+   * approval (OPEN) or dismissed (CLOSE). Payload in bb_finish_stream_event_t.prompt. */
+  BB_FINISH_STREAM_EVENT_PROMPT_OPEN,
+  BB_FINISH_STREAM_EVENT_PROMPT_CLOSE,
 } bb_finish_stream_event_type_t;
 
 /* Dispatch status payload — carried in bb_finish_stream_event_t.dispatch when
@@ -63,6 +67,24 @@ typedef struct {
   char cwd[64];      /* project cwd (filled on started) */
   int64_t elapsed_ms; /* worker elapsed time (filled on done/async) */
 } bb_dispatch_status_t;
+
+/* ADR-033 blocking-prompt payload — carried in bb_finish_stream_event_t.prompt
+ * when type == BB_FINISH_STREAM_EVENT_PROMPT_OPEN/CLOSE. options[] are the
+ * structured menu rows (key = the literal digit the device sends back). */
+#define BB_PROMPT_MAX_OPTIONS 4
+typedef struct {
+  char key[4];     /* injection digit, e.g. "1" */
+  char label[64];
+  int is_default;  /* claude's highlighted row (advisory) */
+} bb_prompt_option_t;
+typedef struct {
+  char prompt_id[24];
+  char kind[16]; /* permission | editConfirm | … */
+  char question[256];
+  bb_prompt_option_t options[BB_PROMPT_MAX_OPTIONS];
+  int n_options;
+  char reason[16]; /* PROMPT_CLOSE only: answered | timeout | … */
+} bb_prompt_t;
 
 typedef struct {
   bb_finish_stream_event_type_t type;
@@ -75,6 +97,8 @@ typedef struct {
   int reply_wait_timed_out;
   /* non-NULL when type == BB_FINISH_STREAM_EVENT_DISPATCH_STATUS */
   const bb_dispatch_status_t* dispatch;
+  /* non-NULL when type == BB_FINISH_STREAM_EVENT_PROMPT_OPEN/CLOSE (ADR-033) */
+  const bb_prompt_t* prompt;
 } bb_finish_stream_event_t;
 
 typedef void (*bb_finish_stream_event_cb_t)(bb_finish_stream_event_t* event, void* user_ctx);
@@ -123,6 +147,10 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
+
+/* ADR-033: send the device's answer to a forwarded blocking menu over the cloud
+ * WS (a prompt.select request the cloud relays to the home adapter). */
+esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* option_key);
 
 /* ADR-028 §2.5.1 barge-in — fire-and-forget turn cancel.
  *

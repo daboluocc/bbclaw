@@ -1,6 +1,9 @@
 package extract
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // noise.go classifies a single screen line as "noise" (UI chrome we must keep
 // out of the extracted reply) vs. real conversation content.
@@ -158,4 +161,29 @@ func isBoxDrawingOnly(t string) bool {
 // top-rule claude sometimes draws). These cover every border glyph claude uses.
 func isBoxDrawingRune(r rune) bool {
 	return r >= 0x2500 && r <= 0x259F
+}
+
+// optionLineRe matches one numbered select-menu row in claude's blocking popups,
+// e.g. "❯ 1. Yes", "  2. Yes, allow …", "  3. No". The optional leading "❯"/"›"
+// is claude's highlight pointer (the default row). Group 1 = pointer (or ""),
+// group 2 = digit key, group 3 = label. Anchored on the "digit + . / )" shape so
+// a prose line ("1990 was …") without the dot-space never matches. Lives here in
+// noise.go with the other claude-UI line classifiers so a TUI change is fixed in
+// one place (prompt.go builds on it).
+var optionLineRe = regexp.MustCompile(`^[ \t]*([❯›])?[ \t]*(\d+)[.)][ \t]+(\S.*?)[ \t]*$`)
+
+// parseOptionLine extracts {pointer, key, label} from a numbered menu row, or
+// ok=false. pointer reports whether the highlight glyph ("❯"/"›") precedes it.
+func parseOptionLine(raw string) (pointer bool, key, label string, ok bool) {
+	m := optionLineRe.FindStringSubmatch(raw)
+	if m == nil {
+		return false, "", "", false
+	}
+	return m[1] != "", m[2], strings.TrimSpace(m[3]), true
+}
+
+// isOptionLine reports whether t is a numbered select-menu option row.
+func isOptionLine(t string) bool {
+	_, _, _, ok := parseOptionLine(t)
+	return ok
 }

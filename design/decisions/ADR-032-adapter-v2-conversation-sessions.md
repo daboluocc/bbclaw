@@ -6,7 +6,7 @@
 
 ## 背景
 
-adapter_v2 用 **一根常驻 PTY 跑交互式 CLI（当前 claude）** 作为设备/语音线的后端（弃 `claude -p`，详见 [[adapter-v2-pty-refactor]] 方向）。CLI 自己管它的「对话」（claude：`~/.claude/projects/<cwd 编码>/<session-uuid>.jsonl`，一个对话一个文件）。但 adapter 此前**完全不管对话的生命周期**，暴露三个问题：
+adapter_v2 用 **一根常驻 PTY 跑交互式 CLI（当前 claude）** 作为设备/语音线的后端（弃 `claude -p`，缘由见 [ADR-035](ADR-035-adapter-v2-interactive-pty-over-claude-p.md)：计费留在订阅内 + 多 CLI 无缝兼容）。CLI 自己管它的「对话」（claude：`~/.claude/projects/<cwd 编码>/<session-uuid>.jsonl`，一个对话一个文件）。但 adapter 此前**完全不管对话的生命周期**，暴露三个问题：
 
 1. **每次重启都开新对话**。默认会话的 claude 裸启动（不带 `--continue`），所以 adapter 一重启就是空白新对话，用户上一轮聊的全断。真机测试期间 workspace 下因此堆了一大把一次性 `.jsonl`。用户诉求:**默认应该续上次对话**。
 2. **没有「新对话」**。用户想主动开一段干净对话时无从下手。

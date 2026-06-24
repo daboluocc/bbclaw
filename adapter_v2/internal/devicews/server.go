@@ -12,9 +12,11 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
 
 // maxFrame bounds a single inbound WS frame (mic audio frames can be a few KB).
@@ -77,11 +79,15 @@ type Options struct {
 // local TTS suffice for Phase A); dev supplies the default conversation's spawn
 // config (the LAN device line drives the same default session as the cloud relay).
 func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesizer, dev *butler.DeviceSession, opt Options) *Server {
+	// Default to the shared FIXED device grid (session.DefaultGridCols×Rows) — a
+	// tall grid so the device line's screen-scrape never loses a long reply's top
+	// to scroll-off (ADR-035, extract/CASES.md C9). The cloud-relay path pins the
+	// same size via butler.DeviceSession.Config; both target the one default PTY.
 	if opt.Cols <= 0 {
-		opt.Cols = 80
+		opt.Cols = session.DefaultGridCols
 	}
 	if opt.Rows <= 0 {
-		opt.Rows = 24
+		opt.Rows = session.DefaultGridRows
 	}
 	return &Server{mgr: mgr, asr: asr, tts: tts, dev: dev, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
 }
@@ -251,6 +257,29 @@ func (c *deviceConn) TurnIdle() {
 	c.setIdle()
 }
 
+// PromptOpen implements deviceapi.PromptObserver (ADR-033): forward claude's
+// blocking permission/confirm menu to the device as a prompt.open frame. The
+// device renders {question, options} and answers with a prompt.select carrying
+// the chosen key (routed to Bridge.SelectPromptOption in the read loop).
+func (c *deviceConn) PromptOpen(p deviceapi.PromptSpec) {
+	turnID, _ := c.turn()
+	opts := make([]promptOption, len(p.Options))
+	for i, o := range p.Options {
+		opts[i] = promptOption{Key: o.Key, Label: o.Label, Default: o.Default}
+	}
+	_ = c.writeCtrl(promptOpen{
+		T: "prompt.open", TurnID: turnID, PromptID: p.ID, Kind: p.Kind,
+		Question: p.Question, Options: opts, Mechanism: p.Mechanism,
+	})
+}
+
+// PromptClosed implements deviceapi.PromptObserver: tell the device to dismiss
+// its prompt UI (answered / timeout / superseded / cleared / respawn).
+func (c *deviceConn) PromptClosed(promptID, reason string) {
+	turnID, _ := c.turn()
+	_ = c.writeCtrl(promptClose{T: "prompt.close", TurnID: turnID, PromptID: promptID, Reason: reason})
+}
+
 // serve runs one device connection: hello handshake, then the PTT loop, until the
 // socket drops. The session/PTY outlives the connection (reaped by the session GC
 // once detached); Phase A has no resume, so a reconnect with the same device id
@@ -294,6 +323,11 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 	deviceID := strings.TrimSpace(hello.Dev)
 	if deviceID == "" {
 		deviceID = "dev-anon-" + strconv.FormatUint(anonSeq.Add(1), 10)
+	} else {
+		// Record the real device id so the `device set-volume/set-miyu` CLI can
+		// target "the current device" without the butler knowing its id (curdevice).
+		// Only real hello.Dev ids — never the synthetic anon placeholder above.
+		_ = curdevice.Record(deviceID)
 	}
 
 	// 2. session + bridge (the bridge's sink AND events are this conn). The LAN
@@ -317,6 +351,11 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		StreamReplyDelta: s.streamDelta,
 		SegmentTTS:       s.segmentTTS,
 		Warmup:           true,
+		// ADR-033: when forward-to-device confirmation is on, the Bridge detects
+		// claude's permission menus and forwards them to this device (dc implements
+		// PromptObserver → prompt.open/prompt.close frames), with auto-DENY on timeout
+		// as the safety net. The device answers via prompt.select.
+		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
 	})
 	bridge.SetEvents(dc)
 	go bridge.Run(ctx)
@@ -363,6 +402,12 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 					dc.setIdle()
 				}
 				uplink = uplink[:0]
+			case "prompt.select":
+				// Device's answer to a forwarded blocking menu (ADR-033). Route to the
+				// Bridge, which validates the promptId/key and injects the digit; a stale
+				// or unknown id is a safe no-op there. Accepted regardless of turn FSM
+				// state (the turn is parked on the menu until answered).
+				_ = bridge.SelectPromptOption(m.PromptID, m.OptionKey)
 			case "ping", "ack":
 				// Phase A: WS-layer keepalive covers ping; ack is Phase C.
 			}

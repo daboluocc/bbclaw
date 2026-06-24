@@ -58,6 +58,20 @@ func main() {
 		return
 	}
 
+	// `device …` is a short-lived CLI (set-volume / set-miyu via the cloud config
+	// API), NOT the server. Dispatch it before any server setup and exit with its
+	// code. The butler shells out to this so it can adjust the current device.
+	if len(os.Args) > 1 && os.Args[1] == "device" {
+		os.Exit(runDeviceCmd(os.Args[2:]))
+	}
+
+	// Export this binary's absolute path so the butler's claude (which inherits the
+	// adapter's env via the PTY) can invoke `"$BBCLAW_ADAPTER_V2_BIN" device …`
+	// regardless of PATH — the persona's device-control section references it.
+	if exe, err := os.Executable(); err == nil {
+		_ = os.Setenv("BBCLAW_ADAPTER_V2_BIN", exe)
+	}
+
 	// Web-first config (ADR-025, env-overlay variant). This MUST run before the
 	// config/voicekit/cloudrelay readers below: it seeds settings.json from the
 	// environment on first boot, then exports the file's values back into the

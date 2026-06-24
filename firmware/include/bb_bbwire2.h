@@ -110,3 +110,8 @@ esp_err_t bb_bbwire2_send_mic_pcm16(bb_stream_ctx_t* ctx, const uint8_t* pcm, si
  * on_event and filling out_result, mirroring bb_adapter_stream_finish_stream. */
 esp_err_t bb_bbwire2_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result,
                             bb_finish_stream_event_cb_t on_event, void* user_ctx);
+
+/* Send the device's answer to a forwarded blocking menu (ADR-033): a TEXT
+ * prompt.select frame with the chosen option's key. Safe to call from any task
+ * (esp_websocket_client_send_text is thread-safe). */
+esp_err_t bb_bbwire2_send_prompt_select(const char* prompt_id, const char* option_key);

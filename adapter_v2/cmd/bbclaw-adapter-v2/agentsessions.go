@@ -62,11 +62,33 @@ func agentSessionsRoutes(mux *http.ServeMux, dev *butler.DeviceSession) {
 		id := dev.New()
 		writeAgentJSON(w, map[string]any{"active": id})
 	})
+
+	// DELETE /v1/agent/sessions/{id} → remove a conversation. Deleting the active
+	// one moves the active id onto the next conversation (or a fresh one). {active}
+	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			http.Error(w, "session id required", http.StatusBadRequest)
+			return
+		}
+		active, err := dev.Delete(id)
+		if err != nil {
+			writeAgentError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeAgentJSON(w, map[string]any{"active": active})
+	})
 }
 
 func writeAgentJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": data})
+}
+
+func writeAgentError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg})
 }
 
 func atoiDefault(s string, def int) int {

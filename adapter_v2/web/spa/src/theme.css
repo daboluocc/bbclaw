@@ -62,13 +62,21 @@ a:hover {
   z-index: 5;
 }
 .wordmark {
+  font: inherit;
   font-weight: 700;
   font-size: 15px;
   letter-spacing: 0.32em;
   color: var(--lit);
+  border: 0;
   border-bottom: 2px dotted var(--accent);
-  padding-bottom: 3px;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 0 3px;
   white-space: nowrap;
+  cursor: pointer;
+}
+.wordmark:hover {
+  color: var(--accent);
 }
 .hdr .sub {
   font-size: 11px;

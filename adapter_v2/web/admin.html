@@ -29,11 +29,17 @@
       background-size:var(--pitch) var(--pitch);
     }
     a{color:var(--accent)}
-    .hdr{padding:16px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:baseline;gap:14px;
+    .hdr{padding:16px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:center;gap:14px;
       background:rgba(7,11,14,.85);backdrop-filter:blur(2px);position:sticky;top:0;z-index:3;flex-wrap:wrap}
     .wordmark{font-weight:700;font-size:15px;letter-spacing:.42em;color:var(--lit);
-      border-bottom:2px dotted var(--accent);padding-bottom:3px}
+      border-bottom:2px dotted var(--accent);padding-bottom:3px;text-decoration:none;cursor:pointer}
+    .wordmark:hover{color:var(--accent)}
     .hdr .sub{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
+    .tabs{display:flex;gap:6px;margin-left:8px}
+    .tab{font:inherit;cursor:pointer;background:transparent;border:1px solid var(--ghost);color:var(--dim);
+      border-radius:7px;padding:6px 16px;letter-spacing:.05em;text-decoration:none}
+    .tab:hover{color:var(--lit);border-color:var(--dim);text-decoration:none}
+    .tab.on{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
     .hdr .actions{margin-left:auto;display:flex;gap:8px;align-items:center}
     main{max-width:980px;margin:0 auto;padding:22px}
     @media (max-width:720px){ .hdr{padding:14px;gap:10px} .hdr .sub{display:none} main{padding:14px} }
@@ -87,8 +93,13 @@
 </head>
 <body>
   <header class="hdr">
-    <span class="wordmark">BBCLAW</span>
-    <span class="sub">adapter v2 · config</span>
+    <a class="wordmark" href="/" title="回到首页 Home">BBCLAW</a>
+    <span class="sub">adapter_v2</span>
+    <nav class="tabs">
+      <a class="tab" href="/#terminal">终端 Terminal</a>
+      <a class="tab" href="/#sessions">会话 Sessions</a>
+      <a class="tab on" href="/admin">⚙ 管理 Admin</a>
+    </nav>
     <div class="actions">
       <button id="save" class="" disabled>保存</button>
     </div>
@@ -202,6 +213,7 @@
         inputField("ADAPTER_V2_CWD", "cli.cwd", cli.cwd, {wide:true, hint:"留空则用共享 butler workspace"}) +
         boolField("跳过权限确认 (SKIP_PERMISSIONS)", "cli.skipPermissions", cli.skipPermissions) +
         boolField("自动跳过 claude 首启提示 (CLAUDE_AUTO_ENTER)", "cli.claudeAutoEnter", cli.claudeAutoEnter) +
+        boolField("设备端确认权限弹窗 (CONFIRM_ON_DEVICE，关 bypass)", "cli.confirmOnDevice", cli.confirmOnDevice) +
         areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
       );
 

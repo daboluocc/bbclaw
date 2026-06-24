@@ -32,6 +32,7 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
 )
@@ -253,6 +254,10 @@ func (r *Relay) announceCode(env Envelope) {
 // answered with minimal static replies so the settings UI doesn't hang. Anything
 // else is silently ignored (the cloud tolerates a no-op, like v1's default).
 func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, env Envelope) {
+	// Record the cloud device id so the `device set-volume/set-miyu` CLI can target
+	// "the current device" without the butler knowing its id (curdevice). This is
+	// the device id the cloud config API expects. Unchanged ids are a no-op write.
+	_ = curdevice.Record(env.DeviceID)
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "voice.transcript") {
 		if err := r.handleTranscript(ctx, write, env); err != nil {
 			r.log("cloudrelay: transcript device=%s error: %v", env.DeviceID, err)
@@ -271,6 +276,14 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 	// until the turn timed out.
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "turn.cancel") {
 		r.handleTurnCancel(write, env)
+		return
+	}
+	// prompt.select is the device's answer to a forwarded blocking menu (ADR-033) —
+	// an INDEPENDENT request kind (not voice.transcript), so a human's think-time is
+	// decoupled from ReplyWait and from supersede-on-new-transcript. Route it to the
+	// live bridge; a stale/unknown promptId is a safe no-op there.
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "prompt.select") {
+		r.handlePromptSelect(write, env)
 		return
 	}
 	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a

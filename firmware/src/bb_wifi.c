@@ -10,6 +10,7 @@
 #include "bb_config.h"
 #include "esp_check.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -835,10 +836,28 @@ static esp_err_t ensure_wifi_stack_ready(void) {
     }
   }
   if (!s_wifi_ready) {
+    size_t dma_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    /* #252: force DYNAMIC TX buffers at runtime. The dev/bench sdkconfig falls
+     * back to IDF-default STATIC TX (16×1.6KB≈25.6KB) which esp_wifi_init pins
+     * in internal DMA RAM (measured: largest 29KB→0), starving the softAP
+     * beacon → ieee80211_hostap_attach NULL-deref → boot loop when no wifi.
+     * Dynamic TX is heap-allocated and lands in PSRAM
+     * (CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y), freeing internal DMA. Done at
+     * runtime so it holds regardless of which sdkconfig the build resolved. */
+    cfg.tx_buf_type = 1;             /* dynamic */
+    cfg.static_tx_buf_num = 0;
+    if (cfg.dynamic_tx_buf_num == 0) cfg.dynamic_tx_buf_num = 32;
+    if (cfg.cache_tx_buf_num == 0) cfg.cache_tx_buf_num = 32;
     ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "set wifi storage failed");
     s_wifi_ready = 1;
+    /* #252: wifi init 的内部 DMA 占用(dynamic TX 后只占几 KB,留足 softAP beacon)。 */
+    ESP_LOGI(TAG, "wifi_init internal DMA: largest %u->%u free=%u (tx_buf_type=%d)",
+             (unsigned)dma_before,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             cfg.tx_buf_type);
   }
   if (!s_event_handlers_registered) {
     ESP_RETURN_ON_ERROR(
@@ -920,6 +939,26 @@ static esp_err_t start_ap_provisioning_mode(void) {
 
   (void)esp_wifi_disconnect();
   (void)esp_wifi_stop();
+
+  /* #252 boot-loop 守卫:softAP 的 beacon/mgmt 缓冲必须用内部 DMA RAM(PSRAM 不能
+   * 做 wifi DMA)。内部堆碎片化到分不出 752B beacon 时,esp_wifi_start() 会在闭源
+   * wifi 库 ieee80211_hostap_attach 对 NULL 做 strlen 崩溃(LoadProhibited)→ 没
+   * wifi 时无限重启(真机实锤,见崩溃 backtrace)。这里在 STA 缓冲已释放后量一次
+   * 内部 DMA 堆:不足就优雅返错——上层 bb_radio_app 会捕获、停在 WiFi 错误页、
+   * 不 abort 整机,而不是硬上让 wifi 库崩。日志带确切水位供调门槛。 */
+  size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  ESP_LOGW(TAG, "softap pre-start internal DMA heap: free=%u largest=%u (min free=%u largest=%u)",
+           (unsigned)dma_free, (unsigned)dma_largest,
+           (unsigned)BBCLAW_WIFI_AP_MIN_DMA_FREE, (unsigned)BBCLAW_WIFI_AP_MIN_DMA_LARGEST);
+  if (dma_free < BBCLAW_WIFI_AP_MIN_DMA_FREE || dma_largest < BBCLAW_WIFI_AP_MIN_DMA_LARGEST) {
+    ESP_LOGE(TAG,
+             "softap aborted: internal DMA RAM too low (free=%u largest=%u) — starting AP here "
+             "would crash the wifi lib (ieee80211_hostap_attach). Returning NO_MEM (graceful).",
+             (unsigned)dma_free, (unsigned)dma_largest);
+    return ESP_ERR_NO_MEM;
+  }
+
   ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "set ap mode failed");
   ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, "set ap config failed");
   ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "ap start failed");

@@ -88,6 +88,10 @@ func (d *DeviceSession) Config() ptyhost.Config {
 		}
 	}
 	cfg := ptyhost.Config{Argv: out, Cwd: d.cwd}
+	// Pin the default session to a FIXED, generous grid (never resized) so the
+	// device line's screen-scrape never loses a tall reply's top to scroll-off
+	// (session.DefaultGridCols×Rows; see ADR-035, extract/CASES.md C9).
+	cfg.InitialSize = ptyhost.Size{Cols: session.DefaultGridCols, Rows: session.DefaultGridRows}
 	if isClaude {
 		cfg.StartupInput = claudeStartupKeys()
 	}
@@ -104,6 +108,14 @@ func (d *DeviceSession) Config() ptyhost.Config {
 // the empty main prompt are harmless no-ops. Disable with
 // ADAPTER_V2_CLAUDE_AUTO_ENTER=0; returns nil when disabled.
 func claudeStartupKeys() []ptyhost.StartupChunk {
+	if envBool("ADAPTER_V2_CONFIRM_ON_DEVICE", false) {
+		// Forward-to-device mode runs claude with --permission-mode default, so a
+		// blind startup Enter could land on a permission menu and select its
+		// highlighted default (= "Yes") — silently AUTO-APPROVING a tool. That
+		// violates the ADR-033 safety invariant (never auto-approve), so the startup
+		// auto-Enter is disabled entirely in this mode; the device confirms prompts.
+		return nil
+	}
 	if !envBool("ADAPTER_V2_CLAUDE_AUTO_ENTER", true) {
 		return nil
 	}
@@ -152,6 +164,40 @@ func (d *DeviceSession) Resume(id string) {
 	d.mu.Unlock()
 	saveActiveSession(id)
 	d.respawn()
+}
+
+// Delete removes a conversation's .jsonl from the workspace. Deleting the ACTIVE
+// conversation also moves the active id onto the most-recent remaining one (or a
+// fresh conversation when none remain) and respawns, so the default session
+// never ends up resuming a now-missing id (claude --resume would fail/hang).
+// Returns the active id after the delete. A missing file is treated as success
+// (idempotent). Removing the file under a still-running claude is safe: respawn
+// kills that PTY, and an unlinked-but-open file is freed when the process exits.
+func (d *DeviceSession) Delete(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return d.ActiveID(), nil
+	}
+	dir := claudeProjectDir(d.cwd)
+	if dir != "" {
+		if err := os.Remove(filepath.Join(dir, id+".jsonl")); err != nil && !os.IsNotExist(err) {
+			return d.ActiveID(), err
+		}
+	}
+	d.mu.Lock()
+	wasActive := d.activeID == id
+	d.mu.Unlock()
+	if !wasActive {
+		return d.ActiveID(), nil
+	}
+	// Deleted the active conversation: fall back to the most-recent remaining one,
+	// else start fresh. Both Resume/New persist + respawn.
+	if remaining, _ := listConversations(d.cwd); len(remaining) > 0 {
+		d.Resume(remaining[0].ID)
+	} else {
+		d.New()
+	}
+	return d.ActiveID(), nil
 }
 
 // respawn kills the live default session so the next spawn picks up the new
