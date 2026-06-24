@@ -252,6 +252,29 @@ func (c *deviceConn) TurnIdle() {
 	c.setIdle()
 }
 
+// PromptOpen implements deviceapi.PromptObserver (ADR-033): forward claude's
+// blocking permission/confirm menu to the device as a prompt.open frame. The
+// device renders {question, options} and answers with a prompt.select carrying
+// the chosen key (routed to Bridge.SelectPromptOption in the read loop).
+func (c *deviceConn) PromptOpen(p deviceapi.PromptSpec) {
+	turnID, _ := c.turn()
+	opts := make([]promptOption, len(p.Options))
+	for i, o := range p.Options {
+		opts[i] = promptOption{Key: o.Key, Label: o.Label, Default: o.Default}
+	}
+	_ = c.writeCtrl(promptOpen{
+		T: "prompt.open", TurnID: turnID, PromptID: p.ID, Kind: p.Kind,
+		Question: p.Question, Options: opts, Mechanism: p.Mechanism,
+	})
+}
+
+// PromptClosed implements deviceapi.PromptObserver: tell the device to dismiss
+// its prompt UI (answered / timeout / superseded / cleared / respawn).
+func (c *deviceConn) PromptClosed(promptID, reason string) {
+	turnID, _ := c.turn()
+	_ = c.writeCtrl(promptClose{T: "prompt.close", TurnID: turnID, PromptID: promptID, Reason: reason})
+}
+
 // serve runs one device connection: hello handshake, then the PTT loop, until the
 // socket drops. The session/PTY outlives the connection (reaped by the session GC
 // once detached); Phase A has no resume, so a reconnect with the same device id
@@ -319,8 +342,9 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		SegmentTTS:       s.segmentTTS,
 		Warmup:           true,
 		// ADR-033: when forward-to-device confirmation is on, the Bridge detects
-		// claude's permission menus and auto-denies on timeout. Rendering them on the
-		// device (PromptObserver on dc) is the P1 follow-up; the safety net engages now.
+		// claude's permission menus and forwards them to this device (dc implements
+		// PromptObserver → prompt.open/prompt.close frames), with auto-DENY on timeout
+		// as the safety net. The device answers via prompt.select.
 		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
 	})
 	bridge.SetEvents(dc)
@@ -368,6 +392,12 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 					dc.setIdle()
 				}
 				uplink = uplink[:0]
+			case "prompt.select":
+				// Device's answer to a forwarded blocking menu (ADR-033). Route to the
+				// Bridge, which validates the promptId/key and injects the digit; a stale
+				// or unknown id is a safe no-op there. Accepted regardless of turn FSM
+				// state (the turn is parked on the menu until answered).
+				_ = bridge.SelectPromptOption(m.PromptID, m.OptionKey)
 			case "ping", "ack":
 				// Phase A: WS-layer keepalive covers ping; ack is Phase C.
 			}

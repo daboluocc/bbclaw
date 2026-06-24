@@ -145,6 +145,58 @@ func TestServeHelloOK(t *testing.T) {
 	}
 }
 
+// promptMenuCLI renders a claude-style permission menu then idles (cat), so the
+// forwarded-prompt round-trip can be exercised end-to-end over the device WS.
+// "❯" is U+276F (e2 9d af). Yes/No labels make ParsePrompt classify it permission.
+const promptMenuCLI = "printf 'Do you want to proceed?\\r\\n'; " +
+	"printf '\\xe2\\x9d\\xaf 1. Yes\\r\\n'; " +
+	"printf '  2. No\\r\\n'; " +
+	"printf 'Esc to cancel\\r\\n'; cat >/dev/null"
+
+// TestServePromptForwardAndSelect (ADR-033 P1): a blocking menu on the shared
+// session is forwarded as prompt.open; the device answers with prompt.select and
+// the Bridge confirms it with prompt.close{answered}.
+func TestServePromptForwardAndSelect(t *testing.T) {
+	t.Setenv("ADAPTER_V2_CONFIRM_ON_DEVICE", "1") // enable forward-to-device
+	mgr := session.NewManager()
+	dev := butler.NewDeviceSession(mgr, []string{"bash", "-c", promptMenuCLI}, "")
+	srv := New(mgr, deviceapi.StaticRecognizer{Text: "x"}, deviceapi.SilentSynthesizer{}, dev, Options{Cols: 80, Rows: 24})
+	hello, _ := json.Marshal(map[string]any{"t": "hello", "proto": Proto, "dev": "unit"})
+	f := newFakeConn(inFrame{typ: websocket.MessageText, data: hello})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { srv.serve(ctx, f); close(done) }()
+
+	open := f.waitForCtrl(t, "prompt.open", 5*time.Second)
+	pid, _ := open["promptId"].(string)
+	if pid == "" || open["question"] != "Do you want to proceed?" {
+		t.Fatalf("bad prompt.open frame: %v", open)
+	}
+	if opts, _ := open["options"].([]any); len(opts) != 2 {
+		t.Fatalf("prompt.open options = %v, want 2", open["options"])
+	}
+
+	// Device confirms option 1; the Bridge validates the id+key, injects the digit,
+	// and reports prompt.close{answered}.
+	sel, _ := json.Marshal(map[string]any{"t": "prompt.select", "promptId": pid, "optionKey": "1"})
+	f.push(inFrame{typ: websocket.MessageText, data: sel})
+
+	closed := f.waitForCtrl(t, "prompt.close", 3*time.Second)
+	if closed["reason"] != "answered" {
+		t.Errorf("prompt.close reason = %v, want answered", closed["reason"])
+	}
+
+	cancel()
+	f.close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("serve did not return after cancel")
+	}
+}
+
 // ── fakeConn: an in-memory wsConn for driving serve() without a network ──────
 
 type inFrame struct {
@@ -158,26 +210,42 @@ type fakeConn struct {
 	idx    int
 	writes [][]byte // captured TEXT frame payloads (control); binary ignored here
 	closed chan struct{}
+	more   chan struct{} // signals a push() so a blocked Read re-checks `in`
 }
 
 func newFakeConn(in ...inFrame) *fakeConn {
-	return &fakeConn{in: in, closed: make(chan struct{})}
+	return &fakeConn{in: in, closed: make(chan struct{}), more: make(chan struct{}, 8)}
+}
+
+// push appends an inbound frame at runtime and wakes a blocked Read — lets a test
+// send a frame only AFTER observing a write (e.g. prompt.select after prompt.open).
+func (f *fakeConn) push(fr inFrame) {
+	f.mu.Lock()
+	f.in = append(f.in, fr)
+	f.mu.Unlock()
+	select {
+	case f.more <- struct{}{}:
+	default:
+	}
 }
 
 func (f *fakeConn) Read(ctx context.Context) (websocket.MessageType, []byte, error) {
-	f.mu.Lock()
-	if f.idx < len(f.in) {
-		fr := f.in[f.idx]
-		f.idx++
+	for {
+		f.mu.Lock()
+		if f.idx < len(f.in) {
+			fr := f.in[f.idx]
+			f.idx++
+			f.mu.Unlock()
+			return fr.typ, fr.data, nil
+		}
 		f.mu.Unlock()
-		return fr.typ, fr.data, nil
-	}
-	f.mu.Unlock()
-	select {
-	case <-ctx.Done():
-		return 0, nil, ctx.Err()
-	case <-f.closed:
-		return 0, nil, io.EOF
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-f.closed:
+			return 0, nil, io.EOF
+		case <-f.more:
+		}
 	}
 }
 

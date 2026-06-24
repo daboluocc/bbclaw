@@ -39,6 +39,7 @@ bytes 8.. 原始音频
    (二进制上行帧 streamKind=0x01,u=7 在说话过程中边录边传)
 {"t":"ptt.stop","turnId":"u7","u":7,"frames":42}
 {"t":"ack","forTurn":"u7","upTo":120}        // 已播下行到 frameSeq=120(流控/barge-in截断点)
+{"t":"prompt.select","promptId":"p1","optionKey":"1"}  // 设备对阻塞弹窗的选择(ADR-033)
 {"t":"ping"}
 ```
 
@@ -52,8 +53,17 @@ bytes 8.. 原始音频
    (二进制下行帧 streamKind=0x02,u=7 携带TTS,逐句合成即流式下发;flags.final=末帧)
 {"t":"turn","turnId":"u7","state":"thinking|speaking|idle"} // 粗粒度忙/闲,idle=可PTT
 {"t":"interrupted","turnId":"u7","atSeq":118}
+{"t":"prompt.open","turnId":"u7","promptId":"p1","kind":"permission","question":"Do you want to proceed?","options":[{"key":"1","label":"Yes","default":true},{"key":"2","label":"No"}],"mechanism":"digit"}  // 阻塞弹窗转发设备确认(ADR-033),设备回 prompt.select
+{"t":"prompt.close","turnId":"u7","promptId":"p1","reason":"answered|timeout|superseded|cleared|respawn"} // 关闭弹窗 UI
 {"t":"error","turnId":"u7","code":"ASR_EMPTY|ASR_TIMEOUT|TTS_FAILED|BUSY|UNAUTH","detail":"..."}
 ```
+
+**阻塞弹窗确认(ADR-033,opt-in `ADAPTER_V2_CONFIRM_ON_DEVICE=1`)**:claude 的工具/权限菜单
+(`Do you want to proceed? ❯1.Yes 2.… 3.No`)被识别后,adapter 发 `prompt.open`(带选项),
+设备渲染并让用户选,回 `prompt.select{promptId,optionKey}`;adapter 把所选数字注入回 PTY
+(数字直提)。超时/无设备一律安全降级 auto-DENY(注入 No/ESC,绝不 auto-approve)。与
+`tool.step` 不同,`prompt.open` 有回路(是新的上行控制消息),菜单选项变化即 supersede
+(旧 `prompt.close{superseded}` + 新 `prompt.open`)。
 
 ## PTT 一轮往返
 
