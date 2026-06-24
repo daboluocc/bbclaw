@@ -1,7 +1,7 @@
 # ADR-033: adapter_v2 阻塞式交互弹窗 → 设备确认（截屏识别 + 转发选择）
 
 - **日期**: 2026-06-24
-- **状态**: 进行中（设计定稿；两个 P0 探针**已真机验证 2026-06-24**：数字直提成立、需显式 `--permission-mode default` 才弹）。**P0 adapter-only 已实现并经多智能体对抗审查 + 修复**（识别器 `extract/prompt.go` + boundary §0 勘误 + deviceapi 转发/注入/超时 auto-DENY + settingsstore/butler 接线，opt-in `ConfirmOnDevice` 默认 off；`go test -race ./...` 全绿）。**待做**：P1 devicews 渲染菜单 + 选择回路；P2 cloud parked-turn + firmware；P0-5 upsell/trust 配置压制（暂仍由 claudeStartupKeys/warmup 兜底）。
+- **状态**: 进行中（设计定稿；两个 P0 探针**已真机验证 2026-06-24**：数字直提成立、需显式 `--permission-mode default` 才弹）。**P0（adapter 核心）+ P1（devicews LAN）已实现并经两轮多智能体对抗审查 + 修复**：识别器 `extract/prompt.go` + boundary §0 勘误 + deviceapi 转发/注入/超时 auto-DENY + settingsstore/butler 接线（opt-in `ConfirmOnDevice` 默认 off）+ devicews `prompt.open`/`prompt.select`/`prompt.close` 端到端回路（`deviceConn` 实现 `PromptObserver`）；`go test -race ./...` 全绿。**待做**：P2 cloud parked-turn + firmware `bb_page_prompt_select`（协同发版）；P0-5 upsell/trust 配置压制（暂由 claudeStartupKeys/warmup 兜底）。
 - **关联**:
   - 完整设计：[`design/adapter_v2_blocking_prompt_confirm.md`](../adapter_v2_blocking_prompt_confirm.md)（本 ADR 是其决策摘要）
   - `adapter_v2/DESIGN.md §9`（Phase 3 — tool 审批 scrape，issue #213）—— 本特性是它从「仅 tool 审批」到「**所有阻塞式弹窗**」的泛化
