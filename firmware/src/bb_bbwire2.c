@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -144,6 +145,67 @@ static void bw_emit(bb_finish_stream_event_type_t type, const char* text, bb_tts
   s_bw.fin_cb(&ev, s_bw.fin_user);
 }
 
+/* Emit a PROMPT_OPEN/PROMPT_CLOSE event carrying the parsed menu (ADR-033). */
+static void bw_emit_prompt(bb_finish_stream_event_type_t type, const bb_prompt_t* prompt) {
+  if (s_bw.fin_cb == NULL) {
+    return;
+  }
+  bb_finish_stream_event_t ev = {
+      .type = type,
+      .phase = NULL,
+      .text = NULL,
+      .hint = NULL,
+      .tts_chunk = NULL,
+      .reply_wait_timed_out = 0,
+      .dispatch = NULL,
+      .prompt = prompt,
+  };
+  s_bw.fin_cb(&ev, s_bw.fin_user);
+}
+
+/* Parse a prompt.open frame's structured options into p (ADR-033 #6: structured
+ * fields). Caps at BB_PROMPT_MAX_OPTIONS; an option with no key is skipped. */
+static void bw_parse_prompt_open(const char* msg, bb_prompt_t* p) {
+  cJSON* root = cJSON_Parse(msg);
+  if (root == NULL) {
+    return;
+  }
+  const cJSON* j;
+  if ((j = cJSON_GetObjectItem(root, "promptId")) != NULL && cJSON_IsString(j)) {
+    snprintf(p->prompt_id, sizeof(p->prompt_id), "%s", j->valuestring);
+  }
+  if ((j = cJSON_GetObjectItem(root, "kind")) != NULL && cJSON_IsString(j)) {
+    snprintf(p->kind, sizeof(p->kind), "%s", j->valuestring);
+  }
+  if ((j = cJSON_GetObjectItem(root, "question")) != NULL && cJSON_IsString(j)) {
+    snprintf(p->question, sizeof(p->question), "%s", j->valuestring);
+  }
+  const cJSON* opts = cJSON_GetObjectItem(root, "options");
+  if (cJSON_IsArray(opts)) {
+    const cJSON* o;
+    cJSON_ArrayForEach(o, opts) {
+      if (p->n_options >= BB_PROMPT_MAX_OPTIONS) {
+        break;
+      }
+      bb_prompt_option_t* dst = &p->options[p->n_options];
+      const cJSON* f;
+      if ((f = cJSON_GetObjectItem(o, "key")) != NULL && cJSON_IsString(f)) {
+        snprintf(dst->key, sizeof(dst->key), "%s", f->valuestring);
+      }
+      if ((f = cJSON_GetObjectItem(o, "label")) != NULL && cJSON_IsString(f)) {
+        snprintf(dst->label, sizeof(dst->label), "%s", f->valuestring);
+      }
+      if ((f = cJSON_GetObjectItem(o, "default")) != NULL) {
+        dst->is_default = cJSON_IsTrue(f) ? 1 : 0;
+      }
+      if (dst->key[0] != '\0') {
+        p->n_options++;
+      }
+    }
+  }
+  cJSON_Delete(root);
+}
+
 /* Deliver one PCM16 TTS unit to the device as a TTS_CHUNK event; the callback
  * takes ownership of the chunk (per bb_adapter_client.h). */
 static void bw_deliver_pcm16_tts(const uint8_t* pcm, size_t pcm_len) {
@@ -207,6 +269,24 @@ static void bw_handle_text(const char* msg) {
     }
     ESP_LOGW(TAG, "error frame code=%s", code);
     xEventGroupSetBits(s_bw.events, BW_ERROR);
+  } else if (strcmp(t, "prompt.open") == 0) {
+    /* ADR-033: a blocking permission/confirm menu — forward to the device UI for
+     * approval. Handled unconditionally (not gated on fin_waiting) so it works
+     * whoever drove the turn on the shared PTY. */
+    bb_prompt_t p;
+    memset(&p, 0, sizeof(p));
+    bw_parse_prompt_open(msg, &p);
+    if (p.prompt_id[0] != '\0' && p.n_options > 0) {
+      ESP_LOGI(TAG, "prompt.open id=%s opts=%d", p.prompt_id, p.n_options);
+      bw_emit_prompt(BB_FINISH_STREAM_EVENT_PROMPT_OPEN, &p);
+    }
+  } else if (strcmp(t, "prompt.close") == 0) {
+    bb_prompt_t p;
+    memset(&p, 0, sizeof(p));
+    bw_json_str(msg, "promptId", p.prompt_id, sizeof(p.prompt_id));
+    bw_json_str(msg, "reason", p.reason, sizeof(p.reason));
+    ESP_LOGI(TAG, "prompt.close id=%s reason=%s", p.prompt_id, p.reason);
+    bw_emit_prompt(BB_FINISH_STREAM_EVENT_PROMPT_CLOSE, &p);
   } else if (s_bw.fin_waiting) {
     if (strcmp(t, "asr.final") == 0) {
       char text[512] = {0};
@@ -382,6 +462,19 @@ static esp_err_t bw_send_hello(void) {
            BB_BBWIRE2_PROTO, BBCLAW_DEVICE_ID, BBCLAW_AUDIO_SAMPLE_RATE, BBCLAW_AUDIO_CHANNELS,
            BBCLAW_TTS_SAMPLE_RATE, BBCLAW_TTS_CHANNELS);
   return bw_send_text(body);
+}
+
+esp_err_t bb_bbwire2_send_prompt_select(const char* prompt_id, const char* option_key) {
+  if (prompt_id == NULL || option_key == NULL || prompt_id[0] == '\0' || option_key[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  char body[160];
+  snprintf(body, sizeof(body),
+           "{\"t\":\"prompt.select\",\"promptId\":\"%s\",\"optionKey\":\"%s\"}",
+           prompt_id, option_key);
+  esp_err_t err = bw_send_text(body);
+  ESP_LOGI(TAG, "prompt.select id=%s key=%s err=%d", prompt_id, option_key, (int)err);
+  return err;
 }
 
 static esp_err_t bw_ensure_connected(void) {
