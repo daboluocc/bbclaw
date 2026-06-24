@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **adapter_v2 阻塞弹窗 → 设备确认（ADR-033，P0 adapter-only，opt-in）**:claude 交互
+  TUI 的权限/工具确认菜单（`Do you want to proceed? ❯1.Yes 2.… 3.No`）现可被识别、转发
+  设备确认、把所选数字注入回 PTY（数字直提，真机验证）。落地:`extract.ParsePrompt`
+  label 锚定识别器（Yes…/No… 形状 + ❯/页脚佐证，prose 列表不误判）、boundary §0 勘误
+  修复（弹窗不再被误判成 turn 结束→播空白）、`deviceapi` PromptObserver/SelectPromptOption
+  + 单一 promptPending 门 + 超时/无设备 auto-DENY（绝不 auto-approve）+ supersede/respawn
+  作废；设置 `ADAPTER_V2_CONFIRM_ON_DEVICE`（默认 off=旧 bypass 行为不变）开 → butler 走
+  `--permission-mode default`。经 4 维度多智能体对抗审查 + 5 处修复，`go test -race ./...`
+  全绿。设备端菜单渲染（devicews）+ cloud parked-turn + firmware 为 P1/P2。
+  (adapter-only,需 tag 才随发布出二进制)
+
 ### Docs
 - **ADR-033 / 设计：adapter_v2 阻塞式交互弹窗 → 设备确认**（`design/adapter_v2_blocking_prompt_confirm.md`
   + `design/decisions/ADR-033-...`）。把 DESIGN.md §9（tool 审批 scrape）泛化为「所有阻塞式
