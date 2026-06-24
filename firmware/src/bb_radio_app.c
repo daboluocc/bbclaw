@@ -3274,6 +3274,12 @@ static void stream_task(void* arg) {
             } else if (state.cloud_volume_pct != s_applied_cloud_volume_pct) {
               s_applied_cloud_volume_pct = state.cloud_volume_pct;
               bb_audio_set_volume_pct(state.cloud_volume_pct);
+              /* Mirror the cloud value into the persisted config so the Settings
+               * menu (reads volume_pct on entry) and the next boot show what the
+               * cloud just applied — otherwise the audio changes but the menu
+               * keeps displaying the old percentage. No version bump: this is a
+               * cloud-originated value (see bb_device_config_note_volume_pct). */
+              bb_device_config_note_volume_pct(state.cloud_volume_pct);
             }
           }
           if (state.cloud_speaker_enabled >= 0) {

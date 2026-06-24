@@ -60,6 +60,67 @@ func TestDeviceSessionConfigResumeModes(t *testing.T) {
 	}
 }
 
+func TestDeviceSessionDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mgr := session.NewManager()
+	cwd := "/ws"
+	pdir := claudeProjectDir(cwd)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(id, text string) {
+		body := `{"type":"user","message":{"role":"user","content":"` + text + `"}}` + "\n"
+		if err := os.WriteFile(filepath.Join(pdir, id+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("keep-1", "one")
+	write("keep-2", "two")
+	write("gone-3", "three")
+
+	d := NewDeviceSession(mgr, []string{"claude"}, cwd)
+	d.Resume("keep-1") // make keep-1 the active conversation
+
+	// Delete a NON-active conversation: file removed, active untouched.
+	if active, err := d.Delete("gone-3"); err != nil || active != "keep-1" {
+		t.Fatalf("Delete(non-active) = (%q,%v), want (keep-1,nil)", active, err)
+	}
+	if _, err := os.Stat(filepath.Join(pdir, "gone-3.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("gone-3.jsonl should be removed, stat err=%v", err)
+	}
+
+	// Deleting a missing conversation is idempotent (no error).
+	if _, err := d.Delete("gone-3"); err != nil {
+		t.Errorf("Delete(missing) should be nil, got %v", err)
+	}
+
+	// Delete the ACTIVE conversation: active moves to the most-recent remaining
+	// (keep-2, which was written after keep-1), never a now-missing id.
+	active, err := d.Delete("keep-1")
+	if err != nil {
+		t.Fatalf("Delete(active) err=%v", err)
+	}
+	if active != "keep-2" || d.ActiveID() != "keep-2" {
+		t.Errorf("after deleting active, active=%q/%q, want keep-2", active, d.ActiveID())
+	}
+	if _, err := os.Stat(filepath.Join(pdir, "keep-1.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("keep-1.jsonl should be removed, stat err=%v", err)
+	}
+
+	// Delete the last remaining conversation: no history left → mint a fresh one
+	// (a brand-new --session-id), not an empty/continue active.
+	active, err = d.Delete("keep-2")
+	if err != nil {
+		t.Fatalf("Delete(last) err=%v", err)
+	}
+	if active == "" || active == "keep-2" {
+		t.Errorf("deleting the last conversation should mint a fresh id, got %q", active)
+	}
+	if a := d.Config().Argv; argIndex(a, "--session-id") < 0 {
+		t.Errorf("fresh conversation after last delete should spawn --session-id: %v", a)
+	}
+}
+
 func TestDeviceSessionMessages(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -131,6 +131,20 @@
 #define BBCLAW_WIFI_AP_MAX_CONNECTIONS 4
 #endif
 
+/* softAP 配网启动前的内部 DMA 堆门槛(#252 boot-loop)。softAP 的 beacon/mgmt
+ * 缓冲必须从内部 DMA RAM 拿(PSRAM 不能做 wifi DMA)。内部堆碎片化到分不出时,
+ * esp_wifi_start() 会在闭源 wifi 库 ieee80211_hostap_attach 对 NULL strlen 崩溃
+ * (LoadProhibited)→ 无 wifi 时无限 boot loop。低于门槛则不启动 AP、优雅返错
+ * (bb_radio_app 捕获→停 WiFi 错误页,不 abort)。门槛凭真机 softap pre-start
+ * 日志调:宁可保守拒启(错误页)也不让 wifi 库崩。 */
+#ifndef BBCLAW_WIFI_AP_MIN_DMA_LARGEST
+#define BBCLAW_WIFI_AP_MIN_DMA_LARGEST 4096
+#endif
+
+#ifndef BBCLAW_WIFI_AP_MIN_DMA_FREE
+#define BBCLAW_WIFI_AP_MIN_DMA_FREE 12288
+#endif
+
 #ifndef BBCLAW_ADAPTER_BASE_URL
 #ifdef CONFIG_BBCLAW_ADAPTER_BASE_URL
 #define BBCLAW_ADAPTER_BASE_URL CONFIG_BBCLAW_ADAPTER_BASE_URL
@@ -639,7 +653,10 @@ const char *bbclaw_session_key(void);
 #ifndef BBCLAW_AUDIO_INMP441_GAIN_NUM
 /* 8x saturated near-field speech (pcm diag showed max pegged at INT16_MAX with
  * heavy positive clipping), which can degrade cloud ASR. 4x leaves ~2 bits of
- * headroom while staying loud enough for the INMP441's low raw level. */
+ * headroom while staying loud enough for the INMP441's low raw level.
+ * 注：bench 板若出现"静音也 mean_abs≈20000、削顶严重、ASR 恒空",那是 mic 硬件
+ * (SD/DOUT 悬空读噪声) 而非增益问题——查接线，别靠调此值。修好 mic 后再按真实
+ * raw 电平重新整定。 */
 #define BBCLAW_AUDIO_INMP441_GAIN_NUM 4
 #endif
 

@@ -62,3 +62,17 @@ esp_err_t bb_device_config_apply_welcome(const char* config_json);
  * @param pct  Volume 0–100
  */
 esp_err_t bb_device_config_set_volume_pct(int pct);
+
+/**
+ * Mirror a CLOUD-applied volume into the local config (cloud-initiated change).
+ * Use this when the cloud heartbeat overrides the volume at runtime: it updates
+ * the in-memory field and persists to NVS so the Settings menu (which reads this
+ * field on entry) and the next boot show the value the cloud just applied —
+ * WITHOUT bumping version. Version is the cloud's own monotonic counter for
+ * config.update / welcome gating; inflating it from a cloud-driven change would
+ * make a later cloud config.update (for any field) be ignored as stale.
+ * Clamps to [0, 100]; a no-op when the value is unchanged.
+ *
+ * @param pct  Volume 0–100, as reported by the cloud
+ */
+esp_err_t bb_device_config_note_volume_pct(int pct);

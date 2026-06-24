@@ -68,6 +68,10 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 # 碎片消失，largest 回到 8192 以上。
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
+# 注:WiFi TX 缓冲改 dynamic(避免 static TX 25.6KB 占满内部 DMA → softAP 崩溃
+# boot loop,#252)由 bb_wifi.c 运行时设 cfg.tx_buf_type=1 强制,不依赖此处
+# sdkconfig(dev build 的 sdkconfig 生成会回落 IDF 默认 static,运行时覆盖更可靠)。
+
 # 渲染性能（issue #149 Round 1）：-O2 + 240MHz + 1ms tick + 60fps 刷新上限。
 # LVGL 软渲染对优化级别极敏感；FREERTOS 100Hz 时 10ms 调度粒度会造成帧间抖动。
 CONFIG_COMPILER_OPTIMIZATION_PERF=y

@@ -88,4 +88,11 @@ export const api = {
       method: "POST",
     });
   },
+
+  deleteSession(id: string): Promise<{ active: string }> {
+    return request<{ active: string }>(
+      `/v1/agent/sessions/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  },
 };

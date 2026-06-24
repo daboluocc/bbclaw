@@ -166,6 +166,40 @@ func (d *DeviceSession) Resume(id string) {
 	d.respawn()
 }
 
+// Delete removes a conversation's .jsonl from the workspace. Deleting the ACTIVE
+// conversation also moves the active id onto the most-recent remaining one (or a
+// fresh conversation when none remain) and respawns, so the default session
+// never ends up resuming a now-missing id (claude --resume would fail/hang).
+// Returns the active id after the delete. A missing file is treated as success
+// (idempotent). Removing the file under a still-running claude is safe: respawn
+// kills that PTY, and an unlinked-but-open file is freed when the process exits.
+func (d *DeviceSession) Delete(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return d.ActiveID(), nil
+	}
+	dir := claudeProjectDir(d.cwd)
+	if dir != "" {
+		if err := os.Remove(filepath.Join(dir, id+".jsonl")); err != nil && !os.IsNotExist(err) {
+			return d.ActiveID(), err
+		}
+	}
+	d.mu.Lock()
+	wasActive := d.activeID == id
+	d.mu.Unlock()
+	if !wasActive {
+		return d.ActiveID(), nil
+	}
+	// Deleted the active conversation: fall back to the most-recent remaining one,
+	// else start fresh. Both Resume/New persist + respawn.
+	if remaining, _ := listConversations(d.cwd); len(remaining) > 0 {
+		d.Resume(remaining[0].ID)
+	} else {
+		d.New()
+	}
+	return d.ActiveID(), nil
+}
+
 // respawn kills the live default session so the next spawn picks up the new
 // resume flag. Lazy: the cloud relay rebuilds on the next turn; a web terminal
 // reconnects.

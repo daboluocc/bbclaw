@@ -39,6 +39,7 @@ package deviceapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -56,6 +57,13 @@ import (
 // extracted plus the tail of the VT mirror at that moment — to diagnose why a
 // turn can extract a stale (previous-turn) reply.
 var debugExtract = os.Getenv("ADAPTER_V2_DEBUG_EXTRACT") != ""
+
+// debugTaskList, when ADAPTER_V2_DEBUG_TASKLIST is set, makes the task-list probe
+// (ADR-034) ALSO dump the raw screen tail on a hit, for full fixture reconstruction.
+// The compact one-line probe log itself is ON BY DEFAULT (not gated): a real-device
+// TodoWrite render may only appear probabilistically, so we must capture it even
+// when no debug env was pre-set in the field. See Bridge.captureTaskListProbe.
+var debugTaskList = os.Getenv("ADAPTER_V2_DEBUG_TASKLIST") != ""
 
 // tailLines returns the last n non-empty lines of s, for compact debug logging.
 func tailLines(s string, n int) string {
@@ -304,6 +312,11 @@ type Bridge struct {
 	// promptSeq mints monotonic promptIds ("p1", "p2", …) so a stale select against
 	// a superseded/answered menu is recognised and dropped (§4/§6).
 	promptSeq atomic.Uint64
+
+	// lastTaskProbeSig dedups the ADR-034 task-list probe: the same TodoWrite block
+	// lingers across many repaints, so we log it once and re-log only when the row
+	// set actually changes. Read/written only on Run's goroutine.
+	lastTaskProbeSig string
 }
 
 // pendingPrompt is the Bridge's record of the menu currently forwarded to the
@@ -730,7 +743,8 @@ func (b *Bridge) Run(ctx context.Context) error {
 			dismissSurvey()
 			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
-			b.emitToolSteps(ts) // display-only tool progress (ADR-030); only on a new paint
+			b.emitToolSteps(ts)                            // display-only tool progress (ADR-030); only on a new paint
+			b.captureTaskListProbe(b.screen.VisibleText()) // ADR-034 data-acquisition probe; logs only, no behaviour change
 			if b.checkPrompt(time.Now()) {
 				continue // a blocking permission/confirm menu is up — don't speak/stream over it
 			}
@@ -882,6 +896,46 @@ func (b *Bridge) emitToolSteps(ts *turnStream) {
 		}
 		ts.steps[key] = struct{}{}
 		b.events.ToolStep(st.Name, st.Hint)
+	}
+}
+
+// taskProbeMinRows is the smallest contiguous checklist-ish run the probe treats as
+// a candidate TodoWrite block. A lone checkbox-looking line is more likely prose
+// (or a stray glyph) than a real todo list, so we require at least two adjacent
+// same-indent rows before logging.
+const taskProbeMinRows = 2
+
+// captureTaskListProbe is ADR-034's data-acquisition probe — pure observation, no
+// extraction or speak-behaviour change. We don't yet know the exact glyph→status
+// mapping claude's TodoWrite uses (ADR-034 §3 is a P0 gate needing a real-device
+// capture), and that render may only appear PROBABILISTICALLY in the field. So
+// rather than hide this behind a debug env that would be off in the wild, it runs
+// by DEFAULT and logs a compact, deduped one-liner whenever a candidate checklist
+// block appears — recording each row's leading marker as a U+XXXX code point (☐ vs
+// □ vs ◻ are different code points that look alike on screen) plus its text. That
+// one log line is enough to pin the mapping and build the fixture later. With
+// ADAPTER_V2_DEBUG_TASKLIST set it also dumps the raw screen tail. Not gated on
+// b.events: useful even when no device sink is attached (e.g. a web-terminal turn).
+func (b *Bridge) captureTaskListProbe(visible string) {
+	run := extract.LongestRun(extract.ScanTaskListCandidates(visible))
+	if len(run) < taskProbeMinRows {
+		return
+	}
+	var sb strings.Builder
+	for i, c := range run {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		fmt.Fprintf(&sb, "%s %q", c.Lead, c.Text)
+	}
+	sig := sb.String()
+	if sig == b.lastTaskProbeSig {
+		return // same block still on screen across repaints — already logged
+	}
+	b.lastTaskProbeSig = sig
+	log.Printf("tasklist-probe (ADR-034): %d candidate rows: %s", len(run), sig)
+	if debugTaskList {
+		log.Printf("tasklist-probe raw screen tail:\n--- begin ---\n%s\n--- end ---", tailLines(visible, 20))
 	}
 }
 

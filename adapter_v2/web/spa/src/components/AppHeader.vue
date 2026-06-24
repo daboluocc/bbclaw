@@ -5,7 +5,13 @@ const emit = defineEmits<{ (e: "nav", v: "terminal" | "sessions"): void }>();
 
 <template>
   <header class="hdr">
-    <span class="wordmark">BBCLAW</span>
+    <button
+      class="wordmark"
+      title="回到首页 Home"
+      @click="emit('nav', 'terminal')"
+    >
+      BBCLAW
+    </button>
     <span class="sub">adapter_v2</span>
     <nav class="tabs">
       <button

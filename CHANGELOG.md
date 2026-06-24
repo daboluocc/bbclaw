@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 计划清单采集探针（ADR-034 P0 第一步，默认开、纯观测）**:为后续把
+  claude `TodoWrite` 计划清单渲染到固件屏幕（display-only `task.list` 通道）做准备,先落
+  **数据采集探针**——`extract.ScanTaskListCandidates` 用放宽的字形集（ballot box / 方块 /
+  圆 / 对勾叉 + ASCII `[ ]`）扫可见网格找 checkbox 样式行,`deviceapi.captureTaskListProbe`
+  在每次 PTY 重绘后跑,命中连续 ≥2 行同缩进块时打一行**紧凑去重日志**,记录每行前导**字形
+  U+码点**（`☐`/`□`/`◻` 码点不同但肉眼难辨,故记码点不记肉眼字形）+ 文本。**默认开**（真机
+  命中 TodoWrite 渲染是概率性的、没法按需复现,藏在 env 后会漏抓）;`ADAPTER_V2_DEBUG_TASKLIST`
+  额外 dump 整屏 tail 供复原 fixture。纯日志观测,不改抽取/朗读行为。待真机留下样本后据此钉死
+  字形→status 映射,再写严格识别器 + `task.list` 帧。`go test -race ./...` 全绿。
+  (adapter_v2,骨架阶段,暂不随发布打 tag)
+- **adapter_v2 管家「自身音量控制」(参考 v1 移植)**:管家(butler)现在知道如何调节
+  **用户正在使用的这台设备**的音量与密语模式。落地:新增 `bbclaw-adapter-v2 device
+  set-volume <0-100>` / `set-miyu <on|off>` CLI 子命令(走云端 config API,等价 v1 的
+  `bbclaw-adapter device`,云端再经 WS `config.update` 推给固件生效);persona
+  (`DeviceSystemPrompt`)恒注入「设备控制」技能段教管家用 Bash 调它。与 v1 不同:v2 的
+  persona 是开机一次性构建、跨设备共享(P1),无法像 v1 那样按轮注入 deviceId——改由新增
+  `curdevice` 在设备(devicews hello / cloud relay 请求)连上时记录「当前设备 id」到数据目录,
+  CLI 默认即作用于当前设备,管家无需知道 id。`$BBCLAW_ADAPTER_V2_BIN`(main 导出运行二进制
+  绝对路径)让管家无视 PATH 也能调到。仅 cloud_saas(云端配对)可远程改;失败时 persona 要求
+  如实告知。`go test ./...` 全绿。(adapter_v2,骨架阶段,暂不随发布打 tag)
 - **adapter_v2 阻塞弹窗 → 设备确认（ADR-033，P0 adapter-only，opt-in）**:claude 交互
   TUI 的权限/工具确认菜单（`Do you want to proceed? ❯1.Yes 2.… 3.No`）现可被识别、转发
   设备确认、把所选数字注入回 PTY（数字直提，真机验证）。落地:`extract.ParsePrompt`
@@ -19,7 +39,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   全绿。设备端菜单渲染（devicews）+ cloud parked-turn + firmware 为 P1/P2。
   (adapter-only,需 tag 才随发布出二进制)
 
+### Fixed
+- **固件:云端远程调音量后,设备「设置」菜单仍显示旧音量(如 65%)**。管家/远端经云端
+  `device set-volume` 改音量时,固件经心跳轮询拿到 `cloud_volume_pct`,运行时变化时
+  `bb_radio_app.c` 只调 `bb_audio_set_volume_pct()` **应用了音频却没回写本地 `s_config`**
+  (`bb_device_config`)。而「设置」菜单进入时读的正是 `s_config.volume_pct`
+  (`bb_ui_settings.c` 入口),于是音量实际变了、菜单却一直显示改之前的百分比(开机重放
+  也读 `s_config`,故重启后又被旧值盖回)。修复:云端音量运行时变化、应用音频的同时,新增
+  `bb_device_config_note_volume_pct()` 把值回写本地 config 并持久化到 NVS——**故意不 bump
+  version**(该值源自云端,抬高本地 version 会让后续云端 versioned `config.update`/welcome
+  被 `version<=current` 拦掉)。`make build` 通过。
+  (注:`speaker_enabled` 走同一云端心跳路径,但它压根没持久化进 `s_config`、开机不重放、
+  「设置」也不显示,是另一类独立 gap,本次未动。)
+
 ### Docs
+- **ADR-034：adapter_v2 计划清单（TodoWrite）→ 设备 display-only `task.list` 通道**
+  （`design/decisions/ADR-034-...`）。把 claude TUI 的 `TodoWrite` 计划清单（每条带
+  pending/in_progress/completed 勾选态）抓屏抽取成一条新的 display-only 下行通道
+  `task.list`，整张快照推到固件渲染成进度面板（用户看得到「多步任务做到第几步」），
+  延续 ADR-030 双通道纪律（永不进说通道、TTS 零变化）+ ADR-033 抓屏方法论（fixture 硬
+  发布门、parse 失败 fail-safe 不显示）。无回路 / 无能力协商 / ignore-unknown，是四端里
+  最易增量上线的通道。澄清与 ADR-021-firmware-ui「Task List」页的关系：同一固件清单页
+  概念，v1 用 butler-dispatch 结构化事件源，v2（单 PTY 无 worker dispatch）用本 ADR 的
+  抓屏 TodoWrite 源。字形→status 映射为 P0 真机探针闸门（未跑探针不臆测硬编码）。
+  状态：草案，代码未实现。(docs-only，不打 tag)
 - **ADR-033 / 设计：adapter_v2 阻塞式交互弹窗 → 设备确认**（`design/adapter_v2_blocking_prompt_confirm.md`
   + `design/decisions/ADR-033-...`）。把 DESIGN.md §9（tool 审批 scrape）泛化为「所有阻塞式
   claude TUI 弹窗」：截屏识别权限 / 工具确认弹窗 → 转发 `{问题, 选项}` 到设备 → 选择注入回 PTY；
@@ -75,6 +118,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     barge-in 三场景按惯例须真机验证后再打 tag。
 
 ### Fixed
+- **没 WiFi 时无限重启：配网 softAP 启动崩溃（#252，真机验证）**：连不上任何已知 wifi
+  → 进配网 AP → `esp_wifi_start()` 在闭源 wifi 库 `ieee80211_hostap_attach` 对 NULL
+  做 `strlen` 崩溃（`LoadProhibited`）→ `rst` 重启 → 死循环。根因:**dev/bench build
+  的 `sdkconfig` 生成时回落 IDF 默认的 static TX 缓冲（16×1.6KB≈25.6KB），`esp_wifi_init`
+  把内部 DMA RAM 一把吃光**（实测 largest 29KB→0），softAP 连 752B beacon 都分不出。
+  （release `sdkconfig.bbclaw.latest` 早设了 dynamic TX,故只 bench 板复现。）修两处:
+  ① `bb_wifi.c` **运行时强制 dynamic TX**（`cfg.tx_buf_type=1`，走 PSRAM via
+  `SPIRAM_TRY_ALLOCATE_WIFI_LWIP`），不依赖 sdkconfig 生成——wifi init 内部 DMA 占用
+  29KB→26.6KB（仅 ~3KB），softAP 正常起；② softAP 启动前加**内部 DMA 守卫**
+  （低于 `BBCLAW_WIFI_AP_MIN_DMA_*` 门槛则优雅返 `ESP_ERR_NO_MEM`，上层停 WiFi 错误页
+  而非让 wifi 库崩）作纵深防御。真机:配网 AP `BBClaw-Setup-xxxxxx`@192.168.4.1 正常起、
+  配网页显示、单次启动、零崩溃。
 - **按键自测任务偷内部 RAM 致 PTT 录音流的 WebSocket 建不起来、语音识别失效**：
   `bb_button_test` 任务用普通 `xTaskCreate` 申请 3072B **内部** RAM 栈,而 bbclaw 板
   `board_config.h` 把 `BBCLAW_BUTTON_TEST_GPIO` 设为 1 → 正式板也常驻该任务。内部堆本就

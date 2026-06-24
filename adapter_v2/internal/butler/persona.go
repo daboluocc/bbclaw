@@ -17,8 +17,11 @@ import "strings"
 // DeviceSystemPrompt is the per-session system prompt appended via claude's
 // --append-system-prompt. It encodes the walkie-talkie form factor: tiny screen,
 // voice output, push-to-talk — so the backend answers short and speakable, not in
-// walls of code. cwd is surfaced as a hint; deviceID is currently unused (adapter
-// _v2 has no device-control CLI yet) but kept for signature parity with v1.
+// walls of code. cwd is surfaced as a hint. deviceID is unused: v2's persona is
+// built ONCE at boot and shared across devices (P1), so unlike v1 it cannot bake
+// in a live id per-turn — instead it teaches the butler the device-control CLI
+// (`device set-volume` / `set-miyu`), which resolves "the current device" itself
+// (curdevice). deviceID is kept only for signature parity with v1.
 func DeviceSystemPrompt(cwd, deviceID string) string {
 	var b strings.Builder
 	b.WriteString("你正通过 BBClaw 与用户对话——一台对讲机式的硬件语音外设" +
@@ -35,8 +38,27 @@ func DeviceSystemPrompt(cwd, deviceID string) string {
 	if c := strings.TrimSpace(cwd); c != "" {
 		b.WriteString("- 当前工作目录(你的 workspace):" + c + "\n")
 	}
+	b.WriteString(deviceControlSection)
 	return b.String()
 }
+
+// deviceControlSection teaches the butler how to adjust THIS device (the one the
+// user is talking through) — volume and 密语模式 — by shelling out to the v2
+// device CLI. The CLI auto-resolves the current device (curdevice), so the butler
+// never needs an id. `$BBCLAW_ADAPTER_V2_BIN` is the absolute path to the running
+// adapter binary, exported into the butler's env by main so the command is found
+// regardless of PATH; the bare name is the fallback. Reachability note: the CLI
+// drives the cloud config API, so it only works for a cloud-paired (cloud_saas)
+// device — the butler is told to report honestly when the call fails.
+const deviceControlSection = "\n## 设备控制(调节这台设备)\n" +
+	"用户让你调节**他正在使用的这台 BBClaw**(音量 / 密语模式)时,用 Bash 工具执行下列命令——" +
+	"命令会自动作用于当前连接的设备,你无需知道设备 ID:\n" +
+	"- 调音量(0-100,0=静音):`\"$BBCLAW_ADAPTER_V2_BIN\" device set-volume <0-100>`\n" +
+	"- 开关密语模式(锁屏语音解锁):`\"$BBCLAW_ADAPTER_V2_BIN\" device set-miyu <on|off>`\n" +
+	"若 `$BBCLAW_ADAPTER_V2_BIN` 为空,改用 `bbclaw-adapter-v2`(需在 PATH)。\n" +
+	"命令打印 `{\"ok\":true,...}` 即成功,用一句话朗读结果(例如「已把音量调到 50%,马上生效」)。\n" +
+	"注意:仅 cloud_saas(云端配对)模式能远程改设置;若命令报错或提示无目标设备," +
+	"就如实告诉用户这台设备当前无法远程调节,别假装成功。\n"
 
 // defaultClaudeMD is the factory persona written to a fresh workspace CLAUDE.md.
 // claude loads it natively because the session's cwd IS the workspace. It is the

@@ -12,6 +12,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
@@ -322,6 +323,11 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 	deviceID := strings.TrimSpace(hello.Dev)
 	if deviceID == "" {
 		deviceID = "dev-anon-" + strconv.FormatUint(anonSeq.Add(1), 10)
+	} else {
+		// Record the real device id so the `device set-volume/set-miyu` CLI can
+		// target "the current device" without the butler knowing its id (curdevice).
+		// Only real hello.Dev ids — never the synthetic anon placeholder above.
+		_ = curdevice.Record(deviceID)
 	}
 
 	// 2. session + bridge (the bridge's sink AND events are this conn). The LAN

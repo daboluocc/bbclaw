@@ -32,6 +32,7 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
 )
@@ -253,6 +254,10 @@ func (r *Relay) announceCode(env Envelope) {
 // answered with minimal static replies so the settings UI doesn't hang. Anything
 // else is silently ignored (the cloud tolerates a no-op, like v1's default).
 func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, env Envelope) {
+	// Record the cloud device id so the `device set-volume/set-miyu` CLI can target
+	// "the current device" without the butler knowing its id (curdevice). This is
+	// the device id the cloud config API expects. Unchanged ids are a no-op write.
+	_ = curdevice.Record(env.DeviceID)
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "voice.transcript") {
 		if err := r.handleTranscript(ctx, write, env); err != nil {
 			r.log("cloudrelay: transcript device=%s error: %v", env.DeviceID, err)
