@@ -41,7 +41,9 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -151,6 +153,43 @@ type Events interface {
 	TurnIdle()
 }
 
+// PromptObserver is the OPTIONAL extension a transport implements to receive
+// blocking-prompt events (ADR-033). The Bridge type-asserts it off the Events
+// value set via SetEvents, so existing Events implementors (cloud, LAN) compile
+// unchanged and only opt in when they grow these methods (P1/P2). A transport
+// that implements it can render the menu and call Bridge.SelectPromptOption to
+// answer. nil observer ⇒ the prompt still auto-resolves on timeout (no-device
+// safety, §11), it just isn't shown anywhere.
+type PromptObserver interface {
+	// PromptOpen reports a blocking permission/confirm menu is on screen and
+	// awaiting a choice. The transport shows {question, options} and lets the user
+	// pick; the chosen Option.Key goes back via Bridge.SelectPromptOption.
+	PromptOpen(p PromptSpec)
+	// PromptClosed reports the menu is gone: reason is "answered" (a selection was
+	// injected), "timeout" (auto-resolved), "superseded" (claude rewrote it — a new
+	// PromptOpen follows), "cleared" (it left the screen by other means), or
+	// "respawn" (the PTY was replaced). The transport dismisses its prompt UI.
+	PromptClosed(promptID, reason string)
+}
+
+// PromptOption is one selectable row forwarded to the device. Key is the LITERAL
+// digit the device echoes back and the adapter injects to submit it (digit-submit;
+// ADR-033 spike). Default marks the highlighted row.
+type PromptOption struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+// PromptSpec is a blocking menu forwarded to the device for confirmation.
+type PromptSpec struct {
+	ID        string         `json:"id"`
+	Kind      string         `json:"kind"`
+	Question  string         `json:"question"`
+	Options   []PromptOption `json:"options"`
+	Mechanism string         `json:"mechanism"` // "digit"
+}
+
 // Config tunes the Bridge. The zero value is usable: cols/rows fall back to the
 // vtscreen defaults and pollInterval to a sane tick.
 type Config struct {
@@ -181,7 +220,26 @@ type Config struct {
 	// device paths (cloud relay, LAN) set it; tests that drive SubmitVoiceTurn
 	// without Run leave it off so they never block on the ready gate.
 	Warmup bool
+
+	// ConfirmPrompts enables blocking-prompt forwarding (ADR-033): Run detects
+	// claude's permission/tool-confirm menus, emits PromptOpen/PromptClosed to a
+	// PromptObserver, and answers via SelectPromptOption. OFF (the default) is the
+	// exact pre-ADR-033 behaviour — no detection, no auto-deny — so voice-only and
+	// existing paths are untouched. The forward-to-device deployment sets it (and
+	// the butler must spawn claude with --permission-mode default, else no menu ever
+	// appears — ADR-033 spike).
+	ConfirmPrompts bool
+
+	// PromptTimeout bounds how long a forwarded permission menu may sit unanswered
+	// before the Bridge auto-resolves it the SAFE way (deny: pick "No"/ESC), so a
+	// disconnected or silent device can't wedge the PTY and never auto-approves a
+	// destructive tool (§11 invariant). Zero ⇒ defaultPromptTimeout. Only consulted
+	// when ConfirmPrompts is on.
+	PromptTimeout time.Duration
 }
+
+// defaultPromptTimeout is the fallback auto-deny window for a forwarded menu.
+const defaultPromptTimeout = 90 * time.Second
 
 const defaultPollInterval = 150 * time.Millisecond
 
@@ -225,6 +283,31 @@ type Bridge struct {
 	// blocks on it so the first turn isn't injected into claude's startup. Without
 	// Warmup it is closed at New, so SubmitVoiceTurn never waits.
 	ready chan struct{}
+
+	// promptObs is the optional blocking-prompt sink, type-asserted from events in
+	// SetEvents (nil when the transport doesn't implement PromptObserver). ADR-033.
+	promptObs PromptObserver
+
+	// promptMu guards promptPending, which is read/written by Run's goroutine
+	// (checkPrompt) AND the transport goroutine (SelectPromptOption). nil when no
+	// menu is currently forwarded.
+	promptMu      sync.Mutex
+	promptPending *pendingPrompt
+
+	// promptSeq mints monotonic promptIds ("p1", "p2", …) so a stale select against
+	// a superseded/answered menu is recognised and dropped (§4/§6).
+	promptSeq atomic.Uint64
+}
+
+// pendingPrompt is the Bridge's record of the menu currently forwarded to the
+// device, kept so SelectPromptOption can validate the id/key, the timeout path
+// can auto-deny, and supersede can fire when the option set changes.
+type pendingPrompt struct {
+	id       string
+	sig      string          // extract.Prompt.Signature; a change ⇒ supersede
+	denyKey  string          // option Key to inject for a safe auto-deny ("" ⇒ ESC)
+	keys     map[string]bool // valid option keys, for SelectPromptOption validation
+	openedAt time.Time
 }
 
 // New builds a device bridge over an existing session. asr/tts/sink supply the
@@ -251,8 +334,12 @@ func New(sess *session.Session, asr Recognizer, tts Synthesizer, sink DeviceSink
 }
 
 // SetEvents attaches a turn-lifecycle observer. Call before Run. Passing nil
-// clears it. Used by the device-WS transport to emit reply.end / turn frames.
-func (b *Bridge) SetEvents(e Events) { b.events = e }
+// clears it. Used by the device-WS transport to emit reply.end / turn frames. If
+// e also implements PromptObserver, it receives blocking-prompt events too.
+func (b *Bridge) SetEvents(e Events) {
+	b.events = e
+	b.promptObs, _ = e.(PromptObserver)
+}
 
 // SubmitVoicePTT is the full PTT entry point: recognise the audio, then inject
 // the transcript as a user turn. Empty/whitespace transcripts are dropped (a
@@ -352,6 +439,168 @@ func (b *Bridge) signalRearm() {
 	}
 }
 
+// forwardablePromptKind reports whether a parsed menu needs a human decision and
+// so is forwarded to the device. upsell/trust are config-suppressed / handled by
+// warmup+auto-enter and must NOT be forwarded (ADR-033 §2); survey never reaches
+// here (ParsePrompt never returns it).
+func forwardablePromptKind(k extract.PromptKind) bool {
+	switch k {
+	case extract.PromptPermission, extract.PromptEditConfirm, extract.PromptUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkPrompt drives the blocking-prompt forward lifecycle from Run's goroutine:
+// open a promptId when a permission/confirm menu appears (PromptOpen), supersede
+// when its option set changes, auto-DENY on timeout (no-device / silent-device
+// safety — never auto-approve), and close it when it leaves the screen. It
+// returns pending=true while a menu is up so Run suppresses speaking/streaming
+// over it. No-op (false) unless Config.ConfirmPrompts is set, so the default and
+// voice-only paths are untouched.
+func (b *Bridge) checkPrompt(now time.Time) (pending bool) {
+	if !b.cfg.ConfirmPrompts {
+		return false
+	}
+	p, ok := extract.ParsePrompt(b.screen.VisibleText())
+	forward := ok && forwardablePromptKind(p.Kind)
+
+	b.promptMu.Lock()
+	cur := b.promptPending
+
+	if !forward {
+		if cur != nil { // a pending menu left the screen by other means
+			b.promptPending = nil
+			b.promptMu.Unlock()
+			b.notifyPromptClosed(cur.id, "cleared")
+			return false
+		}
+		b.promptMu.Unlock()
+		return false
+	}
+
+	if cur != nil && cur.sig == p.Signature { // same menu still waiting
+		if now.Sub(cur.openedAt) >= b.promptTimeout() {
+			deny, id := cur.denyKey, cur.id
+			b.promptPending = nil
+			b.promptMu.Unlock()
+			b.injectDeny(deny) // safe option / ESC — never the default Yes
+			b.notifyPromptClosed(id, "timeout")
+			return true
+		}
+		b.promptMu.Unlock()
+		return true
+	}
+
+	// New menu, or the option set changed under the same screen → supersede the old.
+	superseded := ""
+	if cur != nil {
+		superseded = cur.id
+	}
+	id := b.nextPromptID()
+	keys := make(map[string]bool, len(p.Options))
+	for _, o := range p.Options {
+		keys[o.Key] = true
+	}
+	b.promptPending = &pendingPrompt{
+		id: id, sig: p.Signature, denyKey: denyKeyFor(p), keys: keys, openedAt: now,
+	}
+	spec := toPromptSpec(id, p)
+	b.promptMu.Unlock()
+
+	if superseded != "" {
+		b.notifyPromptClosed(superseded, "superseded")
+	}
+	if b.promptObs != nil {
+		b.promptObs.PromptOpen(spec)
+	}
+	return true
+}
+
+// SelectPromptOption answers a forwarded blocking menu: it validates promptID is
+// still the live pending menu and key is one of its options, then injects the
+// digit into the PTY (digit-submit — NO leading ESC, which would cancel it). A
+// stale/unknown promptID (superseded, already answered, or from a respawned PTY)
+// or an unknown key is a safe ack-and-drop no-op (§6), never a mis-inject. Called
+// from the transport goroutine.
+func (b *Bridge) SelectPromptOption(promptID, key string) error {
+	b.promptMu.Lock()
+	cur := b.promptPending
+	if cur == nil || cur.id != promptID || !cur.keys[key] {
+		b.promptMu.Unlock()
+		return nil
+	}
+	b.promptPending = nil
+	b.promptMu.Unlock()
+
+	if err := b.sess.Write([]byte(key)); err != nil {
+		return mapErr(err)
+	}
+	b.notifyPromptClosed(promptID, "answered")
+	return nil
+}
+
+// closePendingPrompt clears any forwarded menu and tells the observer why — used
+// on Run exit (PTY respawn / ctx cancel) so the device never holds a dead menu.
+func (b *Bridge) closePendingPrompt(reason string) {
+	b.promptMu.Lock()
+	cur := b.promptPending
+	b.promptPending = nil
+	b.promptMu.Unlock()
+	if cur != nil {
+		b.notifyPromptClosed(cur.id, reason)
+	}
+}
+
+func (b *Bridge) notifyPromptClosed(id, reason string) {
+	if b.promptObs != nil {
+		b.promptObs.PromptClosed(id, reason)
+	}
+}
+
+func (b *Bridge) nextPromptID() string { return "p" + strconv.FormatUint(b.promptSeq.Add(1), 10) }
+
+func (b *Bridge) promptTimeout() time.Duration {
+	if b.cfg.PromptTimeout > 0 {
+		return b.cfg.PromptTimeout
+	}
+	return defaultPromptTimeout
+}
+
+// injectDeny answers a menu the SAFE way: the explicit "No" option if claude
+// offered one, else ESC (which the menu's "Esc to cancel" footer honours). Never
+// the highlighted default (which is "Yes").
+func (b *Bridge) injectDeny(key string) {
+	if key != "" {
+		_ = b.sess.Write([]byte(key))
+		return
+	}
+	_ = b.sess.Write([]byte(interruptKey))
+}
+
+// denyKeyFor returns the Key of the option whose label denies (starts with "No"),
+// or "" when there is none (caller falls back to ESC).
+func denyKeyFor(p extract.Prompt) string {
+	for _, o := range p.Options {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(o.Label)), "no") {
+			return o.Key
+		}
+	}
+	return ""
+}
+
+// toPromptSpec converts the extractor's Prompt into the transport-facing spec.
+func toPromptSpec(id string, p extract.Prompt) PromptSpec {
+	opts := make([]PromptOption, len(p.Options))
+	for i, o := range p.Options {
+		opts[i] = PromptOption{Key: o.Key, Label: o.Label, Default: o.Default}
+	}
+	return PromptSpec{
+		ID: id, Kind: string(p.Kind), Question: p.Question, Options: opts, Mechanism: p.Mechanism,
+	}
+}
+
 // Run drives the reply → TTS → device loop until the session's PTY exits or ctx
 // is cancelled. It attaches to the session as a raw-byte Client, feeds every
 // chunk into its private VT mirror, and on each completed turn (extract.Detector
@@ -373,6 +622,9 @@ func (b *Bridge) signalRearm() {
 func (b *Bridge) Run(ctx context.Context) error {
 	client, scrollback, snapshot := b.sess.Attach()
 	defer b.sess.Detach(client)
+	// On exit (PTY respawn / ctx cancel) drop any forwarded menu so the device
+	// never holds a dead promptId pointing at a gone process (ADR-033 §6).
+	defer b.closePendingPrompt("respawn")
 
 	// Replay the attach snapshot into our mirror so the baseline reflects whatever
 	// was already on screen when we joined (an in-progress session), not a blank
@@ -457,6 +709,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 			reply, _ := ext.OnOutput()
 			det.Observe(time.Now(), b.screen, len(chunk) > 0)
 			b.emitToolSteps(ts) // display-only tool progress (ADR-030); only on a new paint
+			if b.checkPrompt(time.Now()) {
+				continue // a blocking permission/confirm menu is up — don't speak/stream over it
+			}
 			if err := b.onProgress(ctx, reply.Text, ts); err != nil {
 				return err
 			}
@@ -472,6 +727,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 			// detected without waiting for the next unrelated chunk.
 			dismissSurvey()
 			det.Observe(time.Now(), b.screen, false)
+			if b.checkPrompt(time.Now()) {
+				continue // blocking menu up — suppress turn-end speak (also a §0 belt-and-suspenders)
+			}
 			reply, _ := ext.OnOutput()
 			if spoke, err := b.maybeSpeak(ctx, det, reply.Text, ts); err != nil {
 				return err
