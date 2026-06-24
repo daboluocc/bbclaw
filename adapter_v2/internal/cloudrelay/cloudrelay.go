@@ -273,6 +273,14 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 		r.handleTurnCancel(write, env)
 		return
 	}
+	// prompt.select is the device's answer to a forwarded blocking menu (ADR-033) —
+	// an INDEPENDENT request kind (not voice.transcript), so a human's think-time is
+	// decoupled from ReplyWait and from supersede-on-new-transcript. Route it to the
+	// live bridge; a stale/unknown promptId is a safe no-op there.
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "prompt.select") {
+		r.handlePromptSelect(write, env)
+		return
+	}
 	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a
 	// minimal static reply; unknown kinds fall through to a silent no-op. Log either
 	// way so the device's settings-page traffic is visible while debugging.
