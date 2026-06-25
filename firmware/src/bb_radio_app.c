@@ -2610,13 +2610,27 @@ static void stream_task(void* arg) {
         /* Unlock → CHAT state, STANDBY view (PTT activates agent chat). */
         set_radio_app_state(BBCLAW_STATE_CHAT);
       } else {
-        ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s", (double)verify_result.confidence,
-                 verify_result.message);
+        ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s transcript=%s",
+                 (double)verify_result.confidence, verify_result.message, verify_result.transcript);
         show_status_error(BB_STATUS_VERIFY_ERR);
-        (void)bb_display_show_chat_turn("密语未匹配",
-                                        verify_result.message[0] != '\0' ? verify_result.message : "请重试");
+        /* ADR-038: show what the ASR heard so the user can adjust pronunciation /
+         * the passphrase. The cloud already returns it in voice.verify.result. */
+        if (verify_result.transcript[0] != '\0') {
+          bb_display_show_heard(verify_result.transcript);
+        }
+        {
+          char detail[160];
+          if (verify_result.transcript[0] != '\0') {
+            snprintf(detail, sizeof(detail), "听到「%s」", verify_result.transcript);
+          } else {
+            snprintf(detail, sizeof(detail), "%s",
+                     verify_result.message[0] != '\0' ? verify_result.message : "请重试");
+          }
+          (void)bb_display_show_chat_turn("密语未匹配", detail);
+        }
         signal_error_haptic();
-        vTaskDelay(pdMS_TO_TICKS(1200));
+        /* Hold the failure (with the heard text) long enough to read it. */
+        vTaskDelay(pdMS_TO_TICKS(2500));
         show_status_idle(BB_STATUS_LOCKED);
       }
       continue;

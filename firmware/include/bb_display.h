@@ -8,6 +8,9 @@ esp_err_t bb_display_init(void);
 /** 设置当前运行模式，用于状态栏 HOME/CLOUD 图标显示 */
 void bb_display_set_cloud_mode(int is_cloud);
 esp_err_t bb_display_show_status(const char* status_line);
+/** ADR-038: 密语解锁失败后，把 ASR 识别到的文本叠到锁屏 hint（「听到「…」请重说」）。
+ *  在 bb_display_show_status(BB_STATUS_VERIFY_ERR) 之后调用；空串/NULL 清除。 */
+esp_err_t bb_display_show_heard(const char* heard);
 /** 主界面：仅展示「自己说的」与「助手回复」，短信式上下两行（ME / AI） */
 esp_err_t bb_display_show_chat_turn(const char* user_said, const char* assistant_reply);
 esp_err_t bb_display_upsert_chat_turn(const char* user_said, const char* assistant_reply, int finalize);

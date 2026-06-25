@@ -11,6 +11,10 @@
 void bb_page_locked_create(lv_obj_t* scr);
 void bb_page_locked_set_visible(int visible);
 void bb_page_locked_update_status(const char* status);
+/** ADR-038: after a failed unlock, replace the hint with what the ASR heard
+ *  ("听到「<heard>」请重说") so the user can adjust. Empty/NULL → no change (keeps
+ *  the default error hint). Call right after update_status(BB_STATUS_VERIFY_ERR). */
+void bb_page_locked_show_heard(const char* heard);
 void bb_page_locked_update_battery(int supported, int available, int percent, int low, int charging);
 /** ADR-021-firmware-ui §2: refresh LOCKED page footer.
  *  cwd: butler workspace cwd (NULL/"" → shows "[B]")

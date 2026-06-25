@@ -386,6 +386,16 @@ void bb_page_locked_update_status(const char* status) {
   keyhole_breathe(breathe_ms);
 }
 
+void bb_page_locked_show_heard(const char* heard) {
+  /* ADR-038: overwrite the hint (just set to "请重新说出密语" by
+   * update_status(VERIFY_ERR)) with what the ASR actually heard, so the user can
+   * tell why the unlock failed and adjust. Empty → leave the default hint. */
+  if (s_lbl_hint == NULL || heard == NULL || heard[0] == '\0') return;
+  char buf[160];
+  snprintf(buf, sizeof(buf), "听到「%s」请重说", heard);
+  lv_label_set_text(s_lbl_hint, buf);
+}
+
 void bb_page_locked_update_footer(const char* cwd, int mem_inbox, int mem_profile) {
   if (s_lbl_footer_left == NULL || s_lbl_footer_right == NULL) return;
 

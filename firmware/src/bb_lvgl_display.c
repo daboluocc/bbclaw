@@ -246,6 +246,11 @@ static int s_scroll_you;
 static int s_scroll_ai;
 static int s_focus_ai;
 static char s_status[32];
+/* ADR-038: ASR-recognized passphrase text to overlay on the LOCKED page hint
+ * ("听到「…」请重说"). Re-applied on every refresh while set, so an intervening
+ * battery/status refresh during the post-reject hold doesn't wipe it. Cleared by
+ * bb_display_show_status (any status change drops it). */
+static char s_locked_heard[128];
 static char s_bottom_session[64];
 /* ADR-016: bottom-bar right side now shows the active model id/label so
  * users can see "what brain am I talking to" at a glance. */
@@ -1542,6 +1547,7 @@ static void create_ui(void) {
 
 static void refresh_ui(void) {
   char status[sizeof(s_status)];
+  char heard[sizeof(s_locked_heard)];
   char you[BBCLAW_DISPLAY_CHAT_LINE_LEN];
   char reply[BBCLAW_DISPLAY_CHAT_LINE_LEN];
   int turn_den = 0;
@@ -1549,6 +1555,7 @@ static void refresh_ui(void) {
 
   portENTER_CRITICAL(&s_state_lock);
   memcpy(status, s_status, sizeof(status));
+  memcpy(heard, s_locked_heard, sizeof(heard));
   locked = s_locked;
   turn_den = s_history_count;
   if (s_history_count <= 0) {
@@ -1593,6 +1600,7 @@ static void refresh_ui(void) {
     s_record_view_visible = 0;
   } else if (mode == UI_VIEW_LOCKED) {
     bb_page_locked_update_status(status);
+    bb_page_locked_show_heard(heard); /* ADR-038: overlay "听到「…」" after a failed unlock */
     {
       int bat_supported, bat_available, bat_percent, bat_low, bat_charging;
       portENTER_CRITICAL(&s_state_lock);
@@ -1963,8 +1971,26 @@ esp_err_t bb_display_show_status(const char* status_line) {
     portENTER_CRITICAL(&s_state_lock);
     strncpy(s_status, status_line, sizeof(s_status) - 1);
     s_status[sizeof(s_status) - 1] = '\0';
+    s_locked_heard[0] = '\0'; /* ADR-038: a status change drops the stale "听到" overlay */
     portEXIT_CRITICAL(&s_state_lock);
   }
+  if (s_ready) refresh_ui();
+  return ESP_OK;
+}
+
+esp_err_t bb_display_show_heard(const char* heard) {
+  /* ADR-038: set the ASR-recognized passphrase text the LOCKED page overlays on
+   * its hint. Call right AFTER bb_display_show_status(BB_STATUS_VERIFY_ERR) — that
+   * call clears any previous heard, this one sets the new one; refresh re-applies
+   * it. Empty/NULL clears it. */
+  portENTER_CRITICAL(&s_state_lock);
+  if (heard != NULL) {
+    strncpy(s_locked_heard, heard, sizeof(s_locked_heard) - 1);
+    s_locked_heard[sizeof(s_locked_heard) - 1] = '\0';
+  } else {
+    s_locked_heard[0] = '\0';
+  }
+  portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
   return ESP_OK;
 }

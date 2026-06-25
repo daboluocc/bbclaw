@@ -1644,6 +1644,10 @@ static void parse_voice_verify_result(const char* body, bb_voice_verify_result_t
   out_result->confidence = json_extract_float(body, "confidence", 0.0f);
   out_result->message[0] = '\0';
   (void)json_extract_string(body, "message", out_result->message, sizeof(out_result->message));
+  /* ADR-038: the cloud already returns the ASR-recognized passphrase text; surface
+   * it so the lock screen can show "听到「…」" on a failed unlock. */
+  out_result->transcript[0] = '\0';
+  (void)json_extract_string(body, "transcript", out_result->transcript, sizeof(out_result->transcript));
 }
 
 static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t* accum) {

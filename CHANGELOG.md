@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:密语解锁失败时显示识别到的语音文本（ADR-038）**:密语(锁屏语音解锁)ASR 准确度不稳,
+  失败时用户原先不知道设备听成了什么、没法调整。现在解锁失败的锁屏会显示「听到「<识别文本>」请
+  重说」。**纯固件改动**——云端 `voice.verify.result` 早已回 `transcript`(`voiceprint_api.go`),
+  只是固件没解析没显示。落地:`bb_voice_verify_result_t` 加 `transcript` 字段 +
+  `parse_voice_verify_result` 解析 + `bb_page_locked_show_heard()` 覆写锁屏 hint +
+  `bb_display_show_heard()`(状态变量 `s_locked_heard` 并入 refresh,防中途刷新冲掉) + reject 分支
+  调用并把失败停留 1200→2500ms 给用户时间读。成功即解锁不显示;transcript 缺失降级原提示、不回归。
+  `idf.py build` 通过。本仓不打 tag,发布由 owner 触发(同 ADR-037)。
 - **固件:设置菜单新增密语(miyu)开关（ADR-037）**:cloud_saas 模式下设备端可自己开/关**密语**
   (锁屏语音解锁),不必再依赖云端/CLI/管家。落地照抄 TTS 开关 + 音量持久化范式:新增
   `MAIN_ROW_MIYU` 行(仅 cloud_saas 显示)、`bb_device_config_set_miyu()` setter(clamp 0/1、

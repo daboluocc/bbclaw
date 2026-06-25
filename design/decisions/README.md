@@ -55,3 +55,4 @@
 | [ADR-035](ADR-035-adapter-v2-interactive-pty-over-claude-p.md) | adapter_v2 跑交互式 PTY + 抓屏而非 `claude -p`——计费留在订阅内 + 多 CLI 无缝兼容 | 2026-06-25 | 已接受（追认既有架构） |
 | [ADR-036](ADR-036-adapter-v2-project-loader.md) | adapter_v2 项目载入——管理页登记目录 + 项目清单注入系统提示（re-exec 落地）+ CLI 发现 | 2026-06-25 | 进行中（P1 核心已实现：projectstore + CRUD + 系统提示 + 原生目录对话框 + 用户画像展示 + 设备控制） |
 | [ADR-037](ADR-037-firmware-miyu-settings-toggle.md) | 固件设置菜单密语(miyu)开关——cloud_saas 下可设备端开/关锁屏语音解锁，重启生效 | 2026-06-25 | 已接受（已实现，`make build` 通过；待真机验证 + owner 发布） |
+| [ADR-038](ADR-038-firmware-miyu-show-recognized-text.md) | 密语解锁失败显示识别到的语音文本——纯固件消费云端已回的 transcript，锁屏「听到「…」」 | 2026-06-25 | 已接受（已实现，`make build` 通过；待真机验证 + owner 发布） |

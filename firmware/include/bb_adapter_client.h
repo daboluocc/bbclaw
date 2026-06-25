@@ -120,6 +120,10 @@ typedef struct {
   int match;
   float confidence;
   char message[128];
+  char transcript[128]; /* ASR-recognized text of the spoken passphrase (ADR-038);
+                         * cloud already returns it in voice.verify.result. Shown on
+                         * the lock screen when unlock fails so the user sees what was
+                         * misheard. Empty when absent. */
 } bb_voice_verify_result_t;
 
 /* ADR-027: a single Home Adapter ("机器") the device may switch its active
