@@ -1,7 +1,8 @@
 # ADR-036: adapter_v2 项目载入与系统提示项目清单注入
 
 - **日期**: 2026-06-25
-- **状态**: 进行中（设计定稿，4 项关键决策已确认。**P1 核心已实现**：`internal/projectstore` 包 + `/v1/projects` CRUD + `/v1/admin/fs` 目录选择器 + `DeviceSystemPrompt` 渲染项目清单(boot 读盘) + re-exec 落地(复用 `adminapi.Restart`) + `ASR_HOTWORDS` 合并项目名 + `cliReady` + 管理页项目卡片；`go test -race ./...` 全绿。**待补**：移植 v1 prewarm 的 scanner 写 `MEMORY/projects.md`(§决策三 的重知识增强)。未真机验证。）
+- **状态**: 进行中（设计定稿。**P1 核心已实现**：`internal/projectstore` 包 + `/v1/projects` CRUD + 原生目录选择器 + `DeviceSystemPrompt` 渲染项目清单(boot 读盘) + `ASR_HOTWORDS` 合并项目名 + `cliReady` + 管理页项目卡片；`go test -race ./...` 全绿。**待补**：移植 v1 prewarm 的 scanner 写 `MEMORY/projects.md`(§决策三)。未真机验证。）
+- **UX 修订（2026-06-25，owner 反馈）**：推翻原先两条决策——(1) **加/删项目不再强制重启**：配置项目是低优先级 setup，不需立刻生效，持久化即可、下次适配器**自然重启**时焊进系统提示（见 §决策二）；(2) **目录选择改用宿主机原生「打开本地目录」对话框**（osascript / zenity），不在浏览器里渲染目录树（见「HTTP/UX 契约」）。下文相关段落已就地更新并标注「修订」。
 - **关联**:
   - **ADR-025（web-first 配置）**——直接复用其 env-overlay store 范式、loopback-only 管理页、`adminapi.Restart()` re-exec 的「restart-to-apply」心智。项目载入是同一配置心智的延伸，不另立配置体系。
   - **ADR-022（记忆整理 + 画像文档）**——项目「重知识」落 `MEMORY/projects.md`，属画像维度；scanner 写入须遵守其两层模型与反投毒（无绝对路径进画像、deny 过滤、0600）。
@@ -47,19 +48,21 @@ Project { Name, Path(绝对), Source('admin'|'env'), AddedAt,
 
 文件 `{version:1, projects:[...]}`，原子写（temp+rename, 0600）。校验沿用 v1 `Add`（`store.go:279-321`）：path 绝对 + 存在 + 是目录；name 非空且不含 `,`/`:`（留作 hotword/清单分隔安全）；name+path 池内唯一。**单一共享池**（决策已确认）：所有设备看到同一份 `projects.json`，不做 per-device 维度。
 
-### 决策二：持久触达走 boot-once 读盘 + re-exec（核心，「保证不遗忘」的正解）
+### 决策二：持久触达走 boot-once 读盘（下次自然重启生效，**不强制重启**）【修订 2026-06-25】
 
 `DeviceSystemPrompt` 在构建时读 `projects.json`，把已登记项目渲染成**紧凑清单**追加到现有 walkie-talkie 约束之后，每条形如：
 
 ```
-- <name> — <一句用途> — [CLI: <bin> 就绪 | 未配置]
+- <name> — <一句用途> — 目录 <path> — [CLI: <bin> 就绪 | 未配置]
 ```
 
-加/删项目（`POST`/`DELETE /v1/projects`）后，**复用现成 `adminapi.Restart()` re-exec**；re-exec 后 `main.go:103-113` 重新 `EnsureWorkspace` + `DeviceClaudeArgs`，`DeviceSystemPrompt` 重新读盘，新项目就**焊进了每轮都带的系统提示**。
+加/删项目（`POST`/`DELETE /v1/projects`）**只持久化、不触发重启**。下次适配器**自然重启**（改设置 re-exec、部署、重开机等）时，`main.go` 重新 `EnsureWorkspace` + `DeviceClaudeArgs`，`DeviceSystemPrompt` 重新读盘，新项目就**焊进了每轮都带的系统提示**。
 
-> **为何这是「不遗忘」的正解**：项目清单进系统提示 = 每轮强加载，不赌管家主动去读 `MEMORY/projects.md`（软指引）。ADR-020/022 明确画像文档不每轮注入——这正是方案 A（只写 MEMORY）会复现截图失败的原因。
+> **修订原因（owner 反馈）**：原设计加/删项目即复用 `adminapi.Restart()` re-exec 落地（~1-2s 断连）。owner 反馈「配置项目就行，不要重启，不用立刻生效」——配置项目是低优先级 setup，强制重启太重。改为**持久化即可、下次自然重启生效**：管理页加/删后只 toast「下次重启后生效」，不弹重启横幅、不调 `/v1/settings/restart`。
 >
-> **为何 re-exec 而非 respawn**（写进 ADR 防后人踩坑）：`respawn` 只换会话 id、不重建 `baseArgv`/系统提示（`session.go:30`「persona already baked in」），拿不到新项目。只有 re-exec 才能重算 `DeviceClaudeArgs`。生效时机 = 加项目→提示重启→re-exec（~1-2s 短暂断连重连），与 ADR-025 设置变更体验同构（决策已确认接受）。
+> **「不遗忘」仍成立**：项目清单已落盘 `projects.json`，下次 boot 必然读入系统提示——每轮强加载，不赌管家主动去读 `MEMORY/projects.md`（软指引）。与原设计唯一差别是**生效有延迟**（到下次重启），owner 已确认接受。
+>
+> **不要用 respawn**（仍写进 ADR 防后人踩坑）：`respawn` 只换会话 id、不重建 `baseArgv`/系统提示（`session.go:30`「persona already baked in」），拿不到新项目；要让运行中的管家立刻看到新项目仍只能 re-exec——但本期不主动做（留给下次自然重启）。
 >
 > **降级**：boot 时 `projects.json` 缺失/损坏 → 渲染为空清单、不阻塞 boot（沿用 settingsstore 坏文件范式）。
 
@@ -80,14 +83,14 @@ Project { Name, Path(绝对), Source('admin'|'env'), AddedAt,
 
 ## HTTP / UX 契约
 
-新增独立 REST（**全部 `adminapi.LocalOnly` 包裹，loopback-only**，`main.go:195-198` 范式）：
+新增独立 REST（**全部 `adminapi.LocalOnly` 包裹，loopback-only**，`main.go` newRouter 范式）。**修订 2026-06-25**：加/删**不返回 `restartRequired`**（不强制重启，§决策二）；目录选择改用**宿主机原生对话框**而非服务端目录浏览。
 
 - `GET /v1/projects` → `{ok,data:{projects:[{name,path,source,summary,cliBin,cliReady,editable}]}}`
-- `POST /v1/projects` body `{path, name?, summary?, cliBin?}` → `store.Add` 校验 → 异步触发 scanner 写 `MEMORY/projects.md` → 并入 `ASR_HOTWORDS` → 返回新项目 + `restartRequired:true`
-- `DELETE /v1/projects/{name}` → 删除 + `restartRequired:true`
-- **`GET /v1/admin/fs`（目录选择器，决策已确认进 P1）**：移植 v1 服务端目录浏览器（`fs` 浏览 / `fs/search` 搜索 / `fs/resolve-drop` 解析拖拽），让非程序员点选目录、不用手敲绝对路径。
+- `POST /v1/projects` body `{path, name?, summary?, cliBin?}` → `store.Add` 校验 → 并入 `ASR_HOTWORDS`（下次 boot 生效）→ 返回新项目（**无 restartRequired**）。scanner 写 `MEMORY/projects.md` 为后续（§决策三）。
+- `DELETE /v1/projects/{name}` → 删除（**无 restartRequired**）。
+- **`POST /v1/admin/pick-dir`（原生目录选择器）**：在**适配器宿主机**弹出 OS 原生「选择文件夹」对话框（macOS `osascript`「choose folder」→ `POSIX path`；Linux `zenity --file-selection --directory`），返回所选**绝对路径**。可行因为管理页 loopback-only——浏览器与适配器同机，对话框就弹在用户屏幕上。取代浏览器内渲染目录树（owner 要求；且浏览器出于安全本就不暴露所选目录绝对路径）。返回 `{path}` / `{cancelled:true}` / `{ok:false,PICKER_UNAVAILABLE}`（无原生选择器时页面降级为手动粘贴路径）。
 
-管理页（`adapter_v2/web/admin.html`，vanilla HTML+JS）在现有设置卡片旁加**项目卡片**（沿用 `card()/render()` 范式）：列出项目（名字、路径、一句用途、CLI 就绪徽标）+ 每行删除 + 底部「添加项目」行（目录选择器 + 可选 name/用途/CLIBin）。加/删后弹「需重启生效」横幅，点重启走现成 `POST /v1/settings/restart`，页面 poll `/healthz` 重连。
+管理页（`adapter_v2/web/admin.html`，vanilla HTML+JS）在现有设置卡片旁加**项目卡片**（沿用 `card()` 范式）：列出项目（名字、路径、一句用途、CLI 就绪徽标）+ 每行删除 + 底部「添加项目」行（「选择目录…」按钮调原生对话框填路径 + 可选 name/用途/CLIBin）。加/删后只 toast「下次重启后生效」，**不弹重启横幅**。
 
 ## 否决的方案
 

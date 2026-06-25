@@ -107,15 +107,7 @@
     .arline input{flex:1;min-width:160px;font:inherit;background:#05090c;color:var(--lit);
       border:1px solid var(--ghost);border-radius:7px;padding:8px 10px}
     .arline input:focus{outline:none;border-color:var(--accent)}
-    .picker{border:1px solid var(--ghost);border-radius:7px;padding:9px 11px;background:rgba(7,11,14,.6)}
-    .pickhead{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:8px}
-    .pickhead .hint{flex:1;min-width:120px;word-break:break-all}
-    .pickup,.pick-use,#pick-use{padding:4px 11px;font-size:11px;font-weight:400}
-    .picklist{display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow:auto}
-    .pickdir{background:transparent;color:var(--lit);border-color:var(--ghost);padding:5px 10px;
-      font-weight:400;font-size:11px}
-    .pickdir:hover{border-color:var(--accent);color:var(--accent)}
-    #projects .hide{display:none}
+    #np-pick{font-weight:400}
   </style>
 </head>
 <body>
@@ -347,10 +339,9 @@
 
     // ── Projects (ADR-036) ───────────────────────────────────────────────────
     // Independent of the settings doc: its own GET/POST/DELETE endpoints. Adding or
-    // removing a project flags a restart (the project list bakes into the butler
-    // system prompt at boot), so we surface the same restart banner.
-    let pickerPath = "";
-
+    // removing a project does NOT trigger a restart (revised UX): it just persists
+    // and the butler picks it up at the next natural boot. The directory is chosen
+    // through the host's NATIVE folder dialog (pick-dir), not an in-page tree.
     function escA(s) { return esc(s).replace(/"/g, "&quot;"); }
 
     function projectRow(p) {
@@ -369,16 +360,15 @@
     function renderProjects(list) {
       const rows = (list && list.length)
         ? list.map(projectRow).join("")
-        : `<div class="hint">还没有登记项目。加一个目录，管家开口就知道你在做什么。</div>`;
+        : `<div class="hint">还没有登记项目。加一个目录，管家就知道你在做什么。</div>`;
       $("projects").innerHTML = `<section class="card"><h2>项目 Projects
-        <span class="hint" style="font-weight:400">管家开口即知；加 / 删后需重启生效（ADR-036）</span></h2>
+        <span class="hint" style="font-weight:400">管家开口即知；下次重启后生效（ADR-036）</span></h2>
         <div class="projlist">${rows}</div>
         <div class="addrow">
           <div class="arline">
-            <input id="np-path" placeholder="项目目录绝对路径，如 /Users/you/buildhub" autocomplete="off" spellcheck="false" />
-            <button id="np-browse" type="button">浏览…</button>
+            <input id="np-path" placeholder="点「选择目录…」用 Finder 选，或粘贴绝对路径" autocomplete="off" spellcheck="false" />
+            <button id="np-pick" type="button">选择目录…</button>
           </div>
-          <div id="picker" class="picker hide"></div>
           <div class="arline">
             <input id="np-name" placeholder="名字（可选，默认取目录名）" autocomplete="off" spellcheck="false" />
             <input id="np-summary" placeholder="一句话用途（可选），如 内部构建平台" autocomplete="off" spellcheck="false" />
@@ -403,7 +393,7 @@
 
     async function addProject() {
       const path = $("np-path").value.trim();
-      if (!path) { toast("请填项目目录路径", "err"); return; }
+      if (!path) { toast("请先选择 / 填写项目目录", "err"); return; }
       const body = {
         path,
         name: $("np-name").value.trim(),
@@ -417,8 +407,7 @@
         });
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
-        toast("已添加项目", "ok");
-        restartPending = true; showBanner();
+        toast("已添加（下次重启后管家生效）", "ok");
         await loadProjects();
       } catch (e) {
         toast("添加失败：" + e.message, "err");
@@ -432,48 +421,47 @@
         const r = await fetch("/v1/projects/" + encodeURIComponent(name), {method: "DELETE"});
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
-        toast("已删除", "ok");
-        if (j.data && j.data.restartRequired) { restartPending = true; showBanner(); }
+        toast("已删除（下次重启后生效）", "ok");
         await loadProjects();
       } catch (e) {
         toast("删除失败：" + e.message, "err");
       }
     }
 
-    async function browseFS(path) {
+    // pickDir opens the host's NATIVE folder chooser (Finder on macOS) via the
+    // adapter and fills the path input with the absolute path it returns. The admin
+    // page is loopback-only so the dialog appears on this same machine.
+    async function pickDir() {
+      const btn = $("np-pick");
+      btn.disabled = true; btn.textContent = "选择中…";
       try {
-        const url = "/v1/admin/fs" + (path ? "?path=" + encodeURIComponent(path) : "");
-        const r = await fetch(url, {headers: {Accept: "application/json"}});
+        const r = await fetch("/v1/admin/pick-dir", {method: "POST"});
         const j = await r.json();
-        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
-        pickerPath = j.data.path;
-        const dirs = (j.data.dirs || []).map((d) =>
-          `<button type="button" class="pickdir" data-fs="${escA(d.path)}">📁 ${esc(d.name)}</button>`).join("");
-        const up = j.data.parent
-          ? `<button type="button" class="pickup" data-fs="${escA(j.data.parent)}">⬆ 上一级</button>` : "";
-        const pk = $("picker");
-        pk.classList.remove("hide");
-        pk.innerHTML = `<div class="pickhead"><span class="hint">${esc(j.data.path)}</span>${up}
-          <button type="button" id="pick-use">用这个目录</button></div>
-          <div class="picklist">${dirs || '<span class="hint">（无子目录）</span>'}</div>`;
+        if (!j.ok) {
+          toast("系统选择器不可用，请手动粘贴目录路径", "err");
+          return;
+        }
+        if (j.data && j.data.path) {
+          $("np-path").value = j.data.path;
+          if (!$("np-name").value.trim()) {
+            const parts = j.data.path.replace(/\/+$/, "").split("/");
+            $("np-name").value = parts[parts.length - 1] || "";
+          }
+        } // cancelled → leave the input as-is
       } catch (e) {
-        toast("浏览目录失败：" + e.message, "err");
+        toast("打开目录选择器失败：" + e.message, "err");
+      } finally {
+        btn.disabled = false; btn.textContent = "选择目录…";
       }
     }
 
-    // Event delegation for the dynamic project + picker controls.
+    // Event delegation for the dynamic project controls.
     $("projects").addEventListener("click", (ev) => {
       const t = ev.target.closest("button");
       if (!t) return;
       if (t.id === "np-add") return addProject();
-      if (t.id === "np-browse") return browseFS($("np-path").value.trim() || "");
-      if (t.id === "pick-use") {
-        if (pickerPath) $("np-path").value = pickerPath;
-        $("picker").classList.add("hide");
-        return;
-      }
+      if (t.id === "np-pick") return pickDir();
       if (t.hasAttribute("data-del")) return deleteProject(t.getAttribute("data-del"));
-      if (t.hasAttribute("data-fs")) return browseFS(t.getAttribute("data-fs"));
     });
 
     $("save").addEventListener("click", save);

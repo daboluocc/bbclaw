@@ -251,13 +251,13 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	mux.HandleFunc("/v1/settings/restart", adminapi.LocalOnly(adminapi.Restart()))
 
 	// Project loader (ADR-036), loopback-only. GET/POST the project list, DELETE one
-	// by name, and a server-side directory picker so non-programmers can browse to a
-	// folder instead of typing an absolute path. Adding/removing flags a restart (the
-	// project list bakes into the system prompt at boot via re-exec). The MEMORY/
-	// projects.md enrichment scanner is a separate follow-up (ADR-036 §决策三).
-	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore, restart)))
-	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore, restart)))
-	mux.HandleFunc("/v1/admin/fs", adminapi.LocalOnly(adminapi.FSBrowse()))
+	// by name, and a NATIVE OS folder chooser (pick-dir) so non-programmers select a
+	// directory via the Finder dialog instead of typing a path. Adding/removing does
+	// NOT force a restart (revised UX): it persists and takes effect at the next boot.
+	// The MEMORY/projects.md enrichment scanner is a separate follow-up (§决策三).
+	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore)))
+	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore)))
+	mux.HandleFunc("/v1/admin/pick-dir", adminapi.LocalOnly(adminapi.PickDir()))
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
 	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var

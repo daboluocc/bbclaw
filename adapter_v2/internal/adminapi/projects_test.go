@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -32,19 +33,18 @@ func decode(t *testing.T, rr *httptest.ResponseRecorder) response {
 
 func TestProjectsAddListDelete(t *testing.T) {
 	store := newProjStore(t)
-	restart := &RestartFlag{}
-	h := Projects(store, restart)
+	h := Projects(store)
 	dir := t.TempDir()
 
-	// POST add.
+	// POST add — persists, does NOT report a restart (revised UX).
 	body := `{"path":"` + dir + `","name":"proj","summary":"测试项目"}`
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(body)))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("add status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	if !restart.Load() {
-		t.Error("add should flag a restart")
+	if strings.Contains(rr.Body.String(), "restartRequired") {
+		t.Error("add must not report restartRequired (no-restart UX)")
 	}
 
 	// GET list shows it.
@@ -57,7 +57,7 @@ func TestProjectsAddListDelete(t *testing.T) {
 	}
 
 	// DELETE removes it.
-	del := ProjectByName(store, &RestartFlag{})
+	del := ProjectByName(store)
 	rr = httptest.NewRecorder()
 	del(rr, httptest.NewRequest(http.MethodDelete, "/v1/projects/proj", nil))
 	if rr.Code != http.StatusOK {
@@ -69,8 +69,7 @@ func TestProjectsAddListDelete(t *testing.T) {
 }
 
 func TestProjectsAddRejectsBadPath(t *testing.T) {
-	store := newProjStore(t)
-	h := Projects(store, &RestartFlag{})
+	h := Projects(newProjStore(t))
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{"path":"relative/dir"}`)))
 	if rr.Code != http.StatusBadRequest {
@@ -92,7 +91,7 @@ func TestProjectsCLIReadyReported(t *testing.T) {
 	if _, err := store.Add(projectstore.Project{Name: "p", Path: dir, CLIBin: bin}); err != nil {
 		t.Fatal(err)
 	}
-	h := Projects(store, &RestartFlag{})
+	h := Projects(store)
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodGet, "/v1/projects", nil))
 	if !strings.Contains(rr.Body.String(), `"cliReady":true`) {
@@ -100,37 +99,44 @@ func TestProjectsCLIReadyReported(t *testing.T) {
 	}
 }
 
-func TestFSBrowseListsDirs(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "alpha"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "afile"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(root, ".hidden"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	h := FSBrowse()
+func TestPickDir(t *testing.T) {
+	orig := pickDir
+	defer func() { pickDir = orig }()
+
+	// Picked → returns the path.
+	pickDir = func(context.Context) (string, bool, error) { return "/Users/me/proj", true, nil }
 	rr := httptest.NewRecorder()
-	h(rr, httptest.NewRequest(http.MethodGet, "/v1/admin/fs?path="+root, nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("fs status = %d, body=%s", rr.Code, rr.Body.String())
+	PickDir()(rr, httptest.NewRequest(http.MethodPost, "/v1/admin/pick-dir", nil))
+	if !strings.Contains(rr.Body.String(), `"path":"/Users/me/proj"`) {
+		t.Errorf("picked path not returned: %s", rr.Body.String())
 	}
-	b := rr.Body.String()
-	if !strings.Contains(b, "alpha") {
-		t.Error("directory 'alpha' should be listed")
+
+	// Cancelled → ok with cancelled:true, no path.
+	pickDir = func(context.Context) (string, bool, error) { return "", false, nil }
+	rr = httptest.NewRecorder()
+	PickDir()(rr, httptest.NewRequest(http.MethodPost, "/v1/admin/pick-dir", nil))
+	if !strings.Contains(rr.Body.String(), `"cancelled":true`) {
+		t.Errorf("cancel not reported: %s", rr.Body.String())
 	}
-	if strings.Contains(b, "afile") {
-		t.Error("files should NOT be listed (dir picker)")
+
+	// No native picker → ok=false PICKER_UNAVAILABLE so the page can fall back.
+	pickDir = func(context.Context) (string, bool, error) { return "", false, errNoPicker }
+	rr = httptest.NewRecorder()
+	PickDir()(rr, httptest.NewRequest(http.MethodPost, "/v1/admin/pick-dir", nil))
+	if !strings.Contains(rr.Body.String(), "PICKER_UNAVAILABLE") {
+		t.Errorf("unavailable picker not reported: %s", rr.Body.String())
 	}
-	if strings.Contains(b, ".hidden") {
-		t.Error("dotdirs should be hidden")
+
+	// GET is not allowed (it's an action).
+	rr = httptest.NewRecorder()
+	PickDir()(rr, httptest.NewRequest(http.MethodGet, "/v1/admin/pick-dir", nil))
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET pick-dir should be 405, got %d", rr.Code)
 	}
 }
 
 func TestProjectsMethodNotAllowed(t *testing.T) {
-	h := Projects(newProjStore(t), &RestartFlag{})
+	h := Projects(newProjStore(t))
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodPut, "/v1/projects", nil))
 	if rr.Code != http.StatusMethodNotAllowed {
