@@ -1399,6 +1399,27 @@ int bb_ui_settings_is_active(void) {
   return s_st.active ? 1 : 0;
 }
 
+void bb_ui_settings_notify_volume_pct(int pct) {
+  /* Live-refresh the displayed volume when it changes underneath us (cloud
+   * heartbeat applied a remote `device set-volume`). When Settings is CLOSED
+   * this is a no-op — bb_ui_settings_show() re-reads the persisted config on
+   * entry, so the next open already shows the latest value. When it is OPEN the
+   * value was cached at entry, so we update it here. Caller must hold
+   * lvgl_port_lock (same contract as the other handlers). */
+  if (!s_st.active) return;
+  if (s_st.volume_dirty) return; /* user is mid-edit; never clobber their pending value */
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  if (s_st.volume_pct == pct) return;
+  s_st.volume_pct = pct;
+  if (s_st.vol_fill != NULL && s_st.vol_pct_lbl != NULL) {
+    update_volume_bar(pct); /* on the volume-adjust page: partial-update bar + "NN%" */
+  } else if (s_st.level == LEVEL_MAIN) {
+    rerender(); /* on the main list: redraw so the "Volume  NN%" row updates */
+  }
+  ESP_LOGI(TAG, "volume refreshed from cloud pct=%d", pct);
+}
+
 /* ── Input handlers ── */
 
 void bb_ui_settings_handle_rotate(int delta) {

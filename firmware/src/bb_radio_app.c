@@ -3280,6 +3280,12 @@ static void stream_task(void* arg) {
                * keeps displaying the old percentage. No version bump: this is a
                * cloud-originated value (see bb_device_config_note_volume_pct). */
               bb_device_config_note_volume_pct(state.cloud_volume_pct);
+              /* And if the Settings menu happens to be open right now, refresh the
+               * value it cached on entry so it updates live (no-op when closed). */
+              if (lvgl_port_lock(200)) {
+                bb_ui_settings_notify_volume_pct(state.cloud_volume_pct);
+                lvgl_port_unlock();
+              }
             }
           }
           if (state.cloud_speaker_enabled >= 0) {

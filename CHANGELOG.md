@@ -45,12 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bb_radio_app.c` 只调 `bb_audio_set_volume_pct()` **应用了音频却没回写本地 `s_config`**
   (`bb_device_config`)。而「设置」菜单进入时读的正是 `s_config.volume_pct`
   (`bb_ui_settings.c` 入口),于是音量实际变了、菜单却一直显示改之前的百分比(开机重放
-  也读 `s_config`,故重启后又被旧值盖回)。修复:云端音量运行时变化、应用音频的同时,新增
-  `bb_device_config_note_volume_pct()` 把值回写本地 config 并持久化到 NVS——**故意不 bump
-  version**(该值源自云端,抬高本地 version 会让后续云端 versioned `config.update`/welcome
-  被 `version<=current` 拦掉)。`make build` 通过。
-  (注:`speaker_enabled` 走同一云端心跳路径,但它压根没持久化进 `s_config`、开机不重放、
-  「设置」也不显示,是另一类独立 gap,本次未动。)
+  也读 `s_config`,故重启后又被旧值盖回)。修复分两处,覆盖两种时序:
+  - **关菜单时改 → 再进菜单刷新**:云端音量运行时变化、应用音频的同时,新增
+    `bb_device_config_note_volume_pct()` 把值回写本地 config 并持久化到 NVS——**故意不 bump
+    version**(该值源自云端,抬高本地 version 会让后续云端 versioned `config.update`/welcome
+    被 `version<=current` 拦掉)。`bb_ui_settings_show()` 进入时重读 `s_config` 即拿到新值。
+  - **菜单正开着时改 → 实时刷新**:新增 `bb_ui_settings_notify_volume_pct()`,心跳应用云端
+    音量后(包 `lvgl_port_lock`)调用它,直接更新当前显示的音量行/进度条;菜单关闭或用户正在
+    手动调音量(`volume_dirty`)时为 no-op,不打架。
+  `make build` 通过。(注:`speaker_enabled` 走同一云端心跳路径,但它压根没持久化进 `s_config`、
+  开机不重放、「设置」也不显示,是另一类独立 gap,本次未动。)
 
 ### Docs
 - **ADR-034：adapter_v2 计划清单（TodoWrite）→ 设备 display-only `task.list` 通道**

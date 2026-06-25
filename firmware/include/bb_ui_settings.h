@@ -37,6 +37,12 @@ void bb_ui_settings_show(lv_obj_t* parent);
 void bb_ui_settings_hide(void);
 int  bb_ui_settings_is_active(void);
 
+/* Live-refresh the displayed volume when it is changed remotely (cloud
+ * heartbeat applied a `device set-volume`) while the Settings menu is open. A
+ * no-op when Settings is closed (bb_ui_settings_show re-reads the persisted
+ * value on entry) or while the user is mid-edit. Caller must hold lvgl_port_lock. */
+void bb_ui_settings_notify_volume_pct(int pct);
+
 /* UP/DOWN rotation moves the cursor at the current level (main or picker). */
 void bb_ui_settings_handle_rotate(int delta);
 
