@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **固件:OTA 在内部 RAM 碎片的设备上「OTA apply task create failed」装不上**:`ota_apply` 任务栈
+  12KB **必须**在内部 RAM(下载+刷 flash 冻结 cache,PSRAM 栈会 panic→reflash loop,issue #179),
+  但原本是用户确认 OTA 时才懒加载——那会儿 dot-matrix UI/CJK 字体已把内部堆打散,最大连续块
+  <12KB → `xTaskCreate` 失败 → 设备拿不到更新(OTA 是所有其他修复的下发通道,装不上=全卡死)。
+  改为**开机预热**:`bb_radio_app_start` 最早一步就建好 `ota_apply` 任务并让它 `ulTaskNotifyTake`
+  阻塞,确认 OTA 时 `xTaskNotifyGive` 唤醒。12KB 内部栈在堆还干净时一次性占住、本次开机复用,
+  确认时永不再 race 碎片。runbook: `firmware/docs/debug/internal-ram-ws-task.md`。
+
 ### Changed
 - **固件:`make release-local` 一条命令本地快速发版**:封装好——未设 `OTA_ADMIN_KEY` 时自动
   `ssh $(OTA_DEPLOY_HOST)` 从生产 cloud.env 取 key,内层 `make build` 自带 `$(IDF_SOURCE)` 自源

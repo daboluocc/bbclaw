@@ -57,6 +57,27 @@ spiram_free=8214096 spiram_largest=8126464
 - 实时高优先级任务可挪，但要确认 PSRAM 栈延迟不影响其时序（`capture_task` 16k 采集余量充裕、又靠 ring buffer 解耦上传，已验证 OK；纯显示/DMA 实时任务要谨慎）。
 - 用 `WithCaps` 建的任务若会被删，必须用 `vTaskDeleteWithCaps`；常驻不删则无所谓。
 
+## 同类已修：OTA apply 任务建不起来（2026-06-26，预热根治）
+
+现象（真机日志，设备 v0.5.15 收到 v0.5.19 OTA）：
+```
+bb_page_ota_confirm: confirm shown cur=v0.5.15 new=v0.5.19-g181923d
+bb_radio_app: OTA confirm: user accepted version=v0.5.19-g181923d
+E bb_radio_app: OTA apply task create failed (internal RAM exhausted?)   ← 装不上
+```
+同一根因：`ota_apply` 任务栈 **12KB 必须在内部 RAM**（下载+刷 flash 会冻结 cache，PSRAM 栈
+会触发 `s_task_stack_is_sane_when_cache_frozen()` panic → reflash loop，见 issue #179），但它
+原本是**用户确认 OTA 时才懒加载**——那会儿 UI 早把内部堆打散，最大连续块 < 12KB →
+`xTaskCreate` 失败 → 设备拿不到更新。**这比 ws 那条更致命：OTA 是所有其他修复的下发通道，
+装不上 = 全卡死。**
+
+**修法 = 上面「根治项 1」的预热**（注意：它必须留内部 RAM，不能挪 PSRAM）：把 `ota_apply`
+任务**开机最早**（`bb_radio_app_start` 第一件事，UI/字体/菜单分配之前）就 `xTaskCreate` 建好，
+任务起来立刻 `ulTaskNotifyTake(portMAX_DELAY)` 阻塞；用户确认时 `ota_confirm_cb` 改为
+`xTaskNotifyGive(handle)` 唤醒它。12KB 内部栈在堆还干净时一次性占住、本次开机复用，确认时
+**永不再 race 碎片**。代价：从开机起常驻 12KB 内部 RAM（值得——换 OTA 永远可应用）。
+见 `bb_radio_app.c` `ota_apply_task` / `ota_confirm_cb` / `bb_radio_app_start`。
+
 ## 仍待做的根治项（治标 vs 治本）
 
 上面都是“少偷内部 RAM”的治标。真正治本是让 ws 任务**不依赖开机后才凑出的 8192 连续内部块**：

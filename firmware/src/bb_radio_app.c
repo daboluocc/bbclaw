@@ -58,6 +58,7 @@ static const char* TAG = "bb_radio_app";
 static int               s_pending_ota_prompt;    /* 1 = waiting to show    */
 static ota_update_info_t s_pending_ota_info;      /* cached check result    */
 static int               s_ota_skipped_this_boot; /* 1 = skipped this boot  */
+static TaskHandle_t      s_ota_apply_task_handle; /* preheated at boot (#179)*/
 
 /* Forwards OTA download progress to the on-screen dot-matrix progress page. */
 static void ota_ui_progress_cb(int percent) {
@@ -71,24 +72,42 @@ static void ota_ui_progress_cb(int percent) {
  * (esp_cache_utils.c) → panic → reboot → re-detect same version → infinite
  * reflash loop. xTaskCreate allocates the stack in internal RAM by default, so
  * the cache-freeze stack sanity check passes. bb_page_ota_* are internally
- * lvgl-locked, so calling them from this task is safe. */
+ * lvgl-locked, so calling them from this task is safe.
+ *
+ * 2026-06-26 "OTA apply task create failed (internal RAM exhausted?)": internal
+ * RAM fragments badly as the dot-matrix UI / CJK font / menus load (see
+ * firmware/docs/debug/internal-ram-ws-task.md). Creating this 12 KB task LAZILY
+ * in ota_confirm_cb means that by the time the user accepts an OTA the largest
+ * free internal block has dropped below 12 KB → xTaskCreate fails → the device
+ * can't take the update. That's fatal: OTA is the recovery channel for every
+ * other fix. Fix = PREHEAT (the runbook's recommended root-fix): create this
+ * task ONCE at boot (bb_radio_app_start) while internal RAM still has a big
+ * contiguous block, then block on a task notification until the user accepts.
+ * The 12 KB internal stack is reserved up-front and reused for every OTA this
+ * boot, so application can never fail on fragmentation. */
 static void ota_apply_task(void* arg) {
   (void)arg;
-  bb_page_ota_show(s_pending_ota_info.version);
-  esp_err_t dl_err = bb_ota_download_and_flash(&s_pending_ota_info, ota_ui_progress_cb);
-  if (dl_err == ESP_OK) {
-    ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
-    bb_page_ota_set_done();
-    (void)bb_ota_apply_update();  /* set_boot_partition + esp_restart; never returns */
-  } else {
-    ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
-    bb_page_ota_dismiss();
+  for (;;) {
+    /* Wait for ota_confirm_cb to signal acceptance. s_pending_ota_info is filled
+     * by the OTA-check path before the confirm prompt is ever shown. */
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    bb_page_ota_show(s_pending_ota_info.version);
+    esp_err_t dl_err = bb_ota_download_and_flash(&s_pending_ota_info, ota_ui_progress_cb);
+    if (dl_err == ESP_OK) {
+      ESP_LOGI(TAG, "OTA download+flash success, rebooting...");
+      bb_page_ota_set_done();
+      (void)bb_ota_apply_update();  /* set_boot_partition + esp_restart; never returns */
+    } else {
+      ESP_LOGW(TAG, "OTA download+flash failed err=%s", esp_err_to_name(dl_err));
+      bb_page_ota_dismiss();
+    }
+    /* On failure, loop back and wait for the next OTA confirm this boot. */
   }
-  vTaskDelete(NULL);
 }
 
 /* Called by bb_page_ota_confirm when the user (or 30 s timeout) decides.
- * accept=1 → spawn ota_apply_task (internal-RAM stack) for download/flash/reboot.
+ * accept=1 → wake the preheated ota_apply_task (internal-RAM stack) to download/
+ *            flash/reboot.
  * accept=0 → mark skipped for this boot cycle; system resumes normally. */
 static void ota_confirm_cb(int accept) {
   if (!accept) {
@@ -99,15 +118,10 @@ static void ota_confirm_cb(int accept) {
   }
   ESP_LOGI(TAG, "OTA confirm: user accepted version=%s", s_pending_ota_info.version);
   s_pending_ota_prompt = 0;
-  /* issue #179: dedicated internal-RAM-stack task. 12 KB fits chunk[4096] + the
-   * TLS handshake stack and, unlike 16 KB, fits within internal RAM's largest
-   * free block (~15 KB). mbedTLS heap buffers (16 KB IN record) now live in
-   * PSRAM (CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC) so they no longer exhaust internal
-   * RAM. Do NOT run download/flash inline — this callback's task stack is in
-   * PSRAM and would panic on cache-freeze during flash write. */
-  BaseType_t ok = xTaskCreate(ota_apply_task, "ota_apply", 12288, NULL, 5, NULL);
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "OTA apply task create failed (internal RAM exhausted?)");
+  if (s_ota_apply_task_handle != NULL) {
+    xTaskNotifyGive(s_ota_apply_task_handle);  /* preheated at boot — see ota_apply_task */
+  } else {
+    ESP_LOGE(TAG, "OTA apply task missing (preheat failed) — cannot apply update");
     bb_page_ota_dismiss();
   }
 }
@@ -3464,6 +3478,18 @@ static void stream_task(void* arg) {
 }
 
 esp_err_t bb_radio_app_start(void) {
+  /* Preheat the OTA apply task FIRST, before any UI/font/menu allocation
+   * fragments internal RAM. Its stack must live in internal RAM (flash-write
+   * cache freeze, issue #179) and needs a 12 KB contiguous block that no longer
+   * exists once the dot-matrix UI loads — so creating it lazily at confirm time
+   * fails ("OTA apply task create failed", 2026-06-26). It immediately blocks on
+   * a task notification (see ota_apply_task), so reserving it this early costs a
+   * blocked task but guarantees every OTA this boot can be applied. */
+  if (xTaskCreate(ota_apply_task, "ota_apply", 12288, NULL, 5, &s_ota_apply_task_handle) != pdPASS) {
+    ESP_LOGE(TAG, "OTA apply task preheat failed (internal RAM?) — OTA may be unapplicable");
+    s_ota_apply_task_handle = NULL;
+  }
+
   /* Phase 4.9: 全局状态协调器初始化 — 必须在任何 PTT/nav 回调可能触发
    * dispatch 之前调用。bb_state.c 的 dispatch 走 lv_async_call，要求 LVGL
    * 已经初始化，所以也必须在 bb_display_init()（启动 LVGL）之前留出
