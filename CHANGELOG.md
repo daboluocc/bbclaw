@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   开机不重放、「设置」也不显示,是另一类独立 gap,本次未动。)
 
 ### Docs
+- **ADR-036：adapter_v2 项目载入与系统提示项目清单注入**（`design/decisions/ADR-036-...`）。
+  复盘截图失败（管家被问 Buildhub 答不上来）两根因=系统提示无项目清单 + `BBCLAW_BUILDHUB_BIN`
+  空/工具调不到,提出把 v1 的项目载入能力带回 adapter_v2,但**接到已有基础设施上而非另起炉灶**:
+  移植 v1 `projectstore`（sibling `projects.json`）+ loopback-only 管理页 `/v1/projects` 增删查
+  + 内置目录选择器(非程序员可点选任意目录、不限 git);**关键**=项目清单在 boot 时渲染进
+  `DeviceSystemPrompt`、加/删项目复用现成 `adminapi.Restart()` re-exec 落地（进系统提示=每轮强
+  加载,这是「保证不遗忘」的正解,非靠管家自觉读 `MEMORY/projects.md`;明确否决 respawn——只换
+  会话 id 不重建 baseArgv);重知识由移植自 v1 prewarm 的 scanner 写 `MEMORY/projects.md`;热词
+  无独立引擎(项目名进系统提示做 LLM 意图映射 + 并入 `ASR_HOTWORDS` 做 ASR boost);新增 `cliBin`
+  字段 + `cliReady` 状态正面预防「BIN 空」。否决 driver-plugin 方案(v2 P1 无 driver 层)。4 项关键
+  决策已与 owner 确认:re-exec 生效 / P1 只做「知道+能调 CLI」不含 dispatch / 单一共享项目池 /
+  内置目录选择器。状态:草案,代码未实现。(docs-only,不打 tag)
 - **ADR-034：adapter_v2 计划清单（TodoWrite）→ 设备 display-only `task.list` 通道**
   （`design/decisions/ADR-034-...`）。把 claude TUI 的 `TodoWrite` 计划清单（每条带
   pending/in_progress/completed 勾选态）抓屏抽取成一条新的 display-only 下行通道
