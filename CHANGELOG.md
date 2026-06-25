@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **固件:`make release-local` 一条命令本地快速发版**:封装好——未设 `OTA_ADMIN_KEY` 时自动
   `ssh $(OTA_DEPLOY_HOST)` 从生产 cloud.env 取 key,内层 `make build` 自带 `$(IDF_SOURCE)` 自源
-  ESP-IDF,无需先手动 `get_idf`/`export`。`make release-local VERSION=vX.Y.Z` 即生产构建+推 OTA
-  bundle(全量,非灰度)。约定:tag→CI 发布(push `v*` 触发 release.yml)只在显式要求时做,默认走
-  本地快速发版。
+  ESP-IDF,无需先手动 `get_idf`/`export`。**不传 VERSION 时自动定版**:查 OTA 当前 active bundle
+  版本 → patch+1 → 追加 `-g<短哈希>[-dirty]`(OTA 的 VersionGreater 只比 M.m.p、忽略后缀,所以
+  patch 真 +1 才能升级;后缀作本地构建可追溯标记;不依赖 git tag——它可能落后于已推 OTA 的版本)。
+  `make release-local` 即生产构建+推 OTA bundle(全量,非灰度)。约定:tag→CI 发布(push `v*` 触发
+  release.yml)只在显式要求时做,默认走本地快速发版。
 
 ### Added
 - **固件:密语解锁失败时显示识别到的语音文本（ADR-038）**:密语(锁屏语音解锁)ASR 准确度不稳,

@@ -37,8 +37,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$VERSION" ]]; then
-  VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
-  echo "[release-local] 未传版本，用 git describe: $VERSION"
+  # 默认本地发版版本（约定 2026-06-25）：查 OTA 当前 active bundle 版本 → patch+1 →
+  # 追加 -g<短哈希>[-dirty]。OTA 的 VersionGreater 只比较 M.m.p、忽略后缀，所以 patch 必须
+  # 真的 +1 才能让设备升级；后缀只作本地构建的可追溯标记（来自哪个 commit / 是否 dirty）。
+  # 不依赖 git tag（git tag 可能落后于已推 OTA 的版本）。查询失败则从 v0.0.0 起。
+  ACTIVE="$(curl -fSs "$OTA_URL/v1/ota/flash-bundles?platform=esp32s3" 2>/dev/null \
+    | jq -r '[.data[]|select(.isActive)|.version][0] // empty' 2>/dev/null || true)"
+  BASE="${ACTIVE#v}"; [[ -z "$BASE" ]] && BASE="0.0.0"
+  IFS=. read -r VMAJ VMIN VPAT <<<"$BASE"
+  VPAT="${VPAT%%[!0-9]*}"               # patch 段的前导数字（丢掉任何 -后缀）
+  : "${VMAJ:=0}" "${VMIN:=0}" "${VPAT:=0}"
+  SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  DIRTY=""; git diff --quiet HEAD 2>/dev/null || DIRTY="-dirty"
+  VERSION="v${VMAJ}.${VMIN}.$((VPAT+1))-g${SHORT}${DIRTY}"
+  echo "[release-local] 未传版本 → 按 OTA active(${ACTIVE:-none}) patch+1 自动定: $VERSION"
 fi
 
 STAGE="$FW_DIR/release-stage/firmware"

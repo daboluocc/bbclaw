@@ -44,7 +44,7 @@ help:
 	@echo "  make boot-recover  # rewrite otadata only, recover from boot-loop after bad flash"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
-	@echo "  make release-local VERSION=vX.Y.Z  # 本地快速发版：生产构建+推OTA（自动取key，默认发布路线）"
+	@echo "  make release-local                  # 本地快速发版：自动版本(OTA active+1)+取key+生产构建+推OTA"
 	@echo "  make list-ports    # list USB serial devices (pick one for PORT=...)"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
 	@echo "  make set-board BOARD=bbclaw             # 切换 board（breadboard | bbclaw | atk-dnesp32s3-box）"
@@ -101,12 +101,14 @@ build:
 # 本地快速发版（默认发布路线）：本机用生产配置构建固件 + 生成 OTA bundle + 推到 OTA
 # 服务器，跳过 GitHub Actions 的慢 round-trip。设备下次 /v1/ota/check 即升级（全量，非灰度）。
 # 自动：① 内层 make build 自带 $(IDF_SOURCE) 自源 ESP-IDF（无需先 get_idf）；
-#       ② 未设 OTA_ADMIN_KEY 时自动 ssh $(OTA_DEPLOY_HOST) 从生产 cloud.env 取。
+#       ② 未设 OTA_ADMIN_KEY 时自动 ssh $(OTA_DEPLOY_HOST) 从生产 cloud.env 取；
+#       ③ 不传 VERSION 时按 OTA 当前 active 版本 patch+1 + -g<短哈希>[-dirty] 自动定版。
 # 约定：tag→CI 发布（push v* tag 触发 release.yml）只在显式要求时做；默认走本地快速发版这条。
-#   make release-local VERSION=v0.5.19
-#   make release-local VERSION=v0.5.19 RELEASE_ARGS=--skip-build   # 复用已构建产物
-#   make release-local VERSION=v0.5.19 RELEASE_ARGS=--gh-release   # 顺带传 GitHub Release
-#   OTA_ADMIN_KEY=xxx make release-local VERSION=v0.5.19           # 手动给 key，跳过 ssh
+#   make release-local                                # 自动版本（OTA active +1，如 v0.5.19-gabc123）
+#   make release-local VERSION=v0.5.19                # 手动指定版本
+#   make release-local RELEASE_ARGS=--skip-build      # 复用已构建产物
+#   make release-local RELEASE_ARGS=--gh-release      # 顺带传 GitHub Release
+#   OTA_ADMIN_KEY=xxx make release-local              # 手动给 key，跳过 ssh
 release-local:
 	@set -e; \
 	if [ -z "$$OTA_ADMIN_KEY" ]; then \
