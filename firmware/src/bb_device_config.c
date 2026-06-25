@@ -1,8 +1,12 @@
 #include "bb_device_config.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -60,23 +64,55 @@ const bb_device_config_t* bb_device_config_get(void) {
   return &s_config;
 }
 
-static esp_err_t persist_config(void) {
+/* One-shot worker that writes a config snapshot to NVS.
+ *
+ * NVS writes briefly disable the SPI-flash cache; any task whose STACK lives in
+ * PSRAM panics on esp_task_stack_is_sane_cache_disabled() the moment the cache
+ * goes down. The cloud-config paths that persist here run on exactly such tasks:
+ * stream_task (cloud runtime volume → note_volume_pct) and the websocket task
+ * (config.update / welcome) both use PSRAM stacks — writing NVS inline rebooted
+ * the device every time the backend changed the volume. So the actual nvs_set_blob
+ * MUST run on a guaranteed-internal-RAM stack. A task created with plain
+ * xTaskCreate gets an internal stack; the snapshot is heap_caps_malloc'd from
+ * internal RAM too (accessed during cache-disable). Fire-and-forget: s_config in
+ * RAM is already the source of truth, NVS just catches up. (Settings-menu persists
+ * already run on an internal commit_task, but routing them through here keeps every
+ * caller cache-safe with no per-caller reasoning.) */
+static void config_persist_task(void* arg) {
+  bb_device_config_t* snap = (bb_device_config_t*)arg;
   nvs_handle_t h;
   esp_err_t err = nvs_open(BB_CONFIG_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) return err;
-
-  err = nvs_set_blob(h, BB_CONFIG_NVS_KEY, &s_config, sizeof(s_config));
   if (err == ESP_OK) {
-    err = nvs_commit(h);
+    err = nvs_set_blob(h, BB_CONFIG_NVS_KEY, snap, sizeof(*snap));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
   }
-  nvs_close(h);
-
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "config persisted version=%d", s_config.version);
+    ESP_LOGI(TAG, "config persisted version=%d (internal-stack task)", snap->version);
   } else {
     ESP_LOGW(TAG, "config persist failed (%s)", esp_err_to_name(err));
   }
-  return err;
+  heap_caps_free(snap);
+  vTaskDelete(NULL);
+}
+
+static esp_err_t persist_config(void) {
+  /* Snapshot in INTERNAL RAM so the worker can read it while flash cache is off. */
+  bb_device_config_t* snap =
+      heap_caps_malloc(sizeof(*snap), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (snap == NULL) {
+    ESP_LOGE(TAG, "config persist: snapshot alloc failed (internal RAM?)");
+    return ESP_ERR_NO_MEM;
+  }
+  *snap = s_config;
+  /* 4KB internal stack: NVS set+commit only, no TLS (mirrors bb_ui_settings
+   * commit_task sizing). Plain xTaskCreate => internal-RAM stack => cache-safe. */
+  if (xTaskCreate(config_persist_task, "bbcfg_persist", 4096, snap, 4, NULL) != pdPASS) {
+    ESP_LOGE(TAG, "config persist: task create failed (internal RAM frag?) — kept in RAM only");
+    heap_caps_free(snap);
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
 }
 
 esp_err_t bb_device_config_apply_update(int version, const char* updates_json) {

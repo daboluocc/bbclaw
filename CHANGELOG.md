@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **固件:后台/云端调音量导致设备重启(cache-disable panic)**:云端把新音量随心跳下发后,
+  `stream_task`(**PSRAM 栈**)直接调 `bb_device_config_note_volume_pct` → `persist_config` →
+  `nvs_set_blob` 写 flash,flash cache 被关的瞬间 PSRAM 栈不可访问 →
+  `esp_task_stack_is_sane_cache_disabled()` 断言 panic 重启(设置菜单调音量不崩,因为走内部 RAM 栈的
+  commit_task,ADR-037)。修法:`persist_config()` 的 NVS 写改到**一次性内部 RAM 栈任务**上跑,快照
+  用 `MALLOC_CAP_INTERNAL` 分配——所有云端驱动的持久化路径(`note_volume_pct` / `apply_update` /
+  `apply_welcome`)一律 cache-safe。
 - **固件:云端 URL 去掉 `:38082` 端口,走标准端口/反代(`http://bbclaw.daboluo.cc`)**:运行时云端
   API 原硬编码 `:38082`,但云端已迁到标准端口反代(OTA flash-bundle 端点早已是无端口的
   `bbclaw.daboluo.cc`)——设备仍连 `:38082` → 连不上 → "CLOUD ERR" 联网报错(正是触发上面密语
