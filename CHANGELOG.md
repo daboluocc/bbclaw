@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **固件:云端 URL 去掉 `:38082` 端口,走标准端口/反代(`http://bbclaw.daboluo.cc`)**:运行时云端
+  API 原硬编码 `:38082`,但云端已迁到标准端口反代(OTA flash-bundle 端点早已是无端口的
+  `bbclaw.daboluo.cc`)——设备仍连 `:38082` → 连不上 → "CLOUD ERR" 联网报错(正是触发上面密语
+  锁死的那次网络错误)。三处同步:C 默认(`bb_config.h`)、生产构建 `sdkconfig.bbclaw.latest`、
+  Kconfig 默认(`Kconfig.projbuild`)。
 - **固件:密语(miyu)锁屏在断网时把人锁死(ADR-039)**:密语解锁只能走云端 `voice.verify`,
   但「是否进/留在锁屏」原本只看 `cloud_saas && miyu_enabled`、**不看网络**——于是网络报错后
   闲置 120s 照样息屏进锁屏,再也校验不过 → 永久锁死(开机即锁/锁屏后才断网同理)。两处协同修:
