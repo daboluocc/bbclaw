@@ -5,6 +5,10 @@ IDF_PATH ?= $(HOME)/esp/esp-idf
 IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
+# 本地快速发版从这台云端机器取 OTA admin key（CLOUD_OTA_ADMIN_KEY）。可覆盖：
+#   make release-local VERSION=vX.Y.Z OTA_DEPLOY_HOST=root@other-host
+OTA_DEPLOY_HOST ?= root@daboluo.cc
+
 # Serial port for flash/monitor/erase.
 # Auto-detect: newest USB serial device (macOS: cu.*/tty.*, Linux: ttyUSB*/ttyACM*).
 # Precedence: command-line PORT=... > env BBCLAW_PORT > auto-detect.
@@ -40,6 +44,7 @@ help:
 	@echo "  make boot-recover  # rewrite otadata only, recover from boot-loop after bad flash"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
+	@echo "  make release-local VERSION=vX.Y.Z  # 本地快速发版：生产构建+推OTA（自动取key，默认发布路线）"
 	@echo "  make list-ports    # list USB serial devices (pick one for PORT=...)"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
 	@echo "  make set-board BOARD=bbclaw             # 切换 board（breadboard | bbclaw | atk-dnesp32s3-box）"
@@ -93,13 +98,25 @@ build:
 	fi
 	@$(IDF_SOURCE) idf.py build
 
-# 本地发版：本机构建固件 + 生成 OTA bundle + 推到 OTA 服务器，跳过 GitHub Actions
-# 慢 round-trip。需先 get_idf 加载 ESP-IDF，并 export OTA_ADMIN_KEY（见脚本 --help）。
-#   make release-local VERSION=v0.4.19
-#   make release-local VERSION=v0.4.19 RELEASE_ARGS=--skip-build   # 复用已构建产物
-#   make release-local VERSION=v0.4.19 RELEASE_ARGS=--gh-release   # 顺带传 GitHub Release
+# 本地快速发版（默认发布路线）：本机用生产配置构建固件 + 生成 OTA bundle + 推到 OTA
+# 服务器，跳过 GitHub Actions 的慢 round-trip。设备下次 /v1/ota/check 即升级（全量，非灰度）。
+# 自动：① 内层 make build 自带 $(IDF_SOURCE) 自源 ESP-IDF（无需先 get_idf）；
+#       ② 未设 OTA_ADMIN_KEY 时自动 ssh $(OTA_DEPLOY_HOST) 从生产 cloud.env 取。
+# 约定：tag→CI 发布（push v* tag 触发 release.yml）只在显式要求时做；默认走本地快速发版这条。
+#   make release-local VERSION=v0.5.19
+#   make release-local VERSION=v0.5.19 RELEASE_ARGS=--skip-build   # 复用已构建产物
+#   make release-local VERSION=v0.5.19 RELEASE_ARGS=--gh-release   # 顺带传 GitHub Release
+#   OTA_ADMIN_KEY=xxx make release-local VERSION=v0.5.19           # 手动给 key，跳过 ssh
 release-local:
-	@scripts/release_local.sh $(VERSION) $(RELEASE_ARGS)
+	@set -e; \
+	if [ -z "$$OTA_ADMIN_KEY" ]; then \
+		echo "[release-local] OTA_ADMIN_KEY 未设置，从 $(OTA_DEPLOY_HOST) 取 …"; \
+		OTA_ADMIN_KEY=$$(ssh -o BatchMode=yes -o ConnectTimeout=8 $(OTA_DEPLOY_HOST) 'grep "^CLOUD_OTA_ADMIN_KEY=" /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-'); \
+		export OTA_ADMIN_KEY; \
+		if [ -n "$$OTA_ADMIN_KEY" ]; then echo "[release-local] key 已取 (len=$${#OTA_ADMIN_KEY})"; \
+		else echo "::warning:: 取 key 失败 → 仅构建+stage、跳过 OTA 推送（可手动 export OTA_ADMIN_KEY 重跑）"; fi; \
+	fi; \
+	scripts/release_local.sh $(VERSION) $(RELEASE_ARGS)
 
 # Flash via the IDF default path: bootloader + partition table + ota_data_initial
 # (all-0xFF, bootloader picks factory) + firmware → factory.

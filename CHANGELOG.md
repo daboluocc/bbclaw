@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **固件:`make release-local` 一条命令本地快速发版**:封装好——未设 `OTA_ADMIN_KEY` 时自动
+  `ssh $(OTA_DEPLOY_HOST)` 从生产 cloud.env 取 key,内层 `make build` 自带 `$(IDF_SOURCE)` 自源
+  ESP-IDF,无需先手动 `get_idf`/`export`。`make release-local VERSION=vX.Y.Z` 即生产构建+推 OTA
+  bundle(全量,非灰度)。约定:tag→CI 发布(push `v*` 触发 release.yml)只在显式要求时做,默认走
+  本地快速发版。
+
 ### Added
 - **固件:密语解锁失败时显示识别到的语音文本（ADR-038）**:密语(锁屏语音解锁)ASR 准确度不稳,
   失败时用户原先不知道设备听成了什么、没法调整。现在解锁失败的锁屏会显示「听到「<识别文本>」请
