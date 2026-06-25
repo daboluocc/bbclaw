@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 管理页支持设备控制（密语 / 音量），走与 CLI 同一条云端路**:管理页「即时生效」组
+  新增「设备控制」区,可开/关**密语**(miyu)与设音量,作用于当前连接的设备——和管家用语音调的是
+  **同一条路**。落地:新增 loopback-only `GET/POST /v1/admin/device-config`,POST 复用 `device
+  set-volume/set-miyu` CLI 的 `postDeviceConfig`(→ 云端 `POST /v1/devices/{id}/config` → WS
+  下发固件),目标设备由 `curdevice.Get()` 解析,无需填 id;无设备/未配对云端时返回友好提示
+  (NO_DEVICE / CLOUD_ERROR,ok=false 不报错)。前端密语开/关按钮 + 音量输入,即时下发、无需保存。
+  `deviceConfigSetter` 可注入,单测覆盖 GET 状态 / POST 密语 / 音量 clamp / 无设备 / 空 body / 405;
+  真机起 adapter DOM 验证:区块渲染、按钮 POST、友好提示均正常。(adapter_v2,暂不打 tag)
 - **adapter_v2 管理页展示用户画像 / 记忆（ADR-036）**:设置页新增「只读信息」组,把管家在
   `workspace/MEMORY/` 里积累的关于用户的记忆(`profile.md` 用户档案 / `preferences.md` 偏好 /
   `projects.md` 项目 / `decisions.md` 决策,ADR-020/022)**只读展示**出来,让用户看到管家都记住了

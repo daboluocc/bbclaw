@@ -131,6 +131,11 @@
     .addrow{border-top:1px dotted var(--ghost);padding-top:13px}
     #np-pick{font-weight:400;background:transparent;color:var(--lit);border-color:var(--dim)}
     #np-pick:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+    /* device control rows */
+    .dcrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    #dc-vol{width:110px;font:inherit;background:#05090c;color:var(--lit);border:1px solid var(--ghost);
+      border-radius:7px;padding:8px 10px;font-size:12px}
+    #dc-vol:focus{outline:none;border-color:var(--accent)}
 
     /* contextual save bar (lives with the settings, pinned to the bottom) */
     .savebar{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;align-items:center;gap:14px;
@@ -294,14 +299,16 @@
 
       $("nav").innerHTML =
         `<div class="navgroup immediate"><div class="navlabel">即时生效</div>
-           <a class="navitem" data-target="sec-projects">项目</a></div>
+           <a class="navitem" data-target="sec-projects">项目</a>
+           <a class="navitem" data-target="sec-devicectl">设备控制</a></div>
          <div class="navgroup"><div class="navlabel">系统配置 · 需保存</div>${navItems(cfg)}</div>
          <div class="navgroup readonly"><div class="navlabel">只读信息</div>${navItems(read)}</div>`;
 
       $("content").innerHTML =
         `<div class="grouphdr imm">即时生效 · 无需保存
-           <span class="gh-note">各控件用自己的按钮即时写入，不走「保存」；下次重启后管家生效</span></div>
+           <span class="gh-note">各控件用自己的按钮即时写入，不走「保存」</span></div>
          <section class="sec" id="sec-projects"><div id="projects"><div class="loading">加载项目…</div></div></section>
+         <section class="sec" id="sec-devicectl"><div id="devicectl"><div class="loading">加载设备控制…</div></div></section>
          <div class="grouphdr">系统配置 · 需保存
            <span class="gh-note">改完底部点「保存」，再「重启并应用」才生效</span></div>
          ${cfg.map((x)=>x.build(s, d)).join("")}
@@ -314,6 +321,7 @@
       updateSaveBar();
       setupScrollSpy();
       loadProjects();
+      loadDeviceControl();
       loadMemory();
     }
 
@@ -488,6 +496,59 @@
       const t = ev.target.closest("button"); if (!t) return;
       if (t.id === "np-pick") return pickAndAdd();
       if (t.hasAttribute("data-del")) return deleteProject(t.getAttribute("data-del"));
+    });
+
+    // ── device control (密语 / 音量) for the current device, via cloud config ──
+    // Controls the connected device the SAME way the butler does over voice
+    // (POST /v1/admin/device-config → cloud → firmware). Immediate, no save.
+    function renderDeviceControl(deviceId, cloudReady) {
+      const dev = deviceId ? `当前设备 <b style="color:var(--lit)">${esc(deviceId)}</b>` : "当前无设备连接";
+      const warn = (!deviceId || !cloudReady)
+        ? `<div class="sdesc" style="color:var(--err)">${!cloudReady ? "未配对云端（需 cloud_saas）" : ""}${(!cloudReady&&!deviceId)?"、":""}${!deviceId ? "无设备连接" : ""}——控制暂不可用。</div>`
+        : "";
+      $("devicectl").innerHTML = `<div class="card">
+        <h2>设备控制 Device</h2>
+        <div class="cardsub">作用于当前连接的设备，经云端即时下发（和管家用语音调的是同一条路）。${dev}</div>
+        ${warn}
+        <div class="setting">
+          <div class="slabel">密语模式 <span class="env">miyu</span></div>
+          <div class="sdesc">锁屏后用语音解锁；开 / 关即时下发到设备</div>
+          <div class="dcrow"><button data-miyu="on">开密语</button><button class="ghost" data-miyu="off">关密语</button></div>
+        </div>
+        <div class="setting">
+          <div class="slabel">音量 <span class="env">volume</span></div>
+          <div class="dcrow"><input id="dc-vol" type="number" min="0" max="100" placeholder="0-100" />
+            <button id="dc-vol-set">设置音量</button></div>
+        </div></div>`;
+    }
+    async function loadDeviceControl() {
+      const host = $("devicectl"); if (!host) return;
+      try {
+        const r = await fetch("/v1/admin/device-config", {headers:{Accept:"application/json"}});
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error((j&&j.detail)||("HTTP "+r.status));
+        renderDeviceControl((j.data&&j.data.deviceId)||"", !!(j.data&&j.data.cloudReady));
+      } catch (e) { host.innerHTML = `<div class="error">加载设备控制失败：${esc(e.message)}</div>`; }
+    }
+    async function deviceConfig(body, okMsg) {
+      try {
+        const r = await fetch("/v1/admin/device-config", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+        const j = await r.json();
+        if (!j.ok) { toast(j.detail || j.error || "操作失败", "err"); return; }
+        toast(okMsg(j.data || {}), "ok");
+      } catch (e) { toast("操作失败：" + e.message, "err"); }
+    }
+    $("content").addEventListener("click", (ev) => {
+      const t = ev.target.closest("button"); if (!t) return;
+      if (t.hasAttribute("data-miyu")) {
+        const on = t.getAttribute("data-miyu") === "on";
+        return deviceConfig({miyuEnabled: on}, (d)=>"密语已" + (d.miyuEnabled ? "开" : "关"));
+      }
+      if (t.id === "dc-vol-set") {
+        const v = parseInt(($("dc-vol")||{}).value, 10);
+        if (isNaN(v)) { toast("请输入 0-100 的音量", "err"); return; }
+        return deviceConfig({volumePct: v}, (d)=>"音量已设为 " + (d.volumePct!=null ? d.volumePct : v) + "%");
+      }
     });
 
     // ── user profile / memory (read-only, ADR-020/022) ────────────────────────

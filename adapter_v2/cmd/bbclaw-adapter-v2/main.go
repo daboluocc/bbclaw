@@ -261,6 +261,10 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	// Read-only view of the butler's user-profile / memory files (ADR-020/022):
 	// workspace MEMORY/*.md, so the operator can see what the butler knows.
 	mux.HandleFunc("/v1/memory", adminapi.LocalOnly(adminapi.Memory(derive)))
+	// Device control (密语 / 音量) for the current device, via the SAME cloud config
+	// path the `device set-volume/set-miyu` CLI uses — so the admin page can control
+	// the device like the butler does over voice. Loopback-only.
+	mux.HandleFunc("/v1/admin/device-config", adminapi.LocalOnly(adminDeviceConfigHandler()))
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
 	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var
