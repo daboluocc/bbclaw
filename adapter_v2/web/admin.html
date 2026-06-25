@@ -119,11 +119,7 @@
     .pbadge.warn{color:var(--err);border-color:#3a2422}
     .pdel{background:transparent;color:var(--dim);border-color:var(--ghost);padding:4px 11px;font-weight:400;font-size:11px}
     .pdel:hover{color:var(--err);border-color:#3a2422}
-    .addrow{display:flex;flex-direction:column;gap:8px;border-top:1px dotted var(--ghost);padding-top:13px}
-    .arline{display:flex;gap:8px;flex-wrap:wrap}
-    .arline input{flex:1;min-width:160px;font:inherit;background:#05090c;color:var(--lit);
-      border:1px solid var(--ghost);border-radius:7px;padding:8px 10px;font-size:12px}
-    .arline input:focus{outline:none;border-color:var(--accent)}
+    .addrow{border-top:1px dotted var(--ghost);padding-top:13px}
     #np-pick{font-weight:400;background:transparent;color:var(--lit);border-color:var(--dim)}
     #np-pick:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 
@@ -416,24 +412,11 @@
     function renderProjects(list) {
       const rows = (list && list.length)
         ? list.map(projectRow).join("")
-        : `<div class="sdesc">还没有登记项目。加一个目录，管家就知道你在做什么。</div>`;
+        : `<div class="sdesc">还没有登记项目。点下面选个目录，管家就知道你在做什么。</div>`;
       $("projects").innerHTML = `<div class="card">
-        <h2>项目 Projects</h2><div class="cardsub">让管家开口即知你在做哪些项目；增删即时生效（无需「保存」）</div>
+        <h2>项目 Projects</h2><div class="cardsub">让管家开口即知你在做哪些项目；选个目录即时加入（无需「保存」）</div>
         <div class="projlist">${rows}</div>
-        <div class="addrow">
-          <div class="arline">
-            <input id="np-path" placeholder="点「选择目录…」用 Finder 选，或粘贴绝对路径" autocomplete="off" spellcheck="false" />
-            <button id="np-pick" type="button">选择目录…</button>
-          </div>
-          <div class="arline">
-            <input id="np-name" placeholder="名字（可选，默认取目录名）" autocomplete="off" spellcheck="false" />
-            <input id="np-summary" placeholder="一句话用途（可选），如 内部构建平台" autocomplete="off" spellcheck="false" />
-          </div>
-          <div class="arline">
-            <input id="np-cli" placeholder="专属 CLI（可选），如 bbclaw-buildhub" autocomplete="off" spellcheck="false" />
-            <button id="np-add" type="button">添加项目</button>
-          </div>
-        </div></div>`;
+        <div class="addrow"><button id="np-pick" type="button">+ 添加项目目录…</button></div></div>`;
     }
     async function loadProjects() {
       try {
@@ -445,19 +428,15 @@
         $("projects").innerHTML = `<div class="error">加载项目失败：${esc(e.message)}</div>`;
       }
     }
-    async function addProject() {
-      const path = $("np-path").value.trim();
-      if (!path) { toast("请先选择 / 填写项目目录", "err"); return; }
-      const body = {path, name: $("np-name").value.trim(), summary: $("np-summary").value.trim(), cliBin: $("np-cli").value.trim()};
-      $("np-add").disabled = true;
-      try {
-        const r = await fetch("/v1/projects", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-        const j = await r.json();
-        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
-        toast("已添加（下次重启后管家生效）", "ok");
-        await loadProjects();
-      } catch (e) { toast("添加失败：" + e.message, "err"); }
-      finally { const b = $("np-add"); if (b) b.disabled = false; }
+    async function addByPath(path) {
+      // Name auto-derives from the directory base name server-side; no extra form.
+      const r = await fetch("/v1/projects", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({path})});
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+      const name = (j.data && j.data.project && j.data.project.name) || "项目";
+      toast("已添加 " + name + "（下次重启后管家生效）", "ok");
+      await loadProjects();
     }
     async function deleteProject(name) {
       try {
@@ -468,27 +447,29 @@
         await loadProjects();
       } catch (e) { toast("删除失败：" + e.message, "err"); }
     }
-    async function pickDir() {
+    // One step: pick a folder in the host's native dialog → it's added immediately
+    // (no name/summary/CLI form). If no native picker, fall back to pasting a path.
+    async function pickAndAdd() {
       const btn = $("np-pick");
       btn.disabled = true; btn.textContent = "选择中…";
       try {
         const r = await fetch("/v1/admin/pick-dir", {method: "POST"});
         const j = await r.json();
-        if (!j.ok) { toast("系统选择器不可用，请手动粘贴目录路径", "err"); return; }
-        if (j.data && j.data.path) {
-          $("np-path").value = j.data.path;
-          if (!$("np-name").value.trim()) {
-            const parts = j.data.path.replace(/\/+$/, "").split("/");
-            $("np-name").value = parts[parts.length - 1] || "";
-          }
+        if (!j.ok) {
+          const typed = prompt("粘贴项目目录的绝对路径");
+          if (typed && typed.trim()) await addByPath(typed.trim());
+          return;
         }
-      } catch (e) { toast("打开目录选择器失败：" + e.message, "err"); }
-      finally { btn.disabled = false; btn.textContent = "选择目录…"; }
+        if (j.data && j.data.path) await addByPath(j.data.path); // cancelled → nothing
+      } catch (e) {
+        toast("添加失败：" + e.message, "err");
+      } finally {
+        const b = $("np-pick"); if (b) { b.disabled = false; b.textContent = "+ 添加项目目录…"; }
+      }
     }
     $("content").addEventListener("click", (ev) => {
       const t = ev.target.closest("button"); if (!t) return;
-      if (t.id === "np-add") return addProject();
-      if (t.id === "np-pick") return pickDir();
+      if (t.id === "np-pick") return pickAndAdd();
       if (t.hasAttribute("data-del")) return deleteProject(t.getAttribute("data-del"));
     });
 

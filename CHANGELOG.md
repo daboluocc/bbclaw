@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 加项目改一步到位（ADR-036）**:owner 反馈「选目录确认了就直接加，不要下面那套
+  表单」。去掉 name/用途/CLIBin 输入 + 「添加项目」按钮,改成单个「+ 添加项目目录…」按钮——点→
+  宿主机原生选文件夹对话框→确认即 `POST {path}` 落库,name 由目录名自动推断(无原生选择器时降级为
+  `prompt` 粘贴路径)。`summary`/`cliBin` 后端字段保留(可经 API 设,行内编辑留作后续)。真机起 adapter
+  验证:单按钮、旧表单输入全消失、add-by-path 自动取名均正常。(adapter_v2,纯前端,暂不打 tag)
 - **adapter_v2 管理页重设计为 VSCode-settings 风格（ADR-036）**:左侧 section 导航(scrollspy 高亮)
   + 右侧分区内容,按两套保存模型分两个色标组——「即时生效·无需保存」(绿,项目区,各控件自己的
   按钮即时写入)与「系统配置·需保存」(青,ADR-025 设置)。**取消顶部全局「保存」按钮**,改为
