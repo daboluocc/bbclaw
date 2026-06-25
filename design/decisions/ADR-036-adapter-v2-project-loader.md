@@ -92,7 +92,8 @@ Project { Name, Path(绝对), Source('admin'|'env'), AddedAt,
 
 管理页（`adapter_v2/web/admin.html`，vanilla HTML+JS）**整页重设计为 VSCode-settings 风格**（owner 反馈：要分区、保存放到需要的地方）：左侧 section 导航 + 右侧分区内容 + scrollspy 高亮，**按两套保存模型分两个色标组**：
 - **即时生效 · 无需保存**（绿）：项目卡片——列出项目（名字、路径、一句用途、CLI 就绪徽标）+ 每行删除 + 底部一个「+ 添加项目目录…」按钮。**一步加入**（owner 反馈：选目录确认了就该直接加，别再要一套表单）：点按钮→宿主机原生「选择文件夹」对话框→确认即 `POST {path}`，name 由目录名自动推断，无 name/用途/CLIBin 表单（无原生选择器时降级为 `prompt` 粘贴路径）。加/删即时写入、只 toast「下次重启后生效」。`summary`/`cliBin` 后端字段保留（可经 API 设；行内编辑为后续增强）。
-- **系统配置 · 需保存**（青）：原 ADR-025 设置（语音 ASR/TTS、设备、CLI、Claude 端点、云、状态），每项 label+说明+输入（VSCode 式）。**取消顶部全局「保存」按钮**；改为**底部贴附的上下文 save bar**——仅当系统配置有未保存改动时浮现「有未保存的系统配置更改 + 保存」，保存后变「已保存·重启后生效 + 重启并应用」。项目区的输入无 `data-path`，永不触发 save bar，两套模型彻底解耦。
+- **系统配置 · 需保存**（青）：原 ADR-025 设置（语音 ASR/TTS、设备、CLI、Claude 端点、云），每项 label+说明+输入（VSCode 式）。**取消顶部全局「保存」按钮**；改为**底部贴附的上下文 save bar**——仅当系统配置有未保存改动时浮现「有未保存的系统配置更改 + 保存」，保存后变「已保存·重启后生效 + 重启并应用」。项目区的输入无 `data-path`，永不触发 save bar，两套模型彻底解耦。
+- **只读信息**（灰）：**用户画像 / 记忆** + **状态 / 只读**。用户画像/记忆经新增 `GET /v1/memory`（loopback-only）读 `workspace/MEMORY/*.md`（`profile.md`/`preferences.md`/`projects.md`/`decisions.md`，ADR-020/022），把管家积累的关于用户的记忆**只读展示**出来（管家在对话中自行读写这些文件，这里仅查看；canonical 维度优先排序，缺失目录降级为空提示）。
 
 ## 否决的方案
 

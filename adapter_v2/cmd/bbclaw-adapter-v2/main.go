@@ -258,6 +258,9 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore)))
 	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore)))
 	mux.HandleFunc("/v1/admin/pick-dir", adminapi.LocalOnly(adminapi.PickDir()))
+	// Read-only view of the butler's user-profile / memory files (ADR-020/022):
+	// workspace MEMORY/*.md, so the operator can see what the butler knows.
+	mux.HandleFunc("/v1/memory", adminapi.LocalOnly(adminapi.Memory(derive)))
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
 	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var

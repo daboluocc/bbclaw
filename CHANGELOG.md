@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 管理页展示用户画像 / 记忆（ADR-036）**:设置页新增「只读信息」组,把管家在
+  `workspace/MEMORY/` 里积累的关于用户的记忆(`profile.md` 用户档案 / `preferences.md` 偏好 /
+  `projects.md` 项目 / `decisions.md` 决策,ADR-020/022)**只读展示**出来,让用户看到管家都记住了
+  什么。落地:新增 loopback-only `GET /v1/memory` 读 MEMORY/*.md(canonical 维度优先排序、缺目录
+  降级空提示、单文件 64KB 上限);前端新增「用户画像/记忆」section(每文件名 + `<pre>` 内容),与
+  「状态/只读」同归新的灰色「只读信息」导航组。管家在对话中自行读写这些文件,本页仅查看。真机起
+  adapter DOM 验证:4 个记忆文件按序渲染、profile 内容正常展示。(adapter_v2,纯展示,暂不打 tag)
 - **adapter_v2 加项目改一步到位（ADR-036）**:owner 反馈「选目录确认了就直接加，不要下面那套
   表单」。去掉 name/用途/CLIBin 输入 + 「添加项目」按钮,改成单个「+ 添加项目目录…」按钮——点→
   宿主机原生选文件夹对话框→确认即 `POST {path}` 落库,name 由目录名自动推断(无原生选择器时降级为

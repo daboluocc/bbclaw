@@ -73,7 +73,16 @@
     .grouphdr{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
       margin:6px 2px 14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
     .grouphdr.imm{color:var(--ok)}
+    .grouphdr.ro{color:var(--dim)}
     .grouphdr .gh-note{color:var(--dim);text-transform:none;letter-spacing:.02em;font-size:10px}
+    .navgroup.readonly .navlabel::before{background:var(--dim)}
+    .navgroup.readonly .navitem.on{background:rgba(110,138,147,.12);border-left-color:var(--dim)}
+    /* user-profile / memory files (read-only) */
+    .memfile{margin-bottom:14px}
+    .memfile:last-child{margin-bottom:0}
+    .memname{font-size:11px;color:var(--accent);letter-spacing:.04em;margin-bottom:5px}
+    .mempre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.5;color:var(--lit);
+      background:#05090c;border:1px solid var(--ghost);border-radius:7px;padding:10px 12px;max-height:280px;overflow:auto}
     .card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px}
     .card>h2{font-size:12px;letter-spacing:.04em;color:var(--lit);margin:0 0 4px;font-weight:600}
     .card>.cardsub{font-size:11px;color:var(--dim);margin:0 0 14px}
@@ -264,7 +273,10 @@
         inputField("CLOUD_WS_URL","WS URL","cloud.wsUrl",cl.wsUrl,{desc:"留空则不连云，仅 LAN"})+
         inputField("CLOUD_AUTH_TOKEN","Auth Token","cloud.authToken",cl.authToken,{password:true})+
         inputField("HOME_SITE_ID","Home Site ID","cloud.homeSiteId",cl.homeSiteId,{desc:"留空用持久化身份 identity.json"}));}},
-      {id:"sec-status", nav:"状态 / 只读", build:(s,d)=>card("sec-status","状态 / 只读","系统生成，不可编辑",
+      {id:"sec-memory", nav:"用户画像 / 记忆", group:"read", build:()=>card("sec-memory","用户画像 / 记忆",
+        "管家在 workspace/MEMORY/ 里积累的关于你的记忆（只读；管家在对话中自行读写）",
+        `<div id="memory"><div class="loading">加载记忆…</div></div>`)},
+      {id:"sec-status", nav:"状态 / 只读", group:"read", build:(s,d)=>card("sec-status","状态 / 只读","系统生成，不可编辑",
         `<div class="status-grid">
           <div class="item"><div class="k">version</div><div class="v">${esc(d.version)}</div></div>
           <div class="item"><div class="k">home site id</div><div class="v">${esc(d.homeSiteId)}</div></div>
@@ -276,28 +288,33 @@
     // ── render the whole page (nav + sections) ─────────────────────────────────
     function render(data) {
       const s = data.settings || {}, d = data.derived || {};
-      // sidebar: immediate group (项目) + system-config group (the SECTIONS).
-      const navHTML =
+      const cfg = SECTIONS.filter((x)=>x.group !== "read");
+      const read = SECTIONS.filter((x)=>x.group === "read");
+      const navItems = (arr)=>arr.map((x)=>`<a class="navitem" data-target="${x.id}">${esc(x.nav)}</a>`).join("");
+
+      $("nav").innerHTML =
         `<div class="navgroup immediate"><div class="navlabel">即时生效</div>
            <a class="navitem" data-target="sec-projects">项目</a></div>
-         <div class="navgroup"><div class="navlabel">系统配置 · 需保存</div>
-           ${SECTIONS.map((x)=>`<a class="navitem" data-target="${x.id}">${esc(x.nav)}</a>`).join("")}</div>`;
-      $("nav").innerHTML = navHTML;
+         <div class="navgroup"><div class="navlabel">系统配置 · 需保存</div>${navItems(cfg)}</div>
+         <div class="navgroup readonly"><div class="navlabel">只读信息</div>${navItems(read)}</div>`;
 
-      const settingsHTML = SECTIONS.map((x)=>x.build(s, d)).join("");
       $("content").innerHTML =
         `<div class="grouphdr imm">即时生效 · 无需保存
            <span class="gh-note">各控件用自己的按钮即时写入，不走「保存」；下次重启后管家生效</span></div>
          <section class="sec" id="sec-projects"><div id="projects"><div class="loading">加载项目…</div></div></section>
          <div class="grouphdr">系统配置 · 需保存
            <span class="gh-note">改完底部点「保存」，再「重启并应用」才生效</span></div>
-         ${settingsHTML}`;
+         ${cfg.map((x)=>x.build(s, d)).join("")}
+         <div class="grouphdr ro">只读信息
+           <span class="gh-note">管家的记忆与系统状态，仅查看</span></div>
+         ${read.map((x)=>x.build(s, d)).join("")}`;
 
       dirty = false;
       restartPending = !!data.restartRequired;
       updateSaveBar();
       setupScrollSpy();
       loadProjects();
+      loadMemory();
     }
 
     // ── system-config save model (PUT the whole doc) ───────────────────────────
@@ -472,6 +489,23 @@
       if (t.id === "np-pick") return pickAndAdd();
       if (t.hasAttribute("data-del")) return deleteProject(t.getAttribute("data-del"));
     });
+
+    // ── user profile / memory (read-only, ADR-020/022) ────────────────────────
+    async function loadMemory() {
+      const host = $("memory"); if (!host) return;
+      try {
+        const r = await fetch("/v1/memory", {headers: {Accept: "application/json"}});
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+        const files = (j.data && j.data.files) || [];
+        host.innerHTML = files.length
+          ? files.map((f)=>`<div class="memfile"><div class="memname">${esc(f.name)}</div>
+              <pre class="mempre">${esc((f.content||"").trim() || "（空）")}</pre></div>`).join("")
+          : `<div class="sdesc">还没有记忆文件——管家初次对话后会逐步在 <span style="color:var(--dim)">${esc((j.data&&j.data.dir)||"workspace/MEMORY")}</span> 里积累。</div>`;
+      } catch (e) {
+        host.innerHTML = `<div class="error">加载记忆失败：${esc(e.message)}</div>`;
+      }
+    }
 
     // ── boot ───────────────────────────────────────────────────────────────────
     async function load() {
