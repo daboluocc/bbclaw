@@ -53,4 +53,5 @@
 | [ADR-033](ADR-033-adapter-v2-blocking-prompt-device-confirm.md) | adapter_v2 阻塞式交互弹窗 → 设备确认（截屏识别 + 转发选择） | 2026-06-24 | 进行中（四端已实现，待真机端到端验证） |
 | [ADR-034](ADR-034-adapter-v2-task-list-channel.md) | adapter_v2 计划清单（TodoWrite）→ 设备 display-only `task.list` 通道 | 2026-06-25 | 草案（docs-only，待 P0 抓屏识别器闸门） |
 | [ADR-035](ADR-035-adapter-v2-interactive-pty-over-claude-p.md) | adapter_v2 跑交互式 PTY + 抓屏而非 `claude -p`——计费留在订阅内 + 多 CLI 无缝兼容 | 2026-06-25 | 已接受（追认既有架构） |
-| [ADR-036](ADR-036-adapter-v2-project-loader.md) | adapter_v2 项目载入——管理页登记目录 + 项目清单注入系统提示（re-exec 落地）+ CLI 发现 | 2026-06-25 | 草案（4 项关键决策已确认，待实现） |
+| [ADR-036](ADR-036-adapter-v2-project-loader.md) | adapter_v2 项目载入——管理页登记目录 + 项目清单注入系统提示（re-exec 落地）+ CLI 发现 | 2026-06-25 | 进行中（P1 核心已实现：projectstore + CRUD + 系统提示 + 原生目录对话框 + 用户画像展示 + 设备控制） |
+| [ADR-037](ADR-037-firmware-miyu-settings-toggle.md) | 固件设置菜单密语(miyu)开关——cloud_saas 下可设备端开/关锁屏语音解锁，重启生效 | 2026-06-25 | 已接受（已实现，`make build` 通过；待真机验证 + owner 发布） |

@@ -127,6 +127,7 @@ typedef enum {
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
   MAIN_ROW_TTS,
+  MAIN_ROW_MIYU,
   MAIN_ROW_BACK,
   MAIN_ROW_ID_COUNT,
 } main_row_t;
@@ -177,6 +178,7 @@ typedef struct {
   volatile uint32_t session_fetch_generation;
 
   int tts_enabled;
+  int miyu_enabled; /* 密语(锁屏语音解锁) on/off; loaded from device config on entry (ADR-037) */
 
   /* Volume adjust state */
   int volume_pct;        /* current working value while in LEVEL_VOLUME_ADJUST */
@@ -345,6 +347,11 @@ static int main_visible_rows(main_row_t* out) {
   }
   out[n++] = MAIN_ROW_VOLUME;
   out[n++] = MAIN_ROW_TTS;
+  /* 密语(锁屏语音解锁) only works in cloud_saas (passphrase_unlock_enabled), so
+   * the toggle is only meaningful there — like the ADAPTER/SESSIONS rows (ADR-037). */
+  if (bb_transport_is_cloud_saas()) {
+    out[n++] = MAIN_ROW_MIYU;
+  }
   /* No explicit Back row — encoder long-press (BB_NAV_EVENT_BACK) exits at the
    * main level; a footer hint on the main page tells the user. */
   return n;
@@ -439,6 +446,9 @@ static void render_main(void) {
       }
       case MAIN_ROW_TTS:
         snprintf(buf, sizeof(buf), "Voice: %s", s_st.tts_enabled ? "on" : "off");
+        break;
+      case MAIN_ROW_MIYU:
+        snprintf(buf, sizeof(buf), "Miyu: %s", s_st.miyu_enabled ? "on" : "off");
         break;
       case MAIN_ROW_BACK:
         snprintf(buf, sizeof(buf), "Back");
@@ -1035,6 +1045,7 @@ typedef enum {
   COMMIT_KIND_MODEL,
   COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
   COMMIT_KIND_TTS,     /* int_val = 0/1 */
+  COMMIT_KIND_MIYU,    /* int_val = 0/1 → bb_device_config_set_miyu (ADR-037) */
   COMMIT_KIND_ADAPTER, /* site_id = target homeSiteId (WS sites.activate) */
   COMMIT_KIND_PERSIST_DRIVER, /* driver_name → NVS only (split off DRIVER's
                                * HTTPS PUT so the PUT can run on a PSRAM stack
@@ -1114,6 +1125,9 @@ static void commit_task(void* arg) {
   } else if (p->kind == COMMIT_KIND_TTS) {
     err = persist_tts_enabled(p->int_val);
     ESP_LOGI(TAG, "commit tts=%d -> %s", p->int_val, esp_err_to_name(err));
+  } else if (p->kind == COMMIT_KIND_MIYU) {
+    err = bb_device_config_set_miyu(p->int_val);
+    ESP_LOGI(TAG, "commit miyu=%d -> %s", p->int_val, esp_err_to_name(err));
   } else if (p->kind == COMMIT_KIND_ADAPTER) {
     /* ADR-027: WS sites.activate (cloud-terminated). On success the active
      * binding has flipped; refresh agent state from the new adapter. On
@@ -1334,6 +1348,7 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   }
   /* Load current volume from persisted config. */
   s_st.volume_pct = bb_device_config_get()->volume_pct;
+  s_st.miyu_enabled = bb_device_config_get()->miyu_enabled; /* ADR-037: 密语开关行 */
   s_st.volume_dirty = 0;
   s_st.vol_fill = NULL;
   s_st.vol_pct_lbl = NULL;
@@ -1510,6 +1525,15 @@ int bb_ui_settings_handle_click(void) {
            * and panics. */
           s_st.tts_enabled = !s_st.tts_enabled;
           spawn_persist_int(COMMIT_KIND_TTS, s_st.tts_enabled);
+          rerender();
+          break;
+        }
+        case MAIN_ROW_MIYU: {
+          /* 密语(锁屏语音解锁) in-place toggle (ADR-037). Persist off the PSRAM
+           * stack via the commit task (NVS write). Takes effect on NEXT boot —
+           * miyu gates lock-on-boot, so we don't lock the user out of Settings now. */
+          s_st.miyu_enabled = !s_st.miyu_enabled;
+          spawn_persist_int(COMMIT_KIND_MIYU, s_st.miyu_enabled);
           rerender();
           break;
         }

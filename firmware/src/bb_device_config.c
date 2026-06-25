@@ -192,3 +192,12 @@ esp_err_t bb_device_config_note_volume_pct(int pct) {
   ESP_LOGI(TAG, "volume noted from cloud pct=%d version=%d (unchanged)", pct, s_config.version);
   return persist_config();
 }
+
+esp_err_t bb_device_config_set_miyu(int enabled) {
+  int v = enabled ? 1 : 0;
+  if (s_config.miyu_enabled == v) return ESP_OK;
+  s_config.miyu_enabled = v;
+  s_config.version++;
+  ESP_LOGI(TAG, "miyu set locally enabled=%d version=%d", v, s_config.version);
+  return persist_config();
+}

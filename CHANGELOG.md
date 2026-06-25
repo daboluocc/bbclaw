@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:设置菜单新增密语(miyu)开关（ADR-037）**:cloud_saas 模式下设备端可自己开/关**密语**
+  (锁屏语音解锁),不必再依赖云端/CLI/管家。落地照抄 TTS 开关 + 音量持久化范式:新增
+  `MAIN_ROW_MIYU` 行(仅 cloud_saas 显示)、`bb_device_config_set_miyu()` setter(clamp 0/1、
+  bump version、存 NVS)、`COMMIT_KIND_MIYU`(commit_task 内部 RAM 栈做 NVS 写)、进设置时从
+  `s_config.miyu_enabled` 读入、渲染 "Miyu: on/off"、点击在位翻转持久化。**重启生效**
+  (密语只在开机时决定锁不锁屏,本地切换天然下次开机生效;也避免开密语时把自己锁在设置页外)。
+  `idf.py build` 通过(8% 余量)。注:本地 build 仅编译验证,真正 OTA 发布须用生产配置
+  `sdkconfig.bbclaw.latest` + tag 注入版本(CI 触发);灰度走现有云端 OTA 渠道。**本仓不打 tag,
+  由 owner 触发发布。** 待真机验证。
 - **adapter_v2 管理页支持设备控制（密语 / 音量），走与 CLI 同一条云端路**:管理页「即时生效」组
   新增「设备控制」区,可开/关**密语**(miyu)与设音量,作用于当前连接的设备——和管家用语音调的是
   **同一条路**。落地:新增 loopback-only `GET/POST /v1/admin/device-config`,POST 复用 `device

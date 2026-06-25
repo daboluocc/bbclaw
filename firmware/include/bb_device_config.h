@@ -76,3 +76,14 @@ esp_err_t bb_device_config_set_volume_pct(int pct);
  * @param pct  Volume 0–100, as reported by the cloud
  */
 esp_err_t bb_device_config_note_volume_pct(int pct);
+
+/**
+ * Set 密语(miyu, lock-screen voice-unlock) enabled locally (device-initiated,
+ * e.g. the Settings menu toggle, ADR-037). Normalizes to 0/1, bumps version, and
+ * persists to NVS immediately. Mirrors bb_device_config_set_volume_pct: a local
+ * change bumps version so it wins the cloud config-version gate. Takes effect on
+ * the NEXT boot (miyu gates lock-on-boot in bb_state.c).
+ *
+ * @param enabled  non-zero = enable miyu, 0 = disable
+ */
+esp_err_t bb_device_config_set_miyu(int enabled);
