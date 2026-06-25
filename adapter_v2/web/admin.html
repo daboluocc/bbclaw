@@ -108,6 +108,14 @@
       border:1px solid var(--ghost);border-radius:7px;padding:8px 10px}
     .arline input:focus{outline:none;border-color:var(--accent)}
     #np-pick{font-weight:400}
+    /* Two zones: immediate (own buttons, no save) vs save-required (the 保存 form) */
+    .zone{margin-bottom:10px}
+    .zonehdr{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);
+      margin:4px 2px 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+    .zonehdr::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent);align-self:center}
+    .zone.immediate .zonehdr{color:var(--ok)}
+    .zone.immediate .zonehdr::before{background:var(--ok)}
+    .zonehint{font-size:10px;letter-spacing:.03em;text-transform:none;color:var(--dim);font-weight:400}
   </style>
 </head>
 <body>
@@ -125,8 +133,16 @@
   </header>
 
   <main>
-    <div id="projects"></div>
-    <div id="root"><div class="loading">加载配置中…</div></div>
+    <section class="zone immediate">
+      <div class="zonehdr">即时生效 · 无需保存
+        <span class="zonehint">下面用各自的按钮即时写入，不走上方「保存」；下次重启后管家生效</span></div>
+      <div id="projects"></div>
+    </section>
+    <section class="zone">
+      <div class="zonehdr">系统配置 · 需保存
+        <span class="zonehint">改完点右上「保存」，再「重启并应用」才生效</span></div>
+      <div id="root"><div class="loading">加载配置中…</div></div>
+    </section>
   </main>
 
   <div id="banner" class="banner hide">
@@ -362,7 +378,7 @@
         ? list.map(projectRow).join("")
         : `<div class="hint">还没有登记项目。加一个目录，管家就知道你在做什么。</div>`;
       $("projects").innerHTML = `<section class="card"><h2>项目 Projects
-        <span class="hint" style="font-weight:400">管家开口即知；下次重启后生效（ADR-036）</span></h2>
+        <span class="hint" style="font-weight:400">让管家开口即知你在做哪些项目（ADR-036）</span></h2>
         <div class="projlist">${rows}</div>
         <div class="addrow">
           <div class="arline">
