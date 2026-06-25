@@ -5,91 +5,108 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>bbclaw adapter v2 · 配置</title>
   <!--
-    Slim, loopback-only web admin/config page for adapter_v2 (ADR-025 "web-first
-    config", env-overlay variant). ONE static HTML file: inline <style> + vanilla
-    JS, NO Vue/Vite/build step — it embeds cleanly alongside index.html so
-    `go build` stays toolchain-free.
+    Loopback-only web admin/config page for adapter_v2 (ADR-025 web-first config +
+    ADR-036 project loader). ONE static HTML file: inline <style> + vanilla JS, NO
+    build step — embeds cleanly alongside index.html so `go build` stays toolchain-free.
 
-    On load: GET /v1/settings → render the grouped form from the JSON.
-    Save:    PUT /v1/settings with the WHOLE doc → show the restart banner.
-    Restart: POST /v1/settings/restart → poll /healthz until 200 → reload.
+    Layout (VSCode-settings style):
+      · left section nav (two groups: 即时生效 / 系统配置)
+      · right scrollable sections
+      · a CONTEXTUAL save bar pinned to the bottom of the settings area (not a global
+        top button) — appears only when there are unsaved system-config changes.
+
+    Two distinct save models, deliberately separated:
+      · 即时生效 (项目): each control commits immediately via its OWN button
+        (POST/DELETE /v1/projects, POST /v1/admin/pick-dir). No save bar.
+      · 系统配置: edit fields → 保存 (PUT /v1/settings) → 重启并应用
+        (POST /v1/settings/restart → poll /healthz → reload).
   -->
   <style>
     /* dot-matrix / Nothing-style tokens (design/UI_DESIGN_LANGUAGE.md) */
     :root{
       --bg:#070b0e; --lit:#dfeaec; --ghost:#152128; --dim:#6e8a93;
-      --accent:#2ec4a0; --ok:#4cd964; --err:#e66f6f; --pitch:9px;
+      --accent:#2ec4a0; --ok:#4cd964; --err:#e66f6f; --pitch:9px; --hdrh:56px;
     }
     *{box-sizing:border-box}
-    html,body{margin:0;min-height:100vh}
+    html,body{margin:0;padding:0}
     body{
-      font:13px/1.55 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+      font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
       color:var(--lit); background:var(--bg);
       background-image:radial-gradient(var(--ghost) 1px, transparent 1px);
       background-size:var(--pitch) var(--pitch);
+      -webkit-font-smoothing:antialiased;
     }
-    a{color:var(--accent)}
-    .hdr{padding:16px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:center;gap:14px;
-      background:rgba(7,11,14,.85);backdrop-filter:blur(2px);position:sticky;top:0;z-index:3;flex-wrap:wrap}
+    a{color:var(--accent);text-decoration:none}
+
+    /* header */
+    .hdr{padding:14px 22px;border-bottom:1px solid var(--ghost);display:flex;align-items:center;gap:14px;
+      background:rgba(7,11,14,.92);backdrop-filter:blur(3px);position:sticky;top:0;z-index:5;flex-wrap:wrap;min-height:var(--hdrh)}
     .wordmark{font-weight:700;font-size:15px;letter-spacing:.42em;color:var(--lit);
-      border-bottom:2px dotted var(--accent);padding-bottom:3px;text-decoration:none;cursor:pointer}
+      border-bottom:2px dotted var(--accent);padding-bottom:3px}
     .wordmark:hover{color:var(--accent)}
     .hdr .sub{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
-    .tabs{display:flex;gap:6px;margin-left:8px}
+    .tabs{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
     .tab{font:inherit;cursor:pointer;background:transparent;border:1px solid var(--ghost);color:var(--dim);
-      border-radius:7px;padding:6px 16px;letter-spacing:.05em;text-decoration:none}
-    .tab:hover{color:var(--lit);border-color:var(--dim);text-decoration:none}
+      border-radius:7px;padding:6px 12px;font-size:12px}
+    .tab:hover{color:var(--lit);border-color:var(--dim)}
     .tab.on{color:#04110f;background:var(--accent);border-color:var(--accent);font-weight:600}
-    .hdr .actions{margin-left:auto;display:flex;gap:8px;align-items:center}
-    main{max-width:980px;margin:0 auto;padding:22px}
-    @media (max-width:720px){ .hdr{padding:14px;gap:10px} .hdr .sub{display:none} main{padding:14px} }
 
-    .card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px;margin-bottom:18px}
-    .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 14px;display:flex;align-items:center}
-    .card h2::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);
-      box-shadow:9px 0 0 var(--ghost),18px 0 0 var(--ghost);margin-right:18px;display:inline-block}
+    /* layout: sidebar + content */
+    .layout{display:flex;align-items:flex-start;gap:0;max-width:1180px;margin:0 auto}
+    .sidebar{position:sticky;top:var(--hdrh);align-self:flex-start;flex:0 0 196px;width:196px;
+      max-height:calc(100vh - var(--hdrh));overflow:auto;padding:20px 12px 40px}
+    .navgroup{margin-bottom:18px}
+    .navlabel{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+      margin:0 8px 8px;display:flex;align-items:center;gap:8px}
+    .navlabel::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent)}
+    .navgroup.immediate .navlabel::before{background:var(--ok)}
+    .navitem{display:block;font:inherit;font-size:12px;color:var(--dim);padding:6px 10px;border-radius:6px;
+      cursor:pointer;border-left:2px solid transparent;letter-spacing:.02em}
+    .navitem:hover{color:var(--lit);background:rgba(255,255,255,.025)}
+    .navitem.on{color:var(--lit);background:rgba(46,196,160,.1);border-left-color:var(--accent)}
+    .navgroup.immediate .navitem.on{background:rgba(76,217,100,.1);border-left-color:var(--ok)}
 
-    .form{display:grid;gap:13px;grid-template-columns:repeat(2,minmax(0,1fr))}
-    .form.one{grid-template-columns:1fr}
-    @media (max-width:560px){ .form{grid-template-columns:1fr} }
-    .field{display:grid;gap:5px;min-width:0}
-    .field.wide{grid-column:1 / -1}
-    .field>label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim)}
-    .field input[type=text],.field input[type=password],.field select,.field textarea{
+    .content{flex:1;min-width:0;padding:20px 24px 120px}
+
+    /* sections + cards */
+    .sec{scroll-margin-top:calc(var(--hdrh) + 14px);margin-bottom:22px}
+    .grouphdr{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
+      margin:6px 2px 14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+    .grouphdr.imm{color:var(--ok)}
+    .grouphdr .gh-note{color:var(--dim);text-transform:none;letter-spacing:.02em;font-size:10px}
+    .card{background:rgba(13,18,22,.78);border:1px solid var(--ghost);border-radius:10px;padding:16px 18px}
+    .card>h2{font-size:12px;letter-spacing:.04em;color:var(--lit);margin:0 0 4px;font-weight:600}
+    .card>.cardsub{font-size:11px;color:var(--dim);margin:0 0 14px}
+
+    /* settings fields (label · description · input, stacked like VSCode) */
+    .setting{margin-bottom:15px}
+    .setting:last-child{margin-bottom:2px}
+    .setting .slabel{font-size:11px;color:var(--lit);letter-spacing:.02em;margin-bottom:2px}
+    .setting .slabel .env{color:var(--dim);font-size:10px;margin-left:6px}
+    .setting .sdesc{font-size:10.5px;color:var(--dim);margin-bottom:6px;line-height:1.45}
+    .setting input[type=text],.setting input[type=password],.setting textarea{width:100%;
       font:inherit;background:#05090c;color:var(--lit);border:1px solid var(--ghost);border-radius:7px;
-      padding:8px 10px;width:100%;min-width:0}
-    .field textarea{resize:vertical;min-height:64px}
-    .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent)}
-    .field .hint{font-size:10px;color:var(--dim)}
-    .switch{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+      padding:8px 10px;font-size:12px}
+    .setting input:focus,.setting textarea:focus{outline:none;border-color:var(--accent)}
+    .setting textarea{min-height:60px;resize:vertical}
+    .switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
     .switch input{accent-color:var(--accent);width:15px;height:15px}
-    .switch span{font-size:12px;color:var(--lit)}
+    .switch .swl{font-size:11px;color:var(--lit)}
 
-    .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+    /* status / read-only grid */
+    .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
     .status-grid .item{border:1px solid var(--ghost);border-radius:7px;padding:9px 11px;background:rgba(7,11,14,.5)}
     .status-grid .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
     .status-grid .v{font-size:12px;color:var(--lit);word-break:break-all}
 
+    /* buttons */
     button{font:inherit;cursor:pointer;border-radius:7px;padding:8px 16px;border:1px solid var(--accent);
-      background:var(--accent);color:#04110f;font-weight:600;letter-spacing:.03em}
+      background:var(--accent);color:#04110f;font-weight:600;letter-spacing:.03em;font-size:12px}
     button:disabled{opacity:.45;cursor:default}
-    button.ghost{background:transparent;color:var(--dim);border-color:var(--ghost)}
+    button.ghost{background:transparent;color:var(--dim);border-color:var(--ghost);font-weight:400}
     button.ghost:hover:not(:disabled){color:var(--lit);border-color:var(--dim)}
 
-    .banner{position:sticky;bottom:0;z-index:4;margin:0 -22px -22px;padding:14px 22px;
-      border-top:1px solid var(--ghost);background:rgba(7,11,14,.94);backdrop-filter:blur(3px);
-      display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-    .banner .msg{flex:1;min-width:200px;font-size:12px;color:var(--lit)}
-    .banner.hide{display:none}
-    .toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9;
-      background:#05090c;border:1px solid var(--ghost);border-radius:8px;padding:9px 16px;font-size:12px;
-      color:var(--lit);box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none}
-    .toast.show{opacity:1}
-    .toast.ok{border-color:#1f4d47;color:var(--ok)}
-    .toast.err{border-color:#3a2422;color:var(--err)}
-    .loading,.error{padding:40px 0;text-align:center;color:var(--dim)}
-    .error{color:var(--err)}
-    /* Projects (ADR-036) */
+    /* projects */
     .projlist{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
     .projrow{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--ghost);border-radius:7px;
       padding:9px 11px;background:rgba(7,11,14,.5)}
@@ -105,17 +122,42 @@
     .addrow{display:flex;flex-direction:column;gap:8px;border-top:1px dotted var(--ghost);padding-top:13px}
     .arline{display:flex;gap:8px;flex-wrap:wrap}
     .arline input{flex:1;min-width:160px;font:inherit;background:#05090c;color:var(--lit);
-      border:1px solid var(--ghost);border-radius:7px;padding:8px 10px}
+      border:1px solid var(--ghost);border-radius:7px;padding:8px 10px;font-size:12px}
     .arline input:focus{outline:none;border-color:var(--accent)}
-    #np-pick{font-weight:400}
-    /* Two zones: immediate (own buttons, no save) vs save-required (the 保存 form) */
-    .zone{margin-bottom:10px}
-    .zonehdr{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);
-      margin:4px 2px 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-    .zonehdr::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent);align-self:center}
-    .zone.immediate .zonehdr{color:var(--ok)}
-    .zone.immediate .zonehdr::before{background:var(--ok)}
-    .zonehint{font-size:10px;letter-spacing:.03em;text-transform:none;color:var(--dim);font-weight:400}
+    #np-pick{font-weight:400;background:transparent;color:var(--lit);border-color:var(--dim)}
+    #np-pick:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+
+    /* contextual save bar (lives with the settings, pinned to the bottom) */
+    .savebar{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;align-items:center;gap:14px;
+      padding:12px 24px;border-top:1px solid var(--ghost);background:rgba(7,11,14,.96);backdrop-filter:blur(4px)}
+    .savebar .sb-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:0 0 auto}
+    .savebar.pending .sb-dot{background:var(--err)}
+    .savebar .sb-msg{flex:1;min-width:160px;font-size:12px;color:var(--lit)}
+    .savebar .sb-msg b{color:var(--accent)}
+
+    /* toast */
+    .toast{position:fixed;left:50%;bottom:74px;transform:translateX(-50%);z-index:9;
+      background:#05090c;border:1px solid var(--ghost);border-radius:8px;padding:9px 16px;font-size:12px;
+      color:var(--lit);box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none}
+    .toast.show{opacity:1}
+    .toast.ok{border-color:#1f4d47;color:var(--ok)}
+    .toast.err{border-color:#3a2422;color:var(--err)}
+
+    .loading,.error{padding:40px 0;text-align:center;color:var(--dim)}
+    .error{color:var(--err)}
+    .hide{display:none}
+
+    /* narrow screens: stack the nav above the content */
+    @media (max-width:760px){
+      .layout{flex-direction:column}
+      .sidebar{position:static;width:auto;flex:none;max-height:none;display:flex;gap:14px;overflow-x:auto;
+        padding:12px 16px;border-bottom:1px solid var(--ghost)}
+      .navgroup{margin-bottom:0;display:flex;align-items:center;gap:6px}
+      .navlabel{margin:0 4px 0 0}
+      .navitem{white-space:nowrap;border-left:none;border-bottom:2px solid transparent}
+      .navitem.on{border-left:none;border-bottom-color:var(--accent)}
+      .content{padding:16px 16px 120px}
+    }
   </style>
 </head>
 <body>
@@ -127,35 +169,27 @@
       <a class="tab" href="/#sessions">会话 Sessions</a>
       <a class="tab on" href="/admin">⚙ 管理 Admin</a>
     </nav>
-    <div class="actions">
-      <button id="save" class="" disabled>保存</button>
-    </div>
   </header>
 
-  <main>
-    <section class="zone immediate">
-      <div class="zonehdr">即时生效 · 无需保存
-        <span class="zonehint">下面用各自的按钮即时写入，不走上方「保存」；下次重启后管家生效</span></div>
-      <div id="projects"></div>
-    </section>
-    <section class="zone">
-      <div class="zonehdr">系统配置 · 需保存
-        <span class="zonehint">改完点右上「保存」，再「重启并应用」才生效</span></div>
-      <div id="root"><div class="loading">加载配置中…</div></div>
-    </section>
-  </main>
-
-  <div id="banner" class="banner hide">
-    <span class="msg">配置已保存。需要重启适配器使其生效。</span>
-    <button id="restart">重启并应用</button>
+  <div class="layout">
+    <aside class="sidebar" id="nav"></aside>
+    <main class="content" id="content"><div class="loading">加载中…</div></main>
   </div>
-  <div id="toast" class="toast"></div>
+
+  <div class="savebar hide" id="savebar">
+    <span class="sb-dot"></span>
+    <span class="sb-msg" id="sb-msg"></span>
+    <button id="sb-save">保存</button>
+    <button id="sb-restart" class="ghost hide">重启并应用</button>
+  </div>
+  <div class="toast" id="toast"></div>
 
   <script>
   (function () {
     "use strict";
     const $ = (id) => document.getElementById(id);
-    let current = null;     // last-loaded full Settings doc
+    let current = null;       // last-loaded {settings, derived, restartRequired}
+    let dirty = false;        // unsaved system-config edits since load/save
     let restartPending = false;
 
     function toast(msg, kind) {
@@ -164,113 +198,113 @@
       t.className = "toast show" + (kind ? " " + kind : "");
       setTimeout(() => { t.className = "toast"; }, 2600);
     }
-
     function esc(s) { return String(s == null ? "" : s); }
+    function escA(s) { return esc(s).replace(/"/g, "&quot;"); }
 
-    // Build one text/password input field.
-    function inputField(label, path, value, opts) {
+    // ── settings field builders (label · description · input) ──────────────────
+    function inputField(env, label, path, value, opts) {
       opts = opts || {};
       const type = opts.password ? "password" : "text";
-      const wide = opts.wide ? " wide" : "";
-      const hint = opts.hint ? `<div class="hint">${esc(opts.hint)}</div>` : "";
-      const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : "";
-      return `<div class="field${wide}">
-        <label>${esc(label)}</label>
-        <input type="${type}" data-path="${path}" value="${esc(value).replace(/"/g, "&quot;")}"${ph} autocomplete="off" spellcheck="false" />
-        ${hint}</div>`;
+      const desc = opts.desc ? `<div class="sdesc">${esc(opts.desc)}</div>` : "";
+      const ph = opts.placeholder ? ` placeholder="${escA(opts.placeholder)}"` : "";
+      return `<div class="setting"><div class="slabel">${esc(label)}<span class="env">${esc(env)}</span></div>
+        ${desc}<input type="${type}" data-path="${path}" value="${escA(value)}"${ph} autocomplete="off" spellcheck="false" /></div>`;
     }
-
-    function areaField(label, path, value, hint) {
-      return `<div class="field wide">
-        <label>${esc(label)}</label>
-        <textarea data-path="${path}" spellcheck="false">${esc(value)}</textarea>
-        ${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>`;
+    function areaField(env, label, path, value, desc) {
+      return `<div class="setting"><div class="slabel">${esc(label)}<span class="env">${esc(env)}</span></div>
+        ${desc ? `<div class="sdesc">${esc(desc)}</div>` : ""}
+        <textarea data-path="${path}" spellcheck="false">${esc(value)}</textarea></div>`;
     }
-
-    function boolField(label, path, value) {
-      return `<div class="field"><label class="switch">
+    function boolField(label, path, value, desc) {
+      return `<div class="setting"><label class="switch">
         <input type="checkbox" data-path="${path}" data-bool="1" ${value ? "checked" : ""} />
-        <span>${esc(label)}</span></label></div>`;
+        <span class="swl">${esc(label)}</span></label>
+        ${desc ? `<div class="sdesc" style="margin-top:5px">${esc(desc)}</div>` : ""}</div>`;
+    }
+    function card(id, title, sub, body) {
+      return `<section class="sec" id="${id}"><div class="card">
+        <h2>${esc(title)}</h2>${sub ? `<div class="cardsub">${esc(sub)}</div>` : ""}${body}</div></section>`;
     }
 
-    function card(title, bodyHTML, oneCol) {
-      return `<section class="card"><h2>${esc(title)}</h2>
-        <div class="form${oneCol ? " one" : ""}">${bodyHTML}</div></section>`;
-    }
-
-    function render(data) {
-      const s = data.settings || {};
-      const v = s.voice || {}, asr = v.asr || {}, tts = v.tts || {};
-      const dev = s.device || {}, cli = s.cli || {}, cloud = s.cloud || {}, ai = s.ai || {};
-      const d = data.derived || {};
-
-      const derivedCard = `<section class="card"><h2>状态 / 只读</h2>
-        <div class="status-grid">
+    // ── section model: one entry per settings card (drives nav + content) ──────
+    const SECTIONS = [
+      {id:"sec-asr", nav:"语音 · ASR", build:(s)=>{const a=(s.voice||{}).asr||{};return card("sec-asr","语音 · ASR（识别）","把用户语音转成文字的服务",
+        inputField("ASR_PROVIDER","Provider","voice.asr.provider",a.provider,{desc:"local / openai_compatible / doubao_native（留空用内置模拟）"})+
+        inputField("ASR_LANGUAGE","语言","voice.asr.language",a.language)+
+        inputField("ASR_BASE_URL","Base URL","voice.asr.baseUrl",a.baseUrl)+
+        inputField("ASR_API_KEY","API Key","voice.asr.apiKey",a.apiKey,{password:true})+
+        inputField("ASR_MODEL","模型","voice.asr.model",a.model)+
+        inputField("ASR_APP_ID","App ID","voice.asr.appId",a.appId)+
+        inputField("ASR_RESOURCE_ID","Resource ID","voice.asr.resourceId",a.resourceId)+
+        inputField("ASR_HOTWORDS","热词","voice.asr.hotwords",a.hotwords,{desc:"逗号/空格分隔；已登记的项目名会自动并入"})+
+        inputField("ASR_LOCAL_BIN","Local Bin","voice.asr.localBin",a.localBin)+
+        inputField("ASR_LOCAL_ARGS","Local Args","voice.asr.localArgs",a.localArgs)+
+        inputField("ASR_LOCAL_TEXT_PATH","Local Text Path","voice.asr.localTextPath",a.localTextPath));}},
+      {id:"sec-tts", nav:"语音 · TTS", build:(s)=>{const t=(s.voice||{}).tts||{};return card("sec-tts","语音 · TTS（合成）","把回复文字读出来的服务",
+        inputField("TTS_PROVIDER","Provider","voice.tts.provider",t.provider,{desc:"local / doubao_native（留空用内置 say/silent）"})+
+        inputField("TTS_VOICE","音色","voice.tts.voice",t.voice)+
+        inputField("TTS_BASE_URL","Base URL","voice.tts.baseUrl",t.baseUrl)+
+        inputField("TTS_APP_ID","App ID","voice.tts.appId",t.appId)+
+        inputField("TTS_TOKEN","Token","voice.tts.token",t.token,{password:true})+
+        inputField("TTS_CLUSTER","Cluster","voice.tts.cluster",t.cluster)+
+        inputField("TTS_LOCAL_BIN","Local Bin","voice.tts.localBin",t.localBin)+
+        inputField("TTS_LOCAL_ARGS","Local Args","voice.tts.localArgs",t.localArgs)+
+        inputField("TTS_LOCAL_OUTPUT_FORMAT","Local Output Format","voice.tts.localOutputFormat",t.localOutputFormat));}},
+      {id:"sec-device", nav:"设备线", build:(s)=>{const d=s.device||{};return card("sec-device","设备线（bbwire/2）","设备语音串流行为",
+        boolField("流式回复增量","device.streamDelta",d.streamDelta,"STREAM_DELTA · 边出边显，reply.end 为准")+
+        boolField("分段 TTS","device.segmentTts",d.segmentTts,"SEGMENT_TTS · 逐句合成播放"));}},
+      {id:"sec-cli", nav:"CLI / 管家", build:(s)=>{const c=s.cli||{};return card("sec-cli","CLI / 管家","跑哪个 CLI、监听地址、权限与人设",
+        inputField("ADAPTER_V2_CLI","CLI argv","cli.cli",c.cli,{desc:"空格分隔，如 claude"})+
+        inputField("ADAPTER_V2_ADDR","监听地址","cli.addr",c.addr,{desc:"如 :18090"})+
+        inputField("ADAPTER_V2_CWD","工作目录","cli.cwd",c.cwd,{desc:"留空用共享 butler workspace"})+
+        boolField("跳过权限确认","cli.skipPermissions",c.skipPermissions,"SKIP_PERMISSIONS · 语音设备无法应答权限弹窗")+
+        boolField("自动跳过 claude 首启提示","cli.claudeAutoEnter",c.claudeAutoEnter,"CLAUDE_AUTO_ENTER")+
+        boolField("设备端确认权限弹窗","cli.confirmOnDevice",c.confirmOnDevice,"CONFIRM_ON_DEVICE · 关 bypass，弹窗转发设备（ADR-033）")+
+        areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT","设备人设（覆盖）","cli.voiceSystemPrompt",c.voiceSystemPrompt,"留空用默认人设；填了会整体覆盖"));}},
+      {id:"sec-ai", nav:"Claude 端点", build:(s)=>{const ai=s.ai||{};return card("sec-ai","Claude 端点（三方 / 代理）","走第三方 / 兼容端点时才填；留空用 claude 官方登录态",
+        inputField("ANTHROPIC_BASE_URL","Base URL","ai.anthropicBaseUrl",ai.anthropicBaseUrl,{placeholder:"https://your-proxy.example.com"})+
+        inputField("ANTHROPIC_AUTH_TOKEN","Auth Token","ai.anthropicAuthToken",ai.anthropicAuthToken,{password:true,placeholder:"sk-..."}));}},
+      {id:"sec-cloud", nav:"云", build:(s)=>{const cl=s.cloud||{};return card("sec-cloud","云（Cloud Relay）","连云后远程设备可经云端中继接到本机",
+        inputField("CLOUD_WS_URL","WS URL","cloud.wsUrl",cl.wsUrl,{desc:"留空则不连云，仅 LAN"})+
+        inputField("CLOUD_AUTH_TOKEN","Auth Token","cloud.authToken",cl.authToken,{password:true})+
+        inputField("HOME_SITE_ID","Home Site ID","cloud.homeSiteId",cl.homeSiteId,{desc:"留空用持久化身份 identity.json"}));}},
+      {id:"sec-status", nav:"状态 / 只读", build:(s,d)=>card("sec-status","状态 / 只读","系统生成，不可编辑",
+        `<div class="status-grid">
           <div class="item"><div class="k">version</div><div class="v">${esc(d.version)}</div></div>
           <div class="item"><div class="k">home site id</div><div class="v">${esc(d.homeSiteId)}</div></div>
           <div class="item"><div class="k">workspace</div><div class="v">${esc(d.workspace)}</div></div>
           <div class="item"><div class="k">settings file</div><div class="v">${esc(d.settingsFile)}</div></div>
-        </div></section>`;
+        </div>`)},
+    ];
 
-      const asrCard = card("语音 · ASR (识别)",
-        inputField("ASR_PROVIDER", "voice.asr.provider", asr.provider, {hint:"local / openai_compatible / doubao_native （留空用内置模拟）"}) +
-        inputField("ASR_LANGUAGE", "voice.asr.language", asr.language) +
-        inputField("ASR_BASE_URL", "voice.asr.baseUrl", asr.baseUrl) +
-        inputField("ASR_API_KEY", "voice.asr.apiKey", asr.apiKey, {password:true}) +
-        inputField("ASR_MODEL", "voice.asr.model", asr.model) +
-        inputField("ASR_APP_ID", "voice.asr.appId", asr.appId) +
-        inputField("ASR_RESOURCE_ID", "voice.asr.resourceId", asr.resourceId) +
-        inputField("ASR_HOTWORDS", "voice.asr.hotwords", asr.hotwords, {hint:"逗号/空格分隔"}) +
-        inputField("ASR_LOCAL_BIN", "voice.asr.localBin", asr.localBin) +
-        inputField("ASR_LOCAL_ARGS", "voice.asr.localArgs", asr.localArgs) +
-        inputField("ASR_LOCAL_TEXT_PATH", "voice.asr.localTextPath", asr.localTextPath, {wide:true})
-      );
+    // ── render the whole page (nav + sections) ─────────────────────────────────
+    function render(data) {
+      const s = data.settings || {}, d = data.derived || {};
+      // sidebar: immediate group (项目) + system-config group (the SECTIONS).
+      const navHTML =
+        `<div class="navgroup immediate"><div class="navlabel">即时生效</div>
+           <a class="navitem" data-target="sec-projects">项目</a></div>
+         <div class="navgroup"><div class="navlabel">系统配置 · 需保存</div>
+           ${SECTIONS.map((x)=>`<a class="navitem" data-target="${x.id}">${esc(x.nav)}</a>`).join("")}</div>`;
+      $("nav").innerHTML = navHTML;
 
-      const ttsCard = card("语音 · TTS (合成)",
-        inputField("TTS_PROVIDER", "voice.tts.provider", tts.provider, {hint:"local / doubao_native （留空用内置 say/silent）"}) +
-        inputField("TTS_VOICE", "voice.tts.voice", tts.voice) +
-        inputField("TTS_BASE_URL", "voice.tts.baseUrl", tts.baseUrl) +
-        inputField("TTS_APP_ID", "voice.tts.appId", tts.appId) +
-        inputField("TTS_TOKEN", "voice.tts.token", tts.token, {password:true}) +
-        inputField("TTS_CLUSTER", "voice.tts.cluster", tts.cluster) +
-        inputField("TTS_LOCAL_BIN", "voice.tts.localBin", tts.localBin) +
-        inputField("TTS_LOCAL_ARGS", "voice.tts.localArgs", tts.localArgs) +
-        inputField("TTS_LOCAL_OUTPUT_FORMAT", "voice.tts.localOutputFormat", tts.localOutputFormat)
-      );
+      const settingsHTML = SECTIONS.map((x)=>x.build(s, d)).join("");
+      $("content").innerHTML =
+        `<div class="grouphdr imm">即时生效 · 无需保存
+           <span class="gh-note">各控件用自己的按钮即时写入，不走「保存」；下次重启后管家生效</span></div>
+         <section class="sec" id="sec-projects"><div id="projects"><div class="loading">加载项目…</div></div></section>
+         <div class="grouphdr">系统配置 · 需保存
+           <span class="gh-note">改完底部点「保存」，再「重启并应用」才生效</span></div>
+         ${settingsHTML}`;
 
-      const deviceCard = card("设备线 (bbwire/2)",
-        boolField("流式回复增量 (STREAM_DELTA)", "device.streamDelta", dev.streamDelta) +
-        boolField("分段 TTS (SEGMENT_TTS)", "device.segmentTts", dev.segmentTts)
-      );
-
-      const cliCard = card("CLI / 管家",
-        inputField("ADAPTER_V2_CLI", "cli.cli", cli.cli, {hint:"空格分隔 argv，如 claude"}) +
-        inputField("ADAPTER_V2_ADDR", "cli.addr", cli.addr, {hint:"监听地址，如 :18090"}) +
-        inputField("ADAPTER_V2_CWD", "cli.cwd", cli.cwd, {wide:true, hint:"留空则用共享 butler workspace"}) +
-        boolField("跳过权限确认 (SKIP_PERMISSIONS)", "cli.skipPermissions", cli.skipPermissions) +
-        boolField("自动跳过 claude 首启提示 (CLAUDE_AUTO_ENTER)", "cli.claudeAutoEnter", cli.claudeAutoEnter) +
-        boolField("设备端确认权限弹窗 (CONFIRM_ON_DEVICE，关 bypass)", "cli.confirmOnDevice", cli.confirmOnDevice) +
-        areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "cli.voiceSystemPrompt", cli.voiceSystemPrompt, "覆盖设备人设；留空用默认人设")
-      );
-
-      const aiCard = card("Claude 端点 (三方 / 代理)",
-        inputField("ANTHROPIC_BASE_URL", "ai.anthropicBaseUrl", ai.anthropicBaseUrl,
-          {wide:true, placeholder:"https://your-proxy.example.com", hint:"留空用 claude 官方登录态；走第三方 / 兼容端点才填。改动需重启生效。"}) +
-        inputField("ANTHROPIC_AUTH_TOKEN", "ai.anthropicAuthToken", ai.anthropicAuthToken,
-          {password:true, wide:true, placeholder:"sk-...", hint:"第三方端点的鉴权 token"})
-      );
-
-      const cloudCard = card("云 (Cloud Relay)",
-        inputField("CLOUD_WS_URL", "cloud.wsUrl", cloud.wsUrl, {wide:true, hint:"留空则不连云，仅 LAN"}) +
-        inputField("CLOUD_AUTH_TOKEN", "cloud.authToken", cloud.authToken, {password:true}) +
-        inputField("HOME_SITE_ID", "cloud.homeSiteId", cloud.homeSiteId, {hint:"留空用持久化身份 identity.json"})
-      );
-
-      $("root").innerHTML = derivedCard + asrCard + ttsCard + deviceCard + cliCard + aiCard + cloudCard;
-      $("save").disabled = false;
+      dirty = false;
+      restartPending = !!data.restartRequired;
+      updateSaveBar();
+      setupScrollSpy();
+      loadProjects();
     }
 
-    // Set a nested value on an object by a dot path, creating objects as needed.
+    // ── system-config save model (PUT the whole doc) ───────────────────────────
     function setPath(obj, path, value) {
       const parts = path.split(".");
       let o = obj;
@@ -280,86 +314,94 @@
       }
       o[parts[parts.length - 1]] = value;
     }
-
-    // Collect the WHOLE doc: start from the last-loaded settings (preserves keys
-    // like version) and overlay every field's current value.
     function collect() {
       const doc = JSON.parse(JSON.stringify(current.settings || {}));
       document.querySelectorAll("[data-path]").forEach((el) => {
-        const path = el.getAttribute("data-path");
         const value = el.getAttribute("data-bool") ? !!el.checked : el.value;
-        setPath(doc, path, value);
+        setPath(doc, el.getAttribute("data-path"), value);
       });
       return doc;
     }
-
-    async function load() {
-      try {
-        const r = await fetch("/v1/settings", {headers: {Accept: "application/json"}});
-        const j = await r.json();
-        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
-        current = j.data;
-        restartPending = !!j.data.restartRequired;
-        render(j.data);
-        if (restartPending) showBanner();
-      } catch (e) {
-        $("root").innerHTML = `<div class="error">加载配置失败：${esc(e.message)}</div>`;
-      }
+    function updateSaveBar() {
+      const bar = $("savebar");
+      if (!dirty && !restartPending) { bar.classList.add("hide"); return; }
+      bar.classList.remove("hide");
+      bar.classList.toggle("pending", restartPending && !dirty);
+      $("sb-save").disabled = !dirty;
+      $("sb-save").classList.toggle("hide", !dirty);
+      $("sb-restart").classList.toggle("hide", !restartPending);
+      $("sb-msg").innerHTML = dirty
+        ? "有<b>未保存</b>的系统配置更改"
+        : "已保存 · 重启适配器后生效";
     }
-
-    function showBanner() { $("banner").classList.remove("hide"); }
+    function markDirty() { if (!dirty) { dirty = true; updateSaveBar(); } }
 
     async function save() {
       const doc = collect();
-      $("save").disabled = true;
+      $("sb-save").disabled = true;
       try {
         const r = await fetch("/v1/settings", {
-          method: "PUT",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(doc),
+          method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(doc),
         });
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
         current.settings = doc;
-        restartPending = true;
+        dirty = false; restartPending = true;
+        updateSaveBar();
         toast("已保存", "ok");
-        showBanner();
       } catch (e) {
         toast("保存失败：" + e.message, "err");
-      } finally {
-        $("save").disabled = false;
+        $("sb-save").disabled = false;
       }
     }
-
     async function pollHealth(then) {
-      // After re-exec the port is briefly down; poll until /healthz answers 200.
       for (let i = 0; i < 60; i++) {
-        try {
-          const r = await fetch("/healthz", {cache: "no-store"});
-          if (r.ok) { then(); return; }
-        } catch (e) { /* server still restarting */ }
+        try { const r = await fetch("/healthz", {cache: "no-store"}); if (r.ok) { then(); return; } }
+        catch (e) { /* still restarting */ }
         await new Promise((res) => setTimeout(res, 500));
       }
       toast("重启超时，请手动刷新", "err");
     }
-
     async function restart() {
-      $("restart").disabled = true;
-      $("restart").textContent = "重启中…";
-      try {
-        await fetch("/v1/settings/restart", {method: "POST"});
-      } catch (e) { /* the connection drops as the process re-execs — expected */ }
-      // Give the old process a moment to exec, then poll the new one.
+      $("sb-restart").disabled = true;
+      $("sb-restart").textContent = "重启中…";
+      try { await fetch("/v1/settings/restart", {method: "POST"}); } catch (e) { /* conn drops on re-exec */ }
       setTimeout(() => pollHealth(() => location.reload()), 800);
     }
 
-    // ── Projects (ADR-036) ───────────────────────────────────────────────────
-    // Independent of the settings doc: its own GET/POST/DELETE endpoints. Adding or
-    // removing a project does NOT trigger a restart (revised UX): it just persists
-    // and the butler picks it up at the next natural boot. The directory is chosen
-    // through the host's NATIVE folder dialog (pick-dir), not an in-page tree.
-    function escA(s) { return esc(s).replace(/"/g, "&quot;"); }
+    // ── scrollspy: highlight the nav item of the section in view ───────────────
+    let spy = null;
+    function setupScrollSpy() {
+      if (spy) spy.disconnect();
+      const secs = [...document.querySelectorAll(".sec")];
+      spy = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting) return;
+          document.querySelectorAll(".navitem").forEach((n) =>
+            n.classList.toggle("on", n.getAttribute("data-target") === en.target.id));
+        });
+      }, {rootMargin: `-${56 + 20}px 0px -55% 0px`, threshold: 0});
+      secs.forEach((s) => spy.observe(s));
+    }
+    $("nav").addEventListener("click", (ev) => {
+      const a = ev.target.closest(".navitem"); if (!a) return;
+      ev.preventDefault();
+      const t = document.getElementById(a.getAttribute("data-target"));
+      if (t) t.scrollIntoView({behavior: "smooth", block: "start"});
+    });
 
+    // mark the system-config form dirty on any [data-path] edit (project inputs
+    // have no data-path, so they never trip the settings save bar).
+    $("content").addEventListener("input", (ev) => {
+      if (ev.target.hasAttribute && ev.target.hasAttribute("data-path")) markDirty();
+    });
+    $("content").addEventListener("change", (ev) => {
+      if (ev.target.hasAttribute && ev.target.hasAttribute("data-path")) markDirty();
+    });
+    $("sb-save").addEventListener("click", save);
+    $("sb-restart").addEventListener("click", restart);
+
+    // ── projects (即时生效, ADR-036) — own buttons, never touches the save bar ──
     function projectRow(p) {
       let badge = "";
       if (p.cliBin) {
@@ -367,18 +409,16 @@
         badge = `<span class="pbadge ${ok ? "ok" : "warn"}">CLI: ${esc(p.cliBin)} ${ok ? "就绪" : "未配置"}</span>`;
       }
       const sum = p.summary ? ` — ${esc(p.summary)}` : "";
-      return `<div class="projrow">
-        <div class="pinfo"><div class="ptop"><b>${esc(p.name)}</b>${sum} ${badge}</div>
+      return `<div class="projrow"><div class="pinfo"><div class="ptop"><b>${esc(p.name)}</b>${sum} ${badge}</div>
         <div class="hint">${esc(p.path)}</div></div>
         <button class="pdel" data-del="${escA(p.name)}">删除</button></div>`;
     }
-
     function renderProjects(list) {
       const rows = (list && list.length)
         ? list.map(projectRow).join("")
-        : `<div class="hint">还没有登记项目。加一个目录，管家就知道你在做什么。</div>`;
-      $("projects").innerHTML = `<section class="card"><h2>项目 Projects
-        <span class="hint" style="font-weight:400">让管家开口即知你在做哪些项目（ADR-036）</span></h2>
+        : `<div class="sdesc">还没有登记项目。加一个目录，管家就知道你在做什么。</div>`;
+      $("projects").innerHTML = `<div class="card">
+        <h2>项目 Projects</h2><div class="cardsub">让管家开口即知你在做哪些项目；增删即时生效（无需「保存」）</div>
         <div class="projlist">${rows}</div>
         <div class="addrow">
           <div class="arline">
@@ -393,9 +433,8 @@
             <input id="np-cli" placeholder="专属 CLI（可选），如 bbclaw-buildhub" autocomplete="off" spellcheck="false" />
             <button id="np-add" type="button">添加项目</button>
           </div>
-        </div></section>`;
+        </div></div>`;
     }
-
     async function loadProjects() {
       try {
         const r = await fetch("/v1/projects", {headers: {Accept: "application/json"}});
@@ -406,32 +445,20 @@
         $("projects").innerHTML = `<div class="error">加载项目失败：${esc(e.message)}</div>`;
       }
     }
-
     async function addProject() {
       const path = $("np-path").value.trim();
       if (!path) { toast("请先选择 / 填写项目目录", "err"); return; }
-      const body = {
-        path,
-        name: $("np-name").value.trim(),
-        summary: $("np-summary").value.trim(),
-        cliBin: $("np-cli").value.trim(),
-      };
+      const body = {path, name: $("np-name").value.trim(), summary: $("np-summary").value.trim(), cliBin: $("np-cli").value.trim()};
       $("np-add").disabled = true;
       try {
-        const r = await fetch("/v1/projects", {
-          method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
-        });
+        const r = await fetch("/v1/projects", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
         toast("已添加（下次重启后管家生效）", "ok");
         await loadProjects();
-      } catch (e) {
-        toast("添加失败：" + e.message, "err");
-      } finally {
-        $("np-add").disabled = false;
-      }
+      } catch (e) { toast("添加失败：" + e.message, "err"); }
+      finally { const b = $("np-add"); if (b) b.disabled = false; }
     }
-
     async function deleteProject(name) {
       try {
         const r = await fetch("/v1/projects/" + encodeURIComponent(name), {method: "DELETE"});
@@ -439,51 +466,45 @@
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
         toast("已删除（下次重启后生效）", "ok");
         await loadProjects();
-      } catch (e) {
-        toast("删除失败：" + e.message, "err");
-      }
+      } catch (e) { toast("删除失败：" + e.message, "err"); }
     }
-
-    // pickDir opens the host's NATIVE folder chooser (Finder on macOS) via the
-    // adapter and fills the path input with the absolute path it returns. The admin
-    // page is loopback-only so the dialog appears on this same machine.
     async function pickDir() {
       const btn = $("np-pick");
       btn.disabled = true; btn.textContent = "选择中…";
       try {
         const r = await fetch("/v1/admin/pick-dir", {method: "POST"});
         const j = await r.json();
-        if (!j.ok) {
-          toast("系统选择器不可用，请手动粘贴目录路径", "err");
-          return;
-        }
+        if (!j.ok) { toast("系统选择器不可用，请手动粘贴目录路径", "err"); return; }
         if (j.data && j.data.path) {
           $("np-path").value = j.data.path;
           if (!$("np-name").value.trim()) {
             const parts = j.data.path.replace(/\/+$/, "").split("/");
             $("np-name").value = parts[parts.length - 1] || "";
           }
-        } // cancelled → leave the input as-is
-      } catch (e) {
-        toast("打开目录选择器失败：" + e.message, "err");
-      } finally {
-        btn.disabled = false; btn.textContent = "选择目录…";
-      }
+        }
+      } catch (e) { toast("打开目录选择器失败：" + e.message, "err"); }
+      finally { btn.disabled = false; btn.textContent = "选择目录…"; }
     }
-
-    // Event delegation for the dynamic project controls.
-    $("projects").addEventListener("click", (ev) => {
-      const t = ev.target.closest("button");
-      if (!t) return;
+    $("content").addEventListener("click", (ev) => {
+      const t = ev.target.closest("button"); if (!t) return;
       if (t.id === "np-add") return addProject();
       if (t.id === "np-pick") return pickDir();
       if (t.hasAttribute("data-del")) return deleteProject(t.getAttribute("data-del"));
     });
 
-    $("save").addEventListener("click", save);
-    $("restart").addEventListener("click", restart);
+    // ── boot ───────────────────────────────────────────────────────────────────
+    async function load() {
+      try {
+        const r = await fetch("/v1/settings", {headers: {Accept: "application/json"}});
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+        current = j.data;
+        render(j.data);
+      } catch (e) {
+        $("content").innerHTML = `<div class="error">加载配置失败：${esc(e.message)}</div>`;
+      }
+    }
     load();
-    loadProjects();
   })();
   </script>
 </body>

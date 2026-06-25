@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 管理页重设计为 VSCode-settings 风格（ADR-036）**:左侧 section 导航(scrollspy 高亮)
+  + 右侧分区内容,按两套保存模型分两个色标组——「即时生效·无需保存」(绿,项目区,各控件自己的
+  按钮即时写入)与「系统配置·需保存」(青,ADR-025 设置)。**取消顶部全局「保存」按钮**,改为
+  **底部贴附的上下文 save bar**:仅当系统配置有未保存改动时浮现「有未保存的更改 + 保存」,保存后变
+  「已保存·重启后生效 + 重启并应用」;项目区输入无 `data-path`、永不触发 save bar,两套模型彻底
+  解耦。每项设置 label+说明+输入(VSCode 式)。真机起 adapter 截图验证布局/save bar/CLI 徽标/
+  scrollspy 均正常。(adapter_v2,纯前端,暂不随发布打 tag)
 - **adapter_v2 项目载入 P1（ADR-036）**:管家现在开口即知用户在管理页登记的项目,不再出现
   「问了不知道」。落地:新增 `internal/projectstore`(sibling `~/.bbclaw-adapter-v2/projects.json`,
   移植自 v1、原子写、加 `summary`/`cliBin` 字段、不限 git 任意目录)、loopback-only

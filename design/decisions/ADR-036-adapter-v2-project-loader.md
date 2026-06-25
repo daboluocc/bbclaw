@@ -90,9 +90,9 @@ Project { Name, Path(绝对), Source('admin'|'env'), AddedAt,
 - `DELETE /v1/projects/{name}` → 删除（**无 restartRequired**）。
 - **`POST /v1/admin/pick-dir`（原生目录选择器）**：在**适配器宿主机**弹出 OS 原生「选择文件夹」对话框（macOS `osascript`「choose folder」→ `POSIX path`；Linux `zenity --file-selection --directory`），返回所选**绝对路径**。可行因为管理页 loopback-only——浏览器与适配器同机，对话框就弹在用户屏幕上。取代浏览器内渲染目录树（owner 要求；且浏览器出于安全本就不暴露所选目录绝对路径）。返回 `{path}` / `{cancelled:true}` / `{ok:false,PICKER_UNAVAILABLE}`（无原生选择器时页面降级为手动粘贴路径）。
 
-管理页（`adapter_v2/web/admin.html`，vanilla HTML+JS）**分两个带标题的区**，把「即时操作」与「需保存」清楚区别开（owner 反馈）：
-- **即时生效 · 无需保存**（绿标）：项目卡片——列出项目（名字、路径、一句用途、CLI 就绪徽标）+ 每行删除 + 底部「添加项目」行（「选择目录…」按钮调原生对话框填路径 + 可选 name/用途/CLIBin）。各控件用**自己的按钮即时写入**，不走顶部「保存」；加/删后只 toast「下次重启后生效」，**不弹重启横幅**。
-- **系统配置 · 需保存**（青标）：原 ADR-025 设置表单（语音/设备/CLI/云等）——改字段→点顶部「保存」(PUT /v1/settings)→「重启并应用」生效。顶部「保存」按钮只管这一区。
+管理页（`adapter_v2/web/admin.html`，vanilla HTML+JS）**整页重设计为 VSCode-settings 风格**（owner 反馈：要分区、保存放到需要的地方）：左侧 section 导航 + 右侧分区内容 + scrollspy 高亮，**按两套保存模型分两个色标组**：
+- **即时生效 · 无需保存**（绿）：项目卡片——列出项目（名字、路径、一句用途、CLI 就绪徽标）+ 每行删除 + 底部「添加项目」行（「选择目录…」原生对话框 + 可选 name/用途/CLIBin）。各控件用**自己的按钮即时写入**，加/删后只 toast「下次重启后生效」。
+- **系统配置 · 需保存**（青）：原 ADR-025 设置（语音 ASR/TTS、设备、CLI、Claude 端点、云、状态），每项 label+说明+输入（VSCode 式）。**取消顶部全局「保存」按钮**；改为**底部贴附的上下文 save bar**——仅当系统配置有未保存改动时浮现「有未保存的系统配置更改 + 保存」，保存后变「已保存·重启后生效 + 重启并应用」。项目区的输入无 `data-path`，永不触发 save bar，两套模型彻底解耦。
 
 ## 否决的方案
 
