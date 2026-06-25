@@ -9,7 +9,7 @@ import (
 
 func TestDeviceClaudeArgs(t *testing.T) {
 	// claude CLI → bypass-permissions flag + device persona appended.
-	got := DeviceClaudeArgs([]string{"/usr/local/bin/claude"}, "/ws")
+	got := DeviceClaudeArgs([]string{"/usr/local/bin/claude"}, "/ws", nil)
 	if !containsArg(got, "--dangerously-skip-permissions") {
 		t.Errorf("missing permission bypass (voice device can't answer prompts): %v", got)
 	}
@@ -21,18 +21,18 @@ func TestDeviceClaudeArgs(t *testing.T) {
 		t.Errorf("base argv must not carry a resume flag (DeviceSession adds it): %v", got)
 	}
 	// Non-claude CLI (e.g. the e2e mockcli) → untouched.
-	if base := DeviceClaudeArgs([]string{"/tmp/mockcli"}, "/ws"); len(base) != 1 {
+	if base := DeviceClaudeArgs([]string{"/tmp/mockcli"}, "/ws", nil); len(base) != 1 {
 		t.Errorf("non-claude argv should be untouched, got %v", base)
 	}
 	// Permission bypass can be turned off for safety.
 	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "0")
-	if off := DeviceClaudeArgs([]string{"claude"}, ""); containsArg(off, "--dangerously-skip-permissions") {
+	if off := DeviceClaudeArgs([]string{"claude"}, "", nil); containsArg(off, "--dangerously-skip-permissions") {
 		t.Errorf("ADAPTER_V2_SKIP_PERMISSIONS=0 should drop the bypass flag: %v", off)
 	}
 	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "1")
 	// Custom persona env overrides the default whole prompt.
 	t.Setenv("ADAPTER_V2_VOICE_SYSTEM_PROMPT", "be terse")
-	got = DeviceClaudeArgs([]string{"claude"}, "")
+	got = DeviceClaudeArgs([]string{"claude"}, "", nil)
 	if i := argIndex(got, "--append-system-prompt"); i < 0 || got[i+1] != "be terse" {
 		t.Errorf("custom persona env not applied: %v", got)
 	}
@@ -44,7 +44,7 @@ func TestDeviceClaudeArgs(t *testing.T) {
 func TestDeviceClaudeArgsConfirmOnDevice(t *testing.T) {
 	t.Setenv("ADAPTER_V2_CONFIRM_ON_DEVICE", "1")
 	t.Setenv("ADAPTER_V2_SKIP_PERMISSIONS", "1") // ConfirmOnDevice must still win
-	got := DeviceClaudeArgs([]string{"claude"}, "")
+	got := DeviceClaudeArgs([]string{"claude"}, "", nil)
 	if containsArg(got, "--dangerously-skip-permissions") {
 		t.Errorf("ConfirmOnDevice must NOT bypass permissions: %v", got)
 	}

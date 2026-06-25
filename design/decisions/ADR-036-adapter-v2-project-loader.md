@@ -1,7 +1,7 @@
 # ADR-036: adapter_v2 项目载入与系统提示项目清单注入
 
 - **日期**: 2026-06-25
-- **状态**: 草案（设计定稿，4 项关键决策已与 owner 确认：re-exec 生效 / P1 只做「知道+能调 CLI」不含 dispatch / 单一共享项目池 / 管理页内置目录选择器。待实现）
+- **状态**: 进行中（设计定稿，4 项关键决策已确认。**P1 核心已实现**：`internal/projectstore` 包 + `/v1/projects` CRUD + `/v1/admin/fs` 目录选择器 + `DeviceSystemPrompt` 渲染项目清单(boot 读盘) + re-exec 落地(复用 `adminapi.Restart`) + `ASR_HOTWORDS` 合并项目名 + `cliReady` + 管理页项目卡片；`go test -race ./...` 全绿。**待补**：移植 v1 prewarm 的 scanner 写 `MEMORY/projects.md`(§决策三 的重知识增强)。未真机验证。）
 - **关联**:
   - **ADR-025（web-first 配置）**——直接复用其 env-overlay store 范式、loopback-only 管理页、`adminapi.Restart()` re-exec 的「restart-to-apply」心智。项目载入是同一配置心智的延伸，不另立配置体系。
   - **ADR-022（记忆整理 + 画像文档）**——项目「重知识」落 `MEMORY/projects.md`，属画像维度；scanner 写入须遵守其两层模型与反投毒（无绝对路径进画像、deny 过滤、0600）。

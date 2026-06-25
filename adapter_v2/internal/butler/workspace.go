@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
 )
 
 // memoryFiles are the per-dimension long-term-memory files seeded into a fresh
@@ -79,7 +81,12 @@ func EnsureWorkspace(dir string) (string, error) {
 // It builds the BASE argv only — persona + permissions, NO resume flag. The resume
 // flag (--continue / --resume <id> / --session-id <id>) is owned by DeviceSession
 // (ADR-032), which appends it per the active conversation.
-func DeviceClaudeArgs(argv []string, cwd string) []string {
+//
+// projects is the user's registered project list (ADR-036), baked into the appended
+// system prompt so the butler knows the user's projects from boot. Because this argv
+// is built once at boot (and again after a re-exec), a newly-added project reaches
+// the butler only after adminapi.Restart re-execs — by design (ADR-036 §决策二).
+func DeviceClaudeArgs(argv []string, cwd string, projects []projectstore.Project) []string {
 	if len(argv) == 0 || !strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude") {
 		return argv
 	}
@@ -93,7 +100,7 @@ func DeviceClaudeArgs(argv []string, cwd string) []string {
 	} else if envBool("ADAPTER_V2_SKIP_PERMISSIONS", true) {
 		out = append(out, "--dangerously-skip-permissions")
 	}
-	prompt := DeviceSystemPrompt(cwd, "")
+	prompt := DeviceSystemPrompt(cwd, "", projects)
 	if v, ok := os.LookupEnv("ADAPTER_V2_VOICE_SYSTEM_PROMPT"); ok {
 		prompt = v
 	}

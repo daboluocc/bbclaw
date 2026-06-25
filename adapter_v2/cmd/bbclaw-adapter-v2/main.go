@@ -39,6 +39,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
@@ -89,6 +90,20 @@ func main() {
 		log.Printf("bbclaw-adapter-v2: settings load error (using env defaults): %v", err)
 	}
 	store.ExportEnv() // env now reflects settings.json; the readers below pick it up
+
+	// Project loader (ADR-036): the registered project list feeds the butler's
+	// system prompt (so it knows the user's projects from boot — preventing the
+	// "asked but doesn't know" failure) and merges project names into ASR_HOTWORDS
+	// (so the recognizer hears them). Opened HERE — after ExportEnv, before the voice
+	// readers and DeviceClaudeArgs below — so a fresh boot / a post-add re-exec both
+	// pick up the current projects. A missing/corrupt file degrades to an empty list.
+	projectsPath := filepath.Join(settingsstore.DataDir(), "projects.json")
+	projStore, perr := projectstore.Open(projectsPath)
+	if perr != nil {
+		log.Printf("bbclaw-adapter-v2: projects load error (using empty list): %v", perr)
+	}
+	mergeProjectHotwords(projStore.List()) // appends project names to ASR_HOTWORDS env (before voicekit reads it)
+
 	restartFlag := &adminapi.RestartFlag{}
 
 	cfg := config.LoadFromEnv()
@@ -104,7 +119,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("bbclaw-adapter-v2: butler workspace: %v", err)
 	}
-	baseArgv := butler.DeviceClaudeArgs(cfg.Argv, defaultCwd)
+	baseArgv := butler.DeviceClaudeArgs(cfg.Argv, defaultCwd, projStore.List())
 	// DeviceSession owns the default conversation's lifecycle (ADR-032): it appends
 	// the resume flag (--resume <active>/--continue/--session-id) to baseArgv, so
 	// every entry point spawns session.DefaultID identically and resume / new /
@@ -127,7 +142,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg, devSess, store, restartFlag, derive),
+		Handler: newRouter(mgr, cfg, devSess, store, projStore, restartFlag, derive),
 	}
 	log.Printf("bbclaw-adapter-v2: settings file %s", store.Path())
 	log.Printf("bbclaw-adapter-v2: admin at http://127.0.0.1%s/admin", cfg.Addr)
@@ -182,10 +197,48 @@ func main() {
 	}
 }
 
+// mergeProjectHotwords appends the registered project names to the ASR_HOTWORDS
+// env var (comma-separated, the format voicekit.splitList accepts) so the
+// recognizer is biased toward hearing them — e.g. so a spoken "Buildhub" is
+// transcribed correctly (ADR-036 §决策四). It runs after ExportEnv and before
+// voicekit reads the env. Existing hotwords are preserved; project names already
+// present are not duplicated. Project names are delimiter-safe by construction
+// (projectstore.Add forbids ',' and ':').
+func mergeProjectHotwords(projects []projectstore.Project) {
+	if len(projects) == 0 {
+		return
+	}
+	seen := map[string]struct{}{}
+	var words []string
+	add := func(w string) {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			return
+		}
+		if _, dup := seen[w]; dup {
+			return
+		}
+		seen[w] = struct{}{}
+		words = append(words, w)
+	}
+	// Preserve any existing hotwords (comma- or space-separated) first.
+	for _, w := range strings.FieldsFunc(os.Getenv("ASR_HOTWORDS"), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		add(w)
+	}
+	for _, p := range projects {
+		add(p.Name)
+	}
+	if len(words) > 0 {
+		_ = os.Setenv("ASR_HOTWORDS", strings.Join(words, ","))
+	}
+}
+
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, projStore *projectstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(mgr, cfg, devSess))
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -196,6 +249,15 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	mux.HandleFunc("/admin/", adminapi.LocalOnly(web.AdminHandler().ServeHTTP))
 	mux.HandleFunc("/v1/settings", adminapi.LocalOnly(adminapi.Settings(store, restart, derive)))
 	mux.HandleFunc("/v1/settings/restart", adminapi.LocalOnly(adminapi.Restart()))
+
+	// Project loader (ADR-036), loopback-only. GET/POST the project list, DELETE one
+	// by name, and a server-side directory picker so non-programmers can browse to a
+	// folder instead of typing an absolute path. Adding/removing flags a restart (the
+	// project list bakes into the system prompt at boot via re-exec). The MEMORY/
+	// projects.md enrichment scanner is a separate follow-up (ADR-036 §决策三).
+	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore, restart)))
+	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore, restart)))
+	mux.HandleFunc("/v1/admin/fs", adminapi.LocalOnly(adminapi.FSBrowse()))
 
 	// bbwire/2 device protocol, Phase A (adapter_v2/docs/device-protocol.md).
 	// ASR/TTS come from the shared voice module via voicekit.FromEnv (same env var

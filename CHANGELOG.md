@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **adapter_v2 项目载入 P1（ADR-036）**:管家现在开口即知用户在管理页登记的项目,不再出现
+  「问了不知道」。落地:新增 `internal/projectstore`(sibling `~/.bbclaw-adapter-v2/projects.json`,
+  移植自 v1、原子写、加 `summary`/`cliBin` 字段、不限 git 任意目录)、loopback-only
+  `/v1/projects` 增删查 + `/v1/admin/fs` 服务端目录选择器(非程序员点选目录)、管理页项目卡片。
+  **持久触达管家**:`DeviceSystemPrompt` 在 boot 时读 projects.json 把项目渲染成紧凑清单
+  (名字—用途—目录—[CLI 就绪/未配置])注入 `--append-system-prompt`,加/删项目复用现成
+  `adminapi.Restart` re-exec 落地(进系统提示=每轮强加载,保证不遗忘)。项目名并入 `ASR_HOTWORDS`
+  提升语音识别;`cliBin` + `cliReady`(LookPath/Stat)预防 `BBCLAW_*_BIN` 空导致调不到工具。
+  `go test -race ./...` 全绿。**待补**:移植 v1 prewarm 的 scanner 写 `MEMORY/projects.md`
+  重知识(ADR-036 §决策三);dispatch(派任务进项目跑 worker)按 ADR 拆为后续。
+  (adapter_v2,骨架阶段,暂不随发布打 tag)
 - **adapter_v2 计划清单采集探针（ADR-034 P0 第一步，默认开、纯观测）**:为后续把
   claude `TodoWrite` 计划清单渲染到固件屏幕（display-only `task.list` 通道）做准备,先落
   **数据采集探针**——`extract.ScanTaskListCandidates` 用放宽的字形集（ballot box / 方块 /

@@ -12,17 +12,33 @@
 // claude never tries to call an MCP tool that is not wired yet.
 package butler
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
+)
+
+// maxPromptProjects bounds how many registered projects are rendered into the
+// system prompt, so a large pool can't bloat every turn's prompt. The full list is
+// always available on the admin page; beyond this the prompt notes the overflow.
+const maxPromptProjects = 20
 
 // DeviceSystemPrompt is the per-session system prompt appended via claude's
 // --append-system-prompt. It encodes the walkie-talkie form factor: tiny screen,
 // voice output, push-to-talk — so the backend answers short and speakable, not in
-// walls of code. cwd is surfaced as a hint. deviceID is unused: v2's persona is
-// built ONCE at boot and shared across devices (P1), so unlike v1 it cannot bake
-// in a live id per-turn — instead it teaches the butler the device-control CLI
-// (`device set-volume` / `set-miyu`), which resolves "the current device" itself
-// (curdevice). deviceID is kept only for signature parity with v1.
-func DeviceSystemPrompt(cwd, deviceID string) string {
+// walls of code. cwd is surfaced as a hint. projects is the user's registered
+// project list (ADR-036): rendered into a compact section so the butler knows what
+// the user is working on the moment it boots — no need to read MEMORY/ on demand,
+// which is what prevented the "asked but doesn't know" failure. deviceID is unused:
+// v2's persona is built ONCE at boot and shared across devices (P1), so unlike v1
+// it cannot bake in a live id per-turn — instead it teaches the butler the
+// device-control CLI, which resolves "the current device" itself (curdevice).
+// deviceID is kept only for signature parity with v1.
+//
+// Because this is built at boot, a newly-registered project reaches the butler only
+// after a re-exec (adminapi.Restart), NOT mid-session — see ADR-036 §决策二.
+func DeviceSystemPrompt(cwd, deviceID string, projects []projectstore.Project) string {
 	var b strings.Builder
 	b.WriteString("你正通过 BBClaw 与用户对话——一台对讲机式的硬件语音外设" +
 		"(1.47 寸小屏、PTT 按键、语音播报),作为 AI 助手 CLI 的远程终端。" +
@@ -39,6 +55,49 @@ func DeviceSystemPrompt(cwd, deviceID string) string {
 		b.WriteString("- 当前工作目录(你的 workspace):" + c + "\n")
 	}
 	b.WriteString(deviceControlSection)
+	b.WriteString(renderProjectsSection(projects))
+	return b.String()
+}
+
+// renderProjectsSection renders the registered project list into the system prompt
+// (ADR-036 §决策二/五). Empty list → "" (no section). Each line is a compact
+// name — purpose — directory — [CLI: <bin> 就绪|未配置], so the butler can map a
+// spoken project name to its directory + tool. cliReady is computed here (LookPath
+// / abs-stat) so the butler is told honestly whether the project's CLI is usable.
+func renderProjectsSection(projects []projectstore.Project) string {
+	if len(projects) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## 用户的项目(已在管理页登记,你开口即知)\n")
+	b.WriteString("用户用语音提到下面某个项目名(或近义词)时,把它对应到该项目;" +
+		"要对它动手就 cd 到它的目录,它若有专属 CLI 就用那个命令:\n")
+	shown := projects
+	overflow := 0
+	if len(shown) > maxPromptProjects {
+		overflow = len(shown) - maxPromptProjects
+		shown = shown[:maxPromptProjects]
+	}
+	for _, p := range shown {
+		line := "- " + p.Name
+		if s := strings.TrimSpace(p.Summary); s != "" {
+			line += " — " + s
+		}
+		line += " — 目录 " + p.Path
+		if bin := strings.TrimSpace(p.CLIBin); bin != "" {
+			if projectstore.CLIReady(bin) {
+				line += fmt.Sprintf(" — [CLI: %s 就绪]", bin)
+			} else {
+				line += fmt.Sprintf(" — [CLI: %s 未配置]", bin)
+			}
+		}
+		b.WriteString(line + "\n")
+	}
+	if overflow > 0 {
+		b.WriteString(fmt.Sprintf("(另有 %d 个项目未列出,完整清单见管理页)\n", overflow))
+	}
+	b.WriteString("某项目的专属 CLI 标「未配置」时,就如实告诉用户该工具还没配好、需要在管理页补上," +
+		"别假装能用或瞎猜命令。\n")
 	return b.String()
 }
 

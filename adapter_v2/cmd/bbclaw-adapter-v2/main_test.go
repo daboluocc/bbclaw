@@ -15,6 +15,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/adminapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
@@ -25,8 +26,9 @@ import (
 func testRouter(mgr *session.Manager) http.Handler {
 	cfg := testConfig()
 	store, _ := settingsstore.Open("", settingsstore.Settings{})
+	projStore, _ := projectstore.Open("")
 	derive := func() adminapi.Derived { return adminapi.Derived{} }
-	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, &adminapi.RestartFlag{}, derive)
+	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, projStore, &adminapi.RestartFlag{}, derive)
 }
 
 // testConfig launches a trivial long-running CLI under the PTY so a created
