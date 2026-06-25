@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **固件:密语(miyu)锁屏在断网时把人锁死(ADR-039)**:密语解锁只能走云端 `voice.verify`,
+  但「是否进/留在锁屏」原本只看 `cloud_saas && miyu_enabled`、**不看网络**——于是网络报错后
+  闲置 120s 照样息屏进锁屏,再也校验不过 → 永久锁死(开机即锁/锁屏后才断网同理)。两处协同修:
+  ① **断网不自动锁屏**——闲置升级 `CHAT→LOCKED` 加 `s_transport_health_ok` 门槛,离线停在
+  CHAT/STANDBY,网回来后 ≤120s 恢复正常锁屏;② **锁屏期间云端持续不可达 15s 自动解锁回 CHAT**
+  (`BBCLAW_LOCKED_OFFLINE_AUTO_UNLOCK_MS`)——救「开机即锁但没网」「锁屏后才断网」。owner 拍板:
+  离线优先「别被锁死」,密语防护让位(拔网即可绕过密语,可接受)。
 - **固件:OTA 在内部 RAM 碎片的设备上「OTA apply task create failed」装不上**:`ota_apply` 任务栈
   12KB **必须**在内部 RAM(下载+刷 flash 冻结 cache,PSRAM 栈会 panic→reflash loop,issue #179),
   但原本是用户确认 OTA 时才懒加载——那会儿 dot-matrix UI/CJK 字体已把内部堆打散,最大连续块

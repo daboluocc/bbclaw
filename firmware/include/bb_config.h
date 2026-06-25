@@ -753,6 +753,14 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_STANDBY_LOCK_TIMEOUT_MS 120000
 #endif
 
+/* ADR-039: 密语离线死锁兜底。锁屏(LOCKED)期间若云端持续不可达
+ * (s_transport_health_ok==0) 超过此时长，自动解锁回 CHAT——密语只能云端
+ * voice.verify 校验，离线必然解不开，宁可放行也不把主人锁死。15s 宽限避开
+ * WiFi 短暂重连(一般 5–10s)误触发。 */
+#ifndef BBCLAW_LOCKED_OFFLINE_AUTO_UNLOCK_MS
+#define BBCLAW_LOCKED_OFFLINE_AUTO_UNLOCK_MS 15000
+#endif
+
 #ifndef BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD
 #define BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD 2
 #endif

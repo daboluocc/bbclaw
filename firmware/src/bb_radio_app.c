@@ -2023,6 +2023,8 @@ static void stream_task(void* arg) {
   int adapter_health_fail_streak = 0;
   /** 按住 PTT 且处于门户配对门闸时，降低 UI/日志刷新频率 */
   int64_t pairing_ptt_ui_last_ms = 0;
+  /** ADR-039: 连续处于 LOCKED && 云端不可达 的起始时刻(0=不在此态)，用于离线自动解锁兜底 */
+  int64_t locked_offline_since_ms = 0;
   unsigned nav_handled_versions[BB_NAV_EVENT_COUNT] = {0};
   /* Phase 4.5: when the current arming/streaming turn was kicked off while
    * agent-chat overlay was open, route the resulting transcript into the
@@ -3423,6 +3425,26 @@ static void stream_task(void* arg) {
       set_radio_app_state(BBCLAW_STATE_CHAT);
     }
 
+    /* ADR-039: 密语离线死锁兜底。LOCKED 期间云端持续不可达 (s_transport_health_ok==0)
+     * 超过宽限期就自动解锁回 CHAT——密语只能云端 voice.verify 校验，离线必然解不开，
+     * 宁可放行也别把主人锁死。健康位恢复(网回来)即清零计时，正常锁屏姿态自动回归。
+     * 开机即锁但没网也走这条：主循环在 wait_for_transport_health 之后才起，首跑时
+     * s_transport_health_ok 已反映开机连通性，无需额外 boot-settled 标志。 */
+    if (s_app_state == BBCLAW_STATE_LOCKED && passphrase_unlock_enabled() &&
+        !s_transport_health_ok) {
+      int64_t off_now_ms = bb_now_ms();
+      if (locked_offline_since_ms == 0) {
+        locked_offline_since_ms = off_now_ms;
+      } else if (off_now_ms - locked_offline_since_ms > BBCLAW_LOCKED_OFFLINE_AUTO_UNLOCK_MS) {
+        ESP_LOGW(TAG, "miyu: cloud unreachable %lldms while LOCKED -> auto-unlock to CHAT (ADR-039)",
+                 (long long)(off_now_ms - locked_offline_since_ms));
+        set_radio_app_state(BBCLAW_STATE_CHAT);
+        locked_offline_since_ms = 0;
+      }
+    } else {
+      locked_offline_since_ms = 0;
+    }
+
     if (!streaming && !s_ptt_pressed && !verifying && !arming && !session_busy &&
         !speaker_active && !bb_page_ota_active()) {
       int64_t now_ms = bb_now_ms();
@@ -3445,9 +3467,14 @@ static void stream_task(void* arg) {
         }
       } else if (s_app_state == BBCLAW_STATE_CHAT && !radio_app_is_locked()) {
         if (now_ms - s_last_activity_ms > BBCLAW_STANDBY_LOCK_TIMEOUT_MS) {
-          if (passphrase_unlock_enabled()) {
+          /* ADR-039: 断网不自动锁屏。密语只能云端校验，离线锁了就解不开——
+           * s_transport_health_ok 为假时停在 CHAT/STANDBY，照常刷新计时，网络
+           * 恢复后 ≤120s 内恢复正常锁屏。避免「锁→离线自动解锁→再锁」抖动。 */
+          if (passphrase_unlock_enabled() && s_transport_health_ok) {
             ESP_LOGI(TAG, "idle: standby timeout, entering LOCKED");
             set_radio_app_state(BBCLAW_STATE_LOCKED);
+          } else if (passphrase_unlock_enabled()) {
+            ESP_LOGI(TAG, "idle: standby timeout but cloud unreachable -> stay CHAT (ADR-039)");
           }
           s_last_activity_ms = now_ms;
         }
