@@ -54,12 +54,71 @@ cd firmware
 5. Stage 4 个 bin：`bootloader / partition-table / ota-data / bbclaw-firmware`
 6. `POST /v1/ota/flash-bundle` → `https://bbclaw.daboluo.cc`
 
-### 发布后确认
+### 发布后记录
+
+**务必**在发布完成后记录一份，方便下次对比：
 
 ```bash
-# 设备 Settings → Check Update，或等下次心跳自动拉取
-# 服务端验证（可选）
-curl https://bbclaw.daboluo.cc/v1/ota/flash-bundles?platform=esp32s3 | jq '.data[] | select(.isActive)'
+# 在项目根目录创建发布记录（自动生成或手工编辑）
+cat > .claude/skills/publish-ota/releases/v0.5.2.md <<'EOF'
+# Release v0.5.2 (2026-06-27)
+
+## 发布方式
+灰度发布（本地脚本）
+
+## 命令
+```bash
+export OTA_ADMIN_KEY=$(ssh root@daboluo.cc "grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-")
+get_idf
+cd firmware
+./scripts/release_local.sh v0.5.2
+```
+
+## 前置状态
+- git: commit abc123def (main, pushed)
+- IDF: v5.5.2
+- board config: sdkconfig.bbclaw.latest ✓
+- firmware size: 2.36 MB
+
+## 关键改动
+- feat(firmware): 设置列表回弹动画(ADR-XXX)
+- fix(firmware): OTA 检查超时问题
+
+## OTA 服务端
+- 推送到：https://bbclaw.daboluo.cc/v1/ota/flash-bundle
+- active bundle 已切换到 v0.5.2
+- 灰度用户可见
+
+## 验证方式
+- 本地设备 Settings → Check Update → 出现 v0.5.2
+- 或 curl https://bbclaw.daboluo.cc/v1/ota/flash-bundles?platform=esp32s3 | jq '.data[] | select(.isActive)'
+
+## 回滚计划
+- 若问题严重：`make boot-recover` 回 factory
+- 下一发版本(v0.5.3)会自动停用本版本
+EOF
+```
+
+**记录清单：**
+- [ ] 版本号 / 发布日期
+- [ ] 发布方式（灰度 / Tag 正式）
+- [ ] 执行命令（复制粘贴能重现）
+- [ ] 前置条件（git hash / IDF 版本 / 固件大小）
+- [ ] 关键改动摘要（git log 或 CHANGELOG 链接）
+- [ ] OTA URL 和验证命令
+- [ ] 灰度用户清单（如适用）
+- [ ] 回滚计划
+
+---
+
+## 发布历史查看
+
+```bash
+# 列出已有发布记录
+ls -ltr .claude/skills/publish-ota/releases/
+
+# 对比上次发布的参数和改动
+diff .claude/skills/publish-ota/releases/v0.5.1.md .claude/skills/publish-ota/releases/v0.5.2.md
 ```
 
 ---
