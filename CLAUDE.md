@@ -53,6 +53,19 @@ adapter migration on 2026-04-27 (ADR-011).
 - **以下仍需人工确认，不自动做**：`git push`、打 `v*` tag（会触发 OTA 发布，见上方
   Release & Tag Policy）、以及其它破坏性 / 会花钱的操作。
 
+## 多会话并行协作
+
+本仓库经常**多个 Claude 会话 / 进程并行**在跑（`ps aux | grep claude` 常能看到一批，
+clawflow worktree 也会并行改）。动手改文件或编译前，先判断有没有别人正在动同一处：
+
+- **判断信号**：目标文件 `mtime` 一直在变、两次读取之间内容 / 行号在变（Edit 工具
+  反复报 "File has been modified since read"）、有其它 `claude` 进程在跑、或有 build 正在进行。
+- **发现冲突就让路**：不要抢着改、不要抢着 `build`。要么**等它结束**，要么**直接退出
+  本次操作**（放弃这次改动 / 编译），交回用户或换个时机再做。
+- **为什么**：抢着改会 clobber 对方**未提交**的工作区改动；并发 `build` 会互相干扰
+  共享的 build 缓存 / 产物。损失的往往是别人正在进行、还没 commit 的活儿。
+- 真要落地编辑时，只基于**磁盘最新内容**做精确替换，并只 `git add` 自己这次改的具体文件。
+
 ## Project Layout
 
 - `daboluocc/bbclaw` — main public repo:
