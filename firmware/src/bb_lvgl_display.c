@@ -669,9 +669,12 @@ static const lv_image_dsc_t* record_anim_icon(uint32_t tick) {
 
 static int should_show_locked_view(int locked, const char* status) {
   if (!locked) return 0;
-  if (status == NULL || status[0] == '\0') return 1;
-  if (strcmp(status, BB_STATUS_LOCKED) == 0 || strcmp(status, BB_STATUS_READY) == 0) return 1;
-  if (strncmp(status, BB_STATUS_VERIFY, 6) == 0) return 1;
+  /* Only the active passphrase-verify beats (VERIFY / VERIFY TX / VERIFY ERR)
+   * own the padlock page — that's the unlock attempt's feedback. An *idle*
+   * locked device instead shows the STANDBY clock (a "locked watch face"),
+   * so the time is always visible; PTT → 密语验证 is the gate into CHAT
+   * (routing lives in bb_radio_app, independent of which view is on screen). */
+  if (status != NULL && strncmp(status, BB_STATUS_VERIFY, 6) == 0) return 1;
   return 0;
 }
 
@@ -1467,6 +1470,9 @@ static void refresh_ui(void) {
 
   if (mode == UI_VIEW_STANDBY) {
     bb_page_standby_refresh_clock(hm);
+    /* Locked-but-idle shows the clock; a dim hint tells the user PTT needs the
+     * passphrase. Unlocked standby hides it (PTT goes straight to chat). */
+    bb_page_standby_set_locked(locked);
     {
       int bat_supported, bat_available, bat_percent, bat_low, bat_charging;
       portENTER_CRITICAL(&s_state_lock);
