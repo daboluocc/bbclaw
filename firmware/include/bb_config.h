@@ -709,6 +709,36 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_VAD_MIN_MEAN_ABS 120
 #endif
 
+/* Mic-fault guard (floating INMP441 SD/DOUT or bad L/R level): a railed / garbage
+ * mic reads as near-full-scale on essentially every sample. Real acoustic speech
+ * NEVER sustains this — even loud near-field clips only on peaks while the mean
+ * stays well below full scale. When >= CLIP_PERMILLE of samples sit at/above
+ * CLIP_LEVEL *and* mean_abs >= MEAN_ABS, treat the capture as a hardware fault:
+ * skip the cloud ASR round-trip (it would just return empty) and surface
+ * "麦克风异常" so the cause is obvious instead of looking like silence.
+ * Signature that motivated this: clipped≈962‰, mean_abs≈31868 (full scale 32768),
+ * both channels near-equal huge energy. See docs/debug/inmp441-lr-board-notes.md. */
+#ifndef BBCLAW_MIC_FAULT_DETECT_ENABLE
+#define BBCLAW_MIC_FAULT_DETECT_ENABLE 1
+#endif
+
+/* Sample magnitude considered "railed" (clamp output is ±32767/-32768). */
+#ifndef BBCLAW_MIC_FAULT_CLIP_LEVEL
+#define BBCLAW_MIC_FAULT_CLIP_LEVEL 32000
+#endif
+
+/* Fraction (per-mille) of railed samples required to suspect a fault. 600‰ = 60%;
+ * real speech peaks clip far below this, the floating-line case is ~960‰. */
+#ifndef BBCLAW_MIC_FAULT_CLIP_PERMILLE
+#define BBCLAW_MIC_FAULT_CLIP_PERMILLE 600
+#endif
+
+/* AND-gate: mean_abs must also be this high (≈73% of full scale). Loud-but-real
+ * speech at 4x gain sits around mean_abs 5000–10000, so this is a wide margin. */
+#ifndef BBCLAW_MIC_FAULT_MEAN_ABS
+#define BBCLAW_MIC_FAULT_MEAN_ABS 24000
+#endif
+
 /** PTT 按下后先本地开麦；仅当累计特征满足下列门限才调用 adapter stream/start（避免无声占满并发流） */
 #ifndef BBCLAW_VAD_ARM_MIN_DURATION_MS
 #define BBCLAW_VAD_ARM_MIN_DURATION_MS 240

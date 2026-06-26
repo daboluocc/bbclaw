@@ -836,6 +836,7 @@ typedef struct {
   uint64_t total_samples;
   uint64_t nonzero_samples;
   uint64_t abs_sum;
+  uint64_t clipped_samples; /* |sample| >= BBCLAW_MIC_FAULT_CLIP_LEVEL — railed-mic detector */
 } vad_stats_t;
 
 static void refresh_power_display(void) {
@@ -1882,6 +1883,9 @@ static void vad_update_from_pcm(vad_stats_t* vad, const uint8_t* pcm_buf, size_t
       v = -v;
     }
     vad->abs_sum += (uint64_t)v;
+    if (v >= BBCLAW_MIC_FAULT_CLIP_LEVEL) {
+      vad->clipped_samples++;
+    }
   }
 }
 
@@ -2678,6 +2682,7 @@ static void stream_task(void* arg) {
       }
 
       int skip_finish = 0;
+      int mic_fault = 0;
 #if BBCLAW_VAD_ENABLE
       uint64_t duration_ms = (vad.total_samples * 1000ULL) / BBCLAW_AUDIO_SAMPLE_RATE;
       uint32_t nonzero_permille = 0;
@@ -2699,6 +2704,21 @@ static void stream_task(void* arg) {
                  "vad blocked asr dur_ms=%u nonzero_permille=%u mean_abs=%u threshold={%u,%u,%u}",
                  (unsigned)duration_ms, (unsigned)nonzero_permille, (unsigned)mean_abs, BBCLAW_VAD_MIN_DURATION_MS,
                  BBCLAW_VAD_MIN_NONZERO_PERMILLE, BBCLAW_VAD_MIN_MEAN_ABS);
+      }
+      if (BBCLAW_MIC_FAULT_DETECT_ENABLE && vad.total_samples > 0U) {
+        uint32_t clipped_permille = (uint32_t)((vad.clipped_samples * 1000ULL) / vad.total_samples);
+        if (clipped_permille >= BBCLAW_MIC_FAULT_CLIP_PERMILLE && mean_abs >= BBCLAW_MIC_FAULT_MEAN_ABS) {
+          /* Railed/garbage capture, not speech — almost always a floating INMP441
+           * SD/DOUT or bad L/R level. Cloud ASR would just return empty; skip it
+           * and tell the user it's the mic, not silence. See
+           * docs/debug/inmp441-lr-board-notes.md. */
+          mic_fault = 1;
+          skip_finish = 1;
+          ESP_LOGE(TAG,
+                   "mic fault suspected: clipped_permille=%u mean_abs=%u (railed, not speech) — skipping ASR; "
+                   "check INMP441 wiring (SD/DOUT, L/R), see docs/debug/inmp441-lr-board-notes.md",
+                   (unsigned)clipped_permille, (unsigned)mean_abs);
+        }
       }
 #endif
 
@@ -2875,11 +2895,20 @@ static void stream_task(void* arg) {
         }
       } else {
         if (voice_target_agent) {
-          /* skip_finish path (VAD blocked / alloc fail) under chat mode. */
-          agent_chat_voice_post_error("no speech detected");
+          /* skip_finish path (VAD blocked / mic fault / alloc fail) under chat mode. */
+          if (mic_fault) {
+            agent_chat_voice_post_error("麦克风异常·检查接线");
+            signal_error_haptic();
+          } else {
+            agent_chat_voice_post_error("no speech detected");
+          }
         } else {
           show_idle_ready_or_locked();
-          (void)bb_display_show_chat_turn("(no voice)", "(no reply)");
+          if (mic_fault) {
+            (void)bb_display_show_chat_turn("(mic fault)", "check INMP441 wiring");
+          } else {
+            (void)bb_display_show_chat_turn("(no voice)", "(no reply)");
+          }
         }
       }
 #if BBCLAW_ENABLE_TTS_PLAYBACK
