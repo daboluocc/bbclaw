@@ -126,6 +126,37 @@ func TestParseStreamJSON_NonMCPToolUse_StillEmitsEvToolCall(t *testing.T) {
 	}
 }
 
+// TestParseStreamJSON_DuplicateToolUse_EmittedOnce verifies that a tool_use id
+// re-seen later in the session (e.g. a --resume turn that re-streams the prior
+// conversation) is surfaced to the device only once — the fix for a plain
+// greeting "replaying" an earlier turn's door-control / set-volume tool chips.
+func TestParseStreamJSON_DuplicateToolUse_EmittedOnce(t *testing.T) {
+	s := newTestSession()
+	// Turn 1: a Bash tool call.
+	parseStreamJSON(strings.NewReader(
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_dup","name":"Bash","input":{"command":"ls"}}]}}`+"\n"),
+		s, obs.NewLogger())
+	// Turn 2 (resume replay): the SAME id re-appears, plus a genuinely new one.
+	parseStreamJSON(strings.NewReader(
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_dup","name":"Bash","input":{"command":"ls"}}]}}`+"\n"+
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_new","name":"Bash","input":{"command":"pwd"}}]}}`+"\n"),
+		s, obs.NewLogger())
+	close(s.events)
+
+	var tools []agent.Event
+	for e := range s.events {
+		if e.Type == agent.EvToolCall {
+			tools = append(tools, e)
+		}
+	}
+	if len(tools) != 2 {
+		t.Fatalf("want 2 EvToolCall (tu_dup once + tu_new once), got %d: %+v", len(tools), tools)
+	}
+	if tools[0].Tool.ID != "tu_dup" || tools[1].Tool.ID != "tu_new" {
+		t.Errorf("want [tu_dup, tu_new], got [%s, %s]", tools[0].Tool.ID, tools[1].Tool.ID)
+	}
+}
+
 // TestParseStreamJSON_NonMCPToolResult_Discarded verifies that tool_results
 // not matching a tracked mcp dispatch are silently discarded.
 func TestParseStreamJSON_NonMCPToolResult_Discarded(t *testing.T) {

@@ -174,6 +174,7 @@ func (d *Driver) Start(ctx context.Context, opts agent.StartOpts) (agent.Session
 		systemPrompt: strings.TrimSpace(opts.SystemPrompt),
 		mcpConfig:    mcpConfig,
 		rootCtx:      ctx,
+		seenToolUse:  make(map[string]bool),
 	}
 	d.mu.Lock()
 	d.sessions[sid] = s
@@ -424,6 +425,16 @@ type session struct {
 	// parseStreamJSON so no mutex is needed.
 	pendingDispatches map[string]*pendingDispatch
 
+	// seenToolUse remembers tool_use.id values already surfaced as EvToolCall so
+	// a given tool call is shown to the device at most once for the life of the
+	// session. claude's tool_use ids are stable + unique per call, so on a turn
+	// that re-emits prior tool_use blocks (e.g. a `--resume` that replays the
+	// conversation) the repeats are dropped instead of re-painting stale grey
+	// tool chips on the device — the symptom seen when a plain greeting "replayed"
+	// a previous turn's door-control / set-volume calls. Single-threaded within
+	// parseStreamJSON; persists across turns because the session is reused.
+	seenToolUse map[string]bool
+
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	// interrupted marks the in-flight turn as deliberately aborted via
@@ -541,6 +552,9 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 	// (in the "user" envelope) can look up which tool produced each result and
 	// decide whether to emit EvDispatchStatus (ADR-021-firmware-ui §1.2).
 	toolUseNames := make(map[string]string)
+	if s.seenToolUse == nil { // robust to directly-constructed sessions (tests)
+		s.seenToolUse = make(map[string]bool)
+	}
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -597,9 +611,19 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 								Title:  title,
 							},
 						})
+					} else if c.ID != "" && s.seenToolUse[c.ID] {
+						// Already surfaced this exact tool_use earlier in the session —
+						// a replayed/duplicate frame (e.g. a --resume that re-streams the
+						// prior conversation). Drop it so the device doesn't re-paint a
+						// stale grey tool chip (e.g. a greeting "replaying" an earlier
+						// turn's door-control / set-volume calls).
+						log.Infof("claude-code: tool_use dup-skip sid=%s tool=%s id=%s", s.id, c.Name, c.ID)
 					} else {
 						// All other tool_use frames: surface as EvToolCall (display-only).
 						// Capabilities().ToolApproval stays false (Phase 2).
+						if c.ID != "" {
+							s.seenToolUse[c.ID] = true
+						}
 						hint := summarizeToolInput(c.Name, c.Input)
 						log.Infof("claude-code: tool_use sid=%s tool=%s id=%s hint=%q", s.id, c.Name, c.ID, hint)
 						s.emit(agent.Event{

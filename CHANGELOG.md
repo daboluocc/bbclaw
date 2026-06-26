@@ -43,7 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   注意:TTS 现在恒定合成(即便物理开关静音),若云端 TTS 按量计费,静音时仍会产生合成开销。
 
 ### Fixed
-- **本地烧录版本号 + dev 构建不再被云端逼升级**:本地 `make build`/`make flash` 烧的固件
+- **adapter(claude-code 驱动):tool 调用按 tool_use.id 去重——修「问候却重播上一轮工具调用」**:
+  设备只说了句问候,屏幕却把上一轮(设音量 / 门禁控制)的灰色工具行又画了一遍。根因在 agent 流:
+  claude `--resume` 续接某些情况下会把上一轮的 `tool_use` 块重新吐进 stream-json,驱动逐条转成
+  `EvToolCall` → 设备重画陈旧工具行(日志特征:tool_call 出现在本轮 ASR 结果**之前**)。驱动现按
+  `tool_use.id`(claude 每次调用唯一且稳定)在**整条会话**内去重,重复出现的直接丢弃
+  (`tool_use dup-skip` 日志),保证每个工具调用最多上屏一次。这是驱动层根治;若更新 adapter 后
+  cloud_saas 仍重播,则是云端 relay 自身缓冲重放(私有仓,另查)。:本地 `make build`/`make flash` 烧的固件
   之前 esp_app_desc.version 来自 gitignore 掉的陈旧 `version.txt`(或落后的最新 tag),自报
   版本恒低于云端 active → 每次开机 OTA 检查都判「有更新」,弹升级框甚至把刚烧的调试固件
   OTA 覆盖掉。两处修复:
