@@ -446,6 +446,11 @@ func (a *Adapter) handleRequest(ctx context.Context, write func(CloudEnvelope) e
 		// ADR-028 §2.5.1 barge-in: device PTT aborts the in-flight turn — kill
 		// the CLI subprocess, keep the session resumable, note the interruption.
 		return a.handleTurnCancelRequest(write, env)
+	case "ptt.event":
+		// PTT edge observability: device reports every physical PTT button edge
+		// (down/up) + its recognized action so the adapter log records each
+		// button operation. Pure telemetry — no side effects.
+		return a.handlePttEventRequest(write, env)
 	case "agent.menu":
 		// ADR-019: cloud proxies firmware GET /v1/agent/menu/{id} so the
 		// server-driven menu renderer works in cloud_saas mode.
@@ -494,6 +499,29 @@ func (a *Adapter) handleTurnCancelRequest(write func(CloudEnvelope) error, env C
 	a.log.Infof("turn.cancel device=%q inflight=%v played_seq=%d played_chars=%d",
 		env.DeviceID, found, playedSeq, len(playedText))
 	return reply(map[string]any{"cancelled": found}, "")
+}
+
+// handlePttEventRequest records a device PTT button edge for observability
+// (every physical down/up + its firmware-recognized action). Pure telemetry —
+// it only logs + counts so each button operation is traceable end-to-end; it
+// never touches the agent turn. Payload: {edge, action, seq}.
+func (a *Adapter) handlePttEventRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {
+	edge, _ := env.Payload["edge"].(string)
+	action, _ := env.Payload["action"].(string)
+	seq := 0
+	if v, ok := env.Payload["seq"].(float64); ok {
+		seq = int(v)
+	}
+	a.metrics.Inc("ptt_event")
+	a.log.Infof("ptt.event device=%q edge=%s action=%s seq=%d", env.DeviceID, edge, action, seq)
+	return write(CloudEnvelope{
+		Type:       "reply",
+		MessageID:  env.MessageID,
+		HomeSiteID: a.cfg.HomeSiteID,
+		DeviceID:   env.DeviceID,
+		Kind:       env.Kind,
+		Payload:    map[string]any{"ok": true},
+	})
 }
 
 func (a *Adapter) handleChatDriversRequest(write func(CloudEnvelope) error, env CloudEnvelope) error {

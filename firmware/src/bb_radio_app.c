@@ -903,6 +903,7 @@ static void on_ptt_changed(int pressed) {
       s_settings_ptt_exit_req = 1;
       s_ptt_change_version++;
     }
+    bb_adapter_report_ptt_event(new_pressed, new_pressed ? "settings_exit" : "release");
     ESP_LOGI(TAG, "ptt: settings overlay active -> request exit pressed=%d", new_pressed);
     return;
   }
@@ -918,7 +919,9 @@ static void on_ptt_changed(int pressed) {
     bb_audio_request_playback_interrupt();
     int agent_busy = bb_ui_agent_chat_is_busy();
     int speaking = s_tts_playback_active || bb_ui_agent_chat_tts_speaking();
-    if (s_cloud_wait_busy || agent_busy || speaking) {
+    int barge_in = (s_cloud_wait_busy || agent_busy || speaking);
+    bb_adapter_report_ptt_event(1, barge_in ? "barge_in" : "listen");
+    if (barge_in) {
       /* 标记当前 voice turn 作废:挡住"打断发生在 TTS 开播之前、稍后 chunk
        * 到达照样起播"的窗口(s_tts_interrupt_requested 会被开播清掉)。 */
       s_voice_turn_stale = 1;
@@ -938,6 +941,8 @@ static void on_ptt_changed(int pressed) {
       ESP_LOGI(TAG, "ptt barge-in: cancel requested (cloud_wait=%d busy=%d speaking=%d send=%s)",
                s_cloud_wait_busy ? 1 : 0, agent_busy, speaking, esp_err_to_name(cancel_err));
     }
+  } else {
+    bb_adapter_report_ptt_event(0, "release");
   }
   s_ptt_change_version++;
 }
@@ -3703,6 +3708,9 @@ esp_err_t bb_radio_app_start(void) {
     bb_page_boot_dismiss();
   }
 #endif
+  /* PTT edge observability: spin up the reporter so the adapter sees every
+   * physical PTT button edge (best-effort; failure just disables reporting). */
+  (void)bb_adapter_ptt_report_init();
   ESP_ERROR_CHECK(bb_ptt_init(BBCLAW_PTT_GPIO, on_ptt_changed));
   ESP_ERROR_CHECK(bb_nav_input_init(on_nav_event));
   /* Dev-only: accept `key`/`ptt` injection commands over the console UART so a

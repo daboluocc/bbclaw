@@ -21,6 +21,7 @@
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "freertos/event_groups.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -860,6 +861,96 @@ esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
     return ESP_ERR_NO_MEM;
   }
   return ESP_OK;
+}
+
+/* ── PTT edge observability: report EVERY physical PTT button edge ─────────
+ * Otherwise the adapter only learns about PTT indirectly (voice.transcript
+ * after VAD/ASR succeeds, or turn.cancel on barge-in) — an empty tap, a press
+ * over a railed mic, or any release is invisible server-side. This reports
+ * every raw down/up edge plus the firmware's classified action so the adapter
+ * log shows each button operation and its recognized event type.
+ *
+ * A single persistent worker drains a queue: rapid down/up pairs are never
+ * dropped (vs. the turn_cancel single-inflight guard) and we never create a
+ * task per edge (internal-RAM fragmentation would make that intermittently
+ * fail — see [[project_firmware_internal_ram_ws_task]]). Enqueue is
+ * non-blocking, safe from the esp_timer / console-inject context. */
+
+typedef struct {
+  int pressed;       /* 1 = down, 0 = up */
+  char action[16];   /* listen | barge_in | settings_exit | release */
+  uint32_t seq;
+} bb_ptt_evt_t;
+
+static QueueHandle_t s_ptt_evt_queue;
+static uint32_t s_ptt_evt_seq;
+static uint32_t s_ptt_evt_dropped;
+
+static void ptt_report_task(void* arg) {
+  (void)arg;
+  bb_ptt_evt_t evt;
+  for (;;) {
+    if (xQueueReceive(s_ptt_evt_queue, &evt, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+    const char* edge = evt.pressed ? "down" : "up";
+    char body[256];
+    esp_err_t err;
+    if (bb_transport_is_cloud_saas()) {
+      snprintf(body, sizeof(body),
+               "{\"type\":\"request\",\"kind\":\"ptt.event\",\"messageId\":\"ptt-%u\","
+               "\"deviceId\":\"%s\",\"payload\":{\"edge\":\"%s\",\"action\":\"%s\",\"seq\":%u}}",
+               (unsigned)evt.seq, BBCLAW_DEVICE_ID, edge, evt.action, (unsigned)evt.seq);
+      err = ws_client_ensure_connected();
+      if (err == ESP_OK) {
+        err = ws_send_text_message(body);
+      }
+    } else {
+      snprintf(body, sizeof(body), "{\"deviceId\":\"%s\",\"edge\":\"%s\",\"action\":\"%s\",\"seq\":%u}",
+               BBCLAW_DEVICE_ID, edge, evt.action, (unsigned)evt.seq);
+      bb_http_resp_t resp;
+      err = http_post_json("/v1/agent/ptt", body, &resp);
+      if (err == ESP_OK && resp.status_code >= 400) {
+        err = ESP_FAIL;
+      }
+    }
+    ESP_LOGI(TAG, "phase=ptt_event_sent edge=%s action=%s seq=%u err=%s", edge, evt.action, (unsigned)evt.seq,
+             esp_err_to_name(err));
+  }
+}
+
+esp_err_t bb_adapter_ptt_report_init(void) {
+  if (s_ptt_evt_queue != NULL) {
+    return ESP_OK;
+  }
+  s_ptt_evt_queue = xQueueCreate(8, sizeof(bb_ptt_evt_t));
+  if (s_ptt_evt_queue == NULL) {
+    ESP_LOGE(TAG, "ptt report: queue create failed");
+    return ESP_ERR_NO_MEM;
+  }
+  if (xTaskCreateWithCaps(ptt_report_task, "bb_ptt_report", 8192, NULL, 5, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "ptt report: task spawn failed (no mem)");
+    vQueueDelete(s_ptt_evt_queue);
+    s_ptt_evt_queue = NULL;
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
+}
+
+void bb_adapter_report_ptt_event(int pressed, const char* action) {
+  if (s_ptt_evt_queue == NULL) {
+    return; /* init not run / failed — observability is best-effort, never blocks PTT */
+  }
+  bb_ptt_evt_t evt = {.pressed = pressed ? 1 : 0, .seq = ++s_ptt_evt_seq};
+  snprintf(evt.action, sizeof(evt.action), "%s", action != NULL ? action : "");
+  if (xQueueSend(s_ptt_evt_queue, &evt, 0) != pdTRUE) {
+    /* Queue full (worker stuck on a slow WS/HTTP send). Drop rather than block
+     * the PTT edge handler; count so the gap is visible in the log. */
+    if ((++s_ptt_evt_dropped % 8U) == 1U) {
+      ESP_LOGW(TAG, "ptt report: queue full, dropped=%u", (unsigned)s_ptt_evt_dropped);
+    }
+  }
 }
 
 /* ── adapter_v2 P2: device-driven session switch / create (cloud_saas only) ──

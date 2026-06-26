@@ -203,6 +203,34 @@ func (s *Server) handleAgentCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"cancelled": found}})
 }
 
+// pttEventRequest is the device PTT-edge telemetry payload. edge is "down"|"up",
+// action is the firmware's recognized event type (listen|barge_in|settings_exit|
+// release), seq monotonically increases per device.
+type pttEventRequest struct {
+	DeviceID string `json:"deviceId"`
+	Edge     string `json:"edge"`
+	Action   string `json:"action"`
+	Seq      int    `json:"seq"`
+}
+
+// handleAgentPtt records a device PTT button edge for observability so the
+// adapter log shows every physical button operation + its recognized event
+// type. Pure telemetry: it only logs + counts, never touches the agent turn.
+func (s *Server) handleAgentPtt(w http.ResponseWriter, r *http.Request) {
+	var req pttEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{OK: false, Error: "INVALID_REQUEST"})
+		return
+	}
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		deviceID = strings.TrimSpace(r.URL.Query().Get("deviceId"))
+	}
+	s.metrics.Inc("ptt_event")
+	s.log.Infof("agent: ptt device=%q edge=%s action=%s seq=%d", deviceID, req.Edge, req.Action, req.Seq)
+	writeJSON(w, http.StatusOK, response{OK: true, Data: map[string]any{"ok": true}})
+}
+
 // resolveActiveDriver picks the driver name to use when the request didn't
 // specify one. Priority: 1) persisted driverState.ActiveDriver, 2) router's
 // own default. Both fall back gracefully to "" when neither resolves.

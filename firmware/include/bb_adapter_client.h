@@ -168,6 +168,20 @@ esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* optio
  * Duplicate requests while one is still in flight are coalesced. */
 esp_err_t bb_adapter_request_turn_cancel(const char* played_text);
 
+/* PTT edge observability — report every physical PTT button edge to the adapter
+ * (kind "ptt.event" over cloud WS, or POST /v1/agent/ptt on LAN) so the adapter
+ * log records each button operation and its recognized event type. `action` is
+ * the firmware's classification of the edge: "listen" (idle press → arm capture),
+ * "barge_in" (press with a turn in flight → cancel), "settings_exit" (press
+ * while the settings overlay is up), or "release" (PTT up).
+ *
+ * bb_adapter_ptt_report_init() creates the queue + persistent worker; call once
+ * at boot. bb_adapter_report_ptt_event() is non-blocking and safe from the PTT
+ * edge / esp_timer context; it no-ops if init didn't run. Best-effort: a full
+ * queue drops (and logs) rather than blocking the button handler. */
+esp_err_t bb_adapter_ptt_report_init(void);
+void bb_adapter_report_ptt_event(int pressed, const char* action);
+
 /* adapter_v2 P2 — device-driven session switch / create (cloud_saas only).
  *
  * Voice always routes to the adapter's DEFAULT session. When the device

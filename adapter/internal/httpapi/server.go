@@ -221,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/display/ack", s.withAuth(s.handleDisplayAck))
 	mux.HandleFunc("POST /v1/agent/message", s.withAuth(s.handleAgentMessage))
 	mux.HandleFunc("POST /v1/agent/cancel", s.withAuth(s.handleAgentCancel))
+	mux.HandleFunc("POST /v1/agent/ptt", s.withAuth(s.handleAgentPtt))
 	mux.HandleFunc("GET /v1/agent/drivers", s.withAuth(s.handleAgentDrivers))
 	mux.HandleFunc("GET /v1/agent/environment", s.withAuth(s.handleAgentEnvironment))
 	mux.HandleFunc("PUT /v1/agent/active_driver", s.withAuth(s.handleAgentActiveDriverPut))

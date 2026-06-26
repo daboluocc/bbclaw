@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **固件 + adapter:PTT 按键边沿全量上报(`ptt.event` / `POST /v1/agent/ptt`)**:此前 adapter 只能
+  间接感知 PTT——只有走完 VAD+ASR 出了 `voice.transcript`、或打断时发了 `turn.cancel` 才知道;空按、
+  按住没说话、railed mic 没出声、以及任何松开,服务端全程无感知。现在固件在 `on_ptt_changed` 的每个
+  边沿都上报一条带「识别事件类型」的轻量遥测:`down` 边按当时上下文分类为 `listen`(空闲按下→准备录音)/
+  `barge_in`(回合在飞→打断)/`settings_exit`(设置覆盖层时按下);`up` 边为 `release`。cloud_saas 走
+  device WS `kind:"ptt.event"`(云端 `RouteFromPeer` 对 device→adapter 的 request 通用透传,无需改云端),
+  LAN 走 `POST /v1/agent/ptt`。固件侧单个常驻 worker 排空队列(快速 down/up 不丢、且不为每个边沿建任务,
+  规避内部 RAM 碎片致建任务失败);adapter 侧纯日志 + `ptt_event` 指标,不触碰 agent 回合。日志:固件
+  `phase=ptt_event_sent edge=.. action=.. seq=..`,adapter `ptt.event device=.. edge=.. action=.. seq=..`。
+
 ### Fixed
 - **固件:后台/云端调音量导致设备重启(cache-disable panic)**:云端把新音量随心跳下发后,
   `stream_task`(**PSRAM 栈**)直接调 `bb_device_config_note_volume_pct` → `persist_config` →
