@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **固件:语音「不跟手」+ 头被吃掉 + 自己打断自己(三连)**——PTT 遥测日志把问题照清楚后定位:
+  1. **头被吃掉**:VAD arm(攒够 240ms 说话才起流)触发那刻,arm 窗口里录的音**只 seed 最后一帧
+     (~32ms)**,开头被丢 →「调到20」识别成「到20」。改为 arm 期间把每帧滚动累积进 8192B(~256ms)
+     pre-roll,起流时整段开头一起 seed(仍静态缓冲不碰环,无 INT WDT 风险)。
+  2. **松手后自己打断自己**:松手到 cloud ASR 返回有数秒,期间用户以为没生效再按 PTT,而 `cloud_wait`
+     还在 → 判成 barge_in **把自己刚发出的正确那轮 turn.cancel 掉**。新增 barge-in 宽限
+     (`BBCLAW_PTT_BARGE_IN_GRACE_MS`=2500):cloud-wait 开始后这段时间内、且 TTS 未开口时,PTT-down 视为
+     「急着重按」不取消在飞轮;TTS 一旦开口则打断照常即时生效(ADR-028)。
+  3. **反馈太弱**:ASR 等待期只有 buddy「thinking…」太隐晦。topbar 期间显式显示「识别中..」,回复落地时
+     由 SESSION/state 帧自动还原会话 id。
+- **固件:PTT 遥测改为观测专用**——`ptt_report_task` 不再从遥测路径调 `ws_client_ensure_connected()`
+  (可能取锁/触发最长 5s 连接,理论上与在飞语音流争用);WS 未连接就直接丢弃该遥测事件。
+
 ### Added
 - **固件:设置里新增「Firmware」行——看版本 + 点击触发 OTA 升级**:设置主菜单底部多一行
   `Firmware: <当前版本>`(任何模式都显示,方便核对设备版本)。在 cloud_saas 下点击 → 后台

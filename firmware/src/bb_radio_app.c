@@ -351,6 +351,7 @@ static void voice_last_sentence_copy(char* dst, size_t dst_size) {
  * esp_timer task and uses this to give the user haptic + log feedback so
  * presses during the long wait don't feel silently dropped. */
 static volatile int s_cloud_wait_busy;
+static volatile int64_t s_cloud_wait_start_ms; /* when cloud-wait began — barge-in grace window (ADR-028) */
 static int s_transport_http_status;
 static char s_transport_detail[64];
 static char s_transport_registration_code[16];
@@ -395,10 +396,34 @@ static size_t s_voice_verify_pcm_cap;
 static int s_voice_verify_truncated;
 
 
-/* VAD 触发后首帧原经 xRingbufferSend 进环；与 LVGL/SPI 异核时易在环缓冲自旋锁上触发 INT WDT，改为先内存再 ingest */
+/* VAD 触发后的「种子」音频。原经 xRingbufferSend 进环；与 LVGL/SPI 异核时易在环缓冲
+ * 自旋锁上触发 INT WDT，改为先内存再 ingest。
+ * 头被吃掉修复:此前只 seed 触发 VAD 的最后一帧(~32ms),arm 窗口(≥240ms)里说话的开头
+ * 被丢 → 「调到20」识别成「到20」。改为在 arm 期间把每帧滚动累积进这个 pre-roll(8192B
+ * ≈256ms @16k mono),VAD 触发时把整段开头一起 seed,不再丢头。仍是静态缓冲、不碰环,无 WDT 风险。 */
+#define BBCLAW_CAPTURE_PREROLL_BYTES 8192
 static volatile int s_capture_seed_pending;
-static uint8_t s_capture_seed_buf[2048];
+static uint8_t s_capture_seed_buf[BBCLAW_CAPTURE_PREROLL_BYTES];
 static size_t s_capture_seed_len;
+
+/* Append a freshly-read arm-phase frame to the rolling pre-roll. Keeps the most
+ * recent BBCLAW_CAPTURE_PREROLL_BYTES so the speech onset survives until VAD
+ * arms. Runs on stream_task (the arm loop); only memcpy/memmove, no ring lock. */
+static void capture_preroll_push(const uint8_t* buf, size_t len) {
+  if (buf == NULL || len == 0U) return;
+  if (len >= sizeof(s_capture_seed_buf)) {
+    memcpy(s_capture_seed_buf, buf + (len - sizeof(s_capture_seed_buf)), sizeof(s_capture_seed_buf));
+    s_capture_seed_len = sizeof(s_capture_seed_buf);
+    return;
+  }
+  if (s_capture_seed_len + len > sizeof(s_capture_seed_buf)) {
+    size_t drop = s_capture_seed_len + len - sizeof(s_capture_seed_buf);
+    memmove(s_capture_seed_buf, s_capture_seed_buf + drop, s_capture_seed_len - drop);
+    s_capture_seed_len -= drop;
+  }
+  memcpy(s_capture_seed_buf + s_capture_seed_len, buf, len);
+  s_capture_seed_len += len;
+}
 
 static void log_heap_snapshot(const char* phase) {
   ESP_LOGI(TAG,
@@ -936,8 +961,22 @@ static void on_ptt_changed(int pressed) {
     bb_audio_request_playback_interrupt();
     int agent_busy = bb_ui_agent_chat_is_busy();
     int speaking = s_tts_playback_active || bb_ui_agent_chat_tts_speaking();
-    int barge_in = (s_cloud_wait_busy || agent_busy || speaking);
-    bb_adapter_report_ptt_event(1, barge_in ? "barge_in" : "listen");
+    /* ADR-028 barge-in grace: just after release the turn sits in cloud-wait
+     * (ASR/agent processing) with nothing speaking yet. A PTT-down here is almost
+     * always the user impatiently re-pressing ("did it hear me?"), NOT a real
+     * barge-in — and cancelling would kill their own just-submitted, correct
+     * turn. So within BBCLAW_PTT_BARGE_IN_GRACE_MS of cloud-wait start, and only
+     * while NOTHING is speaking, suppress the cancel and let the turn land. TTS
+     * speaking → always a real barge-in (no grace). Grace expired with still no
+     * reply → real abort of a stuck turn. */
+    int in_grace = (s_cloud_wait_busy && !speaking &&
+                    (bb_now_ms() - s_cloud_wait_start_ms) < BBCLAW_PTT_BARGE_IN_GRACE_MS);
+    int barge_in = (s_cloud_wait_busy || agent_busy || speaking) && !in_grace;
+    bb_adapter_report_ptt_event(1, in_grace ? "grace" : (barge_in ? "barge_in" : "listen"));
+    if (in_grace) {
+      ESP_LOGI(TAG, "ptt barge-in suppressed (grace): cloud_wait age=%lldms < %dms — keeping in-flight turn",
+               (long long)(bb_now_ms() - s_cloud_wait_start_ms), BBCLAW_PTT_BARGE_IN_GRACE_MS);
+    }
     if (barge_in) {
       /* 标记当前 voice turn 作废:挡住"打断发生在 TTS 开播之前、稍后 chunk
        * 到达照样起播"的窗口(s_tts_interrupt_requested 会被开播清掉)。 */
@@ -2566,6 +2605,7 @@ static void stream_task(void* arg) {
           arm_started_ms = bb_now_ms();
           memset(&vad, 0, sizeof(vad));
           pending_pcm_len = 0;
+          capture_seed_clear(); /* fresh pre-roll for this turn's onset */
           /* Phase 4.5: latch voice routing target at arm time. The chat
            * overlay drives all UI for this turn and we'll skip TTS playback
            * + push the transcript through bb_ui_agent_chat_send on finish. */
@@ -2785,6 +2825,7 @@ static void stream_task(void* arg) {
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
         log_heap_snapshot("before cloud_wait");
         s_cloud_wait_busy = 1;
+        s_cloud_wait_start_ms = bb_now_ms();
         /* Phase 4.5 — when routing to agent bus we don't want assistant
          * deltas / TTS chunks piped into the openclaw chat surface.
          * Use the TTS-only handler so tts.chunk events are enqueued for
@@ -3140,6 +3181,9 @@ static void stream_task(void* arg) {
       if (pcm_read > 0U) {
         update_record_level_from_pcm(s_stream_task_pcm_read_buf, pcm_read);
         vad_update_from_pcm(&vad, s_stream_task_pcm_read_buf, pcm_read);
+        /* Accumulate the onset so it's not lost when VAD finally arms (head-clip
+         * fix). Includes this very frame, so the triggering frame is seeded too. */
+        capture_preroll_push(s_stream_task_pcm_read_buf, pcm_read);
         if (vad_passes_thresholds(&vad, BBCLAW_VAD_ARM_MIN_DURATION_MS, BBCLAW_VAD_ARM_MIN_NONZERO_PERMILLE,
                                   BBCLAW_VAD_ARM_MIN_MEAN_ABS)) {
           esp_err_t start_err = bb_adapter_stream_start(&stream);
@@ -3167,17 +3211,11 @@ static void stream_task(void* arg) {
           pending_pcm_len = 0;
           ESP_LOGI(TAG, "phase=record_start mono_ms=%lld stream=%s (after VAD arm)", (long long)bb_now_ms(),
                    stream.stream_id);
-          /* 首帧不再 xRingbufferSend，避免与显示任务跨核争用环缓冲锁触发 INT WDT；见 s_capture_seed_* */
-          if (pcm_read > sizeof(s_capture_seed_buf)) {
-            pcm_read = sizeof(s_capture_seed_buf);
-          }
-          if (pcm_read > 0U) {
-            memcpy(s_capture_seed_buf, s_stream_task_pcm_read_buf, pcm_read);
-            s_capture_seed_len = pcm_read;
-            s_capture_seed_pending = 1;
-          } else {
-            capture_seed_clear();
-          }
+          /* Seed the WHOLE accumulated pre-roll (onset → triggering frame), not
+           * just the last frame — that's the head-clip fix. Already in
+           * s_capture_seed_buf via capture_preroll_push() during arm; still a
+           * static buffer (no xRingbufferSend), so no cross-core ring-lock WDT. */
+          s_capture_seed_pending = (s_capture_seed_len > 0U) ? 1 : 0;
           s_capture_active = 1;
         }
       }

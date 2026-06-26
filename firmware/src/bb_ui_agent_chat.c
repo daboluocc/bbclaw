@@ -2373,7 +2373,11 @@ void bb_ui_agent_chat_voice_listening(int begin) {
 void bb_ui_agent_chat_voice_processing(void) {
   if (!s_chat.active) return;
   ESP_LOGI(TAG, "voice_processing → BUSY (ASR/cloud wait)");
-  post_listening_topbar(0);
+  /* Explicit "识别中.." topbar hint during the ASR/cloud round-trip — the buddy's
+   * "thinking..." alone was too subtle, so users thought it didn't hear them and
+   * re-pressed PTT (self-barge-in). A SESSION/state frame from the reply restores
+   * the real session id (post_session at the SESSION event / state change). */
+  post_session("识别中..");
   bb_chat_recording_hide();
   post_state(BB_AGENT_STATE_BUSY);
   /* Phase 4.9: PTT 进入 RELEASED_WAIT 等 ASR 返回 */

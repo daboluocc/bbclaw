@@ -752,6 +752,17 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_VAD_ARM_MIN_MEAN_ABS 80
 #endif
 
+/** Barge-in grace (ADR-028): for this long after a turn enters cloud-wait (PTT
+ * released, ASR/agent processing, TTS NOT yet speaking), a PTT-down is treated
+ * as the user impatiently re-pressing — NOT a barge-in — so it does NOT cancel
+ * the just-submitted turn. Once TTS is actually speaking, barge-in is always
+ * live (no grace). After the grace expires with still no reply, a press counts
+ * as a real abort of a stuck turn. Kills the "release → 5s silence → re-press →
+ * cancel my own correct turn" self-barge-in churn. */
+#ifndef BBCLAW_PTT_BARGE_IN_GRACE_MS
+#define BBCLAW_PTT_BARGE_IN_GRACE_MS 2500
+#endif
+
 /** 预检阶段最长等待（毫秒），超时则放弃本轮（需松键再按）；0 表示不限制 */
 #ifndef BBCLAW_VAD_ARM_MAX_WAIT_MS
 #define BBCLAW_VAD_ARM_MAX_WAIT_MS 15000
