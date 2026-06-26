@@ -1469,10 +1469,10 @@ static void refresh_ui(void) {
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
 
   if (mode == UI_VIEW_STANDBY) {
+    /* Locked-but-idle and unlocked idle both show just the clock — no lock
+     * affordance on the watch face. The user discovers the lock by pressing
+     * PTT, which routes into the 密语 verify page (padlock + "正在聆听密语"). */
     bb_page_standby_refresh_clock(hm);
-    /* Locked-but-idle shows the clock; a dim hint tells the user PTT needs the
-     * passphrase. Unlocked standby hides it (PTT goes straight to chat). */
-    bb_page_standby_set_locked(locked);
     {
       int bat_supported, bat_available, bat_percent, bat_low, bat_charging;
       portENTER_CRITICAL(&s_state_lock);

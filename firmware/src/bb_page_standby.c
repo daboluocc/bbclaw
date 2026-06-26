@@ -24,15 +24,6 @@
 LV_FONT_DECLARE(lv_font_montserrat_14)
 #endif
 
-/* CJK font (already linked for the topbar / locked page) — needed for the
- * Chinese "按住说密语" lock hint; falls back to the default font if absent. */
-#ifdef BBCLAW_HAVE_CJK_FONT
-extern const lv_font_t lv_font_bbclaw_cjk;
-static const lv_font_t* hint_font(void) { return &lv_font_bbclaw_cjk; }
-#else
-static const lv_font_t* hint_font(void) { return lv_font_get_default(); }
-#endif
-
 #define DISP_W BBCLAW_ST7789_WIDTH
 #define DISP_H BBCLAW_ST7789_HEIGHT
 
@@ -81,7 +72,6 @@ static const uint8_t GLYPH[10][MX_ROWS] = {
 static lv_obj_t* s_view;
 static lv_obj_t* s_dots[4][MX_ROWS][MX_COLS];
 static lv_obj_t* s_colon[2];
-static lv_obj_t* s_lock_hint; /* dim "🔒 按住说密语" line, shown only while locked */
 static lv_obj_t* s_bat_box;
 static lv_obj_t* s_bat_fill;
 static lv_obj_t* s_bat_frame;
@@ -213,18 +203,6 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_label_set_text(ver, bb_ota_get_current_version());
   lv_obj_set_pos(ver, 0, FB_Y - 22);
 
-  /* Locked-state hint — dim, top-centered, hidden unless the device is locked.
-   * Tells the user the idle clock is a 密语 watch face and PTT needs the
-   * passphrase, instead of the old full-screen padlock page. */
-  s_lock_hint = lv_label_create(s_view);
-  lv_obj_set_width(s_lock_hint, DISP_W);
-  lv_obj_set_style_text_color(s_lock_hint, lv_color_hex(UI_WORDMARK), 0);
-  lv_obj_set_style_text_font(s_lock_hint, hint_font(), 0);
-  lv_obj_set_style_text_align(s_lock_hint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(s_lock_hint, "按住说密语解锁");
-  lv_obj_set_pos(s_lock_hint, 0, 6);
-  lv_obj_add_flag(s_lock_hint, LV_OBJ_FLAG_HIDDEN);
-
   /* __APPEND_CREATE__ */
 
   /* Compact footer battery — right edge; percent sits to its left. */
@@ -280,12 +258,6 @@ void bb_page_standby_set_visible(int visible) {
   if (s_view == NULL) return;
   if (visible) lv_obj_clear_flag(s_view, LV_OBJ_FLAG_HIDDEN);
   else lv_obj_add_flag(s_view, LV_OBJ_FLAG_HIDDEN);
-}
-
-void bb_page_standby_set_locked(int locked) {
-  if (s_lock_hint == NULL) return;
-  if (locked) lv_obj_clear_flag(s_lock_hint, LV_OBJ_FLAG_HIDDEN);
-  else lv_obj_add_flag(s_lock_hint, LV_OBJ_FLAG_HIDDEN);
 }
 
 void bb_page_standby_refresh_clock(const char* hm) {

@@ -127,7 +127,7 @@ typedef enum {
 
 ```c
 typedef enum {
-  UI_VIEW_STANDBY = 0,  // 大时钟（密语锁定时叠一行 dim "按住说密语解锁" 提示）
+  UI_VIEW_STANDBY = 0,  // 大时钟（锁定与否都只显示时钟，无锁标——按 PTT 才进密语页）
   UI_VIEW_LOCKED,       // 挂锁图标 + 密语反馈——仅密语**验证**那一下（VERIFY*）才显示
   UI_VIEW_ACTIVE,       // 顶栏 + 中间对话区 + 底栏（session/cwd）
 } ui_view_mode_t;
@@ -154,7 +154,7 @@ typedef enum {
 ### 3.2 状态转换
 
 ```
-boot(cloud_saas+miyu) ──▶ STANDBY(时钟, 密语锁定: 显示"按住说密语解锁")
+boot(cloud_saas+miyu) ──▶ STANDBY(时钟，密语锁定但页面只显示时钟)
 
 STANDBY(待机/时钟) ──PTT按下──┬─(已解锁)──────────────────────▶ CHAT(聊天)
                               └─(密语锁定)─▶ 密语验证(挂锁页 VERIFY*)
@@ -164,10 +164,10 @@ CHAT ──idle 30s──▶ STANDBY
 STANDBY ──idle 120s(cloud_saas)──▶ 静默重新上锁（视图仍是 STANDBY 时钟，只是下次 PTT 需密语）
 ```
 
-> 2026-06 调整：锁定态不再独占一个「挂锁待机页」。密语设备**空闲时显示时钟**
-> （像一块需要解锁的表盘，附 dim "按住说密语解锁" 提示），挂锁页 `UI_VIEW_LOCKED`
-> 仅在**按住 PTT 做密语验证那一下**（`VERIFY*` 状态）出现，承载「正在聆听密语 /
-> 听到「…」」反馈。安全门槛不变：PTT→密语验证的路由在 `bb_radio_app.c`，与视图无关。
+> 2026-06 调整：锁定态不再独占一个「挂锁待机页」。密语设备**空闲时只显示时钟**
+> （锁定与否的待机页一致、不加任何锁标），用户**按 PTT 时**才进挂锁页
+> `UI_VIEW_LOCKED`（`VERIFY*` 状态，「正在聆听密语 / 听到「…」」），此时自然知道
+> 要说密语解锁。安全门槛不变：PTT→密语验证的路由在 `bb_radio_app.c`，与视图无关。
 
 ### 3.3 CHAT 页面组成
 
