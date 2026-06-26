@@ -301,12 +301,21 @@ static void build_rows_box(int row_count) {
   lv_obj_set_flex_flow(s_st.rows_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(s_st.rows_box, 4, 0);
   lv_obj_set_style_pad_row(s_st.rows_box, 0, 0); /* exact ROW_H spacing for box_h math */
-  /* Encoder-driven vertical scroll: no scrollbar (the moving highlight + the
-   * scroll-into-view in highlight_selected are the only affordances), and lock
-   * the axis to vertical so a long marquee row can't drag the list sideways. */
+  /* Encoder-driven vertical scroll; lock the axis to vertical so a long marquee
+   * row can't drag the list sideways. MODE_AUTO draws a thumb only when there's
+   * actually content off-screen (st>0 || sb>0) — its position + length tells the
+   * user where they are and how much is above/below; when the menu fits, no bar.
+   * highlight_selected() scrolls the cursor row into view as it moves. */
   lv_obj_set_scroll_dir(s_st.rows_box, LV_DIR_VER);
-  lv_obj_set_scrollbar_mode(s_st.rows_box, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_scrollbar_mode(s_st.rows_box, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
+  /* Scrollbar thumb — thin teal accent to match the selection idiom (dot-matrix
+   * design language). Needs bg_opa > MIN or LVGL skips drawing it entirely. */
+  lv_obj_set_style_width(s_st.rows_box, 3, LV_PART_SCROLLBAR);
+  lv_obj_set_style_pad_right(s_st.rows_box, 1, LV_PART_SCROLLBAR);
+  lv_obj_set_style_radius(s_st.rows_box, 2, LV_PART_SCROLLBAR);
+  lv_obj_set_style_bg_color(s_st.rows_box, lv_color_hex(BB_UI_ACCENT), LV_PART_SCROLLBAR);
+  lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_70, LV_PART_SCROLLBAR);
   for (int i = 0; i < row_count && i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
     lv_obj_t* row = lv_label_create(s_st.rows_box);
     lv_obj_set_size(row, lv_pct(100), ROW_H);

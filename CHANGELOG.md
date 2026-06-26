@@ -23,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   6 行(Adapter / Sessions / Volume / Voice / Miyu / Firmware),`22(头) + 6×26 = 178px` 超过 bbclaw
   面板的 172px 高,尾部 Miyu/Firmware 行连同底部「Hold to exit」提醒一起被挤出屏幕、选不中也看不见。
   现在 `rows_box` 限高到「头部与底栏提醒之间」的可用区(`DISP_H - HEADER_H - FOOTER_H`)并开启纵向滚动
-  (`LV_DIR_VER`,无滚动条,编码器驱动);`highlight_selected()` 在每次选中变化时 `lv_obj_scroll_to_view`
-  把光标行滚入可视区,底栏提醒始终留白不被覆盖。对所有列表层级生效(主菜单 / Driver / Adapter /
-  Sessions / Model 选择器,Sessions 最多 16 行尤其受益)。
+  (`LV_DIR_VER`,编码器驱动);`highlight_selected()` 在每次选中变化时 `lv_obj_scroll_to_view`
+  把光标行滚入可视区,底栏提醒始终留白不被覆盖。右侧带一条 `MODE_AUTO` 的细 teal accent 滚动条
+  (仅在内容溢出时出现,thumb 的位置/长度指示上下还剩多少),与选中行高亮同色,贴合点阵设计语言。
+  对所有列表层级生效(主菜单 / Driver / Adapter / Sessions / Model 选择器,Sessions 最多 16 行尤其受益)。
 - **固件:语音「不跟手」+ 头被吃掉 + 自己打断自己(三连)**——PTT 遥测日志把问题照清楚后定位:
   1. **头被吃掉**:VAD arm(攒够 240ms 说话才起流)触发那刻,arm 窗口里录的音**只 seed 最后一帧
      (~32ms)**,开头被丢 →「调到20」识别成「到20」。改为 arm 期间把每帧滚动累积进 8192B(~256ms)
