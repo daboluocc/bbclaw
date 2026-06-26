@@ -33,6 +33,35 @@ func TestEmitToolStepsDedupAndDisplayOnly(t *testing.T) {
 	}
 }
 
+// TestSeedVisibleToolStepsNoReplay: a prior turn's tool bullet still painted on the
+// grid when a new turn baselines must NOT replay into the new turn (regression for
+// "an earlier device set-volume showed up during a later weather question"). Only
+// bullets painted DURING the new turn should emit.
+func TestSeedVisibleToolStepsNoReplay(t *testing.T) {
+	ev := &recordingEvents{}
+	b := &Bridge{screen: vtscreen.New(80, 24), events: ev}
+
+	// Prior turn left a tool bullet on screen.
+	b.screen.Feed([]byte("\x1b[3;1H⏺ Bash(\"$BIN\" device set-volume 5)\r\n"))
+
+	// New turn baselines against the current screen: seed what's already visible.
+	ts := &turnStream{}
+	b.seedVisibleToolSteps(ts)
+
+	// First paint(s) of the new turn: the lingering prior bullet must not replay.
+	b.emitToolSteps(ts)
+	if len(ev.tools) != 0 {
+		t.Fatalf("prior-turn tool bullet replayed into new turn: %v", ev.tools)
+	}
+
+	// A genuinely new bullet painted this turn still emits.
+	b.screen.Feed([]byte("\x1b[4;1H⏺ Read(weather.go)\r\n"))
+	b.emitToolSteps(ts)
+	if len(ev.tools) != 1 || ev.tools[0] != "Read|weather.go" {
+		t.Fatalf("want new-turn ToolStep Read|weather.go, got %v", ev.tools)
+	}
+}
+
 func TestNextSentence(t *testing.T) {
 	cases := []struct {
 		in       string

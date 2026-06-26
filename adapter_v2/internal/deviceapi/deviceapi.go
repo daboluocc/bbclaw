@@ -719,6 +719,11 @@ func (b *Bridge) Run(ctx context.Context) error {
 		det.Reset()
 		seed, _ := ext.OnOutput()
 		*ts = turnStream{seed: seed.Text}
+		// Tool-step analogue of `seed`: the PRIOR turn's "⏺ Bash(…)" bullets are
+		// still on the visible grid until this turn paints over them. Without seeding,
+		// the just-reset ts.steps makes those stale bullets look NEW and replay a
+		// previous turn's tool call (e.g. an earlier "device set-volume") into this turn.
+		b.seedVisibleToolSteps(ts)
 	}
 
 	for {
@@ -876,6 +881,19 @@ type turnStream struct {
 	lastDelta string              // last full reply text emitted via Events.ReplyDelta
 	spoken    string              // reply prefix already synthesised by per-segment TTS
 	steps     map[string]struct{} // tool steps already emitted this turn (dedup); reset per turn via rebaseline
+}
+
+// seedVisibleToolSteps pre-fills ts.steps with the tool-step bullets currently on
+// the visible grid, marking them already-emitted. Called at turn rebaseline so a
+// prior turn's bullet (still painted on screen until this turn overwrites it) is
+// NOT replayed into the new turn — the tool-step analogue of turnStream.seed for
+// reply text. Uses the same key format as emitToolSteps.
+func (b *Bridge) seedVisibleToolSteps(ts *turnStream) {
+	steps := map[string]struct{}{}
+	for _, st := range extract.ScanToolSteps(b.screen.VisibleText()) {
+		steps[st.Name+"\x00"+st.Hint] = struct{}{}
+	}
+	ts.steps = steps
 }
 
 // emitToolSteps scans the screen for claude's tool-step bullets and emits a
