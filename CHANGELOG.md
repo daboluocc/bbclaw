@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:
+  - **开关状态**:Miyu 行不再用裸 `on`/`off`,改 `Enabled` / `Disabled`(后续新增开关共用
+    `toggle_state_label()`)。
+  - **会话标题**:Sessions 选择器与主菜单 Sessions 行原来在无标题时直接显示 8 位十六进制
+    session id,很难认。改为「标题(adapter 对首条 prompt 的自动摘要)→ 工作区名 cwd_name →
+    短 id」的回退链,尽量显示人类可读名(`session_display_label()`)。
+  - 固件 `bb_agent_session_info_t.title` 缓冲 24→64 字节:adapter 标题最长约 48B,旧 24B 会把
+    中文标题截到 ~7 字。
+  - 注:标题为空仍会退化到 id——adapter 仅在会话「跑完第一回合」后才自动生成标题(AutoTitle),
+    全新空会话本就没有标题;此时优先显示工作区名。会话列表过多时选择器已可滚动(本轮早前已加)。
 - **固件:设置菜单重构——固件信息收进「System Info」只读页 + 独立「Check Update」+ Sessions 行显示当前会话**:
   - 原「Firmware: <版本>」一行身兼「显示版本」与「点击 OTA」两职,现拆开:
   - **System Info(关于)**:新增只读子页(点进去看),列固件版本 / 设备 ID / 连接模式 / 空闲堆。

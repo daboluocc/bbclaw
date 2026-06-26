@@ -72,7 +72,8 @@ typedef struct {
 
 typedef struct {
   char id[64];
-  char title[24];
+  char title[64];     /* adapter auto-title (summary of first prompt); up to ~48B
+                       * — 24 was too tight and truncated CJK titles to ~7 chars */
   char cwd[32];       /* absolute cwd path (truncated); kept for compat */
   char cwd_name[32];  /* CwdPool entry name (issue #70); empty if adapter didn't send it */
   int message_count;

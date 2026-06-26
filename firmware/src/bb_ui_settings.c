@@ -411,28 +411,41 @@ static const char* current_site_label(void) {
   return "(none)";
 }
 
+/* Resolve a human-readable label for a session: its title (the adapter's
+ * auto-generated summary of the first prompt), else the workspace name
+ * (cwd_name), else a short id prefix. Never the bare full id. */
+static const char* session_display_label(const bb_agent_session_info_t* s) {
+  if (s == NULL) return "(none)";
+  if (s->title[0] != '\0') return s->title;
+  if (s->cwd_name[0] != '\0') return s->cwd_name;
+  /* Untitled + no workspace name — last resort, a short id prefix. */
+  static char idbuf[10];
+  snprintf(idbuf, sizeof(idbuf), "%.8s", s->id);
+  return idbuf;
+}
+
 /* Label of the currently-active session for the main-page Sessions row. Matches
  * the chat's active session id against the session_cache (fetched on entry) to
- * resolve a human title; falls back to a short id, then "(none)". Like
- * current_site_label, this is display-only — the picker remains the place to
- * switch sessions. */
+ * resolve a title/workspace name. Display-only — the picker switches sessions. */
 static const char* current_session_label(void) {
   static char buf[80]; /* static scratch — single-threaded LVGL render */
   const char* cur = bb_ui_agent_chat_get_current_session();
   if (cur == NULL || cur[0] == '\0') return "(none)";
   for (int i = 0; i < s_st.session_cache_count; ++i) {
     if (strcmp(s_st.session_cache[i].id, cur) == 0) {
-      if (s_st.session_cache[i].title[0] != '\0') {
-        snprintf(buf, sizeof(buf), "%s", s_st.session_cache[i].title);
-        return buf;
-      }
-      break; /* matched but untitled — fall through to short id */
+      snprintf(buf, sizeof(buf), "%s", session_display_label(&s_st.session_cache[i]));
+      return buf;
     }
   }
-  /* Not in cache (still loading, or beyond the first page) — show a short id so
-   * the row is never empty; the title fills in once the fetch lands. */
+  /* Not in cache yet (still loading, or beyond the first page) — show a short
+   * id so the row is never empty; the title fills in once the fetch lands. */
   snprintf(buf, sizeof(buf), "%.8s", cur);
   return buf;
+}
+
+/* Render a boolean toggle state as a word instead of a bare "on"/"off". */
+static const char* toggle_state_label(int on) {
+  return on ? "Enabled" : "Disabled";
 }
 
 static void render_main(void) {
@@ -488,7 +501,7 @@ static void render_main(void) {
         break;
       }
       case MAIN_ROW_MIYU:
-        snprintf(buf, sizeof(buf), "Miyu: %s", s_st.miyu_enabled ? "on" : "off");
+        snprintf(buf, sizeof(buf), "Miyu: %s", toggle_state_label(s_st.miyu_enabled));
         break;
       case MAIN_ROW_CHECK_UPDATE:
         /* Dedicated OTA-check action (the read-only version lives in System
@@ -633,18 +646,9 @@ static void render_session_picker(void) {
   for (int i = 0; i < s_st.session_cache_count && s_st.rows[i + 1] != NULL; ++i) {
     char buf[80];
     const bb_agent_session_info_t* s = &s_st.session_cache[i];
-    char shortid[9];
-    const char* label;
-    if (s->title[0] != '\0') {
-      label = s->title;
-    } else {
-      /* No title — use the first 8 chars of the id. */
-      strncpy(shortid, s->id, sizeof(shortid) - 1);
-      shortid[sizeof(shortid) - 1] = '\0';
-      label = shortid;
-    }
+    /* Title (adapter's summary) → workspace name → short id; never the bare id. */
     int is_active = (cur != NULL && cur[0] != '\0' && strcmp(s->id, cur) == 0);
-    snprintf(buf, sizeof(buf), "%s%s", label, is_active ? "  *" : "");
+    snprintf(buf, sizeof(buf), "%s%s", session_display_label(s), is_active ? "  *" : "");
     lv_label_set_text(s_st.rows[i + 1], buf);
   }
   highlight_selected();
