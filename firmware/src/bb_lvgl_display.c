@@ -1276,10 +1276,19 @@ static void create_ui(void) {
   /* Bottom bar removed (UI calm-down pass): the heavy full-width dot-matrix
    * sweep strip that used to sit here repainted a 48-column canvas every 48ms
    * and cluttered the screen. Conversation state is now shown by the top-bar
-   * activity dot (s_obj_listen_dot) + a Chinese status word. The freed strip
-   * at bottom_bar_y is left as quiet background. bb_page_locked keeps its own
-   * footer. */
-  (void)bottom_bar_y;
+   * activity dot (s_obj_listen_dot) + a Chinese status word. The freed strip is
+   * carried by a thin horizontal rule for now — a baseline that closes off the
+   * layout and reserves the zone for future bottom-bar content. bb_page_locked
+   * keeps its own footer. */
+  {
+    lv_obj_t* rule = lv_obj_create(s_view_active);
+    lv_obj_remove_style_all(rule);
+    lv_obj_set_size(rule, body_w, 1);
+    lv_obj_set_pos(rule, UI_SAFE_LEFT, bottom_bar_y + UI_BOTTOM_BAR_H / 2);
+    lv_obj_set_style_bg_color(rule, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_opa(rule, LV_OPA_40, 0);
+    lv_obj_clear_flag(rule, LV_OBJ_FLAG_SCROLLABLE);
+  }
 
   /* Speaking area — shown only while TX is active */
   s_view_speaking = lv_obj_create(s_view_active);
