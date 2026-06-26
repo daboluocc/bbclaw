@@ -1,6 +1,7 @@
 #include "bb_cloud_client.h"
 
 #include "bb_audio.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -189,6 +190,56 @@ static void copy_lower_ascii(char* out, size_t out_len, const char* in) {
   out[i] = '\0';
 }
 
+/* Parse exactly 4 hex digits at s into *out. Returns 1 on success. */
+static int json_parse_hex4(const char* s, uint32_t* out) {
+  uint32_t cp = 0U;
+  for (int i = 0; i < 4; i++) {
+    char c = s[i];
+    uint32_t n;
+    if (c >= '0' && c <= '9') {
+      n = (uint32_t)(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      n = (uint32_t)(c - 'a' + 10);
+    } else if (c >= 'A' && c <= 'F') {
+      n = (uint32_t)(c - 'A' + 10);
+    } else {
+      return 0;
+    }
+    cp = (cp << 4) | n;
+  }
+  *out = cp;
+  return 1;
+}
+
+/* Encode a Unicode code point as UTF-8 into buf (max avail bytes).
+ * Returns bytes written, or 0 if it doesn't fit. */
+static size_t json_utf8_encode(uint32_t cp, char* buf, size_t avail) {
+  if (cp < 0x80U) {
+    if (avail < 1U) return 0;
+    buf[0] = (char)cp;
+    return 1;
+  }
+  if (cp < 0x800U) {
+    if (avail < 2U) return 0;
+    buf[0] = (char)(0xC0U | (cp >> 6));
+    buf[1] = (char)(0x80U | (cp & 0x3FU));
+    return 2;
+  }
+  if (cp < 0x10000U) {
+    if (avail < 3U) return 0;
+    buf[0] = (char)(0xE0U | (cp >> 12));
+    buf[1] = (char)(0x80U | ((cp >> 6) & 0x3FU));
+    buf[2] = (char)(0x80U | (cp & 0x3FU));
+    return 3;
+  }
+  if (avail < 4U) return 0;
+  buf[0] = (char)(0xF0U | (cp >> 18));
+  buf[1] = (char)(0x80U | ((cp >> 12) & 0x3FU));
+  buf[2] = (char)(0x80U | ((cp >> 6) & 0x3FU));
+  buf[3] = (char)(0x80U | (cp & 0x3FU));
+  return 4;
+}
+
 static int json_extract_string(const char* body, const char* key, char* out, size_t out_len) {
   if (body == NULL || key == NULL || out == NULL || out_len == 0U) {
     return 0;
@@ -218,7 +269,25 @@ static int json_extract_string(const char* body, const char* key, char* out, siz
       break;
     }
     if (*p == '\\' && p[1] != '\0') {
-      ++p;
+      if (p[1] == 'u') {
+        /* \uXXXX — decode to a code point and emit UTF-8. Go's encoding/json
+         * HTML-escapes '<' '>' '&' to backslash-u-003c / 003e / 0026, so a
+         * value like "2>&1" would otherwise print as literal "u003e"/"u0026". */
+        uint32_t cp;
+        if (json_parse_hex4(p + 2, &cp)) {
+          p += 5; /* consume 'u' + 4 hex (loop's ++p skips the last) */
+          if (cp >= 0xD800U && cp <= 0xDBFFU && p[1] == '\\' && p[2] == 'u') {
+            uint32_t lo;
+            if (json_parse_hex4(p + 3, &lo) && lo >= 0xDC00U && lo <= 0xDFFFU) {
+              cp = 0x10000U + ((cp - 0xD800U) << 10) + (lo - 0xDC00U);
+              p += 6; /* consume the low surrogate "\uXXXX" */
+            }
+          }
+          j += json_utf8_encode(cp, out + j, out_len - 1U - j);
+          continue;
+        }
+      }
+      ++p; /* other escape / malformed \u: skip backslash, copy next char */
     }
     out[j++] = *p;
   }
