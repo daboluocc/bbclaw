@@ -1612,18 +1612,6 @@ static void refresh_ui(void) {
       portEXIT_CRITICAL(&s_state_lock);
       bb_page_locked_update_battery(bat_supported, bat_available, bat_percent, bat_low, bat_charging);
     }
-    /* ADR-021-firmware-ui §2: refresh LOCKED footer with butler cwd + mem stats */
-    {
-      char locked_cwd[48];
-      int locked_inbox, locked_profile;
-      portENTER_CRITICAL(&s_state_lock);
-      strncpy(locked_cwd, s_butler_cwd, sizeof(locked_cwd) - 1);
-      locked_cwd[sizeof(locked_cwd) - 1] = '\0';
-      locked_inbox   = s_mem_inbox;
-      locked_profile = s_mem_profile;
-      portEXIT_CRITICAL(&s_state_lock);
-      bb_page_locked_update_footer(locked_cwd, locked_inbox, locked_profile);
-    }
     s_record_view_visible = 0;
   } else {
     /* ACTIVE view (chat) — full layout with top bar + bottom bar */

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 顺手修掉主菜单首次打开光标落点错位(`sel` 本应是可见行索引,旧代码误置成逻辑行 id)。
 
 ### Removed
+- **固件:密语锁屏页移除底部状态栏**:锁屏页(`设备已锁定` / 密语解锁)底栏左下角的
+  `[B] <cwd>`(butler 工作目录)与右下角的 `mem: N+M`(记忆条数)是开发/butler 调试信息,
+  对被锁定的用户毫无意义。整条底栏(含分隔线 + 两个角标 + `bb_page_locked_update_footer`
+  及其在 bb_lvgl_display 的刷新调用)一并移除,锁屏更干净。
 - **固件:移除「声音(Voice/TTS)开关」——改由物理开关控制**:设备已有物理开关控制声音,
   软件层的 TTS 开/关因此冗余,全部移除:① 设置主菜单去掉 `Voice: on/off` 行;② 后台持久化
   (NVS `agent/tts`)、`bb_ui_settings_tts_enabled()` / `bb_ui_settings_preload_nvs()` 公共 API、
