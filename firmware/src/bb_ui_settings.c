@@ -49,6 +49,7 @@
 #include "bb_ui_theme.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_system.h"  /* esp_get_free_heap_size — System Info page */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -101,6 +102,8 @@ static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
 
 #define HEADER_H 22
 #define ROW_H    26
+/* System Info ("About") page rows: Firmware / Device / Mode / Heap. */
+#define SYSINFO_ROW_COUNT 4
 /* Reserve the bottom strip for the footer hint ("Hold to exit") — the
  * "reminder" the list must never overlap. The bbclaw panel is only 172px tall,
  * so the rows live in [HEADER_H, DISP_H - FOOTER_H] and scroll within it. */
@@ -115,6 +118,7 @@ typedef enum {
   LEVEL_ADAPTER_PICKER,
   LEVEL_SESSION_PICKER,
   LEVEL_VOLUME_ADJUST,
+  LEVEL_SYSINFO, /* read-only "About" page (firmware ver / device / mode / heap) */
 } settings_level_t;
 
 /* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
@@ -128,14 +132,15 @@ typedef enum {
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
   MAIN_ROW_MIYU,
-  MAIN_ROW_FIRMWARE,
+  MAIN_ROW_CHECK_UPDATE, /* cloud_saas only — runs an OTA check (→ confirm page) */
+  MAIN_ROW_SYSINFO,      /* read-only "About" page */
   MAIN_ROW_BACK,
   MAIN_ROW_ID_COUNT,
 } main_row_t;
 
 /* Firmware row click state — view version, click to check/upgrade (OTA). */
 typedef enum {
-  OTA_ROW_IDLE = 0, /* show version only */
+  OTA_ROW_IDLE = 0, /* idle — no check run yet this session */
   OTA_ROW_CHECKING, /* check in flight */
   OTA_ROW_LATEST,   /* checked: already newest */
   OTA_ROW_ERROR,    /* check failed */
@@ -355,10 +360,14 @@ static int main_visible_rows(main_row_t* out) {
    * the toggle is only meaningful there — like the ADAPTER/SESSIONS rows (ADR-037). */
   if (bb_transport_is_cloud_saas()) {
     out[n++] = MAIN_ROW_MIYU;
+    /* OTA is cloud-only (local_home has no OTA server), so the Check Update
+     * action only appears in cloud_saas. The firmware version itself is shown
+     * read-only in System Info below, which is available in any mode. */
+    out[n++] = MAIN_ROW_CHECK_UPDATE;
   }
-  /* Firmware version + OTA upgrade — always shown (version is useful in any
-   * mode; click only triggers an OTA check in cloud_saas, else shows a note). */
-  out[n++] = MAIN_ROW_FIRMWARE;
+  /* System Info ("About") — read-only firmware version / device id / mode / heap.
+   * Always shown; click pushes the read-only sub-page. */
+  out[n++] = MAIN_ROW_SYSINFO;
   /* No explicit Back row — encoder long-press (BB_NAV_EVENT_BACK) exits at the
    * main level; a footer hint on the main page tells the user. */
   return n;
@@ -402,6 +411,30 @@ static const char* current_site_label(void) {
   return "(none)";
 }
 
+/* Label of the currently-active session for the main-page Sessions row. Matches
+ * the chat's active session id against the session_cache (fetched on entry) to
+ * resolve a human title; falls back to a short id, then "(none)". Like
+ * current_site_label, this is display-only — the picker remains the place to
+ * switch sessions. */
+static const char* current_session_label(void) {
+  static char buf[80]; /* static scratch — single-threaded LVGL render */
+  const char* cur = bb_ui_agent_chat_get_current_session();
+  if (cur == NULL || cur[0] == '\0') return "(none)";
+  for (int i = 0; i < s_st.session_cache_count; ++i) {
+    if (strcmp(s_st.session_cache[i].id, cur) == 0) {
+      if (s_st.session_cache[i].title[0] != '\0') {
+        snprintf(buf, sizeof(buf), "%s", s_st.session_cache[i].title);
+        return buf;
+      }
+      break; /* matched but untitled — fall through to short id */
+    }
+  }
+  /* Not in cache (still loading, or beyond the first page) — show a short id so
+   * the row is never empty; the title fills in once the fetch lands. */
+  snprintf(buf, sizeof(buf), "%.8s", cur);
+  return buf;
+}
+
 static void render_main(void) {
   if (s_st.root == NULL) return;
   lv_label_set_text(s_st.header_lbl, "Settings");
@@ -409,7 +442,9 @@ static void render_main(void) {
   main_row_t rows[MAIN_ROW_ID_COUNT];
   int n = main_visible_rows(rows);
   build_rows_box(n);
-  char buf[80];
+  /* Wide enough for "Sessions: " + a full session title (current_session_label
+   * returns up to 79 bytes) without format-truncation. */
+  char buf[96];
 
   const bb_agent_driver_info_t* active = active_driver_entry();
 
@@ -428,11 +463,12 @@ static void render_main(void) {
         snprintf(buf, sizeof(buf), "Adapter: %s", current_site_label());
         break;
       case MAIN_ROW_SESSIONS:
-        /* Static label — the live list (Chinese session titles from
-         * session_cache) lives in the picker; this row is just the English
-         * menu entry. build_rows_box still binds lv_font_bbclaw_cjk to every
-         * row so the picker's CJK titles render. */
-        snprintf(buf, sizeof(buf), "Sessions");
+        /* Show the currently-active session (its CJK title when known) so the
+         * row reflects state like Adapter does, not just a static label. Long
+         * titles marquee-scroll (LV_LABEL_LONG_MODE_SCROLL on every row).
+         * current_session_label() matches the chat's active id against the
+         * session_cache fetched on entry; falls back to a short id / (none). */
+        snprintf(buf, sizeof(buf), "Sessions: %s", current_session_label());
         break;
       case MAIN_ROW_VOLUME: {
         int pct = s_st.volume_pct;
@@ -454,28 +490,32 @@ static void render_main(void) {
       case MAIN_ROW_MIYU:
         snprintf(buf, sizeof(buf), "Miyu: %s", s_st.miyu_enabled ? "on" : "off");
         break;
-      case MAIN_ROW_FIRMWARE: {
-        const char* ver = bb_ota_get_current_version();
+      case MAIN_ROW_CHECK_UPDATE:
+        /* Dedicated OTA-check action (the read-only version lives in System
+         * Info now). Click runs bb_ota_check; the result is shown inline here,
+         * and an available update opens the confirm page. */
         switch (s_st.ota_status) {
           case OTA_ROW_CHECKING:
-            snprintf(buf, sizeof(buf), "Firmware: %s · checking…", ver);
+            snprintf(buf, sizeof(buf), "Check Update · checking…");
             break;
           case OTA_ROW_LATEST:
-            snprintf(buf, sizeof(buf), "Firmware: %s · up to date", ver);
+            snprintf(buf, sizeof(buf), "Check Update · up to date");
             break;
           case OTA_ROW_ERROR:
-            snprintf(buf, sizeof(buf), "Firmware: %s · check failed", ver);
+            snprintf(buf, sizeof(buf), "Check Update · check failed");
             break;
           case OTA_ROW_CLOUD_ONLY:
-            snprintf(buf, sizeof(buf), "Firmware: %s · cloud only", ver);
+            snprintf(buf, sizeof(buf), "Check Update · cloud only");
             break;
           case OTA_ROW_IDLE:
           default:
-            snprintf(buf, sizeof(buf), "Firmware: %s", ver);
+            snprintf(buf, sizeof(buf), "Check Update");
             break;
         }
         break;
-      }
+      case MAIN_ROW_SYSINFO:
+        snprintf(buf, sizeof(buf), "System Info");
+        break;
       case MAIN_ROW_BACK:
         snprintf(buf, sizeof(buf), "Back");
         break;
@@ -740,6 +780,32 @@ static void update_volume_bar(int pct) {
   lv_label_set_text(s_st.vol_pct_lbl, buf);
 }
 
+/* ── Render: System Info ("About") — read-only ── */
+
+static void render_sysinfo(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "System Info");
+
+  build_rows_box(SYSINFO_ROW_COUNT);
+  char buf[80];
+
+  snprintf(buf, sizeof(buf), "Firmware: %s", bb_ota_get_current_version());
+  lv_label_set_text(s_st.rows[0], buf);
+
+  snprintf(buf, sizeof(buf), "Device: %s", bbclaw_device_id());
+  lv_label_set_text(s_st.rows[1], buf);
+
+  snprintf(buf, sizeof(buf), "Mode: %s",
+           bb_transport_is_cloud_saas() ? "cloud" : "local");
+  lv_label_set_text(s_st.rows[2], buf);
+
+  snprintf(buf, sizeof(buf), "Heap: %u KB free",
+           (unsigned)(esp_get_free_heap_size() / 1024));
+  lv_label_set_text(s_st.rows[3], buf);
+
+  highlight_selected();
+}
+
 static void rerender(void) {
   switch (s_st.level) {
     case LEVEL_MAIN:           render_main(); break;
@@ -748,6 +814,7 @@ static void rerender(void) {
     case LEVEL_ADAPTER_PICKER: render_adapter_picker(); break;
     case LEVEL_SESSION_PICKER: render_session_picker(); break;
     case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
+    case LEVEL_SYSINFO:        render_sysinfo(); break;
   }
 }
 
@@ -1067,7 +1134,9 @@ static void on_session_fetch_done(void* user_data) {
     s_st.session_cache_count = total;
     ESP_LOGI(TAG, "session fetch ok: %d sessions (capped from %d)", total, r->count);
   }
-  if (s_st.level == LEVEL_SESSION_PICKER) {
+  /* Re-render the picker (live list) or the main page (the "Sessions: <title>"
+   * row resolves its title from this cache). */
+  if (s_st.level == LEVEL_SESSION_PICKER || s_st.level == LEVEL_MAIN) {
     rerender();
   }
   free(r);
@@ -1426,6 +1495,13 @@ static void enter_session_picker(void) {
   rerender();
 }
 
+/* Open the read-only System Info ("About") page. */
+static void enter_sysinfo(void) {
+  s_st.level = LEVEL_SYSINFO;
+  s_st.sel = 0;
+  rerender();
+}
+
 static void return_to_main(main_row_t row) {
   s_st.level = LEVEL_MAIN;
   s_st.sel = main_row_to_index(row);
@@ -1444,14 +1520,11 @@ void bb_ui_settings_show(lv_obj_t* parent) {
     return;
   }
 
-  /* Initialise level + cursor before any LVGL work. Driver/Model are hidden now,
-   * so start the cursor on the first VISIBLE row rather than MAIN_ROW_DRIVER. */
+  /* Initialise level + cursor before any LVGL work. sel is an index into the
+   * VISIBLE row list, so the first row is simply index 0 (Driver/Model are
+   * hidden; the first visible row is Adapter in cloud_saas, Volume otherwise). */
   s_st.level = LEVEL_MAIN;
-  {
-    main_row_t vrows[MAIN_ROW_ID_COUNT];
-    int vn = main_visible_rows(vrows);
-    s_st.sel = vn > 0 ? vrows[0] : MAIN_ROW_VOLUME;
-  }
+  s_st.sel = 0;
   /* Load current volume from persisted config. */
   s_st.volume_pct = bb_device_config_get()->volume_pct;
   s_st.miyu_enabled = bb_device_config_get()->miyu_enabled; /* ADR-037: 密语开关行 */
@@ -1497,6 +1570,10 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   /* ADR-027: in cloud_saas, also pull the Home Adapter list so the main-page
    * "Adapter: <label>" row shows the active machine on first paint. */
   spawn_site_fetch_task();
+  /* Pull the session list too so the main-page "Sessions: <title>" row can
+   * resolve the active session's human title (not just a short id) on first
+   * paint, mirroring the Adapter row. cloud_saas-only (no-op otherwise). */
+  spawn_session_fetch_task();
   rerender();
 
   ESP_LOGI(TAG, "show level=MAIN");
@@ -1542,6 +1619,34 @@ void bb_ui_settings_notify_volume_pct(int pct) {
   ESP_LOGI(TAG, "volume refreshed from cloud pct=%d", pct);
 }
 
+/* ── Overscroll bounce (rubber-band edge feedback) ──
+ * The list no longer wraps. When a press can't move the cursor (already on the
+ * first/last row), we play a short rubber-band nudge on the rows box instead, so
+ * the user feels they've hit the end — the phone-style overscroll the encoder
+ * can't otherwise convey. translate_y is render-only (doesn't disturb layout or
+ * the scrollbar thumb), and the anim's playback phase springs it back to 0, so a
+ * freshly-rebuilt rows_box (re-created on every level change) always starts at 0. */
+static void rows_box_translate_cb(void* obj, int32_t v) {
+  lv_obj_set_style_translate_y((lv_obj_t*)obj, v, 0);
+}
+
+static void overscroll_bounce(int dir) {
+  if (s_st.rows_box == NULL) return;
+  /* dir > 0 = tried to go past the bottom → nudge content UP and spring back;
+   * dir < 0 = past the top → nudge DOWN. ~8px reads clearly on the 172px panel. */
+  int32_t peak = (dir > 0) ? -8 : 8;
+  lv_anim_del(s_st.rows_box, rows_box_translate_cb); /* restart cleanly on a fast double-press */
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, s_st.rows_box);
+  lv_anim_set_exec_cb(&a, rows_box_translate_cb);
+  lv_anim_set_values(&a, 0, peak);
+  lv_anim_set_duration(&a, 90);           /* push out to the edge */
+  lv_anim_set_playback_duration(&a, 150); /* then spring back, a touch slower */
+  lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+  lv_anim_start(&a);
+}
+
 /* ── Input handlers ── */
 
 void bb_ui_settings_handle_rotate(int delta) {
@@ -1580,13 +1685,23 @@ void bb_ui_settings_handle_rotate(int delta) {
       row_count = (d != NULL && d->model_count > 0) ? d->model_count : 1;
       break;
     }
+    case LEVEL_SYSINFO:
+      row_count = SYSINFO_ROW_COUNT; /* read-only, but cursor drives scroll */
+      break;
     default:
       return;
   }
-  /* Wrap-around: past the bottom loops to the top and vice-versa. delta is
-   * ±1 in practice; the double-mod keeps it correct for any magnitude/sign. */
-  int next = ((s_st.sel + delta) % row_count + row_count) % row_count;
-  if (next == s_st.sel) return;
+  /* No wrap-around: the cursor clamps at the ends. When a press can't move it
+   * (already on the first/last row) we play a rubber-band bounce so the user
+   * feels the edge instead of the cursor silently looping to the other end.
+   * delta is ±1 in practice. */
+  int next = s_st.sel + delta;
+  if (next < 0) next = 0;
+  if (next > row_count - 1) next = row_count - 1;
+  if (next == s_st.sel) {
+    overscroll_bounce(delta > 0 ? 1 : -1);
+    return;
+  }
   s_st.sel = next;
   highlight_selected();
 }
@@ -1635,17 +1750,20 @@ int bb_ui_settings_handle_click(void) {
           rerender();
           break;
         }
-        case MAIN_ROW_FIRMWARE:
-          /* Click the Firmware row to check for an OTA update; if one is found
-           * the confirm page (re-press OK to flash) takes over. OTA is cloud-only
-           * (local_home has no OTA server) — show a note instead in that mode. */
+        case MAIN_ROW_CHECK_UPDATE:
+          /* Run an OTA check; if an update is found the confirm page (re-press
+           * OK to flash) takes over. The row is cloud_saas-only (see
+           * main_visible_rows), but guard defensively. */
           if (!bb_transport_is_cloud_saas()) {
             s_st.ota_status = OTA_ROW_CLOUD_ONLY;
-            ESP_LOGI(TAG, "firmware row: OTA only in cloud_saas mode");
+            ESP_LOGI(TAG, "check update: OTA only in cloud_saas mode");
             rerender();
           } else {
             spawn_ota_check_task();
           }
+          break;
+        case MAIN_ROW_SYSINFO:
+          enter_sysinfo();
           break;
         case MAIN_ROW_BACK:
           return 1; /* caller tears down + returns to chat */
@@ -1764,6 +1882,10 @@ int bb_ui_settings_handle_click(void) {
       s_st.vol_pct_lbl = NULL;
       return_to_main(MAIN_ROW_VOLUME);
       return 0;
+
+    case LEVEL_SYSINFO:
+      /* Read-only page — OK does nothing; BACK returns to main. */
+      return 0;
   }
   return 0;
 }
@@ -1784,6 +1906,9 @@ int bb_ui_settings_handle_back(void) {
       return 0;
     case LEVEL_MODEL_PICKER:
       return_to_main(MAIN_ROW_MODEL);
+      return 0;
+    case LEVEL_SYSINFO:
+      return_to_main(MAIN_ROW_SYSINFO);
       return 0;
     case LEVEL_VOLUME_ADJUST:
       /* BACK: persist then return to main (same as OK). Persist off the

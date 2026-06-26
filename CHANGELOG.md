@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **固件:设置菜单重构——固件信息收进「System Info」只读页 + 独立「Check Update」+ Sessions 行显示当前会话**:
+  - 原「Firmware: <版本>」一行身兼「显示版本」与「点击 OTA」两职,现拆开:
+  - **System Info(关于)**:新增只读子页(点进去看),列固件版本 / 设备 ID / 连接模式 / 空闲堆。
+    任何模式都可进(版本信息在哪都有用)。
+  - **Check Update(版本检测)**:独立菜单项(仅 cloud_saas,OTA 本就云端专属)。点击跑
+    `bb_ota_check`,行内显示 `· checking… / · up to date / · check failed`;查到新版本弹原确认页选择是否升级。
+  - **Sessions 行显示当前会话**:原来只是静态「Sessions」,现显示 `Sessions: <当前会话标题>`(过长
+    marquee 滚动),靠进设置时预拉的 session 列表把活动会话 id 解析成人类标题,回退短 id / (none)——
+    与 Adapter 行同套路。
+  - 顺手修掉主菜单首次打开光标落点错位(`sel` 本应是可见行索引,旧代码误置成逻辑行 id)。
+
 ### Removed
 - **固件:移除「声音(Voice/TTS)开关」——改由物理开关控制**:设备已有物理开关控制声音,
   软件层的 TTS 开/关因此冗余,全部移除:① 设置主菜单去掉 `Voice: on/off` 行;② 后台持久化
