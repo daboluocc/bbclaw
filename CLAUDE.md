@@ -41,6 +41,18 @@ compatible. The closed-repo "two separate tag patterns" model
 (`v*` for firmware, `adapter/v*` for adapter) was retired with the
 adapter migration on 2026-04-27 (ADR-011).
 
+## Git Commit 约定
+
+- **每开发完一个功能 / 一个独立改动就提一个 commit**——一个功能 = 一个 commit，
+  主动提交，不必等人催。保持提交粒度清晰、可读、易回滚。
+- **直接在 `main` 分支提交**，不为每次改动开 feature 分支。
+- **只暂存本次自己改的文件**（`git add <具体文件>`），别把工作区里无关的 / 别人的
+  未提交改动一并带进同一个 commit。
+- 提交信息沿用**中文 Conventional Commits** 风格，带组件 scope，例如
+  `fix(firmware): …`、`feat(adapter_v2): …`、`fix(firmware+adapter): …`。
+- **以下仍需人工确认，不自动做**：`git push`、打 `v*` tag（会触发 OTA 发布，见上方
+  Release & Tag Policy）、以及其它破坏性 / 会花钱的操作。
+
 ## Project Layout
 
 - `daboluocc/bbclaw` — main public repo:
