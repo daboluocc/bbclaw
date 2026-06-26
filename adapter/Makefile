@@ -67,7 +67,7 @@ build:
 	@mkdir -p "$(BIN_DIR)"
 	cd "$(CURDIR)" && $(GO) build -ldflags "$(GO_LDFLAGS)" -o "$(BIN_DIR)/bbclaw-adapter" ./cmd/bbclaw-adapter
 
-# 把编译产物安装到系统路径，区别于 `make run`（go run 临时跑）。
+# 把编译产物安装到系统路径，区别于 `make run`（air 热重载临时跑）。
 # 默认装到 ~/.local/bin（免 sudo）；装全局用 make install PREFIX=/usr/local。
 install: build
 	@mkdir -p "$(INSTALL_DIR)"
@@ -102,6 +102,8 @@ clean-run-procs:
 		pkill -KILL -u "$$user_id" -f '$(ADAPTER_RUN_MATCH)' || true; \
 	fi
 
+# make run 用 air 热重载:改任意 .go → 自动重新编译 + 重启 adapter,不用手动重启
+# (config 见 .air.toml)。版本号 ldflags 在这里注入,覆盖 .air.toml 的默认 build cmd。
 run: clean-run-procs
 	@mkdir -p "$(LOG_DIR)"; \
 	if [ -f "$(ENV_FILE)" ]; then \
@@ -110,9 +112,19 @@ run: clean-run-procs
 	else \
 		echo "config: no $(ENV_FILE) — running from defaults + web settings (~/.bbclaw-adapter/settings.json)"; \
 	fi; \
-	echo "=== adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) ===" >> "$(LOG_FILE)"; \
+	echo "=== adapter start $$(date -u +%Y-%m-%dT%H:%M:%SZ) (air live-reload) ===" >> "$(LOG_FILE)"; \
 	echo "log: $(LOG_FILE)"; \
-	$(GO) run -ldflags "$(GO_LDFLAGS)" ./cmd/bbclaw-adapter 2>&1 | tee -a "$(LOG_FILE)"
+	air_bin="$$(command -v air 2>/dev/null || echo "$$($(GO) env GOPATH)/bin/air")"; \
+	if [ ! -x "$$air_bin" ]; then \
+		echo "air 未安装,正在安装 github.com/air-verse/air@latest ..."; \
+		$(GO) install github.com/air-verse/air@latest; \
+		air_bin="$$($(GO) env GOPATH)/bin/air"; \
+	fi; \
+	echo "air: $$air_bin — 改 .go 自动 rebuild+重启 (Ctrl+C 退出)"; \
+	"$$air_bin" \
+		--build.cmd "$(GO) build -ldflags \"$(GO_LDFLAGS)\" -o ./tmp/bbclaw-adapter ./cmd/bbclaw-adapter" \
+		--build.bin "./tmp/bbclaw-adapter" \
+		2>&1 | tee -a "$(LOG_FILE)"
 
 dev: run
 

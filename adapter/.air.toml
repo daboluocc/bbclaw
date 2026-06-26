@@ -7,10 +7,12 @@ tmp_dir = "tmp"
 
 [build]
   args_bin = []
-  bin = "./tmp/main"
-  cmd = "go build -o ./tmp/main ./cmd/bbclaw-adapter"
+  # bin 名带 bbclaw-adapter,这样 `make clean-run-procs` 的进程匹配能识别并清理。
+  bin = "./tmp/bbclaw-adapter"
+  # 默认 build(bare `air`)。make run 会用注入版本号 ldflags 的 --build.cmd 覆盖。
+  cmd = "go build -o ./tmp/bbclaw-adapter ./cmd/bbclaw-adapter"
   delay = 500
-  entrypoint = ["./tmp/main"]
+  entrypoint = ["./tmp/bbclaw-adapter"]
   exclude_dir = ["assets", "tmp", "vendor", "testdata", "bin"]
   exclude_file = []
   exclude_regex = ["_test.go"]
@@ -21,7 +23,8 @@ tmp_dir = "tmp"
   include_dir = ["cmd", "internal"]
   include_ext = ["go", "tpl", "tmpl", "html"]
   include_file = []
-  kill_delay = "0s"
+  # 重启前给老进程 2s 优雅退出(释放端口 / 关 WS 连接),避免端口还被占着。
+  kill_delay = "2s"
   log = "build-errors.log"
   poll = false
   poll_interval = 0
@@ -29,8 +32,10 @@ tmp_dir = "tmp"
   pre_cmd = []
   rerun = false
   rerun_delay = 500
-  send_interrupt = false
-  stop_on_error = false
+  # 用 SIGINT 重启 → 走 adapter 的优雅关闭(等价 Ctrl+C)。
+  send_interrupt = true
+  # 编译失败时保留上一个能跑的进程,别把活着的 adapter 换成崩的。
+  stop_on_error = true
 
 [color]
   app = ""
