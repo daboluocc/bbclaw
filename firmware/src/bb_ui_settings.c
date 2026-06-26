@@ -42,6 +42,8 @@
 #include "bb_audio.h"
 #include "bb_config.h"
 #include "bb_device_config.h"
+#include "bb_ota.h"
+#include "bb_radio_app.h"
 #include "bb_session_store.h"
 #include "bb_transport.h"
 #include "bb_ui_agent_chat.h"
@@ -128,9 +130,19 @@ typedef enum {
   MAIN_ROW_VOLUME,
   MAIN_ROW_TTS,
   MAIN_ROW_MIYU,
+  MAIN_ROW_FIRMWARE,
   MAIN_ROW_BACK,
   MAIN_ROW_ID_COUNT,
 } main_row_t;
+
+/* Firmware row click state — view version, click to check/upgrade (OTA). */
+typedef enum {
+  OTA_ROW_IDLE = 0, /* show version only */
+  OTA_ROW_CHECKING, /* check in flight */
+  OTA_ROW_LATEST,   /* checked: already newest */
+  OTA_ROW_ERROR,    /* check failed */
+  OTA_ROW_CLOUD_ONLY, /* not cloud_saas — OTA unavailable */
+} ota_row_status_t;
 
 /* ── State ── */
 
@@ -152,6 +164,11 @@ typedef struct {
   int driver_cache_count;
   volatile int driver_fetch_pending;
   volatile uint32_t driver_fetch_generation;
+
+  /* Firmware row OTA check (Settings → Firmware → click). */
+  ota_row_status_t ota_status;
+  volatile int ota_check_pending;
+  volatile uint32_t ota_check_generation;
 
   /* Persisted active selections from the last successful fetch — what
    * the main page shows as the current value, and what the picker marks
@@ -352,6 +369,9 @@ static int main_visible_rows(main_row_t* out) {
   if (bb_transport_is_cloud_saas()) {
     out[n++] = MAIN_ROW_MIYU;
   }
+  /* Firmware version + OTA upgrade — always shown (version is useful in any
+   * mode; click only triggers an OTA check in cloud_saas, else shows a note). */
+  out[n++] = MAIN_ROW_FIRMWARE;
   /* No explicit Back row — encoder long-press (BB_NAV_EVENT_BACK) exits at the
    * main level; a footer hint on the main page tells the user. */
   return n;
@@ -450,6 +470,28 @@ static void render_main(void) {
       case MAIN_ROW_MIYU:
         snprintf(buf, sizeof(buf), "Miyu: %s", s_st.miyu_enabled ? "on" : "off");
         break;
+      case MAIN_ROW_FIRMWARE: {
+        const char* ver = bb_ota_get_current_version();
+        switch (s_st.ota_status) {
+          case OTA_ROW_CHECKING:
+            snprintf(buf, sizeof(buf), "Firmware: %s · checking…", ver);
+            break;
+          case OTA_ROW_LATEST:
+            snprintf(buf, sizeof(buf), "Firmware: %s · up to date", ver);
+            break;
+          case OTA_ROW_ERROR:
+            snprintf(buf, sizeof(buf), "Firmware: %s · check failed", ver);
+            break;
+          case OTA_ROW_CLOUD_ONLY:
+            snprintf(buf, sizeof(buf), "Firmware: %s · cloud only", ver);
+            break;
+          case OTA_ROW_IDLE:
+          default:
+            snprintf(buf, sizeof(buf), "Firmware: %s", ver);
+            break;
+        }
+        break;
+      }
       case MAIN_ROW_BACK:
         snprintf(buf, sizeof(buf), "Back");
         break;
@@ -824,6 +866,90 @@ static void spawn_driver_fetch_task(void) {
     s_st.driver_fetch_pending = 0;
     free(r);
   }
+}
+
+/* ── Firmware OTA check — Settings → Firmware row click, async ──
+ * Mirrors the driver-fetch pattern: run the blocking bb_ota_check() on a PSRAM
+ * stack task, marshal the result back to the LVGL thread. On has_update, hand
+ * off to bb_radio_app_present_ota_update() which shows the existing confirm page
+ * (lv_layer_top, intercepts OK/BACK over the Settings overlay) and routes accept
+ * into the preheated apply task. Otherwise just update the row status text. */
+
+typedef struct {
+  uint32_t gen;
+  esp_err_t err;
+  ota_update_info_t info;
+} ota_check_result_t;
+
+static void on_ota_check_done(void* user_data) {
+  ota_check_result_t* r = (ota_check_result_t*)user_data;
+  if (r == NULL) return;
+  s_st.ota_check_pending = 0;
+  if (!s_st.active || r->gen != s_st.ota_check_generation) {
+    free(r);
+    return;
+  }
+  if (r->err != ESP_OK) {
+    ESP_LOGW(TAG, "ota check failed: %s", esp_err_to_name(r->err));
+    s_st.ota_status = OTA_ROW_ERROR;
+    rerender();
+  } else if (r->info.has_update) {
+    ESP_LOGI(TAG, "ota check: update %s available -> confirm", r->info.version);
+    s_st.ota_status = OTA_ROW_IDLE; /* confirm page takes over the screen */
+    rerender();
+    bb_radio_app_present_ota_update(&r->info);
+  } else {
+    ESP_LOGI(TAG, "ota check: already up to date");
+    s_st.ota_status = OTA_ROW_LATEST;
+    rerender();
+  }
+  free(r);
+}
+
+static void ota_check_task(void* arg) {
+  ota_check_result_t* r = (ota_check_result_t*)arg;
+  if (r == NULL) {
+    s_st.ota_check_pending = 0;
+    vTaskDeleteWithCaps(NULL);
+    return;
+  }
+  r->err = bb_ota_check(&r->info);
+  if (lvgl_port_lock(200)) {
+    lv_async_call(on_ota_check_done, r);
+    lvgl_port_unlock();
+  } else {
+    s_st.ota_check_pending = 0;
+    free(r);
+  }
+  vTaskDeleteWithCaps(NULL);
+}
+
+static void spawn_ota_check_task(void) {
+  if (s_st.ota_check_pending) return;
+  s_st.ota_check_pending = 1;
+  s_st.ota_status = OTA_ROW_CHECKING;
+  uint32_t gen = ++s_st.ota_check_generation;
+  ota_check_result_t* r = (ota_check_result_t*)calloc(1, sizeof(*r));
+  if (r == NULL) {
+    ESP_LOGE(TAG, "spawn_ota_check_task: calloc failed");
+    s_st.ota_check_pending = 0;
+    s_st.ota_status = OTA_ROW_ERROR;
+    return;
+  }
+  r->gen = gen;
+  TaskHandle_t t = NULL;
+  /* Larger PSRAM stack than the driver fetch: bb_ota_check() does an HTTP(S) GET
+   * to the cloud, and the TLS handshake (mbedTLS + cert bundle) is stack-hungry. */
+  BaseType_t ok = xTaskCreateWithCaps(ota_check_task, "ota_check", 16384, r,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_ota_check_task: xTaskCreateWithCaps failed");
+    s_st.ota_check_pending = 0;
+    s_st.ota_status = OTA_ROW_ERROR;
+    free(r);
+  }
+  rerender();
 }
 
 /* ── Site (Home Adapter) fetch — ADR-027, WS sites.list, async ── */
@@ -1352,6 +1478,7 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   s_st.volume_dirty = 0;
   s_st.vol_fill = NULL;
   s_st.vol_pct_lbl = NULL;
+  s_st.ota_status = OTA_ROW_IDLE; /* fresh each session — no stale check result */
   /* Seed active_driver from NVS cache so the first paint of the main page
    * shows something sensible even before the async fetch lands. */
   if (s_st.active_driver[0] == '\0') {
@@ -1537,6 +1664,18 @@ int bb_ui_settings_handle_click(void) {
           rerender();
           break;
         }
+        case MAIN_ROW_FIRMWARE:
+          /* Click the Firmware row to check for an OTA update; if one is found
+           * the confirm page (re-press OK to flash) takes over. OTA is cloud-only
+           * (local_home has no OTA server) — show a note instead in that mode. */
+          if (!bb_transport_is_cloud_saas()) {
+            s_st.ota_status = OTA_ROW_CLOUD_ONLY;
+            ESP_LOGI(TAG, "firmware row: OTA only in cloud_saas mode");
+            rerender();
+          } else {
+            spawn_ota_check_task();
+          }
+          break;
         case MAIN_ROW_BACK:
           return 1; /* caller tears down + returns to chat */
         case MAIN_ROW_ID_COUNT:

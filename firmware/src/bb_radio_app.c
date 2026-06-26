@@ -126,6 +126,23 @@ static void ota_confirm_cb(int accept) {
   }
 }
 
+/* Manual OTA from Settings → Firmware row. The settings module runs the check
+ * (bb_ota_check) on its own background task, then calls this on the LVGL thread
+ * with the result. Reuse the boot path's confirm→apply flow verbatim: stash the
+ * info where ota_apply_task reads it and show the confirm page (lv_layer_top,
+ * intercepts OK/BACK over the Settings overlay). Clear s_ota_skipped_this_boot
+ * so a manual trigger works even after the boot auto-prompt was skipped. */
+void bb_radio_app_present_ota_update(const struct ota_update_info* info) {
+  if (info == NULL || !info->has_update) return;
+  s_pending_ota_info      = *info;
+  s_pending_ota_prompt    = 0;
+  s_ota_skipped_this_boot = 0;
+  ESP_LOGI(TAG, "manual OTA: present confirm version=%s size=%u", s_pending_ota_info.version,
+           (unsigned)s_pending_ota_info.size);
+  bb_page_ota_confirm_show(bb_ota_get_current_version(), s_pending_ota_info.version, s_pending_ota_info.size,
+                           ota_confirm_cb);
+}
+
 #if BBCLAW_SPK_TEST_ON_BOOT
 extern const uint8_t _binary_bbclaw_wav_start[] asm("_binary_bbclaw_wav_start");
 extern const uint8_t _binary_bbclaw_wav_end[] asm("_binary_bbclaw_wav_end");

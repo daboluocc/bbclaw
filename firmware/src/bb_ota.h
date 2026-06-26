@@ -16,7 +16,7 @@ typedef enum {
 } ota_state_t;
 
 // OTA 检查结果
-typedef struct {
+typedef struct ota_update_info {
     bool has_update;
     char version[32];
     char release_notes[256];

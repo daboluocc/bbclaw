@@ -2,6 +2,10 @@
 
 #include "esp_err.h"
 
+/* Forward decl so this public header needn't pull in src/bb_ota.h (which is a
+ * private header only on the .c include path). Tagged struct in bb_ota.h. */
+struct ota_update_info;
+
 /**
  * App-level page state machine (3-state, STANDBY removed).
  *
@@ -18,3 +22,12 @@ typedef enum {
 } bb_radio_app_state_t;
 
 esp_err_t bb_radio_app_start(void);
+
+/* Present the OTA confirm page for a manually-triggered update (Settings →
+ * Firmware row → click). Stashes the checked update info and shows the same
+ * confirm page the boot auto-check uses, routing an accept into the preheated
+ * internal-RAM apply task. Call on the LVGL thread (under lvgl_port lock); the
+ * confirm page sits on lv_layer_top and intercepts OK/BACK even while the
+ * Settings overlay is up, so no teardown is needed. Copies *info; no-op if
+ * info is NULL or has no update. */
+void bb_radio_app_present_ota_update(const struct ota_update_info* info);

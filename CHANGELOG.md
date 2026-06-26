@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:设置里新增「Firmware」行——看版本 + 点击触发 OTA 升级**:设置主菜单底部多一行
+  `Firmware: <当前版本>`(任何模式都显示,方便核对设备版本)。在 cloud_saas 下点击 → 后台
+  跑 `bb_ota_check`(PSRAM 栈任务,行内显示 `· checking…`):查到新版本就弹出原有 OTA 确认页
+  (再按 OK 即开始下载/烧写/重启——确认页在 `lv_layer_top`,盖在设置层上且优先吃 OK/BACK,
+  无需先退设置);已是最新显示 `· up to date`;失败显示 `· check failed`。复用启动自检那条
+  确认→预热内部 RAM apply 任务的链路,不重复造轮子。local_home 无 OTA,点击显示 `· cloud only`。
 - **固件 + adapter:PTT 按键边沿全量上报(`ptt.event` / `POST /v1/agent/ptt`)**:此前 adapter 只能
   间接感知 PTT——只有走完 VAD+ASR 出了 `voice.transcript`、或打断时发了 `turn.cancel` 才知道;空按、
   按住没说话、railed mic 没出声、以及任何松开,服务端全程无感知。现在固件在 `on_ptt_changed` 的每个
