@@ -30,6 +30,7 @@
 | C8 | 无 marker 的 CLI | 没有盒线/`❯`/`⏺` 的裸回复行 | diff 兜底返回该行 | `TestExtractFallbackStillWorksForMarkerlessCLI` |
 | C9 | **回复比屏幕高（长列表）** | 回复行数 > 终端可视行数，顶部含 `⏺` 锚点已滚出可视网格进 scrollback | **完整回复**（含已滚出的标题与开头各项），不被截断成可见尾部 | `TestExtractRecoversReplyTallerThanGrid` |
 | C10 | 多段、后续段落顶格 | `⏺ 段一` + 空行 + 顶格`段二` + `✻ … for Ns` | 整段回复（段一+段二），止于 `✻` 完成行 | `TestExtractMarkerBlockFlushLeftParagraphs` |
+| C11 | **token 计数贴在回复行尾** | 短回复同一行尾部带 token chrome：`⏺ 谢谢…吩咐。  ↓ 3 tokens)` | 锚定该行为**真回复**（不当噪声丢弃），且 token chrome 被 `NormalizeReply` 剥掉不念 | `TestExtractReplyWithGluedTokenCounter` / `TestNormalizeReply` / `TestIsNoiseLine` |
 
 ## C9 详记（本次修复 —— TTS 念不全的根因）
 

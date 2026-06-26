@@ -12,6 +12,16 @@ func TestNormalizeReply(t *testing.T) {
 			want: "你好你好,我在呢!",
 		},
 		{
+			name: "token-count chrome glued to reply tail is stripped",
+			in:   "谢谢周老板夸奖,随时听候吩咐。  ↓ 3 tokens)",
+			want: "谢谢周老板夸奖,随时听候吩咐。",
+		},
+		{
+			name: "reply legitimately mentioning tokens is left intact",
+			in:   "你的余额还有 100 tokens 可用",
+			want: "你的余额还有 100 tokens 可用",
+		},
+		{
 			name: "CJK word split by a hard wrap is rejoined with no space",
 			in:   "工作目\n录现在是 bbclaw 的 adapter_v2。",
 			want: "工作目录现在是 bbclaw 的 adapter_v2。",

@@ -208,6 +208,34 @@ func TestBaselineIsolatesNewestTurn(t *testing.T) {
 	}
 }
 
+// Regression for the "reply never forwarded → firmware timeout" bug: claude renders
+// a short reply with its token-count chrome wrapped onto the SAME line
+// ("⏺ <reply>  ↓ 3 tokens)"). The token-counter noise rule used to reject that whole
+// line, so the marker scan skipped the real reply and fell back to the PRIOR turn's
+// "⏺" block (== the rebaseline seed), which maybeSpeak suppresses forever. The line
+// must be recognised as a reply, with the chrome stripped from the spoken text.
+func TestExtractReplyWithGluedTokenCounter(t *testing.T) {
+	s := vtscreen.New(80, 10)
+	s.Feed([]byte("\x1b[1;1H⏺ 今天 6 月 27 号,周六。")) // prior turn's reply
+	e := New(s)                                       // baseline + seed = the prior reply
+
+	// This turn paints its reply with token chrome glued to the tail.
+	s.Feed([]byte("\x1b[3;1H⏺ 谢谢周老板夸奖,随时听候吩咐。  ↓ 3 tokens)"))
+	reply, changed := e.OnOutput()
+	if !changed {
+		t.Fatal("expected a reply for the new turn (got none — would hang until timeout)")
+	}
+	if strings.Contains(reply.Text, "27") {
+		t.Errorf("prior turn leaked / fell back to seed: %q", reply.Text)
+	}
+	if !strings.Contains(reply.Text, "谢谢周老板夸奖") {
+		t.Errorf("new reply missing: %q", reply.Text)
+	}
+	if strings.Contains(reply.Text, "tokens") || strings.ContainsRune(reply.Text, '↓') {
+		t.Errorf("token-count chrome leaked into spoken reply: %q", reply.Text)
+	}
+}
+
 // Regression for the long-list-reply TTS-truncation bug: a reply TALLER than the
 // terminal grid scrolls its top — including claude's "⏺" anchor and the opening
 // lines — off the visible grid into scrollback. The marker scan used to read the

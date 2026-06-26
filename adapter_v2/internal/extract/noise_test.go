@@ -29,6 +29,8 @@ func TestIsNoiseLine(t *testing.T) {
 		{"token counter with arrow", "↑ 1.2k tokens", true},
 		{"token counter with sep", "38 tokens · esc to interrupt", true},
 		{"reply mentioning tokens (not chrome)", "你的余额还有 100 tokens 可用", false},
+		{"reply with token chrome glued to tail", "谢谢周老板夸奖,随时听候吩咐。  ↓ 3 tokens)", false},
+		{"reply with token chrome glued (ascii)", "Done, all set.  (↑ 1.2k tokens · ↓ 3 tokens)", false},
 
 		{"box top border", "╭──────────────╮", true},
 		{"box bottom border", "╰──────────────╯", true},

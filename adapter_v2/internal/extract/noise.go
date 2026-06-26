@@ -3,6 +3,7 @@ package extract
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // noise.go classifies a single screen line as "noise" (UI chrome we must keep
@@ -84,13 +85,70 @@ func isStatusLine(t string) bool {
 		return true // "[Opus 4.8 (1M context)] │ …" model status
 	case strings.Contains(t, "for agents"):
 		return true // "… ← for agents" footer hint
-	case strings.Contains(t, "tokens") && (strings.HasSuffix(t, "tokens)") ||
-		strings.ContainsRune(t, '↑') || strings.ContainsRune(t, '↓') || strings.Contains(t, "·")):
-		return true // token-counter fragment ("38 tokens)", "↑ 1.2k tokens · …") —
-		// the completion summary's counter wraps onto its own flush-left line and
-		// would otherwise leak onto the end of the spoken reply.
+	case isTokenCounterOnly(t):
+		return true // a line that is ONLY the completion summary's token counter
+		// ("38 tokens)", "↑ 1.2k tokens · ↓ 3 tokens") — it wraps onto its own
+		// flush-left line and would otherwise leak onto the spoken reply. NOTE: we
+		// must NOT reject a real reply line that merely has token chrome glued to its
+		// tail (claude renders "⏺ <short reply>  ↓ N tokens)" on one row) — that line
+		// is prose, recovered as a reply, with the chrome stripped by NormalizeReply.
 	}
 	return false
+}
+
+// counterRune reports whether r is part of token-counter chrome — digits, the
+// "1.2k"/"3m" unit letters, arrows, the "·" separator, parens, and spaces — i.e.
+// everything in "(↑ 1.2k tokens · ↓ 3 tokens)" except the word "tokens" itself.
+func counterRune(r rune) bool {
+	switch r {
+	case ' ', '.', '·', '↑', '↓', '(', ')', 'k', 'K', 'm', 'M':
+		return true
+	}
+	return r >= '0' && r <= '9'
+}
+
+// isCounterChrome reports whether s is ONLY token-counter chrome: nothing but the
+// word "tokens" and counterRunes. "↑ 1.2k tokens" / "38 tokens)" → true;
+// "100 tokens 可用" → false (the trailing prose is not chrome).
+func isCounterChrome(s string) bool {
+	for _, r := range strings.ReplaceAll(s, "tokens", "") {
+		if !counterRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// stripTokenCounter removes a trailing token-counter fragment ("↓ 3 tokens)",
+// "(↑ 1.2k tokens · ↓ 3 tokens)") that claude wraps onto the END of a short reply
+// line, so it is neither mistaken for a pure status line nor spoken. It strips ONLY
+// when the suffix from the fragment start to end-of-line is pure counter chrome and
+// carries a digit — so a reply that legitimately says "tokens" mid-sentence
+// ("你的余额还有 100 tokens 可用") is left untouched.
+func stripTokenCounter(t string) string {
+	idx := strings.Index(t, "tokens")
+	if idx < 0 {
+		return t
+	}
+	start := idx
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(t[:start])
+		if !counterRune(r) {
+			break
+		}
+		start -= size
+	}
+	suffix := t[start:]
+	if !isCounterChrome(suffix) || !strings.ContainsAny(suffix, "0123456789") {
+		return t // "tokens" sits inside prose, not a counter — leave the line alone
+	}
+	return strings.TrimRight(t[:start], " ")
+}
+
+// isTokenCounterOnly reports whether the whole line is token-counter chrome (so it
+// should be dropped as noise), as opposed to a reply line that merely ends with it.
+func isTokenCounterOnly(t string) bool {
+	return strings.Contains(t, "tokens") && strings.TrimSpace(stripTokenCounter(t)) == ""
 }
 
 // firstRune returns the first rune of s, or 0 for the empty string.

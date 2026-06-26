@@ -35,6 +35,9 @@ func NormalizeReply(raw string) string {
 	}
 	for _, line := range strings.Split(raw, "\n") {
 		t := strings.TrimSpace(line)
+		// Drop token-count chrome claude wraps onto a reply line's tail
+		// ("⏺ <short reply>  ↓ 3 tokens)") so it is never spoken.
+		t = stripTokenCounter(t)
 		if t == "" {
 			flush() // blank line → paragraph break
 			continue
