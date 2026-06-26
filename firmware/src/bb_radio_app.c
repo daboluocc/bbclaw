@@ -509,6 +509,7 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
  * laid LV_OPA_COVER full-screen so it visually occludes the existing
  * standby/active views without us needing to mutate bb_lvgl_display.c. */
 static void show_status_idle(const char* status); /* fwd: defined later in file */
+static void show_idle_ready_or_locked(void);       /* fwd: defined later in file */
 static volatile int s_agent_chat_active;
 static lv_obj_t* s_agent_chat_root;
 static int64_t s_last_activity_ms;
@@ -663,11 +664,28 @@ static void settings_overlay_exit(void) {
     ESP_LOGW(TAG, "settings_exit: lvgl_port_lock timeout, leaking overlay");
   }
   ESP_LOGI(TAG, "settings: EXIT");
-  /* Repaint the radio's normal status. */
-  if (bb_wifi_is_connected()) {
-    show_status_idle(radio_app_is_locked() ? BB_STATUS_LOCKED : BB_STATUS_READY);
+  /* No idle/standby repaint here. Every caller (settings_exit_to_chat) goes
+   * straight into the chat overlay, which paints the conversation page;
+   * painting the radio idle surface in between flashed the standby clock for
+   * one frame before the overlay covered it (the "standby flash" seen when
+   * leaving Settings via PTT). A caller that needs the idle surface paints it. */
+}
+
+/* Leave Settings straight into the conversation page (chat overlay), with no
+ * intermediate standby repaint. Shared by all three exit paths: OK-on-Back,
+ * BACK, and the PTT quick-exit. Only falls back to the idle surface when chat
+ * can't be shown (locked, OTA-confirm up, or overlay build failed) so the
+ * screen is never left blank. */
+static void settings_exit_to_chat(void) {
+  settings_overlay_exit();
+  set_radio_app_state(BBCLAW_STATE_CHAT);
+  if (!radio_app_is_locked() && !bb_page_ota_confirm_active()) {
+    if (agent_chat_enter() != 0) {
+      ESP_LOGW(TAG, "settings_exit_to_chat: agent_chat_enter failed");
+      show_idle_ready_or_locked();
+    }
   } else {
-    show_status_idle("NO WIFI");
+    show_idle_ready_or_locked();
   }
 }
 
@@ -698,9 +716,7 @@ static void settings_click_locked(void) {
    * Land on the conversation page (chat overlay), not the standby clock —
    * exiting a menu should put the user back in the dialog, not at idle. */
   if (want_exit && s_settings_active) {
-    settings_overlay_exit();
-    set_radio_app_state(BBCLAW_STATE_CHAT);
-    if (!radio_app_is_locked()) agent_chat_enter();
+    settings_exit_to_chat();
   }
 }
 static void settings_back_locked(void) {
@@ -712,11 +728,7 @@ static void settings_back_locked(void) {
   /* BACK at the main level → exit; on a sub-picker we just popped one
    * level and stay inside the overlay. */
   if (want_exit && s_settings_active) {
-    settings_overlay_exit();
-    set_radio_app_state(BBCLAW_STATE_CHAT);
-    /* Same as the OK-Back path: drop the user onto the conversation page,
-     * not the standby clock. */
-    if (!radio_app_is_locked()) agent_chat_enter();
+    settings_exit_to_chat();
     ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT (chat overlay)");
   }
 }
@@ -2340,9 +2352,7 @@ static void stream_task(void* arg) {
       s_settings_ptt_exit_req = 0;
       ptt_handled_version = s_ptt_change_version; /* consume the edge */
       if (s_settings_active) {
-        settings_overlay_exit();
-        set_radio_app_state(BBCLAW_STATE_CHAT);
-        if (!radio_app_is_locked()) agent_chat_enter();
+        settings_exit_to_chat();
         ESP_LOGI(TAG, "SETTINGS: PTT -> CHAT");
       }
       vTaskDelay(pdMS_TO_TICKS(20));
@@ -2689,8 +2699,15 @@ static void stream_task(void* arg) {
         pulse_success_on_idle(BB_STATUS_READY);
         (void)bb_display_show_chat_turn("密语验证通过",
                                         verify_result.message[0] != '\0' ? verify_result.message : "设备已解锁");
-        /* Unlock → CHAT state, STANDBY view (PTT activates agent chat). */
+        /* Unlock → CHAT, and open the conversation page directly (not the
+         * standby clock): a successful 密语 verify means the owner is actively
+         * using the device, so land them in the dialog. set_radio_app_state may
+         * raise the OTA-confirm page when an update is pending after unlock —
+         * don't cover that with chat. */
         set_radio_app_state(BBCLAW_STATE_CHAT);
+        if (!bb_page_ota_confirm_active()) {
+          agent_chat_enter();
+        }
       } else {
         ESP_LOGW(TAG, "phase=voice_verify_reject confidence=%.3f message=%s transcript=%s",
                  (double)verify_result.confidence, verify_result.message, verify_result.transcript);
