@@ -897,12 +897,18 @@ static void ptt_report_task(void* arg) {
     char body[256];
     esp_err_t err;
     if (bb_transport_is_cloud_saas()) {
-      snprintf(body, sizeof(body),
-               "{\"type\":\"request\",\"kind\":\"ptt.event\",\"messageId\":\"ptt-%u\","
-               "\"deviceId\":\"%s\",\"payload\":{\"edge\":\"%s\",\"action\":\"%s\",\"seq\":%u}}",
-               (unsigned)evt.seq, BBCLAW_DEVICE_ID, edge, evt.action, (unsigned)evt.seq);
-      err = ws_client_ensure_connected();
-      if (err == ESP_OK) {
+      /* Observe-only: NEVER drive the WS connection from the telemetry path —
+       * that is the voice/main path's job. If the WS isn't already up, drop this
+       * event rather than take s_ws.lock / trigger a (up-to-5s) connect that
+       * could contend with an in-flight voice stream. A healthy cloud_saas WS is
+       * persistently connected, so this sends in the common case. */
+      if (s_ws.client == NULL || !esp_websocket_client_is_connected(s_ws.client)) {
+        err = ESP_ERR_INVALID_STATE;
+      } else {
+        snprintf(body, sizeof(body),
+                 "{\"type\":\"request\",\"kind\":\"ptt.event\",\"messageId\":\"ptt-%u\","
+                 "\"deviceId\":\"%s\",\"payload\":{\"edge\":\"%s\",\"action\":\"%s\",\"seq\":%u}}",
+                 (unsigned)evt.seq, BBCLAW_DEVICE_ID, edge, evt.action, (unsigned)evt.seq);
         err = ws_send_text_message(body);
       }
     } else {
