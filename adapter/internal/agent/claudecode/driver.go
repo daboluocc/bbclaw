@@ -788,9 +788,11 @@ func hasFlag(args []string, flag string) bool {
 // input blob. Returns "" when no obvious field applies — the caller should
 // treat an empty hint as "no preview available".
 //
-// Hint length is capped at 80 chars: long enough to recognise a command or
-// file path at a glance on the playground / small device screen, short
-// enough to avoid wrapping in tight UI slots.
+// Hint length is capped at toolHintMaxLen chars: enough that the device prints
+// the (near-)complete command/path to its serial conversation log and shows it
+// in the transcript, while still bounding pathological inputs (long heredocs).
+// The web playground/admin have room to wrap; the device transcript tool line
+// is dimmed/secondary so a 2-3 line wrap is acceptable.
 func summarizeToolInput(name string, raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -804,13 +806,18 @@ func summarizeToolInput(name string, raw json.RawMessage) string {
 	}
 	switch name {
 	case "Bash":
-		return truncate(strings.TrimSpace(fields.Command), 80)
+		return truncate(strings.TrimSpace(fields.Command), toolHintMaxLen)
 	case "Edit", "Write", "Read":
-		return truncate(fields.FilePath, 80)
+		return truncate(fields.FilePath, toolHintMaxLen)
 	default:
 		return ""
 	}
 }
+
+// toolHintMaxLen bounds the tool_call hint sent to the device (ADR-030). The
+// firmware reception buffer (bb_adapter_client.c char hint[256]) must stay >=
+// this + the "…" suffix.
+const toolHintMaxLen = 240
 
 // ─── dispatch helpers (ADR-021-firmware-ui §1.2) ────────────────────────────
 

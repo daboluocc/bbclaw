@@ -1348,7 +1348,7 @@ static void ws_handle_text_message(const char* msg) {
     }
   } else if (strcmp(kind, "tool_call") == 0) {
     char name[64] = {0};
-    char hint[160] = {0};
+    char hint[256] = {0}; /* full-ish tool command (adapter caps hint at 240) */
     (void)json_extract_string(msg, "name", name, sizeof(name));
     (void)json_extract_string(msg, "hint", hint, sizeof(hint)); /* ADR-030 */
     if (s_ws.finish_on_event != NULL && name[0] != '\0') {
@@ -1847,7 +1847,7 @@ static void parse_finish_stream_line(const char* line, bb_finish_stream_accum_t*
 
   if (strcmp(type, "tool_call") == 0) {
     char name[64] = {0};
-    char hint[160] = {0};
+    char hint[256] = {0}; /* full-ish tool command (adapter caps hint at 240) */
     (void)json_extract_string(line, "name", name, sizeof(name));
     (void)json_extract_string(line, "hint", hint, sizeof(hint)); /* ADR-030 */
     if (accum->on_event != NULL && name[0] != '\0') {

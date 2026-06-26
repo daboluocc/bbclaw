@@ -1451,7 +1451,7 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
   }
 
   if (event->type == BB_FINISH_STREAM_EVENT_THINKING && event->text != NULL && event->text[0] != '\0') {
-    ESP_LOGI(TAG, "phase=thinking text=%.80s", event->text);
+    log_phase_text_chunks("phase=thinking text=", event->text);
     size_t cur = strlen(ui->reply_text);
     snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[thinking...]\n", cur > 0 ? "\n" : "");
     (void)bb_display_upsert_chat_turn(ui->transcript[0] != '\0' ? ui->transcript : "...", ui->reply_text, 0);
@@ -1459,7 +1459,13 @@ static void on_finish_stream_event(bb_finish_stream_event_t* event, void* user_c
   }
 
   if (event->type == BB_FINISH_STREAM_EVENT_TOOL_CALL && event->text != NULL && event->text[0] != '\0') {
-    ESP_LOGI(TAG, "phase=tool_call name=%s hint=%.80s", event->text, event->hint != NULL ? event->hint : "");
+    {
+      /* Print the FULL tool command/hint to serial (chunked if long), not the
+       * old 80-char preview — so the conversation record is complete on UART. */
+      char pfx[128];
+      snprintf(pfx, sizeof(pfx), "phase=tool_call name=%s hint=", event->text);
+      log_phase_text_chunks(pfx, event->hint != NULL ? event->hint : "");
+    }
     size_t cur = strlen(ui->reply_text);
     if (event->hint != NULL && event->hint[0] != '\0') {
       snprintf(ui->reply_text + cur, sizeof(ui->reply_text) - cur, "%s[tool: %s %s]\n", cur > 0 ? "\n" : "", event->text,
@@ -1603,7 +1609,13 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
    * dimmed tool line; never enqueued to TTS (the step channel is independent of
    * the voice.reply speak channel). event->text=tool name, event->hint=preview. */
   if (event->type == BB_FINISH_STREAM_EVENT_TOOL_CALL && event->text != NULL && event->text[0] != '\0') {
-    ESP_LOGI(TAG, "phase=tool_call name=%s hint=%.80s", event->text, event->hint != NULL ? event->hint : "");
+    {
+      /* Print the FULL tool command/hint to serial (chunked if long), not the
+       * old 80-char preview — so the conversation record is complete on UART. */
+      char pfx[128];
+      snprintf(pfx, sizeof(pfx), "phase=tool_call name=%s hint=", event->text);
+      log_phase_text_chunks(pfx, event->hint != NULL ? event->hint : "");
+    }
     bb_ui_agent_chat_post_tool_call(event->text, event->hint);
     return;
   }
