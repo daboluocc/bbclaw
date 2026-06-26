@@ -36,6 +36,7 @@ typedef enum {
   APP_MODE_APCONFIG = 6,
   APP_MODE_OTA_CONFIRM = 7,
   APP_MODE_PROMPT_SELECT = 13, /* ADR-033 blocking-prompt confirm page */
+  APP_MODE_CHAT = 14,          /* chat overlay active: top-bar activity dot + 中文状态词 */
   /* LED preview modes (issue #168): maps to v2 LED states */
   APP_MODE_LED_IDLE = 8,      /* 空闲：绿常亮 */
   APP_MODE_LED_LISTENING = 9, /* 倾听：橙常亮 */
@@ -127,6 +128,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_NOTIFICATION;
       } else if (strcmp(argv[i], "speaking") == 0) {
         state->mode = APP_MODE_SPEAKING;
+      } else if (strcmp(argv[i], "chat") == 0) {
+        state->mode = APP_MODE_CHAT;
       } else if (strcmp(argv[i], "netconn") == 0) {
         state->mode = APP_MODE_NETCONN;
       } else if (strcmp(argv[i], "locked") == 0) {
@@ -350,7 +353,19 @@ static void populate_preview_state(const app_state_t* state) {
   }
   (void)bb_display_show_chat_turn(state->you, state->reply);
 
-  if (state->mode == APP_MODE_SPEAKING) {
+  if (state->mode == APP_MODE_CHAT) {
+    /* Chat overlay active — preview the top-bar activity dot + 中文状态词
+     * (聆听中…/识别中…/回复中…/出错). --status TX|RX|SPEAK|ERR picks the beat. */
+    const char* status = state->status[0] != '\0' ? state->status : "TX";
+    bb_bar_state_t bs = BB_BAR_STATE_LISTENING;
+    if (strcmp(status, "RX") == 0) bs = BB_BAR_STATE_BUSY;
+    else if (strcmp(status, "SPEAK") == 0) bs = BB_BAR_STATE_SPEAKING;
+    else if (strstr(status, "ERR") != NULL) bs = BB_BAR_STATE_ERROR;
+    bb_display_set_chat_active(1);
+    bb_display_set_agent_bar_state(bs);
+    if (bs == BB_BAR_STATE_LISTENING) bb_display_set_record_level(72, 1);
+    (void)bb_display_show_status(status);
+  } else if (state->mode == APP_MODE_SPEAKING) {
     const char* status = state->status[0] != '\0' ? state->status : "TX";
     (void)bb_display_show_status(status);
   } else if (state->mode == APP_MODE_NOTIFICATION || state->turn_den > 0) {

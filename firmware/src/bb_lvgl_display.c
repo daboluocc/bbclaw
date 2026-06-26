@@ -152,18 +152,13 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_BATTERY_LG_CAP_W      4  /* positive terminal cap width */
 #define UI_BATTERY_LG_CAP_H     12  /* positive terminal cap height */
 
-/* Bottom bar — a dot-matrix "mini screen" strip (Knight-rider sweep) that
- * replaces the old session/cwd text cells. A bright head comet bounces L↔R
- * across a row of resting ghost dots; color + speed track the live status. */
+/* Bottom strip height — the old dot-matrix sweep band that lived here was
+ * removed (UI calm-down pass); the height is kept only so the content-area
+ * math below leaves the same quiet margin at the bottom of the screen. */
 #define UI_BOTTOM_BAR_H    16
-#define UI_BAR_DOT          4  /* dot diameter */
-#define UI_BAR_PITCH        7  /* column center-to-center */
-#define UI_BAR_ROWS         3  /* 3×320 dot-matrix band */
-#define UI_BAR_VPITCH       5  /* row center-to-center */
-#define UI_BAR_DOTS_MAX    48  /* column cap; actual count fits body_w */
-#define UI_BAR_UPDATE_MS   48  /* aligned to LV_DEF_REFR_PERIOD=16ms: 3×16, see #149 #155
-                                * (was 55ms — adjusted down to nearest 16ms multiple;
-                                *  visual sweep speed change is imperceptible at ~13%) */
+/* Status-bar activity-dot tick (also the legacy record-meter cadence).
+ * Aligned to LV_DEF_REFR_PERIOD=16ms: 3×16. */
+#define UI_BAR_UPDATE_MS   48
 
 /* Recording speaking view */
 #define UI_RECORD_UPDATE_MS       48  /* aligned to LV_DEF_REFR_PERIOD=16ms: 3×16, see #149 #155 */
@@ -310,32 +305,23 @@ static lv_obj_t* s_obj_status_battery_cap;
 static lv_obj_t* s_obj_status_battery_charge_lbl; /* ⚡ overlay for charging state */
 static lv_obj_t* s_lbl_status_battery_pct;        /* numeric "NN%" left of the icon */
 
-/* Bottom bar — dot-matrix Knight-rider sweep strip */
+/* Conversation activity state. The heavy full-width dot-matrix sweep strip that
+ * used to live at the bottom of the ACTIVE view was removed (UI calm-down pass):
+ * it repainted a 48-column canvas every 48ms — the dominant LVGL load during
+ * voice — and cluttered the screen. The live conversation state is now shown by
+ * a single small "breathing" dot in the top status bar (s_obj_listen_dot),
+ * pulsed by s_bar_timer, plus a Chinese status word (聆听中…/识别中…/回复中…). */
 typedef enum {
-  BAR_IDLE = 0, /* READY/RESULT — slow calm teal sweep */
-  BAR_LISTEN,   /* TX — medium teal */
-  BAR_PROCESS,  /* RX/TASK/BOOT/WIFI… — fast teal (busy) */
-  BAR_SPEAK,    /* SPEAK — medium teal */
-  BAR_ERROR,    /* ERR / NO WIFI / AUTH — red */
+  BAR_IDLE = 0, /* READY/RESULT — no activity dot */
+  BAR_LISTEN,   /* TX — dot tracks the live mic envelope (跟手) */
+  BAR_PROCESS,  /* RX/TASK/BOOT/WIFI… — dot slow breathe (识别中) */
+  BAR_SPEAK,    /* SPEAK — dot slow breathe (回复中) */
+  BAR_ERROR,    /* ERR / NO WIFI / AUTH — dot red heartbeat */
 } bottombar_mode_t;
-static lv_obj_t* s_obj_bottom_bar;
-/* Canvas replaces s_bar_dots[48][3] object matrix — single lv_canvas + static
- * RGB565 buffer. Width sized to max (UI_BAR_DOTS_MAX * UI_BAR_PITCH) so we
- * never need to reallocate; actual active columns tracked by s_bar_dot_count. */
-#define UI_BAR_CANVAS_W  (UI_BAR_DOTS_MAX * UI_BAR_PITCH)
-#define UI_BAR_CANVAS_H  UI_BOTTOM_BAR_H
-static lv_color_t s_bar_canvas_buf[UI_BAR_CANVAS_W * UI_BAR_CANVAS_H];
-static lv_draw_buf_t s_bar_draw_buf;
-static lv_obj_t* s_obj_bar_canvas;
-static int s_bar_dot_count; /* number of columns */
-static int s_bar_x0;        /* x offset of first dot column in canvas */
-static int s_bar_y0;        /* y offset of top dot row in canvas */
-static int s_bar_head_x10; /* comet head position, column index ×10 */
-static int s_bar_dir = 1;  /* +1 → moving right, -1 → left */
-static uint32_t s_bar_tick; /* frame counter — time base for non-sweep motifs */
+static uint32_t s_bar_tick; /* frame counter — time base for the activity dot */
 static int s_bottombar_mode;
-static int s_bar_idle_drawn; /* idle = static: 1 once the calm frame is painted */
 static lv_timer_t* s_bar_timer;
+static lv_obj_t* s_obj_listen_dot; /* top-bar "live activity" breathing dot */
 static lv_obj_t* s_view_speaking;
 static lv_obj_t* s_obj_record_halo_outer;
 static lv_obj_t* s_obj_record_halo_inner;
@@ -552,183 +538,80 @@ static void apply_bottom_bar(const char* status, int recording) {
   s_bottombar_mode = mode;
 }
 
-/* Comet head step per frame (dot index ×10). Faster = busier state. */
-static int bottombar_speed_x10(int mode) {
-  switch (mode) {
-    case BAR_PROCESS: return 13;
-    case BAR_LISTEN:  return 7;
-    case BAR_SPEAK:   return 6;
-    case BAR_ERROR:   return 9;
-    default:          return 4; /* idle — slow calm drift */
-  }
-}
-
-static uint32_t bottombar_color(int mode) {
-  return (mode == BAR_ERROR) ? BB_UI_ERR : BB_UI_ACCENT;
-}
-
-/* Paint a single dot onto the bar canvas buffer.
- * cx/cy: top-left pixel of the UI_BAR_DOT×UI_BAR_DOT square.
- * Uses lv_canvas_set_px which handles the draw-buf directly in LVGL 9. */
-static void bar_fill_dot(int col, int row, lv_color_t c, lv_opa_t opa) {
-  if (s_obj_bar_canvas == NULL) return;
-  const int x = s_bar_x0 + col * UI_BAR_PITCH;
-  const int y = s_bar_y0 + row * UI_BAR_VPITCH;
-  for (int dy = 0; dy < UI_BAR_DOT; dy++) {
-    for (int dx = 0; dx < UI_BAR_DOT; dx++) {
-      lv_canvas_set_px(s_obj_bar_canvas, x + dx, y + dy, c, opa);
-    }
-  }
-}
-
-/* Paint a whole column (all UI_BAR_ROWS dots) one color/opacity. */
-static void bottombar_paint_col(int col, uint32_t color, lv_opa_t opa) {
-  lv_color_t c = lv_color_hex(color);
-  for (int r = 0; r < UI_BAR_ROWS; r++) {
-    bar_fill_dot(col, r, c, opa);
-  }
-}
-
-static void bottombar_paint_dot(int col, int row, uint32_t color, lv_opa_t opa) {
-  bar_fill_dot(col, row, lv_color_hex(color), opa);
-}
-
 static lv_opa_t clamp_opa(int v) { return (lv_opa_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-/* The bottom band shares one visual vocabulary with daboluo.cc/style's
- * dot-matrix-anim.js. Each conversation state drives a different motif:
- *   PROCESS→sweep · LISTEN→vu · SPEAK→wave · ERROR→pulse(红) · IDLE→breathe.
- * See design/UI_DESIGN_LANGUAGE.md §3. */
+/* Diameter of the top-bar activity dot (s_obj_listen_dot). */
+#define UI_LISTEN_DOT_SZ 9
 
-/* PROCESS — Knight-rider: white-hot full-height column head + fading tail. */
-static void motif_sweep(int n, uint32_t comet) {
-  const int max_x10 = (n - 1) * 10;
-  s_bar_head_x10 += s_bar_dir * bottombar_speed_x10(s_bottombar_mode);
-  if (s_bar_head_x10 >= max_x10) { s_bar_head_x10 = max_x10; s_bar_dir = -1; }
-  else if (s_bar_head_x10 <= 0) { s_bar_head_x10 = 0; s_bar_dir = 1; }
-
-  const int tail_x10 = 65; /* ~6.5-column trailing comet */
-  for (int i = 0; i < n; i++) {
-    int rel = (s_bar_dir > 0) ? (s_bar_head_x10 - i * 10) : (i * 10 - s_bar_head_x10);
-    if (rel >= -5 && rel <= 5) {
-      bottombar_paint_col(i, UI_TEXT_MAIN, LV_OPA_COVER); /* white-hot head */
-    } else if (rel > 5 && rel < tail_x10) {
-      int b = 255 - (rel - 5) * 255 / (tail_x10 - 5);
-      bottombar_paint_col(i, comet, clamp_opa(45 + b * 210 / 255));
-    } else {
-      bottombar_paint_col(i, BB_UI_DOT_GHOST, LV_OPA_COVER);
-    }
-  }
-}
-
-/* LISTEN — equalizer echoing the real mic envelope (bb_display_set_record_level),
- * bell-weighted across columns, lit bottom-up, peak dot accent. This replaces
- * the removed full-width record overlay as the sole recording indicator. */
-static void motif_vu(int n, uint32_t accent) {
-  int level_pct, voiced;
-  int64_t updated;
-  portENTER_CRITICAL(&s_state_lock);
-  level_pct = s_record_level_pct;
-  voiced = s_record_voiced;
-  updated = s_record_level_updated_ms;
-  portEXIT_CRITICAL(&s_state_lock);
-  if (updated == 0 || (bb_now_ms() - updated) > 400) {
-    level_pct = 0;
-    voiced = 0;
-  }
-  float base = (float)level_pct / 100.0f; /* 0..1 mic envelope */
-  if (base > 1.0f) base = 1.0f;
-  static const float kBell[7] = {0.5f, 0.7f, 0.9f, 1.0f, 0.9f, 0.7f, 0.5f};
-  float t = (float)s_bar_tick;
-  for (int i = 0; i < n; i++) {
-    float bell = (i < 7) ? kBell[i] : 0.7f;
-    /* small shimmer only while voiced, so silence reads as a flat baseline */
-    float shimmer = voiced ? (sinf(t * 0.6f + i * 1.1f) * 0.5f + 0.5f) * 0.18f : 0.0f;
-    float lv = base * (bell + shimmer);
-    if (lv > 1.0f) lv = 1.0f;
-    int lit = (int)(lv * UI_BAR_ROWS + 0.5f);
-    if (lit < 1) lit = 1; /* always one baseline dot while listening */
-    for (int r = 0; r < UI_BAR_ROWS; r++) { /* r=0 top */
-      int on = r >= UI_BAR_ROWS - lit;
-      int peak = r == UI_BAR_ROWS - lit;
-      bottombar_paint_dot(i, r, peak ? accent : (on ? UI_TEXT_MAIN : BB_UI_DOT_GHOST),
-                          on ? (peak ? LV_OPA_COVER : (lv_opa_t)217) : LV_OPA_COVER);
-    }
-  }
-}
-
-/* SPEAK — a single accent row glides per column on a sine. */
-static void motif_wave(int n, uint32_t accent) {
-  float t = (float)s_bar_tick;
-  for (int i = 0; i < n; i++) {
-    float rowf = (sinf(t * 0.22f + i * 0.45f) * 0.5f + 0.5f) * (UI_BAR_ROWS - 1);
-    for (int r = 0; r < UI_BAR_ROWS; r++) {
-      float d = fabsf((float)r - rowf);
-      if (d < 0.6f) bottombar_paint_dot(i, r, accent, LV_OPA_COVER);
-      else bottombar_paint_dot(i, r, BB_UI_DOT_GHOST, d < 1.6f ? (lv_opa_t)128 : LV_OPA_COVER);
-    }
-  }
-}
-
-/* ERROR — heartbeat: whole band double-pulses in red. */
-static void motif_pulse(int n, uint32_t comet) {
-  float b = fmodf((float)s_bar_tick * 0.07f, 1.0f);
-  float d0 = (b - 0.00f) / 0.06f, d1 = (b - 0.17f) / 0.06f;
-  float env = expf(-d0 * d0);
-  float e1 = expf(-d1 * d1);
-  if (e1 > env) env = e1;
-  /* Floor kept high so an error always reads clearly red; beats brighten it. */
-  lv_opa_t opa = clamp_opa((int)((0.34f + env * 0.66f) * 255.0f));
-  for (int i = 0; i < n; i++) bottombar_paint_col(i, comet, opa);
-}
-
-/* IDLE — calm whole-band breathing (rarely shown; idle resolves to standby). */
-static void motif_breathe(int n, uint32_t accent) {
-  float o = 0.18f + (sinf((float)s_bar_tick * 0.09f) * 0.5f + 0.5f) * 0.82f;
-  lv_opa_t opa = clamp_opa((int)(o * 255.0f));
-  for (int i = 0; i < n; i++) bottombar_paint_col(i, accent, opa);
-}
-
-/* Per-state dot-matrix motif on the bottom band. Skips work while hidden. */
+/* ── Top-bar "live activity" dot ──────────────────────────────────────────
+ * Replaces the removed bottom dot-matrix strip. A single small dot in the
+ * status bar carries the whole conversation state — far cheaper than the old
+ * 48-column canvas repaint, and it leaves the transcript area uncluttered:
+ *   LISTEN  → opacity tracks the live mic envelope (跟手 — immediate feedback)
+ *   PROCESS → calm slow breathe   (识别中…)
+ *   SPEAK   → calm slow breathe   (回复中…)
+ *   ERROR   → red heartbeat double-pulse
+ *   IDLE    → dot hidden, the static status icon shows in its place
+ * Driven by s_bar_timer; early-returns (does no paint) while idle or hidden. */
 static void bottombar_timer_cb(lv_timer_t* t) {
   (void)t;
-  if (s_obj_bar_canvas == NULL || s_bar_dot_count == 0) return;
+  if (s_obj_listen_dot == NULL) return;
   if (s_view_active == NULL || lv_obj_has_flag(s_view_active, LV_OBJ_FLAG_HIDDEN)) return;
 
-  /* Minimal-animation policy (UI redesign): the bottom bar animates ONLY during
-   * voice INPUT (BAR_LISTEN) to give capture feedback, plus a brief ERROR pulse
-   * as an alert. Everything else — TTS output (SPEAK), thinking (PROCESS) and
-   * IDLE — is painted as a single STATIC frame, so the whole screen is calm
-   * ("静态齐屏") and the user can scroll/read history smoothly while listening
-   * to the reply (the 48ms repaint no longer steals the LVGL thread). This also
-   * restores the listening animation that an earlier follow-tail gate had
-   * accidentally suppressed after the user scrolled up. */
-  int animate = (s_bottombar_mode == BAR_LISTEN || s_bottombar_mode == BAR_ERROR);
-  if (!animate) {
-    if (s_bar_idle_drawn) return;
-    s_bar_idle_drawn = 1;
-  } else {
-    s_bar_idle_drawn = 0;
+  /* The dot is a chat-mode indicator. In the legacy non-chat recording path the
+   * full-screen meter owns s_img_status, so leave the icon alone there. */
+  const int active = s_chat_active &&
+                     (s_bottombar_mode == BAR_LISTEN || s_bottombar_mode == BAR_PROCESS ||
+                      s_bottombar_mode == BAR_SPEAK  || s_bottombar_mode == BAR_ERROR);
+  if (!active) {
+    /* Idle: hide the dot, restore the static status icon, stop animating. */
+    if (!lv_obj_has_flag(s_obj_listen_dot, LV_OBJ_FLAG_HIDDEN)) {
+      lv_obj_add_flag(s_obj_listen_dot, LV_OBJ_FLAG_HIDDEN);
+      if (s_img_status != NULL) lv_obj_clear_flag(s_img_status, LV_OBJ_FLAG_HIDDEN);
+    }
+    return;
   }
-
-  /* Clear canvas to background before painting dots */
-  lv_canvas_fill_bg(s_obj_bar_canvas, lv_color_hex(0x000000), LV_OPA_COVER);
+  /* Active: the dot owns the status-icon slot. */
+  if (lv_obj_has_flag(s_obj_listen_dot, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_clear_flag(s_obj_listen_dot, LV_OBJ_FLAG_HIDDEN);
+    if (s_img_status != NULL) lv_obj_add_flag(s_img_status, LV_OBJ_FLAG_HIDDEN);
+  }
 
   s_bar_tick++;
-  const int n = s_bar_dot_count;
-  const uint32_t color = bottombar_color(s_bottombar_mode);
+  uint32_t color = BB_UI_ACCENT;
+  lv_opa_t opa;
 
-  switch (s_bottombar_mode) {
-    case BAR_LISTEN:  motif_vu(n, color); break;
-    case BAR_SPEAK:   motif_wave(n, color); break;
-    case BAR_ERROR:   motif_pulse(n, color); break;
-    case BAR_IDLE:    motif_breathe(n, color); break;
-    case BAR_PROCESS:
-    default:          motif_sweep(n, color); break;
+  if (s_bottombar_mode == BAR_LISTEN) {
+    int level, voiced;
+    int64_t updated;
+    portENTER_CRITICAL(&s_state_lock);
+    level   = s_record_level_pct;
+    voiced  = s_record_voiced;
+    updated = s_record_level_updated_ms;
+    portEXIT_CRITICAL(&s_state_lock);
+    /* Short stale window so the dot drops the instant the user stops talking
+     * (跟手 decay); soft opacity floor keeps it visible between words. */
+    if (updated == 0 || (bb_now_ms() - updated) > 200) { level = 0; voiced = 0; }
+    if (level > 100) level = 100;
+    opa   = clamp_opa(60 + level * 195 / 100);
+    color = voiced ? BB_UI_ACCENT : UI_TEXT_DIM;
+  } else if (s_bottombar_mode == BAR_ERROR) {
+    /* red heartbeat — two close beats per cycle */
+    float b = fmodf((float)s_bar_tick * 0.10f, 1.0f);
+    float d0 = (b - 0.00f) / 0.07f, d1 = (b - 0.22f) / 0.07f;
+    float e = expf(-d0 * d0), e1 = expf(-d1 * d1);
+    if (e1 > e) e = e1;
+    opa   = clamp_opa((int)((0.35f + e * 0.65f) * 255.0f));
+    color = BB_UI_ERR;
+  } else {
+    /* PROCESS / SPEAK — calm indeterminate breathe */
+    float o = 0.30f + (sinf((float)s_bar_tick * 0.16f) * 0.5f + 0.5f) * 0.70f;
+    opa   = clamp_opa((int)(o * 255.0f));
+    color = BB_UI_ACCENT;
   }
 
-  /* Single invalidate triggers one redraw of the whole canvas */
-  lv_obj_invalidate(s_obj_bar_canvas);
+  lv_obj_set_style_bg_color(s_obj_listen_dot, lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(s_obj_listen_dot, opa, 0);
 }
 
 /* ── Status icon ── */
@@ -1310,7 +1193,24 @@ static void create_ui(void) {
   s_img_status = lv_image_create(s_view_active);
   lv_image_set_src(s_img_status, &bb_img_ready);
   lv_obj_set_size(s_img_status, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
-  lv_obj_set_pos(s_img_status, UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
+  const int status_icon_x = UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4;
+  const int status_icon_y = UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2;
+  lv_obj_set_pos(s_img_status, status_icon_x, status_icon_y);
+
+  /* "Live activity" dot — occupies the status-icon slot while a conversation
+   * is active (聆听/识别/回复/出错). The status-dot timer pulses it (mic-level
+   * tracking while listening) and toggles it against the static icon. */
+  s_obj_listen_dot = lv_obj_create(s_view_active);
+  lv_obj_remove_style_all(s_obj_listen_dot);
+  lv_obj_set_size(s_obj_listen_dot, UI_LISTEN_DOT_SZ, UI_LISTEN_DOT_SZ);
+  lv_obj_set_pos(s_obj_listen_dot,
+                 status_icon_x + (UI_STATUS_ICON_SZ - UI_LISTEN_DOT_SZ) / 2,
+                 status_icon_y + (UI_STATUS_ICON_SZ - UI_LISTEN_DOT_SZ) / 2);
+  lv_obj_set_style_radius(s_obj_listen_dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(s_obj_listen_dot, lv_color_hex(BB_UI_ACCENT), 0);
+  lv_obj_set_style_bg_opa(s_obj_listen_dot, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(s_obj_listen_dot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_obj_listen_dot, LV_OBJ_FLAG_HIDDEN);
 
   {
     /* Right side, right→left: clock · battery icon · "NN%" · WiFi bars.
@@ -1373,41 +1273,13 @@ static void create_ui(void) {
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
 
-  /* Bottom bar — dot-matrix Knight-rider sweep strip (replaces session/cwd
-   * text; bb_page_locked still surfaces cwd/mem in its own footer). */
-  {
-    s_obj_bottom_bar = lv_obj_create(s_view_active);
-    lv_obj_remove_style_all(s_obj_bottom_bar);
-    lv_obj_set_size(s_obj_bottom_bar, body_w, UI_BOTTOM_BAR_H);
-    lv_obj_set_pos(s_obj_bottom_bar, UI_SAFE_LEFT, bottom_bar_y);
-    lv_obj_clear_flag(s_obj_bottom_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(s_obj_bottom_bar, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_style_border_width(s_obj_bottom_bar, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_side(s_obj_bottom_bar, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_obj_bottom_bar, lv_color_hex(UI_TEXT_DIM), LV_PART_MAIN);
-    lv_obj_set_style_border_opa(s_obj_bottom_bar, LV_OPA_20, LV_PART_MAIN);
-
-    int n = (body_w - UI_BAR_DOT) / UI_BAR_PITCH + 1;
-    if (n > UI_BAR_DOTS_MAX) n = UI_BAR_DOTS_MAX;
-    s_bar_dot_count = n;
-    const int span = (n - 1) * UI_BAR_PITCH + UI_BAR_DOT;
-    s_bar_x0 = (body_w - span) / 2;
-    const int grid_h = (UI_BAR_ROWS - 1) * UI_BAR_VPITCH + UI_BAR_DOT;
-    s_bar_y0 = (UI_BOTTOM_BAR_H - grid_h) / 2 + 1; /* +1 clears top border */
-
-    /* Create canvas spanning the full bottom bar area */
-    lv_draw_buf_init(&s_bar_draw_buf, body_w, UI_BAR_CANVAS_H,
-                     LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO,
-                     s_bar_canvas_buf, sizeof(s_bar_canvas_buf));
-    s_obj_bar_canvas = lv_canvas_create(s_obj_bottom_bar);
-    lv_canvas_set_draw_buf(s_obj_bar_canvas, &s_bar_draw_buf);
-    lv_obj_set_pos(s_obj_bar_canvas, 0, 0);
-    lv_obj_set_size(s_obj_bar_canvas, body_w, UI_BAR_CANVAS_H);
-    lv_canvas_fill_bg(s_obj_bar_canvas, lv_color_hex(0x000000), LV_OPA_COVER);
-
-    s_bar_head_x10 = 0;
-    s_bar_dir = 1;
-  }
+  /* Bottom bar removed (UI calm-down pass): the heavy full-width dot-matrix
+   * sweep strip that used to sit here repainted a 48-column canvas every 48ms
+   * and cluttered the screen. Conversation state is now shown by the top-bar
+   * activity dot (s_obj_listen_dot) + a Chinese status word. The freed strip
+   * at bottom_bar_y is left as quiet background. bb_page_locked keeps its own
+   * footer. */
+  (void)bottom_bar_y;
 
   /* Speaking area — shown only while TX is active */
   s_view_speaking = lv_obj_create(s_view_active);
@@ -1614,10 +1486,25 @@ static void refresh_ui(void) {
     }
     s_record_view_visible = 0;
   } else {
-    /* ACTIVE view (chat) — full layout with top bar + bottom bar */
+    /* ACTIVE view (chat) — full layout with top status bar */
     const char* status_text = status;
-    if (strcmp(status, BB_STATUS_TX) == 0) status_text = "LISTENING";
-    else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) status_text = "PROCESSING";
+    if (strcmp(status, BB_STATUS_TX) == 0) status_text = "聆听中…";
+    else if (strcmp(status, BB_STATUS_RX) == 0 || strcmp(status, "TRANSCRIBING") == 0 || strcmp(status, "PROCESSING") == 0) status_text = "识别中…";
+    else if (strcmp(status, BB_STATUS_SPEAK) == 0) status_text = "回复中…";
+
+    /* In chat mode the legacy status string is intentionally stale; the agent
+     * bar state is the authority for the conversation word. Keep it in sync
+     * with the top-bar activity dot (s_obj_listen_dot). */
+    if (s_chat_active && s_agent_bar_mode >= 0) {
+      switch (s_agent_bar_mode) {
+        case BAR_LISTEN:  status_text = "聆听中…"; break;
+        case BAR_PROCESS: status_text = "识别中…"; break;
+        case BAR_SPEAK:   status_text = "回复中…"; break;
+        case BAR_ERROR:   status_text = "出错";    break;
+        case BAR_IDLE:
+        default:          status_text = "就绪";    break;
+      }
+    }
 
     /* ADR-021-firmware-ui §1.2: dispatch phase overlay — highest priority.
      * error > async > done > started > 常态 */
@@ -1654,7 +1541,13 @@ static void refresh_ui(void) {
     lv_label_set_text(s_lbl_status_clock, hm);
     apply_bottom_bar(status, recording);
 
-    set_view_visible(s_view_speaking, recording);
+    /* Legacy full-screen recording meter ("正在聆听 / 请靠近麦克风说话" + halo +
+     * 10-col VU) is retired in chat mode — the top-bar activity dot is the sole
+     * indicator there. Without the !s_chat_active gate, a stray BB_STATUS_TX
+     * leaking in while the chat overlay is up would flash the old meter over the
+     * transcript (the "之前的动画效果" bug). It still serves the legacy non-chat
+     * radio path. */
+    set_view_visible(s_view_speaking, recording && !s_chat_active);
     /* chat 激活时：底层对话文本区隐藏，中间留给 overlay 的 transcript */
     set_view_visible(s_scroll_text, !recording && !s_chat_active);
 
@@ -2219,10 +2112,14 @@ void bb_display_set_agent_bar_state(bb_bar_state_t state) {
     default:                     mode = BAR_IDLE; break;
   }
   s_agent_bar_mode = mode;
-  s_bottombar_mode = mode; /* take effect on the next 48ms bar tick */
+  s_bottombar_mode = mode; /* activity dot picks the new mode on its next tick */
 #if BBCLAW_LVGL_REFR_PROFILE
   ESP_LOGI("bb_bar", "agent bar state=%d -> mode=%d (chat_active=%d)", (int)state, mode, s_chat_active);
 #endif
+  /* Refresh now so the top-bar status word (聆听中…/识别中…/回复中…/出错/就绪)
+   * flips immediately with the state instead of waiting for the next unrelated
+   * display update — chat mode otherwise rarely triggers a refresh. */
+  if (s_ready) refresh_ui();
 }
 
 void bb_display_set_tts_playing(int playing) {
