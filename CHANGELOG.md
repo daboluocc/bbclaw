@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **固件:移除「声音(Voice/TTS)开关」——改由物理开关控制**:设备已有物理开关控制声音,
+  软件层的 TTS 开/关因此冗余,全部移除:① 设置主菜单去掉 `Voice: on/off` 行;② 后台持久化
+  (NVS `agent/tts`)、`bb_ui_settings_tts_enabled()` / `bb_ui_settings_preload_nvs()` 公共 API、
+  `bb_radio_app` 的 preload 调用全删;③ chat 侧 `s_chat.tts_enabled` 及其门(回合结束 `will_speak`、
+  流式断句起播、`tts_kick_or_spawn`)改为**常开**——固件总是合成/请求 TTS,静音交给物理开关;
+  ④ 主题顶栏的 `T+/T-` 指示一并去掉(buddy-ascii / text-only,均为已退役主题)。
+  注意:TTS 现在恒定合成(即便物理开关静音),若云端 TTS 按量计费,静音时仍会产生合成开销。
+
 ### Fixed
 - **本地烧录版本号 + dev 构建不再被云端逼升级**:本地 `make build`/`make flash` 烧的固件
   之前 esp_app_desc.version 来自 gitignore 掉的陈旧 `version.txt`(或落后的最新 tag),自报

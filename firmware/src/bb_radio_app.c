@@ -3647,13 +3647,7 @@ esp_err_t bb_radio_app_start(void) {
   ESP_LOGI(TAG, "boot active theme: %s",
            (boot_theme != NULL && boot_theme->name != NULL) ? boot_theme->name : "(none)");
 
-  /* Pre-load Settings NVS values from this internal-RAM stack so later
-   * bb_ui_settings_show() calls (triggered from stream_task on PSRAM stack)
-   * never have to issue an nvs_get_str — that would disable SPI flash cache
-   * and trip esp_task_stack_is_sane_cache_disabled, panic-rebooting the
-   * device the moment the user tries to open Settings from chat. */
-  bb_ui_settings_preload_nvs();
-  /* Same rule for "drv/active" — ADR-016 reads it in agent_chat_show via
+  /* Pre-load "drv/active" — ADR-016 reads it in agent_chat_show via
    * bb_session_store_load_active_driver. Without this preload that load
    * would issue nvs_get_str from stream_task (PSRAM stack) and panic. */
   bb_session_store_preload_nvs();

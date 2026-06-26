@@ -27,8 +27,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
-#include "nvs.h"
-#include "nvs_flash.h"
+#include "nvs.h"  /* ESP_ERR_NVS_NOT_FOUND — session-load error check */
 
 static const char* TAG = "bb_agent_ui";
 
@@ -191,7 +190,6 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 /* NVS 配置（与 bb_agent_theme.c 同 namespace）。 */
 #define BB_CHAT_NVS_NS         "bbclaw"
 #define BB_CHAT_NVS_KEY_DRIVER "agent/driver"
-#define BB_CHAT_NVS_KEY_TTS    "agent/tts"
 #define BB_CHAT_DRIVER_FALLBACK "claude-code"
 
 /* Phase 4.5.1 — TTS reply playback. The accumulator caps at 4 KiB; cloud
@@ -281,7 +279,6 @@ typedef struct {
    * ESP32-S3, and any race produces at worst a one-iteration lag, never a
    * crash. tts_cancel_requested is a soft-kill flag the TTS task polls.
    */
-  int tts_enabled;             /* 1 = synth reply via adapter TTS; default ON */
   char* reply_buf;             /* heap, capacity BB_CHAT_REPLY_BUF_CAP */
   size_t reply_len;            /* bytes used (excl. terminating NUL) */
   size_t reply_synth_offset;   /* bytes already extracted for synthesis */
@@ -763,14 +760,15 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
        * LVGL lock contention. After turn_end no more chunks will arrive,
        * so this is the last chance to render them. */
       flush_pending_chunk_blocking();
-      /* Phase 4.5.1 — speak the assistant reply if the toggle is ON.
+      /* Phase 4.5.1 — speak the assistant reply (TTS is always on now; the
+       * physical sound switch handles muting, so there is no software toggle).
        * Phase 4.5.2 — set turn_complete so the streaming task will flush the
        * tail (any text after the last sentence boundary) and then exit. The
        * task may already be running mid-stream; if not, kick spawns it now.
        * Phase 4.8.x — only post the final IDLE/HEART here when we know TTS
-       * will NOT play (toggle off OR no spoken content). When TTS will play,
-       * the streaming task posts SPEAKING on entry and IDLE/HEART on exit,
-       * so posting IDLE here would just cause a brief flicker. */
+       * will NOT play (no spoken content). When TTS will play, the streaming
+       * task posts SPEAKING on entry and IDLE/HEART on exit, so posting IDLE
+       * here would just cause a brief flicker. */
       s_chat.reply_turn_complete = 1;
       /* ADR-017 — HTTP agent path's natural turn boundary. Flush the
        * cache's assistant accumulator now so the freshly-completed reply
@@ -778,7 +776,7 @@ static void on_agent_event(const bb_agent_stream_event_t* evt, void* user_ctx) {
       bb_chat_cache_finalize_assistant();
       /* Phase 4.9: 通知 bb_state agent_in_flight 结束 */
       bb_state_dispatch_simple(BB_EVT_AGENT_TURN_END);
-      const int will_speak = s_chat.tts_enabled && reply_buf_has_content();
+      const int will_speak = reply_buf_has_content();
       if (will_speak) {
         tts_kick_or_spawn();  /* TTS task will handle final state. */
       } else {
@@ -875,12 +873,9 @@ static void agent_task(void* arg) {
  * RAM.  stream_task's stack is PSRAM-backed; during SPI-flash reads
  * (required by NVS) the cache is disabled, making PSRAM inaccessible
  * and triggering the esp_task_stack_is_sane_cache_disabled assert.
- * Solution: spawn a one-shot task on internal heap, wait for it.
- * Forward-declare load_tts_enabled_from_nvs (defined below). */
-static void load_tts_enabled_from_nvs(void);
+ * Solution: spawn a one-shot task on internal heap, wait for it. */
 
 static void load_nvs_task(void* arg) {
-  load_tts_enabled_from_nvs();
   /* Load session ID for current driver from NVS on internal RAM stack */
   const char* driver = bb_ui_agent_chat_get_current_driver();
   if (driver != NULL && driver[0] != '\0') {
@@ -926,33 +921,6 @@ static void load_nvs_on_internal_stack(void) {
   if (s_chat.session_id[0] != '\0') {
     bb_display_set_session_id(s_chat.session_id);
   }
-}
-
-/* ── Phase 4.5.1 — TTS reply toggle persistence ── */
-
-/* Load NVS string at "agent/tts"; missing or unparseable → default ON. */
-static void load_tts_enabled_from_nvs(void) {
-  s_chat.tts_enabled = 1;
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_CHAT_NVS_NS, NVS_READONLY, &h);
-  if (err != ESP_OK) {
-    ESP_LOGI(TAG, "tts_enabled: no nvs (%s), default ON", esp_err_to_name(err));
-    return;
-  }
-  char buf[8] = {0};
-  size_t sz = sizeof(buf);
-  err = nvs_get_str(h, BB_CHAT_NVS_KEY_TTS, buf, &sz);
-  nvs_close(h);
-  if (err != ESP_OK) {
-    ESP_LOGI(TAG, "tts_enabled: not in nvs (%s), default ON", esp_err_to_name(err));
-    return;
-  }
-  if (strcmp(buf, "off") == 0) {
-    s_chat.tts_enabled = 0;
-  } else {
-    s_chat.tts_enabled = 1;
-  }
-  ESP_LOGI(TAG, "tts_enabled: loaded '%s'", buf);
 }
 
 /* ── Phase 4.5.1/4.5.2 — reply accumulator (called from agent_task only) ── */
@@ -1054,25 +1022,23 @@ static void reply_buf_append(const char* delta) {
    * EvTurnEnd. Detect both ASCII (.!?\n) and Chinese 。！？； — Chinese
    * replies often have no ASCII boundary at all (paths between full-width
    * commas, then a 。 at the end), which used to flush as one huge chunk. */
-  if (s_chat.tts_enabled) {
-    for (size_t i = before; i < s_chat.reply_len; ++i) {
-      unsigned char c = (unsigned char)s_chat.reply_buf[i];
-      int kick = 0;
-      if (c == '.' || c == '!' || c == '?' || c == '\n') {
-        kick = 1;
-      } else if (c == 0xE3 && i + 2 < s_chat.reply_len &&
-                 (unsigned char)s_chat.reply_buf[i + 1] == 0x80 &&
-                 (unsigned char)s_chat.reply_buf[i + 2] == 0x82) {
-        kick = 1; /* 。 */
-      } else if (c == 0xEF && i + 2 < s_chat.reply_len &&
-                 (unsigned char)s_chat.reply_buf[i + 1] == 0xBC) {
-        unsigned char d = (unsigned char)s_chat.reply_buf[i + 2];
-        if (d == 0x81 || d == 0x9F || d == 0x9B) kick = 1; /* ！？； */
-      }
-      if (kick) {
-        tts_kick_or_spawn();
-        break;
-      }
+  for (size_t i = before; i < s_chat.reply_len; ++i) {
+    unsigned char c = (unsigned char)s_chat.reply_buf[i];
+    int kick = 0;
+    if (c == '.' || c == '!' || c == '?' || c == '\n') {
+      kick = 1;
+    } else if (c == 0xE3 && i + 2 < s_chat.reply_len &&
+               (unsigned char)s_chat.reply_buf[i + 1] == 0x80 &&
+               (unsigned char)s_chat.reply_buf[i + 2] == 0x82) {
+      kick = 1; /* 。 */
+    } else if (c == 0xEF && i + 2 < s_chat.reply_len &&
+               (unsigned char)s_chat.reply_buf[i + 1] == 0xBC) {
+      unsigned char d = (unsigned char)s_chat.reply_buf[i + 2];
+      if (d == 0x81 || d == 0x9F || d == 0x9B) kick = 1; /* ！？； */
+    }
+    if (kick) {
+      tts_kick_or_spawn();
+      break;
     }
   }
 }
@@ -1318,7 +1284,6 @@ static void tts_playback_task(void* arg) {
  * spawn it. Called from reply_buf_append (mid-stream sentence boundary)
  * and from EvTurnEnd (flush tail). */
 static void tts_kick_or_spawn(void) {
-  if (!s_chat.tts_enabled) return;
   /* ADR-028 barge-in:本回合已被用户打断(可能在 TTS spawn 之前)——不再起播,
    * 否则旧回复会盖着用户的新话说。 */
   if (s_chat.tts_cancel_requested) return;
@@ -1457,7 +1422,7 @@ void bb_ui_agent_chat_show(lv_obj_t* parent) {
   s_chat.turn_start_ms = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
   s_chat.active = 1;
-  /* Load NVS data (tts_enabled, session_id) on internal RAM stack. */
+  /* Load NVS data (session_id) on internal RAM stack. */
   load_nvs_on_internal_stack();
 
   /* Phase 4.2.5 — pre-warm the driver list off-LVGL so Settings entry / LEFT-
@@ -1614,7 +1579,7 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
     free(args);
     return ESP_ERR_NO_MEM;
   }
-  /* Load NVS data (tts_enabled, session_id) on internal RAM stack. */
+  /* Load NVS data (session_id) on internal RAM stack. */
   load_nvs_on_internal_stack();
   strncpy(args->session_id, s_chat.session_id, sizeof(args->session_id) - 1);
   strncpy(args->driver_name, s_chat.driver_name, sizeof(args->driver_name) - 1);

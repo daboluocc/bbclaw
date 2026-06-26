@@ -8,7 +8,6 @@
  * Layout (LEVEL_MAIN):
  *     Driver: <name>
  *     Model:  <label>
- *     TTS:    On/Off
  *     (no Back row — encoder long-press exits; footer hint says so)
  *
  * Layout (LEVEL_DRIVER_PICKER):
@@ -53,8 +52,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 
 static const char* TAG = "bb_ui_settings";
 
@@ -68,8 +65,6 @@ static const char* TAG = "bb_ui_settings";
 extern const lv_font_t lv_font_bbclaw_cjk;
 static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
 
-#define BB_SETTINGS_NVS_NS         "bbclaw"
-#define BB_SETTINGS_NVS_KEY_TTS    "agent/tts"
 #define BB_SETTINGS_DRIVER_CACHE_MAX 6
 #define BB_SETTINGS_SITE_CACHE_MAX   6
 
@@ -132,7 +127,6 @@ typedef enum {
   MAIN_ROW_ADAPTER,
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
-  MAIN_ROW_TTS,
   MAIN_ROW_MIYU,
   MAIN_ROW_FIRMWARE,
   MAIN_ROW_BACK,
@@ -198,7 +192,6 @@ typedef struct {
   volatile int session_fetch_pending;
   volatile uint32_t session_fetch_generation;
 
-  int tts_enabled;
   int miyu_enabled; /* 密语(锁屏语音解锁) on/off; loaded from device config on entry (ADR-037) */
 
   /* Volume adjust state */
@@ -210,44 +203,6 @@ typedef struct {
 } settings_state_t;
 
 static settings_state_t s_st = {0};
-static int s_tts_loaded = 0;
-
-/* ── NVS helpers (TTS only — driver/model live on adapter) ── */
-
-static esp_err_t persist_tts_enabled(int v) {
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READWRITE, &h);
-  if (err != ESP_OK) return err;
-  err = nvs_set_u8(h, BB_SETTINGS_NVS_KEY_TTS, v ? 1 : 0);
-  if (err == ESP_OK) err = nvs_commit(h);
-  nvs_close(h);
-  return err;
-}
-
-static void load_tts_enabled_from_nvs(void) {
-  if (s_tts_loaded) return;
-  s_st.tts_enabled = 1;
-  nvs_handle_t h;
-  esp_err_t err = nvs_open(BB_SETTINGS_NVS_NS, NVS_READONLY, &h);
-  s_tts_loaded = 1;
-  if (err != ESP_OK) return;
-  uint8_t v = 1;
-  if (nvs_get_u8(h, BB_SETTINGS_NVS_KEY_TTS, &v) == ESP_OK) {
-    s_st.tts_enabled = v ? 1 : 0;
-  }
-  nvs_close(h);
-}
-
-void bb_ui_settings_preload_nvs(void) {
-  load_tts_enabled_from_nvs();
-}
-
-int bb_ui_settings_tts_enabled(void) {
-  if (!s_tts_loaded) {
-    load_tts_enabled_from_nvs();
-  }
-  return s_st.tts_enabled ? 1 : 0;
-}
 
 /* ── Cache lookup helpers ── */
 
@@ -396,7 +351,6 @@ static int main_visible_rows(main_row_t* out) {
     out[n++] = MAIN_ROW_SESSIONS;
   }
   out[n++] = MAIN_ROW_VOLUME;
-  out[n++] = MAIN_ROW_TTS;
   /* 密语(锁屏语音解锁) only works in cloud_saas (passphrase_unlock_enabled), so
    * the toggle is only meaningful there — like the ADAPTER/SESSIONS rows (ADR-037). */
   if (bb_transport_is_cloud_saas()) {
@@ -497,9 +451,6 @@ static void render_main(void) {
         snprintf(buf, sizeof(buf), "Volume: %s %d%%", mini, pct);
         break;
       }
-      case MAIN_ROW_TTS:
-        snprintf(buf, sizeof(buf), "Voice: %s", s_st.tts_enabled ? "on" : "off");
-        break;
       case MAIN_ROW_MIYU:
         snprintf(buf, sizeof(buf), "Miyu: %s", s_st.miyu_enabled ? "on" : "off");
         break;
@@ -1203,7 +1154,6 @@ typedef enum {
   COMMIT_KIND_DRIVER = 0,
   COMMIT_KIND_MODEL,
   COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
-  COMMIT_KIND_TTS,     /* int_val = 0/1 */
   COMMIT_KIND_MIYU,    /* int_val = 0/1 → bb_device_config_set_miyu (ADR-037) */
   COMMIT_KIND_ADAPTER, /* site_id = target homeSiteId (WS sites.activate) */
   COMMIT_KIND_PERSIST_DRIVER, /* driver_name → NVS only (split off DRIVER's
@@ -1281,9 +1231,6 @@ static void commit_task(void* arg) {
   } else if (p->kind == COMMIT_KIND_VOLUME) {
     err = bb_device_config_set_volume_pct(p->int_val);
     ESP_LOGI(TAG, "commit volume=%d%% -> %s", p->int_val, esp_err_to_name(err));
-  } else if (p->kind == COMMIT_KIND_TTS) {
-    err = persist_tts_enabled(p->int_val);
-    ESP_LOGI(TAG, "commit tts=%d -> %s", p->int_val, esp_err_to_name(err));
   } else if (p->kind == COMMIT_KIND_MIYU) {
     err = bb_device_config_set_miyu(p->int_val);
     ESP_LOGI(TAG, "commit miyu=%d -> %s", p->int_val, esp_err_to_name(err));
@@ -1376,7 +1323,7 @@ static void spawn_commit_adapter(const char* home_site_id) {
   }
 }
 
-/* Persist a simple integer setting (volume / tts) on a fresh task. NVS/flash
+/* Persist a simple integer setting (volume / miyu) on a fresh task. NVS/flash
  * writes freeze the cache; the stream_task that drives Settings nav has its
  * stack in PSRAM, so writing from there panics
  * (s_task_stack_is_sane_when_cache_frozen). xTaskCreate stacks live in
@@ -1552,7 +1499,7 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   spawn_site_fetch_task();
   rerender();
 
-  ESP_LOGI(TAG, "show level=MAIN tts=%d", s_st.tts_enabled);
+  ESP_LOGI(TAG, "show level=MAIN");
 }
 
 void bb_ui_settings_hide(void) {
@@ -1679,15 +1626,6 @@ int bb_ui_settings_handle_click(void) {
           s_st.vol_pct_lbl = NULL;
           rerender();
           break;
-        case MAIN_ROW_TTS: {
-          /* In-place toggle (no sub-picker — binary value). Persist off the
-           * stream_task (PSRAM stack) — an NVS write there freezes the cache
-           * and panics. */
-          s_st.tts_enabled = !s_st.tts_enabled;
-          spawn_persist_int(COMMIT_KIND_TTS, s_st.tts_enabled);
-          rerender();
-          break;
-        }
         case MAIN_ROW_MIYU: {
           /* 密语(锁屏语音解锁) in-place toggle (ADR-037). Persist off the PSRAM
            * stack via the commit task (NVS write). Takes effect on NEXT boot —

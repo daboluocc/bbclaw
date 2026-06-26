@@ -2,7 +2,6 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
-#include "bb_ui_settings.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
 #include "lvgl.h"
@@ -140,16 +139,14 @@ static void refresh_topbar(void) {
   const char* drv = s_st.driver_buf[0] != '\0' ? s_st.driver_buf : "(no driver)";
   const char* ses = s_st.session_buf[0] != '\0' ? s_st.session_buf : "--------";
   if (s_st.unread_count > 0) {
-    snprintf(buf, sizeof(buf), "%s[%d] | %s | %s %s%s",
+    snprintf(buf, sizeof(buf), "%s[%d] | %s | %s %s",
              drv, s_st.unread_count, ses,
              state_short(s_st.state),
-             bb_ui_settings_tts_enabled() ? "T+" : "T-",
              bb_wifi_is_connected()       ? "W+" : "W-");
   } else {
-    snprintf(buf, sizeof(buf), "%s | %s | %s %s%s",
+    snprintf(buf, sizeof(buf), "%s | %s | %s %s",
              drv, ses,
              state_short(s_st.state),
-             bb_ui_settings_tts_enabled() ? "T+" : "T-",
              bb_wifi_is_connected()       ? "W+" : "W-");
   }
   lv_label_set_text(s_st.topbar_lbl, buf);
