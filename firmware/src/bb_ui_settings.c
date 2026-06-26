@@ -1884,7 +1884,9 @@ int bb_ui_settings_handle_click(void) {
       return 0;
 
     case LEVEL_SYSINFO:
-      /* Read-only page — OK does nothing; BACK returns to main. */
+      /* Read-only page — nothing to commit, so OK just dismisses back to main
+       * (same as BACK), the natural "tap to return" for an info screen. */
+      return_to_main(MAIN_ROW_SYSINFO);
       return 0;
   }
   return 0;
