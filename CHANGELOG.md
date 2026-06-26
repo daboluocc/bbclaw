@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device WS `kind:"ptt.event"`(云端 `RouteFromPeer` 对 device→adapter 的 request 通用透传,无需改云端),
   LAN 走 `POST /v1/agent/ptt`。固件侧单个常驻 worker 排空队列(快速 down/up 不丢、且不为每个边沿建任务,
   规避内部 RAM 碎片致建任务失败);adapter 侧纯日志 + `ptt_event` 指标,不触碰 agent 回合。日志:固件
-  `phase=ptt_event_sent edge=.. action=.. seq=..`,adapter `ptt.event device=.. edge=.. action=.. seq=..`。
+  `phase=ptt_event_sent edge=.. action=.. seq=..`,adapter `cloudrelay: ⮟ ptt device=.. edge=.. action=.. seq=..`。
+  两套 adapter 都加了 handler:`adapter/`(homeadapter + httpapi)与实际在跑的 `adapter_v2/`(cloudrelay)。
+- **adapter_v2:设备上线本地日志**:relay 多路复用所有设备到一条云 WS,本地无单设备连接信号;现按流量推断
+  presence——某设备首次发请求、或静默超 90s 后再次出现时,打 `cloudrelay: ● device online device=..`,
+  让 adapter 日志能记录设备上线。
 
 ### Fixed
 - **固件:后台/云端调音量导致设备重启(cache-disable panic)**:云端把新音量随心跳下发后,

@@ -124,6 +124,35 @@ type Relay struct {
 	dev     *butler.DeviceSession // active-conversation lifecycle (ADR-032)
 	bridges *bridgeManager        // PTY session + Bridge onto session.DefaultID
 	log     func(format string, args ...any)
+
+	// presence tracks the last time each device sent any request, so we can log
+	// a "device online" line on first contact (or after a silence gap). The relay
+	// multiplexes all devices over one cloud WS, so there is no per-device connect
+	// signal — presence is inferred from traffic.
+	presenceMu sync.Mutex
+	lastSeen   map[string]time.Time
+}
+
+// presenceGap is how long a device must be silent before its next request is
+// logged as a fresh "online" again (vs. treated as the same ongoing session).
+const presenceGap = 90 * time.Second
+
+// notePresence logs "device online" the first time a device is seen, or after it
+// has been silent longer than presenceGap, then records the contact time.
+func (r *Relay) notePresence(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	now := time.Now()
+	r.presenceMu.Lock()
+	prev, known := r.lastSeen[deviceID]
+	r.lastSeen[deviceID] = now
+	r.presenceMu.Unlock()
+	if !known {
+		r.log("cloudrelay: ● device online device=%s (first contact)", deviceID)
+	} else if now.Sub(prev) > presenceGap {
+		r.log("cloudrelay: ● device online device=%s (after %s idle)", deviceID, now.Sub(prev).Round(time.Second))
+	}
 }
 
 // New builds a Relay sharing the given session.Manager (so the device's voice
@@ -132,7 +161,7 @@ type Relay struct {
 // conversation's resume flag) and the new/list/resume operations. log is the line
 // logger (e.g. log.Printf).
 func New(mgr *session.Manager, dev *butler.DeviceSession, cfg Config, log func(string, ...any)) *Relay {
-	return &Relay{cfg: cfg, dev: dev, bridges: newBridgeManager(mgr, dev), log: log}
+	return &Relay{cfg: cfg, dev: dev, bridges: newBridgeManager(mgr, dev), log: log, lastSeen: make(map[string]time.Time)}
 }
 
 // Run connects to the cloud and serves relayed requests until ctx is cancelled,
@@ -258,6 +287,9 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 	// "the current device" without the butler knowing its id (curdevice). This is
 	// the device id the cloud config API expects. Unchanged ids are a no-op write.
 	_ = curdevice.Record(env.DeviceID)
+	// Surface device presence locally: log "device online" on first contact (or
+	// after an idle gap) so the adapter log records a device showing up.
+	r.notePresence(env.DeviceID)
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "voice.transcript") {
 		if err := r.handleTranscript(ctx, write, env); err != nil {
 			r.log("cloudrelay: transcript device=%s error: %v", env.DeviceID, err)
@@ -276,6 +308,22 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 	// until the turn timed out.
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "turn.cancel") {
 		r.handleTurnCancel(write, env)
+		return
+	}
+	// ptt.event is PTT-edge telemetry: the device reports EVERY physical PTT
+	// button edge (down/up) + its firmware-recognized action so each button
+	// operation is visible server-side (otherwise PTT is only seen indirectly via
+	// voice.transcript / turn.cancel — empty taps, railed-mic presses, releases
+	// are invisible). Pure telemetry: log it, no side effects, no reply needed
+	// (the device fires-and-forgets).
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "ptt.event") {
+		edge, _ := env.Payload["edge"].(string)
+		action, _ := env.Payload["action"].(string)
+		seq := 0
+		if v, ok := env.Payload["seq"].(float64); ok {
+			seq = int(v)
+		}
+		r.log("cloudrelay: ⮟ ptt device=%s edge=%s action=%s seq=%d", env.DeviceID, edge, action, seq)
 		return
 	}
 	// prompt.select is the device's answer to a forwarded blocking menu (ADR-033) —
