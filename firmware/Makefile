@@ -5,6 +5,13 @@ IDF_PATH ?= $(HOME)/esp/esp-idf
 IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
+# esp_app_desc.version 的真相来源（本地构建）：`git describe --tags --dirty`，
+# 形如 v0.5.17-69-g7544427[-dirty]——tag 作前缀 + 落后 tag 的提交数 + 脏标记。
+# 这样 `make flash` 烧的固件总是自报真实 git 状态，而不是 gitignore 掉的、可能很旧
+# 的 version.txt。发布路线（release_local.sh / CI release.yml）显式传 FW_VERSION=vX.Y.Z
+# 钉死发布版本，覆盖此默认。配合 bb_ota.c 的 dev 构建护栏（dev 版本不自动 OTA）。
+FW_VERSION ?=
+
 # 本地快速发版从这台云端机器取 OTA admin key（CLOUD_OTA_ADMIN_KEY）。可覆盖：
 #   make release-local VERSION=vX.Y.Z OTA_DEPLOY_HOST=root@other-host
 OTA_DEPLOY_HOST ?= root@daboluo.cc
@@ -34,7 +41,7 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
+.PHONY: help idf-env init set-target reconfigure stamp-version build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -87,7 +94,25 @@ list-ports:
 			echo "[list-ports] override with: make flash PORT=/dev/cu.usbmodemXXXX"; \
 		fi
 
-build:
+# Write esp_app_desc.version into version.txt before building. Dev builds derive
+# it from `git describe`; release paths pin it via FW_VERSION=vX.Y.Z. Only rewrite
+# when the value actually changed, so repeated `make flash` on the same commit
+# don't needlessly re-stamp (and trigger an app_desc rebuild).
+stamp-version:
+	@v="$(FW_VERSION)"; \
+	if [ -z "$$v" ]; then v="$$(git describe --tags --dirty --always 2>/dev/null)"; fi; \
+	if [ -n "$$v" ]; then \
+		if [ "$$(cat version.txt 2>/dev/null)" != "$$v" ]; then \
+			printf '%s' "$$v" > version.txt; \
+			echo "[version] esp_app_desc.version = $$v"; \
+		else \
+			echo "[version] esp_app_desc.version = $$v (unchanged)"; \
+		fi; \
+	else \
+		echo "[version] WARN: 无法从 git 推导版本且未传 FW_VERSION，沿用现有 version.txt"; \
+	fi
+
+build: stamp-version
 	@# Keep the project-root copy of partitions_ota.csv in sync with boards/bbclaw/.
 	@# boards/bbclaw/ is the source of truth; the root copy is what ESP-IDF reads.
 	@if [ -f boards/bbclaw/partitions_ota.csv ]; then \

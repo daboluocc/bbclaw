@@ -122,13 +122,53 @@ esp_err_t bb_ota_init(void) {
     return ESP_OK;
 }
 
+// 本地 dev 构建判定。`make flash` 烧录的固件 esp_app_desc.version 来自
+// `git describe --tags --dirty`，形如 "v0.5.17-69-g7544427" 或 "...-dirty"：
+//   - "-dirty"      工作区有未提交改动
+//   - "-<N>-g<hash>" 落后/超前最新 tag N 个 commit（git describe 的"提交数+短哈希"段）
+// 干净发布（CI 注入 tag）是精确的 "vX.Y.Z"，release_local 推送是 "vM.m.p-g<hash>"
+// （"-g" 前没有提交数段），两者都不会命中，仍正常走 OTA。
+static bool bb_ota_is_dev_build(const char* v) {
+    if (v == NULL || v[0] == '\0') {
+        return false;
+    }
+    if (strstr(v, "-dirty") != NULL) {
+        return true;
+    }
+    for (const char* d = strchr(v, '-'); d != NULL; d = strchr(d + 1, '-')) {
+        const char* p = d + 1;
+        if (*p < '0' || *p > '9') {
+            continue;  // 需要 "-数字" 开头
+        }
+        while (*p >= '0' && *p <= '9') {
+            p++;
+        }
+        if (p[0] == '-' && p[1] == 'g') {
+            return true;  // 命中 "-<N>-g"
+        }
+    }
+    return false;
+}
+
 esp_err_t bb_ota_check(ota_update_info_t* info) {
     if (info == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    s_state = OTA_STATE_CHECKING;
     memset(info, 0, sizeof(*info));
+
+    // 本地 dev 构建护栏：云端 VersionGreater 只比较 M.m.p，而最新 tag 永远落后于
+    // 已推 OTA 的 active 版本，于是 `make flash` 的 dev 构建每次开机都被判"有更新"
+    // → 无谓升级弹窗，甚至把刚烧的调试固件 OTA 覆盖掉。dev 构建不该被自动顶替，
+    // 这里直接短路、连云端都不打。正式发布 / release_local 推送不受影响。
+    const char* cur = bb_ota_get_current_version();
+    if (bb_ota_is_dev_build(cur)) {
+        ESP_LOGW(TAG, "OTA check skipped: dev/dirty build %s — local git build never auto-OTA", cur);
+        s_state = OTA_STATE_IDLE;
+        return ESP_OK;  // info 已清零 → has_update=false
+    }
+
+    s_state = OTA_STATE_CHECKING;
 
     char url[256];
     snprintf(url, sizeof(url), "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3",

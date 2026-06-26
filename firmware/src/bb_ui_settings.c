@@ -106,6 +106,10 @@ static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
 
 #define HEADER_H 22
 #define ROW_H    26
+/* Reserve the bottom strip for the footer hint ("Hold to exit") — the
+ * "reminder" the list must never overlap. The bbclaw panel is only 172px tall,
+ * so the rows live in [HEADER_H, DISP_H - FOOTER_H] and scroll within it. */
+#define FOOTER_H 22
 
 /* ── Level / row enums ── */
 
@@ -283,14 +287,25 @@ static void build_rows_box(int row_count) {
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.rows_box);
-  /* Height = row_count * ROW_H + small padding. Cap so it never overflows
-   * the (typically 240-tall) screen — caller picks reasonable row_count. */
-  int box_h = row_count * ROW_H + 6;
+  /* Bound the list to the region between the header and the footer hint. When
+   * the menu has more rows than fit (e.g. cloud_saas: Adapter/Sessions + Volume
+   * /Voice/Miyu/Firmware = 6 rows, ~178px on a 172px panel) the box caps to the
+   * available height and scrolls; highlight_selected() keeps the cursor in view.
+   * When everything fits, box_h == content so there's nothing to scroll.
+   * content = pad_top(4) + rows*ROW_H + pad_bottom(4). */
+  int content_h = row_count * ROW_H + 8;
+  int avail_h = BBCLAW_ST7789_HEIGHT - HEADER_H - FOOTER_H;
+  int box_h = content_h < avail_h ? content_h : avail_h;
   lv_obj_set_size(s_st.rows_box, lv_pct(100), box_h);
   lv_obj_align(s_st.rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
   lv_obj_set_flex_flow(s_st.rows_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(s_st.rows_box, 4, 0);
-  lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_pad_row(s_st.rows_box, 0, 0); /* exact ROW_H spacing for box_h math */
+  /* Encoder-driven vertical scroll: no scrollbar (the moving highlight + the
+   * scroll-into-view in highlight_selected are the only affordances), and lock
+   * the axis to vertical so a long marquee row can't drag the list sideways. */
+  lv_obj_set_scroll_dir(s_st.rows_box, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(s_st.rows_box, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
   for (int i = 0; i < row_count && i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
     lv_obj_t* row = lv_label_create(s_st.rows_box);
@@ -330,6 +345,15 @@ static void highlight_selected(void) {
       lv_obj_set_style_border_width(row, 0, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
     }
+  }
+
+  /* Keep the cursor visible when the list is taller than the bounded rows_box.
+   * update_layout first so the freshly-built/moved rows have current
+   * coordinates; lv_obj_scroll_to_view is a no-op when the row already fits. */
+  if (s_st.rows_box != NULL && s_st.sel >= 0 && s_st.sel < s_st.rows_used &&
+      s_st.rows[s_st.sel] != NULL) {
+    lv_obj_update_layout(s_st.rows_box);
+    lv_obj_scroll_to_view(s_st.rows[s_st.sel], LV_ANIM_OFF);
   }
 }
 

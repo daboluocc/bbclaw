@@ -62,7 +62,8 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
   cp sdkconfig.bbclaw.latest sdkconfig
   printf '%s' "$VERSION" > version.txt
   echo "[release-local] make build …（需先 get_idf 加载 ESP-IDF 环境）"
-  make build
+  # 显式钉死发布版本，覆盖 Makefile stamp-version 的 git describe 默认，避免被改写。
+  make build FW_VERSION="$VERSION"
 fi
 
 # 生成指向 ota_0(seq=1) 的 otadata —— 默认全 0xFF 会指 factory，放不下 2.36MB 固件。

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **本地烧录版本号 + dev 构建不再被云端逼升级**:本地 `make build`/`make flash` 烧的固件
+  之前 esp_app_desc.version 来自 gitignore 掉的陈旧 `version.txt`(或落后的最新 tag),自报
+  版本恒低于云端 active → 每次开机 OTA 检查都判「有更新」,弹升级框甚至把刚烧的调试固件
+  OTA 覆盖掉。两处修复:
+  1. **Makefile `stamp-version`**:`make build` 前用 `git describe --tags --dirty` 把版本写进
+     `version.txt`(形如 `v0.5.17-69-g7544427-dirty`——tag 前缀 + 落后 tag 提交数 + 脏标记),
+     本地构建总是自报真实 git 状态。发布路线(`release_local.sh` / CI `release.yml`)显式传
+     `FW_VERSION=vX.Y.Z` 钉死发布版本,行为不变。
+  2. **`bb_ota.c` dev 构建护栏**:`bb_ota_check()` 检测到运行版本是 git describe 的 dev/脏构建
+     (含 `-dirty` 或 `-<N>-g<hash>` 提交数段)就直接短路、连云端都不打,`has_update=false`。
+     干净 tag 发布与 release_local 推送(`vM.m.p-g<hash>`,无提交数段)不受影响,仍正常 OTA。
+- **固件:设置菜单过长溢出 → 改为可滚动列表**:新增 Firmware 行后,cloud_saas 下主菜单已有
+  6 行(Adapter / Sessions / Volume / Voice / Miyu / Firmware),`22(头) + 6×26 = 178px` 超过 bbclaw
+  面板的 172px 高,尾部 Miyu/Firmware 行连同底部「Hold to exit」提醒一起被挤出屏幕、选不中也看不见。
+  现在 `rows_box` 限高到「头部与底栏提醒之间」的可用区(`DISP_H - HEADER_H - FOOTER_H`)并开启纵向滚动
+  (`LV_DIR_VER`,无滚动条,编码器驱动);`highlight_selected()` 在每次选中变化时 `lv_obj_scroll_to_view`
+  把光标行滚入可视区,底栏提醒始终留白不被覆盖。对所有列表层级生效(主菜单 / Driver / Adapter /
+  Sessions / Model 选择器,Sessions 最多 16 行尤其受益)。
 - **固件:语音「不跟手」+ 头被吃掉 + 自己打断自己(三连)**——PTT 遥测日志把问题照清楚后定位:
   1. **头被吃掉**:VAD arm(攒够 240ms 说话才起流)触发那刻,arm 窗口里录的音**只 seed 最后一帧
      (~32ms)**,开头被丢 →「调到20」识别成「到20」。改为 arm 期间把每帧滚动累积进 8192B(~256ms)

@@ -69,7 +69,10 @@ jobs:
           # Without this the version was hardcoded → device always reported the
           # old version → infinite OTA loop.
           printf '%s' "${RELEASE_VERSION}" > version.txt
-          make build
+          # Pin the release version explicitly so the Makefile stamp-version step
+          # uses the tag (not `git describe`, which may be a hash on a shallow CI
+          # checkout without tags) for esp_app_desc.version.
+          make build FW_VERSION="${RELEASE_VERSION}"
 
       - name: Generate OTA data (ota_0 boot)
         # The default ota_data_initial.bin (all 0xFF) points to factory which
