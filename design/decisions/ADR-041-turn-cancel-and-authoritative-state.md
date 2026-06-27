@@ -127,6 +127,30 @@ adapter 的 `extract/boundary` 只识别 spinner("esc to interrupt") 和 idle �
   固件"草稿"语义从"撤销保留"改为"committed 前过渡 + cancelled 后标记"。
 - **依赖 ADR-035 抓屏**：INTERRUPTED 态识别 + IDLE 确认都靠 extract/vtscreen。
 
+## 6.5 实现修正（来自对抗验证 2026-06-27，已核对代码）
+
+三条经对抗验证后必须修订的实现约束：
+
+1. **干净取消的状态机必须跑在 Run 的 goroutine 里，不能在 `Interrupt()`/`SubmitVoiceTurn` 里同步轮询。**
+   `b.screen`(vtscreen) 是**单属主**(只有 Run 的 goroutine 喂它、读它),不是 goroutine-safe;
+   而 `Interrupt`/`SubmitVoiceTurn` 跑在**传输 goroutine**。在那里同步轮询 `b.screen.VisibleText()`
+   会与 Run 的 `b.screen.Feed` 数据竞争。**做法:加 `cancelReq chan cancelOp`(cap 1),
+   `Interrupt`/barge-in 分支只往 channel 投请求;Run 的 loop 收到后在自己 goroutine 里执行
+   "ESC → 轮询到 INTERRUPTED → 发 dismiss 键 → 轮询到干净 IDLE →(若 barge-in)注入新句 →
+   发 turn.cancelled/idle"。`cancelOp{inject string}`:空=纯取消,非空=barge-in 要注入的文本。**
+2. **双路径在 adapter_v2 + cloud_saas 下其实是死路。** adapter_v2 的 cloudrelay **没有
+   `agent.message` 处理器**(proxy.go 只有复数 `agent.messages` 列历史;cloudrelay.go:343
+   未知 kind 直接丢弃)。固件 `/v1/agent/message` fallback(bb_radio_app.c:2974 reply_text 空分支)
+   在 cloud_saas 下会 hang/timeout,**根本到不了 Bridge**。所以**没有第二个活入口、没有状态漏洞**;
+   turn.* 只在 WS voice 路径发即可。固件那条 fallback 是 **P4 清理**(P1/P3 不碰)。
+3. **检测缺口已在代码确认**:`boundary.go:220 isIdlePromptLine()` 只认裸 `❯`/`>`,而 INTERRUPTED
+   重定向屏也有裸 `❯` → `scanStatus` 报 idlePrompt=true → 因本轮已 `sawSpinner`,`TurnEnded()` 在
+   重定向态就返回 true。修法:`extract/prompt.go` 加 `PromptInterrupted`;`Detector` 加
+   `interruptedOnScreen` 字段,`refresh()` 里置位,`TurnEnded()` 在 sawSpinner 短路**之前**加
+   `if d.interruptedOnScreen { return false }`。
+4. **dismiss 键是唯一最脆假设**:集中成一个常量 `redirectDismissKey`(暂=第二个 ESC),真 claude 上
+   验证后一处即可改。配 PTY fixture 回归。
+
 ## 7. 落地分期
 
 - **P1（adapter，最关键）**：extract 识别 INTERRUPTED；`Interrupt()`/barge-in 改为
