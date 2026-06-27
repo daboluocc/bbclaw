@@ -1,7 +1,8 @@
 # ADR-040 — 设备 ↔ adapter 回合状态权威同步
 
-- **状态**: Accepted（Layer-1 + Layer-2 三端均已实现并提交。adapter_v2 + 云已
-  build + test 通过；固件待真机 flash 验证。云端改动已在私有 repo 提交，**未推送/未部署**）
+- **状态**: Accepted（Layer-1 + Layer-2 三端均已实现并提交。**云端已本地部署上线**
+  （`a4a9598`，daboluo.cc，healthz ok）；固件编译已验证、待真机 flash；adapter_v2
+  已提交、运行中的旧进程待 rebuild+重启。云端 commit 仍 **未 push 到 origin**）
 
 ## 实现落点（已提交）
 
