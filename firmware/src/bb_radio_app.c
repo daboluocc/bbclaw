@@ -395,13 +395,6 @@ static size_t s_voice_verify_pcm_len;
 static size_t s_voice_verify_pcm_cap;
 static int s_voice_verify_truncated;
 
-/* 锁屏唤醒门(密语交互):待机表盘下第一次按键只「唤醒」到挂锁页提示,不立刻录音验证;
- * 松开再按一次才真正进密语验证。避免待机随手一按就开录(用户反馈)。 */
-static int s_locked_awake = 0;          /* 0=待机表盘, 1=已唤醒显示挂锁页 */
-static int s_locked_capture_armed = 0;  /* 唤醒后已松开一次,下一次按 PTT 才录音验证 */
-static int64_t s_locked_awake_ms = 0;   /* 上次唤醒/活动时刻,用于空闲超时退回待机 */
-#define BB_LOCKED_AWAKE_TIMEOUT_MS 8000 /* 挂锁页空闲 ~8s 无操作 → 退回待机表盘 */
-
 
 /* VAD 触发后的「种子」音频。原经 xRingbufferSend 进环；与 LVGL/SPI 异核时易在环缓冲
  * 自旋锁上触发 INT WDT，改为先内存再 ingest。
@@ -477,8 +470,6 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
     ESP_LOGI(TAG, "STATE_TRANSITION: %s -> %s",
              radio_app_state_name(prev), radio_app_state_name(state));
     s_app_state = state;
-    s_locked_awake = 0;          /* 唤醒门只在 LOCKED 待机里有意义,任何状态切换都清掉 */
-    s_locked_capture_armed = 0;
     refresh_lock_screen_visibility();
     /* Phase 4.9: 同步 bb_state 协调器。dispatch 内的转换表会校验合法性
      * 并打结构化日志。事件选取遵循"原因优先"原则：解锁 → VERIFY_OK，
@@ -2216,14 +2207,8 @@ static void stream_task(void* arg) {
 
         switch (s_app_state) {
           case BBCLAW_STATE_LOCKED:
-            /* 待机表盘下任意导航键也只「唤醒」到挂锁页提示(不触发原功能);PTT 同理。
-             * 解锁仍只能靠 PTT 密语验证——导航键在挂锁页上只是续命/保持唤醒。 */
-            if (!s_locked_awake) {
-              s_locked_awake = 1;
-              s_locked_capture_armed = 0;
-              (void)bb_display_show_status(BB_STATUS_VERIFY_WAKE);
-            }
-            s_locked_awake_ms = bb_now_ms();
+            /* Nav events ignored in LOCKED; only PTT (passphrase verify) is alive.
+             * (ADR-041 后续：去掉「先唤醒再录」唤醒门，PTT 第一按即录密语。) */
             break;
 
           case BBCLAW_STATE_CHAT: {
@@ -2406,18 +2391,6 @@ static void stream_task(void* arg) {
       continue;
     }
 
-    /* 锁屏唤醒态:松开 PTT → arm(把「唤醒那一按」和「验证那一按」分开,下一次按才录音)。 */
-    if (!s_ptt_pressed && radio_app_is_locked() && s_locked_awake && !s_locked_capture_armed) {
-      s_locked_capture_armed = 1;
-    }
-    /* 挂锁页空闲超时:唤醒后 ~8s 无操作(且没在录音/验证)→ 退回待机表盘。 */
-    if (s_locked_awake && !verifying && !s_capture_active &&
-        (bb_now_ms() - s_locked_awake_ms) > BB_LOCKED_AWAKE_TIMEOUT_MS) {
-      s_locked_awake = 0;
-      s_locked_capture_armed = 0;
-      if (radio_app_is_locked()) show_idle_ready_or_locked();
-    }
-
     unsigned ptt_version = s_ptt_change_version;
     if (ptt_version != ptt_handled_version) {
       /* Always consume the version, even when we won't act — otherwise a
@@ -2558,22 +2531,10 @@ static void stream_task(void* arg) {
         continue;
       }
       if (radio_app_is_locked()) {
-        /* 唤醒门:待机表盘下第一次按 PTT 只「唤醒」到挂锁页提示,不录音;松开再按才验证。 */
-        if (!s_locked_awake) {
-          s_locked_awake = 1;
-          s_locked_capture_armed = 0;
-          s_locked_awake_ms = bb_now_ms();
-          (void)bb_display_show_status(BB_STATUS_VERIFY_WAKE); /* 挂锁页:设备已锁定 / 请按住说话键后说出密语 */
-          (void)bb_motor_trigger(BB_MOTOR_PATTERN_PTT_PRESS);
-          vTaskDelay(pdMS_TO_TICKS(20));
-          continue;
-        }
-        if (!s_locked_capture_armed) {
-          /* 还是「唤醒那一次」的按下没松手:不录,等松开后下次再按。 */
-          vTaskDelay(pdMS_TO_TICKS(20));
-          continue;
-        }
-        s_locked_awake_ms = bb_now_ms(); /* 真正验证:刷新活动时间,避免被空闲超时打断 */
+        /* ADR-041 后续:去掉「唤醒门」——LOCKED 下第一按 PTT 即录密语。原 8b160d8 的
+         * 「先唤醒、松开再按才录」让用户说完密语却没录进(说进了不录音的唤醒按里),
+         * 还叠了 8s 超时从按下起算的 bug,要按 2~3 次。LOCKED 误触只会 verify 失败、
+         * 无害(不发 agent),所以唤醒门防误触收益小、却毁了解锁体验。1 按即录。 */
         if (!bb_transport_is_cloud_saas()) {
           show_status_error(BB_STATUS_VERIFY_ERR);
           (void)bb_display_show_chat_turn("Voice unlock unavailable", "cloud_saas transport required");
