@@ -151,6 +151,11 @@ static bool bb_ota_is_dev_build(const char* v) {
 }
 
 esp_err_t bb_ota_check(ota_update_info_t* info) {
+    // 开机 / 静默自动检查：保留 dev/dirty 护栏（不打扰正在调试的 make flash 固件）。
+    return bb_ota_check_ex(info, /*allow_dev_build=*/false);
+}
+
+esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool allow_dev_build) {
     if (info == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -161,11 +166,18 @@ esp_err_t bb_ota_check(ota_update_info_t* info) {
     // 已推 OTA 的 active 版本，于是 `make flash` 的 dev 构建每次开机都被判"有更新"
     // → 无谓升级弹窗，甚至把刚烧的调试固件 OTA 覆盖掉。dev 构建不该被自动顶替，
     // 这里直接短路、连云端都不打。正式发布 / release_local 推送不受影响。
+    //
+    // allow_dev_build=true（用户在菜单主动点「Check Update」）跳过护栏：明确要升级就
+    // 照常查云端，dirty 也能被识别升级——但只在主动触发，不在开机自动路径，避免调试
+    // 固件每次开机被升级弹窗顶掉。
     const char* cur = bb_ota_get_current_version();
-    if (bb_ota_is_dev_build(cur)) {
+    if (!allow_dev_build && bb_ota_is_dev_build(cur)) {
         ESP_LOGW(TAG, "OTA check skipped: dev/dirty build %s — local git build never auto-OTA", cur);
         s_state = OTA_STATE_IDLE;
         return ESP_OK;  // info 已清零 → has_update=false
+    }
+    if (allow_dev_build && bb_ota_is_dev_build(cur)) {
+        ESP_LOGI(TAG, "OTA check: dev/dirty build %s — 手动 Check Update 放行 dev 护栏", cur);
     }
 
     s_state = OTA_STATE_CHECKING;

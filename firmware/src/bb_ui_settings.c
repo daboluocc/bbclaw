@@ -968,7 +968,9 @@ static void ota_check_task(void* arg) {
     vTaskDeleteWithCaps(NULL);
     return;
   }
-  r->err = bb_ota_check(&r->info);
+  /* 菜单「Check Update」是用户主动触发——放行 dev/dirty 护栏，dirty 构建也能
+   * 查到并升级（开机自动检查仍走 bb_ota_check 保留护栏）。 */
+  r->err = bb_ota_check_ex(&r->info, /*allow_dev_build=*/true);
   if (lvgl_port_lock(200)) {
     lv_async_call(on_ota_check_done, r);
     lvgl_port_unlock();
