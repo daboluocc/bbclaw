@@ -316,7 +316,17 @@ esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool allow_dev_build) {
     // 了占位/dev 版本号）。cloud 因此持续 hasUpdate=true，继续弹窗只会无限重刷，
     // 故在此退避，让设备正常进入主流程。这是软件侧兜底，根因仍需发布构建注入
     // 递增版本号（见 CLAUDE.md 发布约束 / release_local.sh）。
-    if (info->has_update && info->version[0] != '\0') {
+    //
+    // ⚠️ 仅在开机/自动检查路径（allow_dev_build=false）执行这段 NVS 读：
+    // ota_nvs_get_last_try 读 NVS → SPI flash 读 → 冻结 flash cache，期间 PSRAM
+    // 不可访问。开机自动检查跑在内部 RAM 栈任务上，安全;但菜单「Check Update」
+    // (allow_dev_build=true) 跑在 PSRAM 栈任务 spawn_ota_check_task() 上——在那里
+    // 读 NVS 会触发 esp_task_stack_is_sane_cache_disabled assert，设备直接重启
+    // （bug: 菜单页面检查升级触发设备重启）。死循环护栏本就是为了挡开机「自动」
+    // 无限重刷;菜单是用户一次性手动触发、不会自动成环，跳过护栏即可——开机路径
+    // 仍保留护栏。后续若菜单也要护栏，需把这次 NVS 读挪到内部 RAM 栈
+    //（参见 bb_ui_agent_chat.c 的 load_nvs_on_internal_stack 范式）。
+    if (!allow_dev_build && info->has_update && info->version[0] != '\0') {
         char last_try[sizeof(info->version)] = {0};
         if (ota_nvs_get_last_try(last_try, sizeof(last_try)) == ESP_OK &&
             last_try[0] != '\0' &&

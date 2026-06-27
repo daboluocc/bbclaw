@@ -969,7 +969,13 @@ static void ota_check_task(void* arg) {
     return;
   }
   /* 菜单「Check Update」是用户主动触发——放行 dev/dirty 护栏，dirty 构建也能
-   * 查到并升级（开机自动检查仍走 bb_ota_check 保留护栏）。 */
+   * 查到并升级（开机自动检查仍走 bb_ota_check 保留护栏）。
+   *
+   * ⚠️ 本任务栈在 PSRAM（spawn_ota_check_task 用 BBCLAW_MALLOC_CAP_PREFER_PSRAM）。
+   * 因此 bb_ota_check_ex(allow_dev_build=true) 这条路径绝不能做任何 NVS / SPI
+   * flash 操作——flash 读写会冻结 cache，期间 PSRAM 栈不可访问 → cache-disabled
+   * assert → 设备重启。bb_ota_check_ex 已把 #179 NVS 死循环护栏限定在
+   * allow_dev_build=false（开机内部栈）路径。日后别往这条 check 路径加 NVS。 */
   r->err = bb_ota_check_ex(&r->info, /*allow_dev_build=*/true);
   if (lvgl_port_lock(200)) {
     lv_async_call(on_ota_check_done, r);
