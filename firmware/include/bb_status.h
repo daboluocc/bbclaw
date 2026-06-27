@@ -23,6 +23,10 @@
 #define BB_STATUS_VERIFY     "VERIFY"
 #define BB_STATUS_VERIFY_TX  "VERIFY TX"
 #define BB_STATUS_VERIFY_ERR "VERIFY ERR"
+/* 锁屏「唤醒」态:待机表盘下第一次按键先亮挂锁页提示(还没录音/验证)。前 6 字符
+ * 仍是 "VERIFY",复用 should_show_locked_view 的挂锁页判定;非三个精确 VERIFY 串,
+ * 故走 bb_page_locked_update_status 默认分支(设备已锁定 / 请按住说话键后说出密语)。 */
+#define BB_STATUS_VERIFY_WAKE "VERIFY WAKE"
 
 /* ── Response / Playback ── */
 #define BB_STATUS_SPEAK  "SPEAK"
