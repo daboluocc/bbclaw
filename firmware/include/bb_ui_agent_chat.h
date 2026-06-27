@@ -328,6 +328,13 @@ void bb_ui_agent_chat_voice_listening(int begin);
  */
 void bb_ui_agent_chat_voice_processing(void);
 
+/* ADR-040: show a「未发送」hint in the topbar speaking-status when a captured
+ * turn was cancelled/interrupted before its reply landed. The turn's question
+ * bubble stays in the transcript (joined with the conversation flow); this only
+ * marks that the send→reply round-trip didn't complete. Cleared by the next
+ * LISTEN (PTT press) or SESSION/state frame. Safe to call from any task. */
+void bb_ui_agent_chat_voice_unsent(void);
+
 /* Session picker removed (ADR-021-firmware-ui v2, issue #103).
  * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h).
  * CWD pool picker (issue #30) removed with it — device-side session creation

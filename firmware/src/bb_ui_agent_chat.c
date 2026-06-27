@@ -2355,6 +2355,17 @@ void bb_ui_agent_chat_voice_processing(void) {
   });
 }
 
+void bb_ui_agent_chat_voice_unsent(void) {
+  if (!s_chat.active) return;
+  /* ADR-040: 用户在回复落地前撤销/打断了这一回合。它的问题气泡仍留在 transcript
+   * 里(与前后句拼在一起、像正常回合那样连续显示),但这一句并没有走完发送→回复
+   * 的闭环。原来设备对此毫无指示,用户分不清某句是"已发"还是"没发出去"。这里在
+   * 顶栏说话状态显示「未发送」把这个状态显式化。下一次 PTT(LISTEN..)或收到
+   * SESSION/state 帧时由 post_session 还原成真实会话 id。 */
+  ESP_LOGI(TAG, "voice_unsent → topbar '未发送' (turn cancelled before reply)");
+  post_session("未发送");
+}
+
 void bb_ui_agent_chat_voice_error(void) {
   if (!s_chat.active) return;
   if (s_chat.sending) return;
