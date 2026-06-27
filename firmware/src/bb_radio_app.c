@@ -2962,11 +2962,19 @@ static void stream_task(void* arg) {
           ESP_LOGI(TAG, "phase=finish_aborted_by_user stream=%s (barge-in, starting new turn)",
                    stream.stream_id);
           agent_chat_voice_post_error(NULL); /* 仅清 listening 提示 */
-          /* ADR-028 §2.5.1 (撤回语义):把这条被打断的回合从 transcript + cache
-           * 撤掉(刚发出、正在处理的提问 + 它的半截回复)。单击撤销→屏幕回到
-           * 上一轮;按住重说→旧轮先撤,稍后新轮正常 append。finish_stream 已
-           * 返回,不会再有本 turn 的渲染入队,撤回安全。 */
-          bb_ui_agent_chat_withdraw_last_turn();
+          /* ADR-040(修订 ADR-028 §2.5.1 撤回语义):只撤回 adapter 从未提交的回合。
+           * cloud_saas 下 asr.final 已回(ui_stream->transcript 非空)= 云已转写并已把
+           * 这句路由给 adapter/claude(web 终端可见、adapter 已 commit)。此时本地整轮
+           * 撤回会与 adapter 发散——正是"设备看不到上面那句、只有 web 看得到"的根因。
+           * 故保留用户的问题气泡(它的半截回复已被 stale stream_id 丢弃),让设备与
+           * adapter 一致;仅当 transcript 仍为空(ASR 出结果前就被打断 = 误触/纯撤销
+           * 手势)才整轮撤回。彻底一致由 Layer-2 adapter 权威 turn.committed/superseded
+           * 对账解决(见 ADR-040)。 */
+          if (ui_stream != NULL && ui_stream->transcript[0] != '\0') {
+            ESP_LOGI(TAG, "barge-in: keep committed turn (asr.final shown) — not withdrawing (ADR-040)");
+          } else {
+            bb_ui_agent_chat_withdraw_last_turn();
+          }
         } else {
           ESP_LOGE(TAG,
                    "phase=finish_failed esp=%s http_status=%d error_code=%s stream=%s reply_wait_timed_out=%d",
