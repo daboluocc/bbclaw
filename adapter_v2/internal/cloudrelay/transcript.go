@@ -65,6 +65,21 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 		return err
 	}
 
+	// ADR-040: the turn is now authoritatively COMMITTED — the transcript was
+	// injected into the CLI as a real user turn. Tell the device (seq-ordered) so
+	// it reconciles its optimistic, PTT-driven UI against ground truth: re-show
+	// this turn if a local barge-in/withdraw dropped it, and stop flagging it
+	// 「未发送」. Without this the device's local turn decisions can silently
+	// diverge from what the adapter actually ran (the bug ADR-040 fixes).
+	cb.seq++
+	turnSeq := cb.seq
+	_ = write(Envelope{
+		Type: "event", MessageID: env.MessageID, DeviceID: env.DeviceID,
+		HomeSiteID: r.cfg.HomeSiteID, Kind: "turn.committed",
+		Payload: map[string]any{"seq": turnSeq, "text": text},
+	})
+	r.log("cloudrelay: ⊙ turn.committed device=%s seq=%d text=%q", deviceID, turnSeq, text)
+
 	// Keepalive: a silent turn (long thinking / a long-running tool call) must
 	// reset the cloud's per-request reply-idle timer (ReplyIdleWait, default 120s)
 	// or the cloud drops the turn. Only a MessageID-bearing event resets it (the
@@ -92,6 +107,15 @@ waitLoop:
 			// was spoken for this turn yet, so return a clean empty reply to complete
 			// the cloud's request for THIS messageID; the newer transcript carries its
 			// own reply (and its SubmitVoiceTurn ESC-aborted this turn's CLI work).
+			//
+			// ADR-040: this turn WAS committed (turn.committed already went out) — its
+			// REPLY was interrupted, not the turn itself. Tell the device so it keeps
+			// the question bubble but marks it「已发送·已打断」rather than「未发送」.
+			_ = write(Envelope{
+				Type: "event", MessageID: env.MessageID, DeviceID: env.DeviceID,
+				HomeSiteID: r.cfg.HomeSiteID, Kind: "turn.superseded",
+				Payload: map[string]any{"seq": turnSeq, "reason": "interrupted_after_commit"},
+			})
 			r.log("cloudrelay: ⊘ reply device=%s superseded by newer transcript (barge-in) after %s",
 				deviceID, time.Since(started).Round(time.Millisecond))
 			return write(Envelope{
@@ -218,6 +242,11 @@ type cloudBridge struct {
 	// preempt() cancels it so a barging-in transcript doesn't block behind it.
 	actMu  sync.Mutex
 	active *turnHandle
+
+	// seq is a monotonic per-device turn counter (ADR-040). Bumped once per
+	// committed turn while holding turnMu, so the device can order/dedup the
+	// authoritative turn.committed/turn.superseded events and detect a gap.
+	seq uint64
 }
 
 // turnHandle identifies one in-flight turn for preemption. Pointer identity (not

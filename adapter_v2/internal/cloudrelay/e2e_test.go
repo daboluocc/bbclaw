@@ -32,10 +32,13 @@ func TestE2ECloudRelayVoiceTurn(t *testing.T) {
 
 	// Channels for the mock cloud to report what adapter_v2 sent back.
 	type result struct {
-		sawInfo  bool
-		deltas   int
-		replyOK  bool
-		replyTxt string
+		sawInfo      bool
+		deltas       int
+		replyOK      bool
+		replyTxt     string
+		committed    bool   // saw turn.committed (ADR-040)
+		committedTxt string // its text payload
+		committedSeq float64
 	}
 	resCh := make(chan result, 1)
 
@@ -69,6 +72,10 @@ func TestE2ECloudRelayVoiceTurn(t *testing.T) {
 			switch {
 			case env.Type == "info":
 				res.sawInfo = true
+			case env.Type == "event" && env.Kind == "turn.committed":
+				res.committed = true
+				res.committedTxt, _ = env.Payload["text"].(string)
+				res.committedSeq, _ = env.Payload["seq"].(float64)
 			case env.Type == "event" && env.Kind == "voice.reply.delta":
 				res.deltas++
 			case env.Type == "reply" && env.Kind == "voice.reply":
@@ -107,6 +114,17 @@ func TestE2ECloudRelayVoiceTurn(t *testing.T) {
 		}
 		if res.deltas == 0 {
 			t.Errorf("no voice.reply.delta streamed (StreamReplyDelta on)")
+		}
+		// ADR-040: the authoritative turn.committed must precede the reply, carry
+		// the injected transcript, and start the per-device seq at 1.
+		if !res.committed {
+			t.Error("never received turn.committed (ADR-040)")
+		}
+		if res.committedTxt != "hello" {
+			t.Errorf("turn.committed text = %q, want \"hello\"", res.committedTxt)
+		}
+		if res.committedSeq != 1 {
+			t.Errorf("turn.committed seq = %v, want 1", res.committedSeq)
 		}
 	case <-time.After(25 * time.Second):
 		t.Fatal("timed out waiting for voice.reply")
