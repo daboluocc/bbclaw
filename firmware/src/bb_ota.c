@@ -141,9 +141,26 @@ esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool manual_check) {
 
     s_state = OTA_STATE_CHECKING;
 
-    char url[256];
-    snprintf(url, sizeof(url), "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3",
-             BBCLAW_CLOUD_BASE_URL, BBCLAW_DEVICE_ID, bb_ota_get_current_version());
+    // #179 防砖死循环护栏已迁到 cloud:判断放后台,固件只「上报事实」。开机/自动路径
+    // (manual_check=false,跑在内部 RAM 栈,读 NVS 安全)把 last_try——「上次真正烧录并
+    // 重启进去的目标版本」(bb_ota_apply_update 里 set,只有 reboot 那一刻才置位)——作为
+    // 事实带给 cloud,由 cloud 决定要不要退避。菜单路径(manual_check=true,PSRAM 栈不能读
+    // NVS,否则 cache-disabled assert 重启)不带 last_try,cloud 因此对它不启用护栏——与
+    // 旧固件「菜单路径跳过护栏」语义一致。
+    char last_try[sizeof(info->version)] = {0};
+    if (!manual_check) {
+        (void)ota_nvs_get_last_try(last_try, sizeof(last_try));
+    }
+
+    char url[320];
+    if (last_try[0] != '\0') {
+        snprintf(url, sizeof(url),
+                 "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3&last_try=%s",
+                 BBCLAW_CLOUD_BASE_URL, BBCLAW_DEVICE_ID, bb_ota_get_current_version(), last_try);
+    } else {
+        snprintf(url, sizeof(url), "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3",
+                 BBCLAW_CLOUD_BASE_URL, BBCLAW_DEVICE_ID, bb_ota_get_current_version());
+    }
 
     ESP_LOGI(TAG, "OTA check: %s", url);
 
@@ -269,36 +286,10 @@ esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool manual_check) {
         }
     }
 
-    // 死循环护栏（issue #179）：若 cloud 给出的目标版本与上次「已烧录并重启」
-    // 尝试过的版本相同，但当前运行版本仍未变成该目标版本，说明上一次升级虽然
-    // 烧录成功，新固件自报的 esp_app_desc.version 却没有递增（典型：发布构建用
-    // 了占位/dev 版本号）。cloud 因此持续 hasUpdate=true，继续弹窗只会无限重刷，
-    // 故在此退避，让设备正常进入主流程。这是软件侧兜底，根因仍需发布构建注入
-    // 递增版本号（见 CLAUDE.md 发布约束 / release_local.sh）。
-    //
-    // ⚠️ 仅在开机/自动检查路径（manual_check=false）执行这段 NVS 读：
-    // ota_nvs_get_last_try 读 NVS → SPI flash 读 → 冻结 flash cache，期间 PSRAM
-    // 不可访问。开机自动检查跑在内部 RAM 栈任务上，安全;但菜单「Check Update」
-    // (manual_check=true) 跑在 PSRAM 栈任务 spawn_ota_check_task() 上——在那里
-    // 读 NVS 会触发 esp_task_stack_is_sane_cache_disabled assert，设备直接重启
-    // （bug: 菜单页面检查升级触发设备重启）。死循环护栏本就是为了挡开机「自动」
-    // 无限重刷;菜单是用户一次性手动触发、不会自动成环，跳过护栏即可——开机路径
-    // 仍保留护栏。后续若菜单也要护栏，需把这次 NVS 读挪到内部 RAM 栈
-    //（参见 bb_ui_agent_chat.c 的 load_nvs_on_internal_stack 范式）。
-    if (!manual_check && info->has_update && info->version[0] != '\0') {
-        char last_try[sizeof(info->version)] = {0};
-        if (ota_nvs_get_last_try(last_try, sizeof(last_try)) == ESP_OK &&
-            last_try[0] != '\0' &&
-            strcmp(last_try, info->version) == 0 &&
-            strcmp(bb_ota_get_current_version(), info->version) != 0) {
-            ESP_LOGW(TAG,
-                     "OTA loop guard: target version=%s already flashed but running "
-                     "version=%s unchanged — suppressing update to break reflash loop "
-                     "(published firmware likely did not bump esp_app_desc.version)",
-                     info->version, bb_ota_get_current_version());
-            info->has_update = false;
-        }
-    }
+    // #179 防砖死循环护栏已迁到 cloud:固件在 check 请求里带 last_try(见上方 URL 构建),
+    // 由 cloud 判定要不要退避(cloud/internal/ota/handler.go HandleOTACheck +
+    // loopGuardSuppress)。固件侧不再做这个判断——判断只放后台、后台可随时改;固件只
+    // 「上报事实」(current_version + last_try)。
 
     ESP_LOGI(TAG, "OTA check result: has_update=%d version=%s",
              info->has_update, info->has_update ? info->version : "N/A");
@@ -477,10 +468,15 @@ esp_err_t bb_ota_apply_update(void) {
         ESP_LOGI(TAG, "OTA NVS just_upd flag set");
     }
 
-    /* Record the version we are about to flash+reboot into, so the next boot's
-     * OTA check can detect a reflash loop if the running version doesn't change
-     * (issue #179). Only versions that actually reach reboot are recorded —
-     * transient download failures never call this function. */
+    /* Record the version we are about to flash+reboot into. The next boot's OTA
+     * check reports it to the cloud as last_try (see bb_ota_check_ex URL build); the
+     * cloud uses it to detect a reflash loop when the running version doesn't change
+     * (issue #179 — the guard DECISION now lives on the cloud, not here). Only
+     * versions that actually reach reboot are recorded — transient download failures
+     * never call this function, so decline/timeout never set last_try.
+     * Intentionally never cleared: once you're actually running it the cloud's
+     * current==offered check naturally stops mattering, and matching the exact
+     * flashed version is the whole point of the guard. */
     ota_nvs_set_last_try(s_pending_update.version);
 
     // 标记待启动的分区

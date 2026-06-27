@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     marquee 滚动),靠进设置时预拉的 session 列表把活动会话 id 解析成人类标题,回退短 id / (none)——
     与 Adapter 行同套路。
   - 顺手修掉主菜单首次打开光标落点错位(`sel` 本应是可见行索引,旧代码误置成逻辑行 id)。
+- **固件+云端:OTA 判断全部迁到后台——dev/dirty 放行 + #179 防砖护栏迁 cloud**:
+  - **dev/dirty 也能 OTA**:删掉固件侧「dev/dirty 构建跳过 OTA」护栏(`bb_ota_is_dev_build`),
+    是否升级一律由云端 `GET /v1/ota/check` 决定。原则:OTA 判断只放后台(后台可热改,固件改不动)。
+  - **#179 防砖死循环护栏迁后台**:原固件在 NVS 里比 `last_try` 本地决定是否退避;现改为固件把
+    `last_try`(上次**真正烧录并重启**的目标版本,仅 `bb_ota_apply_update` 置位,decline/下载失败永不
+    置位)作为**事实**带进 check 请求 `&last_try=`,由云端 `loopGuardSuppress`(`last_try==offered &&
+    current!=offered`)**决策**退避。固件侧不再做这个判断。菜单「Check Update」(跑 PSRAM 栈、不能读
+    NVS)不带 last_try → 云端对手动路径不护栏(与旧固件菜单绕过语义一致)。
+  - ⚠️ **部署顺序必须「先云端、后固件」**:否则窗口期固件本地护栏已删、云端护栏未上,撞上「版本号
+    没递增」的坏发布会复活 #179 无限重刷。
+  - ⚠️ **救砖只能 bump 版本号**:护栏只比版本串,同号重传(即便换了修好的二进制)会被持续退避;
+    救砖发版必须用更高的新版本号(本就符合 one-tag-one-release)。
 
 ### Removed
 - **固件:密语锁屏页移除底部状态栏**:锁屏页(`设备已锁定` / 密语解锁)底栏左下角的

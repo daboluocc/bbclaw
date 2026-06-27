@@ -287,6 +287,7 @@ BBClaw's Adapter defines the canonical protocol (WebSocket envelopes, HTTP API c
 | Change in this repo | Also verify |
 |------|------|
 | Adapter HTTP API (`/v1/agent/*`, `/v1/ota/*`) | Cloud relay proxy passes new fields correctly |
+| OTA `/v1/ota/check` `last_try` param (#179 reflash-loop guard) | Cloud `internal/ota` `loopGuardSuppress` reads it & decides; firmware only reports the fact. **Deploy cloud BEFORE shipping firmware that reports `last_try`** — else the migration window has neither guard. Rescue a bricked device only with a **higher** version (guard compares the version tag). |
 | WebSocket envelope format (`homeadapter/`) | Cloud hub routing handles new envelope kinds |
 | Notification payload fields (`notifications.go`) | Cloud hub forwarding + Firmware WS handler |
 | Session API changes (`agent.go`) | Cloud agent proxy + Firmware session client |
