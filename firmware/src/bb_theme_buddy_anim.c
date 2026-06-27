@@ -75,7 +75,10 @@ static const lv_image_dsc_t* state_icon(bb_agent_state_t s) {
     case BB_AGENT_STATE_SPEAKING:
       return &bb_img_task;
     case BB_AGENT_STATE_DIZZY:
-      return &bb_img_err;
+      /* DIZZY 是每轮答完都会经过的「歇口气」过渡(也兼作错误态),正常对话每轮都进它。
+       * 之前用红色 err 图标 → 每次正常回答完页头都闪一下「报错」样式(交互其实没问题)。
+       * 改用中性 ready 图标,不再误报。真错误另有文字/语音播报。 */
+      return &bb_img_ready;
     default:
       return &bb_img_ready;
   }

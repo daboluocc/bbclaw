@@ -1343,7 +1343,10 @@ static bb_bar_state_t agent_to_bar_state(bb_agent_state_t s) {
     case BB_AGENT_STATE_LISTENING: return BB_BAR_STATE_LISTENING;
     case BB_AGENT_STATE_BUSY:      return BB_BAR_STATE_BUSY;
     case BB_AGENT_STATE_SPEAKING:  return BB_BAR_STATE_SPEAKING;
-    case BB_AGENT_STATE_DIZZY:     return BB_BAR_STATE_ERROR;
+    /* DIZZY = 每轮答完的「歇口气」过渡(也兼错误态)。原来映射成 ERROR → 底栏红色心跳,
+     * 正常对话每轮答完都红一下,看着像报错(其实没问题)。改成中性 IDLE,不再误报红。
+     * 真错误靠文字/语音播报;要专门给真失败一个红色态可另加独立 error agent state。 */
+    case BB_AGENT_STATE_DIZZY:     return BB_BAR_STATE_IDLE;
     default:                       return BB_BAR_STATE_IDLE; /* SLEEP/IDLE/ATTENTION/CELEBRATE/HEART */
   }
 }
