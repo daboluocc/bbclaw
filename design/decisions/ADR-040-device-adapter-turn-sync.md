@@ -1,6 +1,20 @@
 # ADR-040 — 设备 ↔ adapter 回合状态权威同步
 
-- **状态**: Proposed（Layer-1 固件止血已实现；Layer-2 跨端协议待云端契约确认）
+- **状态**: Accepted（Layer-1 + Layer-2 三端均已实现并提交。adapter_v2 + 云已
+  build + test 通过；固件待真机 flash 验证。云端改动已在私有 repo 提交，**未推送/未部署**）
+
+## 实现落点（已提交）
+
+| 组件 | 提交 | 关键文件 |
+|------|------|----------|
+| 固件 Layer-1（不撤回已提交回合 + 顶栏「未发送」） | `3b43ac8` / `b594afd`(+`8b160d8` 接线) | `bb_radio_app.c`、`bb_ui_agent_chat.c/.h` |
+| adapter_v2 发 `turn.committed/superseded` | `015f2cf` | `cloudrelay/transcript.go`、`e2e_test.go` |
+| 云转发两个 kind（WS + HTTP 两路） | `a4a9598`(私有 repo) | `cloud/internal/httpapi/server.go(_test)` |
+| 固件消费对账 | `1072ff4` | `bb_adapter_client.c`、`bb_ui_agent_chat.c/.h`、`bb_chat_transcript.c/.h` |
+
+实测：adapter_v2 `make e2e`（真 PTY）断言 `turn.committed{seq:1,text}` 先于 reply;
+云 `TestStreamFinishStreamingForwardsTurnCommitted` 断言转发到设备帧。固件 5 文件改动
+符号自洽,待 bench idf 会话释放后 build+flash 验证（未抢占共享 build）。
 - **日期**: 2026-06-27
 - **关联**: ADR-028（对话核心 v2 / barge-in 撤回语义，本 ADR 修订其 §2.5.1）、
   ADR-030（设备执行步骤）、ADR-033（阻塞菜单确认）、ADR-035（adapter_v2 交互式 PTY）
