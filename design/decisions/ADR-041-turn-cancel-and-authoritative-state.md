@@ -1,12 +1,45 @@
 # ADR-041 — 回合取消语义 + 权威回合状态机（撤销=干净中止·全新重发）
 
-- **状态**: Proposed（架构设计；落地分期见 §7）
+- **状态**: Accepted（§0 串轮 fix 已实现 + 真机验证;§5 权威状态/撤销标记为后续 P2/P3）
 - **日期**: 2026-06-27
-- **关联 / 修订**: ADR-028（对话核心 v2 / barge-in），ADR-040（设备↔adapter 回合同步，
-  本 ADR 把它的"撤销保留+草稿"升级为"权威 turn.cancelled + 已撤销标记"），ADR-035（PTY 抓屏）
-- **依据**: 2026-06-27 真机 + claude PTY 实测日志（见 §1）
+- **关联 / 修订**: ADR-028（对话核心 v2 / barge-in），ADR-040（设备↔adapter 回合同步），ADR-035（PTY 抓屏）
+- **依据**: 2026-06-27 真机日志 + `cmd/cancelprobe` 对真 claude 的实测（见 §0）
 
-## 1. 病根（真机实测，不是猜）
+## 0. 实测修正（2026-06-27，PTY 探针）—— 推翻 §1/§4 的「redirect」模型
+
+> ⚠️ 下文 §1「病根=ESC 进重定向态、需要 dismiss 键」和 §4「检测 INTERRUPTED + dismiss +
+> 跑在 Run goroutine 的取消状态机」**是基于一个错误模型**。用 `cmd/cancelprobe` 对真
+> claude(v2.1.158)逐帧实测后,真相和修法都简单得多。本节为准。
+
+**实测事实：**
+1. **一个 ESC 就是干净中止。** ESC 后 spinner 消失、**composer 立刻清空**(裸 `❯`),
+   上一句**没有**残留在输入框里。
+2. **「Interrupted · What should Claude do instead?」是被动的历史标记**(行首 `⎿`,
+   留在 scrollback),**不是**会拦输入的弹窗。第二个 ESC、Ctrl-C 都**不会**消除它,
+   也**不需要**消除——直接打字就是干净的新一轮。
+3. **串轮的真因是注入时机 + composer 追加**:adapter 旧逻辑 barge-in 是
+   `ESC + 60ms + "transcript\r"`。**60ms 太短**,claude 还在处理打断,这一句的回车
+   没提交、文本滞留在 composer;**紧接着的下一次 barge-in 把它的文本 APPEND 上去** →
+   合成一句 `「啊…再讲…一二三」` 喂给 claude(实测复现:`MANGO.Reply…KIWI`)。
+   与「重定向态」无关。
+
+**修法(已实现 + 探针验证):barge-in 注入序列改为**
+`ESC → 等 interruptSettle(250ms) → Ctrl-U(清空 composer) → 写 transcript → 停 injectPause → 单独写 Enter`。
+- Ctrl-U 保证「永远往空 composer 里打字」,滞留的上一句被清掉 → 最新一句**替换**而非合并
+  (= 用户要的「撤销=全新重发」)。
+- 单独的 Enter 防 claude 的 burst/paste 检测把回车当换行。
+- **不需要**:检测 INTERRUPTED 态、dismiss 键、Run-goroutine 取消状态机、screen 轮询。
+  纯写端改动(`deviceapi.go` SubmitVoiceTurn barge-in 分支),~15 行。
+
+**因此撤销/修订：**
+- §1 的「ESC=redirect」叙述、§4 的「INTERRUPTED 检测 + dismiss + 状态机」、§6.5 的实现
+  约束 —— **全部作废**,以本节为准。
+- 之前提交的 boundary `interruptedOnScreen→TurnEnded false` 检测 **已 revert**(那个历史
+  标记会长期留在 scrollback,会错误地永久压住后续 turn-end)。
+- **仍然有效**:§5 的「就绪要权威(等 turn.idle)+ 撤销回合标记『已撤销』」—— 这俩是独立的
+  跨端工作(P3 固件 + turn.cancelled/idle 事件),不受本节影响,留作后续。
+
+## 1. 病根（早期假设 —— 已被 §0 实测推翻，保留作记录）
 
 实测 claude TUI 在被 ESC 打断后：
 ```

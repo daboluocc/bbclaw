@@ -410,12 +410,19 @@ func TestSpeakNilDepsNoop(t *testing.T) {
 // interrupt key, proving SubmitVoiceTurn injects ESC ahead of the transcript
 // (the documented in-flight policy: interrupt, not queue). It echoes
 // "SAW_ESC:<rest>" when the leading byte was ESC, else "NO_ESC:<line>".
+// interruptProbeCLI echoes each submitted line back tagged with whether a barge-in
+// ESC preceded it. It runs `stty kill undef` so Ctrl-U (0x15) is a LITERAL byte —
+// matching real claude (raw mode, Ctrl-U handled by its composer), not the default
+// canonical mode where Ctrl-U is VKILL and would erase the line. ADR-041's barge-in
+// sequence is ESC + Ctrl-U(clear composer) + transcript + Enter, so the probe strips
+// a leading ESC (recording it) and then a leading Ctrl-U before reporting the text.
 const interruptProbeCLI = `
+stty kill undef 2>/dev/null
 while IFS= read -r line; do
-  case "$line" in
-    $'\033'*) printf 'SAW_ESC:%s\n' "${line#$'\033'}" ;;
-    *)        printf 'NO_ESC:%s\n' "$line" ;;
-  esac
+  esc=NO_ESC; cu=-
+  case "$line" in $'\033'*) esc=SAW_ESC; line="${line#$'\033'}" ;; esac
+  case "$line" in $'\025'*) cu=CU; line="${line#$'\025'}" ;; esac
+  printf '%s:%s:%s\n' "$esc" "$cu" "$line"
 done
 `
 
@@ -441,7 +448,7 @@ func TestSubmitVoiceTurnInterruptsInFlight(t *testing.T) {
 	if err := br.SubmitVoiceTurn("first turn"); err != nil {
 		t.Fatalf("SubmitVoiceTurn (idle): %v", err)
 	}
-	if !drainContains(client.Out, "NO_ESC:first turn", 3*time.Second) {
+	if !drainContains(client.Out, "NO_ESC:-:first turn", 3*time.Second) {
 		t.Fatalf("idle SubmitVoiceTurn must NOT inject an ESC ahead of the transcript")
 	}
 
@@ -450,7 +457,7 @@ func TestSubmitVoiceTurnInterruptsInFlight(t *testing.T) {
 	if err := br.SubmitVoiceTurn("second turn"); err != nil {
 		t.Fatalf("SubmitVoiceTurn (in-flight): %v", err)
 	}
-	if !drainContains(client.Out, "SAW_ESC:second turn", 3*time.Second) {
+	if !drainContains(client.Out, "SAW_ESC:CU:second turn", 3*time.Second) {
 		t.Fatalf("in-flight SubmitVoiceTurn must inject ESC ahead of the transcript")
 	}
 }
@@ -483,7 +490,7 @@ func TestInterruptEscOnlyWhenInFlight(t *testing.T) {
 	if err := br.SubmitVoiceTurn("first"); err != nil {
 		t.Fatalf("SubmitVoiceTurn: %v", err)
 	}
-	if !drainContains(client.Out, "NO_ESC:first", 3*time.Second) {
+	if !drainContains(client.Out, "NO_ESC:-:first", 3*time.Second) {
 		t.Fatal("no ESC should precede the first (idle) turn")
 	}
 
@@ -503,7 +510,7 @@ func TestInterruptEscOnlyWhenInFlight(t *testing.T) {
 	if err := br.SubmitVoiceTurn("second"); err != nil {
 		t.Fatalf("SubmitVoiceTurn: %v", err)
 	}
-	if !drainContains(client.Out, "SAW_ESC:second", 3*time.Second) {
+	if !drainContains(client.Out, "SAW_ESC:-:second", 3*time.Second) {
 		t.Fatal("Interrupt's ESC must land ahead of the next submitted line")
 	}
 }

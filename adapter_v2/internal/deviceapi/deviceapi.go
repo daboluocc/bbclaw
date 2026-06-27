@@ -95,14 +95,32 @@ const interruptKey = "\x1b"
 // user turn (carriage return is what a real Enter sends over a PTY).
 const enterKey = "\r"
 
-// interruptSettle is the gap between an interrupt ESC and the following
-// transcript. A terminal distinguishes a lone ESC key from an escape SEQUENCE by
-// timing: an ESC immediately followed by a byte is read as Alt+<byte> / a
-// sequence, which would swallow the transcript's first character — harmless-ish
-// for ASCII ("reply"→"eply") but fatal for a multibyte CJK rune (ESC eats the
-// lead byte, leaving invalid UTF-8 that the CLI drops). So when we do send an
-// interrupt, we let it land as its own keystroke before typing.
-const interruptSettle = 60 * time.Millisecond
+// killLineKey is Ctrl-U — "kill the input line". Sent before injecting a barge-in
+// transcript to CLEAR any text left in claude's composer (ADR-041): after an ESC
+// interrupt, claude needs a few hundred ms to settle, and a transcript injected
+// too soon does NOT submit — it lingers in the composer. A rapid follow-up
+// barge-in then APPENDS its transcript to that lingering text, so the CLI runs a
+// single garbled turn that merges both utterances (the 串轮 bug, reproduced and
+// fixed in cmd/cancelprobe). Ctrl-U guarantees we type into an empty composer, so
+// the latest barge-in always replaces — never merges with — an un-submitted one.
+// No-op on an already-empty idle composer.
+const killLineKey = "\x15"
+
+// interruptSettle is the gap after an interrupt ESC before we touch the composer.
+// Two reasons: (1) a terminal distinguishes a lone ESC from an escape SEQUENCE by
+// timing — an ESC immediately followed by a byte is read as Alt+<byte> and
+// swallows the next character (fatal for a leading CJK rune); (2) empirically
+// (cmd/cancelprobe) claude takes a few HUNDRED ms to finish processing the
+// interrupt — injecting at the old 60ms landed in a transitional composer that
+// dropped the submit (串轮). 250ms covers both.
+const interruptSettle = 250 * time.Millisecond
+
+// injectPause separates the discrete input phases (Ctrl-U → transcript → Enter)
+// so each lands as its own keystroke in order, defeating claude's burst/paste
+// detection that otherwise treats "transcript\r" as a paste and turns the Enter
+// into a newline instead of a submit (cmd/cancelprobe confirmed a separated Enter
+// submits where a glued one does not).
+const injectPause = 120 * time.Millisecond
 
 // Recognizer turns a PTT audio buffer into transcript text. It is the device
 // line's ASR entry point. Kept deliberately narrower than v1's asr.Provider
@@ -410,13 +428,35 @@ func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 	// its own keystroke before typing (interruptSettle) so it is not glued to the
 	// first byte of the transcript.
 	if b.inFlight.Load() {
+		// Barge-in: interrupt the running turn (ESC), let claude SETTLE, CLEAR the
+		// composer of any lingering un-submitted transcript (Ctrl-U), then type the
+		// new turn and submit it with the Enter as a SEPARATE keystroke. This is the
+		// 串轮 fix (ADR-041; reproduced + validated in cmd/cancelprobe): at the old
+		// "ESC + 60ms + transcript\r" the transcript injected before claude finished
+		// the interrupt, did not submit, and a rapid second barge-in APPENDED to it →
+		// one garbled merged turn. Clearing + pacing makes the latest barge-in always
+		// REPLACE an un-submitted one, never merge — i.e. "撤销 = 全新重发".
 		if err := b.sess.Write([]byte(interruptKey)); err != nil {
 			return mapErr(err)
 		}
 		time.Sleep(interruptSettle)
-	}
-	if err := b.sess.Write([]byte(transcript + enterKey)); err != nil {
-		return mapErr(err)
+		if err := b.sess.Write([]byte(killLineKey)); err != nil {
+			return mapErr(err)
+		}
+		time.Sleep(injectPause)
+		if err := b.sess.Write([]byte(transcript)); err != nil {
+			return mapErr(err)
+		}
+		time.Sleep(injectPause)
+		if err := b.sess.Write([]byte(enterKey)); err != nil {
+			return mapErr(err)
+		}
+	} else {
+		// Clean first/sequential turn at an idle prompt: nothing to interrupt or
+		// clear, so the fast single burst submits (no 串轮 risk without a prior turn).
+		if err := b.sess.Write([]byte(transcript + enterKey)); err != nil {
+			return mapErr(err)
+		}
 	}
 	b.inFlight.Store(true)
 	// A new user turn is now in flight. Signal Run to re-baseline the Extractor on
@@ -443,6 +483,11 @@ func (b *Bridge) Interrupt() error {
 		return mapErr(err)
 	}
 	time.Sleep(interruptSettle)
+	// No Ctrl-U here: a PURE cancel injects nothing, so the composer is already
+	// empty after ESC, and the NEXT turn takes SubmitVoiceTurn's clean (inFlight=
+	// false) path. The composer-clear is only needed on the barge-in INJECT path
+	// (SubmitVoiceTurn), where a lingering un-submitted transcript could be appended
+	// to (the 串轮 fix, ADR-041).
 	b.inFlight.Store(false)
 	b.signalRearm()
 	return nil

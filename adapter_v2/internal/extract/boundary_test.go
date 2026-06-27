@@ -42,19 +42,6 @@ const (
 		"╭──────────────────────────────╮\n" +
 		"│ > what is the capital?       │\n" +
 		"╰──────────────────────────────╯"
-
-	// interruptedScreen is claude's post-ESC redirect (ADR-041): the working
-	// spinner is GONE (claude waits on the user to redirect), an "Interrupted ·
-	// What should Claude do instead?" banner is shown, and a bare "❯" composer box
-	// is present — which on its own satisfies isIdlePromptLine. The turn is NOT
-	// over and it is NOT a clean idle prompt.
-	interruptedScreen = "" +
-		"⏺ Once there was a little fox who thought\n" +
-		"\n" +
-		"Interrupted · What should Claude do instead?\n" +
-		"╭──────────────────────────────╮\n" +
-		"│ ❯                            │\n" +
-		"╰──────────────────────────────╯"
 )
 
 // TestTurnEnded table-drives the three-heuristic combination. Each case sets up
@@ -117,44 +104,6 @@ func TestTurnEnded(t *testing.T) {
 				t.Errorf("TurnEnded = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestInterruptedRedirectIsNotTurnEnd (ADR-041): after a spinner has been seen
-// this turn, claude's post-ESC "Interrupted · What should Claude do instead?"
-// redirect — spinner cleared + bare "❯" present — must NOT be read as turn-end.
-// Before the fix the sawSpinner short-circuit fired here, so a barge-in injected
-// INTO the redirect frame (串轮). After the fix interruptedOnScreen holds it false.
-func TestInterruptedRedirectIsNotTurnEnd(t *testing.T) {
-	now := time.Unix(3_000_000, 0)
-
-	var d Detector
-	// Turn was working (spinner up): sets the sticky sawSpinner.
-	d.Observe(now.Add(-2*Quiet), fakeScreen{busyScreen}, true)
-	if !d.sawSpinner {
-		t.Fatal("precondition: spinner should have been seen")
-	}
-	// ESC interrupted -> redirect on screen, spinner gone, output settled past Quiet.
-	d.Observe(now.Add(-Quiet-10*time.Millisecond), fakeScreen{interruptedScreen}, true)
-	if d.TurnEnded(now) {
-		t.Error("TurnEnded=true on the INTERRUPTED redirect; want false (ADR-041)")
-	}
-
-	// Regression guard: a TRUE clean idle (no banner) after the same setup DOES end.
-	d.Observe(now.Add(-Quiet-10*time.Millisecond), fakeScreen{idleScreen}, true)
-	if !d.TurnEnded(now) {
-		t.Error("TurnEnded=false on clean idle after dismiss; want true")
-	}
-
-	// IsCleanIdle helper distinguishes the two (used by the cancel state machine).
-	if IsCleanIdle(interruptedScreen) {
-		t.Error("IsCleanIdle(interrupted)=true; want false")
-	}
-	if !IsCleanIdle(idleScreen) {
-		t.Error("IsCleanIdle(idle)=false; want true")
-	}
-	if !HasInterruptedBanner(interruptedScreen) || HasInterruptedBanner(idleScreen) {
-		t.Error("HasInterruptedBanner mis-detected")
 	}
 }
 

@@ -31,23 +31,6 @@ import (
 // all churn, but the "esc to interrupt" affordance is stable while busy.
 const promptInterruptHint = "esc to interrupt"
 
-// interruptedBanner is claude's redirect line after ONE ESC interrupts a running
-// generation: "Interrupted · What should Claude do instead?" with the user's
-// message moved into the composer. The turn is NEITHER finished NOR a clean idle
-// prompt — claude is parked waiting for the user to redirect. Two consumers key
-// off this (ADR-041): (1) the boundary detector must NOT read it as turn-end (the
-// bare "❯" below it otherwise satisfies isIdlePromptLine); (2) the device
-// clean-cancel path must detect it to dismiss it and reach a true idle prompt.
-// The stable substring is "what should claude do instead" — the leading
-// "Interrupted ·" and the middot can transcode/wrap; match case-insensitively.
-const interruptedBanner = "what should claude do instead"
-
-// HasInterruptedBanner reports whether claude's post-ESC "Interrupted · What
-// should Claude do instead?" redirect prompt is on the visible grid (ADR-041).
-func HasInterruptedBanner(visible string) bool {
-	return strings.Contains(strings.ToLower(visible), interruptedBanner)
-}
-
 // apiRetryHints mark claude's network/API retry wait — "Waiting for API response
 // · will retry in Ns · check your network". In this state claude drops the
 // "esc to interrupt" affordance, but the turn is NOT finished: it will retry.

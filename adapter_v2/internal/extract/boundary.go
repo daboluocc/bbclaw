@@ -87,15 +87,6 @@ type Detector struct {
 	// would speak blank / stale text over the prompt (ADR-033 §0; the bug §9 wrongly
 	// claimed was "naturally" handled).
 	awaitingPromptOnScreen bool
-
-	// interruptedOnScreen records whether claude's post-ESC "Interrupted · What
-	// should Claude do instead?" redirect is on screen (ADR-041). Like a blocking
-	// menu, claude CLEARS the spinner here (it's waiting on the user to redirect),
-	// yet the turn is NOT over AND it is NOT a clean idle prompt — the redirect
-	// shows a bare "❯" that satisfies isIdlePromptLine. Without this, TurnEnded's
-	// sawSpinner short-circuit would mis-fire turn-end on the redirect, and a
-	// barge-in would inject INTO the redirect frame (串轮). See HasInterruptedBanner.
-	interruptedOnScreen bool
 }
 
 // Observe records a PTY chunk: t is when the bytes arrived, screen is the
@@ -135,9 +126,6 @@ func (d *Detector) refresh(screen screenView) {
 	} else {
 		d.awaitingPromptOnScreen = false
 	}
-	// ADR-041: the post-ESC redirect ("What should Claude do instead?") is a
-	// distinct non-terminal state — spinner cleared, bare "❯" present, yet parked.
-	d.interruptedOnScreen = HasInterruptedBanner(visible)
 }
 
 // TurnEnded reports whether, as of now, the current turn looks complete. All
@@ -167,13 +155,6 @@ func (d *Detector) TurnEnded(now time.Time) bool {
 		// speak blank/stale text over the menu (ADR-033 §0).
 		return false
 	}
-	if d.interruptedOnScreen {
-		// ADR-041: claude is parked at the post-ESC redirect ("What should Claude do
-		// instead?") — spinner cleared, bare "❯" present, but the turn is NOT done.
-		// Must precede the sawSpinner short-circuit, which would otherwise mis-fire
-		// turn-end on the redirect (and a barge-in would inject into it → 串轮).
-		return false
-	}
 	// Output settled and the working spinner is gone. The primary completion
 	// signal is "the CLI was working this turn (a spinner appeared) and it is now
 	// gone" — robust across CLIs whose idle prompt we cannot pin down: real claude
@@ -198,17 +179,6 @@ func (d *Detector) Reset() {
 	d.idlePromptOnScreen = false
 	d.sawSpinner = false
 	d.awaitingPromptOnScreen = false
-	d.interruptedOnScreen = false
-}
-
-// IsCleanIdle reports whether the visible grid is at claude's TRUE idle prompt:
-// an idle "❯" box with NO working spinner and NOT the post-ESC INTERRUPTED
-// redirect (which also shows a bare "❯"). The device clean-cancel state machine
-// (ADR-041 §4.2-4.3) waits for this before injecting the next turn, so a barge-in
-// never lands inside the redirect frame.
-func IsCleanIdle(visible string) bool {
-	spinner, idle := scanStatus(visible)
-	return idle && !spinner && !HasInterruptedBanner(visible)
 }
 
 // scanStatus inspects the plain-text visible grid for the two screen-derived
