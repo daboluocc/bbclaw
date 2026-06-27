@@ -335,6 +335,15 @@ void bb_ui_agent_chat_voice_processing(void);
  * LISTEN (PTT press) or SESSION/state frame. Safe to call from any task. */
 void bb_ui_agent_chat_voice_unsent(void);
 
+/* ADR-040 — authoritative turn lifecycle from the adapter (via the cloud relay),
+ * to reconcile the device's optimistic, PTT-driven UI against ground truth. Both
+ * are safe to call from any task (WS handler).
+ *   note_committed:  the transcript was committed as a real user turn — re-show it
+ *                    if a local barge-in/withdraw dropped it (deduped, no double).
+ *   note_superseded: a committed turn whose reply was interrupted — flag it. */
+void bb_ui_agent_chat_note_committed(int seq, const char* text);
+void bb_ui_agent_chat_note_superseded(int seq, const char* reason);
+
 /* Session picker removed (ADR-021-firmware-ui v2, issue #103).
  * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h).
  * CWD pool picker (issue #30) removed with it — device-side session creation

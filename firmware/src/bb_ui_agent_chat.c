@@ -220,6 +220,7 @@ typedef struct {
   /* 持久化 session/driver；adapter SESSION 帧到达时更新。Phase 4.2 接入 NVS。 */
   char session_id[64];
   char driver_name[24];          /* 来自 SESSION 帧（adapter 真实分配的 driver） */
+  int last_committed_seq;        /* ADR-040 — 最近一次 adapter 权威 turn.committed 的序号 */
 
   /* picker 状态（Phase 4.2） */
   lv_obj_t* picker_root;
@@ -2364,6 +2365,54 @@ void bb_ui_agent_chat_voice_unsent(void) {
    * SESSION/state 帧时由 post_session 还原成真实会话 id。 */
   ESP_LOGI(TAG, "voice_unsent → topbar '未发送' (turn cancelled before reply)");
   post_session("未发送");
+}
+
+/* ADR-040 — async arg for the LVGL-task reconcile of an authoritative committed
+ * turn. turn.committed arrives on the WS task; transcript ops run on LVGL, so we
+ * hop tasks via safe_lv_async_call. */
+typedef struct {
+  int  seq;
+  char text[256];
+} reconcile_committed_arg_t;
+
+static void note_committed_cb(void* arg) {
+  reconcile_committed_arg_t* a = (reconcile_committed_arg_t*)arg;
+  if (a == NULL) return;
+  if (s_chat.active) {
+    /* Re-add the user bubble iff a local barge-in/withdraw dropped it; no-op when
+     * already shown, so the optimistic asr.final bubble is never duplicated. */
+    bb_chat_transcript_reconcile_user(a->text);
+  }
+  s_chat.last_committed_seq = a->seq;
+  free(a);
+}
+
+void bb_ui_agent_chat_note_committed(int seq, const char* text) {
+  /* ADR-040: the adapter authoritatively committed this transcript as a real user
+   * turn. Reconcile the optimistic, PTT-driven UI against ground truth so a turn
+   * the device locally dropped (barge-in withdraw) reappears — the device mirrors
+   * what the adapter actually ran, instead of guessing from a local heuristic. */
+  ESP_LOGI(TAG, "turn.committed seq=%d text=%.40s (ADR-040 reconcile)", seq,
+           text != NULL ? text : "");
+  reconcile_committed_arg_t* a = (reconcile_committed_arg_t*)calloc(1, sizeof(*a));
+  if (a == NULL) return;
+  a->seq = seq;
+  if (text != NULL) {
+    strncpy(a->text, text, sizeof(a->text) - 1);
+  }
+  if (safe_lv_async_call(note_committed_cb, a) != LV_RESULT_OK) {
+    free(a);
+  }
+}
+
+void bb_ui_agent_chat_note_superseded(int seq, const char* reason) {
+  /* ADR-040: a committed turn whose REPLY was interrupted (barge-in). Show the
+   * same「未发送」topbar hint the local path uses — now driven authoritatively by
+   * the adapter, not just the local asr.final heuristic. post_session is async,
+   * so this is safe to call straight from the WS task. */
+  ESP_LOGI(TAG, "turn.superseded seq=%d reason=%s (ADR-040)", seq,
+           reason != NULL ? reason : "");
+  bb_ui_agent_chat_voice_unsent();
 }
 
 void bb_ui_agent_chat_voice_error(void) {

@@ -9,6 +9,7 @@
 #include "bb_prompt.h"
 #include "bb_device_config.h"
 #include "bb_notification.h"
+#include "bb_ui_agent_chat.h" /* ADR-040: reconcile turn.committed/superseded into chat UI */
 #include "bb_ogg_opus.h"
 #include "bb_config.h"
 #include "bb_time.h"
@@ -1286,6 +1287,28 @@ static void ws_handle_text_message(const char* msg) {
         }
       }
     }
+    return;
+  }
+
+  /* ADR-040 — authoritative turn lifecycle from the adapter (relayed by cloud).
+   * Reconcile the device's optimistic, PTT-driven chat UI against ground truth.
+   * Handled BEFORE the finish/stream_id guards below so a prior turn's reconcile
+   * (which can arrive after the device already moved to a newer stream) is not
+   * dropped. No finish context needed; the chat-UI funcs post via lv_async.
+   * seq/text/reason are read top-level (json_extract_* searches the whole frame,
+   * so the cloud's nested "payload" is fine — same as voice.reply.delta). */
+  if (strcmp(kind, "turn.committed") == 0) {
+    char committed_text[256] = {0};
+    int seq = json_extract_int(msg, "seq", 0);
+    (void)json_extract_string(msg, "text", committed_text, sizeof(committed_text));
+    bb_ui_agent_chat_note_committed(seq, committed_text);
+    return;
+  }
+  if (strcmp(kind, "turn.superseded") == 0) {
+    char reason[40] = {0};
+    int seq = json_extract_int(msg, "seq", 0);
+    (void)json_extract_string(msg, "reason", reason, sizeof(reason));
+    bb_ui_agent_chat_note_superseded(seq, reason);
     return;
   }
 

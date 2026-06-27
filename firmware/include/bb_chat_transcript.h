@@ -30,6 +30,12 @@ lv_obj_t* bb_chat_transcript_get_container(void);
 
 /* Message appenders. Streaming assistant chunks coalesce into a single bubble. */
 void bb_chat_transcript_append_user(const char* text);
+
+/* ADR-040 — re-add the user bubble for an adapter-committed turn (turn.committed)
+ * ONLY if the live user turn was dropped (e.g. a barge-in withdrew it). No-op
+ * when a live user bubble is already present, so the optimistic asr.final bubble
+ * is never duplicated. Reconciles the device against the adapter's ground truth. */
+void bb_chat_transcript_reconcile_user(const char* text);
 void bb_chat_transcript_append_assistant_chunk(const char* delta);
 void bb_chat_transcript_append_tool_call(const char* tool, const char* hint);
 void bb_chat_transcript_append_error(const char* msg);

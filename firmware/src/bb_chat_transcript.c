@@ -277,6 +277,18 @@ void bb_chat_transcript_append_user(const char* text) {
   scroll_to_bottom_unconditional();
 }
 
+void bb_chat_transcript_reconcile_user(const char* text) {
+  if (s_transcript == NULL || text == NULL || text[0] == '\0') return;
+  /* ADR-040 — authoritative re-add. The adapter says this turn was committed
+   * (turn.committed). Re-show the user bubble ONLY if the live turn was dropped
+   * (s_last_user_bubble == NULL, e.g. a local barge-in withdrew it): that is the
+   * exact divergence ADR-040 fixes — adapter kept the turn, device lost it. When
+   * a live user bubble is already present (the common case: the optimistic
+   * asr.final bubble), keep it as-is so we never duplicate it. */
+  if (s_last_user_bubble != NULL) return;
+  bb_chat_transcript_append_user(text);
+}
+
 void bb_chat_transcript_append_assistant_chunk(const char* delta) {
   if (s_transcript == NULL || delta == NULL) return;
   /* Cache is always current (persistence) regardless of reading mode. */
