@@ -344,6 +344,10 @@ void bb_ui_agent_chat_voice_unsent(void);
 void bb_ui_agent_chat_note_committed(int seq, const char* text);
 void bb_ui_agent_chat_note_superseded(int seq, const char* reason);
 
+/* 瞬时底部提醒(底部 subtitle 条闪一下、~2s 自动消失)——给「No speech detected」
+ * 这类不该进对话记录栏的临时状态用。Safe to call from any task。 */
+void bb_ui_agent_chat_flash_hint(const char* msg);
+
 /* Session picker removed (ADR-021-firmware-ui v2, issue #103).
  * Short-press OK in CHAT now opens the Task List page (bb_ui_task_list.h).
  * CWD pool picker (issue #30) removed with it — device-side session creation

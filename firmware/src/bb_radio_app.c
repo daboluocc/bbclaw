@@ -814,6 +814,13 @@ static void agent_chat_voice_post_error(const char* msg) {
   }
 }
 
+/* 用户反馈:「No speech detected」不该写进对话记录栏——清掉 listening 提示(msg=NULL
+ * 不 append 到 transcript),改成底部一闪即逝的瞬时提醒(subtitle 条,~2s 自动消失)。 */
+static void agent_chat_voice_no_speech(void) {
+  agent_chat_voice_post_error(NULL); /* 清 listening + DIZZY,不写 transcript */
+  bb_ui_agent_chat_flash_hint("No speech detected");
+}
+
 /* Phase 4.8.x — transition chat UI from LISTENING → BUSY the moment PTT is
  * released and we enter the blocking cloud-wait (ASR upload + response). This
  * eliminates the long "listening..." hang while the cloud processes audio. */
@@ -2962,7 +2969,7 @@ static void stream_task(void* arg) {
             char* t = trim_ascii_inplace(trimmed);
             if (t == NULL || t[0] == '\0') {
               ESP_LOGW(TAG, "agent_chat: empty transcript, no send");
-              agent_chat_voice_post_error("no speech detected");
+              agent_chat_voice_no_speech();
               signal_error_haptic();
             } else if (ui_stream != NULL && ui_stream->reply_text[0] != '\0') {
               /* cloud_saas path: the cloud already routed the transcript to
@@ -3059,7 +3066,7 @@ static void stream_task(void* arg) {
             agent_chat_voice_post_error("麦克风异常·检查接线");
             signal_error_haptic();
           } else {
-            agent_chat_voice_post_error("no speech detected");
+            agent_chat_voice_no_speech();
           }
         } else {
           show_idle_ready_or_locked();
@@ -3249,7 +3256,7 @@ static void stream_task(void* arg) {
         memset(&vad, 0, sizeof(vad));
         pending_pcm_len = 0;
         if (voice_target_agent) {
-          agent_chat_voice_post_error("no speech detected");
+          agent_chat_voice_no_speech();
           voice_target_agent = 0;
         } else {
           show_idle_ready_or_locked();

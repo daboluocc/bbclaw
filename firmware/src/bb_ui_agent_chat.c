@@ -653,6 +653,34 @@ static void post_clear_subtitle(void) {
   async_post(p);
 }
 
+/* 用户反馈：「No speech detected」这类瞬时提醒不该写进对话记录栏——改用底部
+ * subtitle 条闪一下、BB_CHAT_SUBTITLE_HOLD_MS(2s)后自动消失。短任务栈走 PSRAM
+ * (xTaskCreateWithCaps)，避免内部 DRAM 吃紧（见 ADR / 内部 DRAM 反复崩因）。 */
+static void flash_hint_task(void* arg) {
+  char* msg = (char*)arg;
+  if (msg != NULL) {
+    bb_async_payload_t* p = async_alloc(BB_ASYNC_SET_SUBTITLE);
+    if (p != NULL) {
+      p->s1 = dup_str(msg);
+      async_post(p);
+    }
+    vTaskDelay(pdMS_TO_TICKS(BB_CHAT_SUBTITLE_HOLD_MS));
+    post_clear_subtitle();
+    free(msg);
+  }
+  vTaskDeleteWithCaps(NULL); /* stack is PSRAM-allocated (xTaskCreateWithCaps) */
+}
+
+void bb_ui_agent_chat_flash_hint(const char* msg) {
+  if (!s_chat.active || msg == NULL || msg[0] == '\0') return;
+  char* dup = dup_str(msg);
+  if (dup == NULL) return;
+  if (xTaskCreateWithCaps(flash_hint_task, "flashhint", 3072, dup, 4, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    free(dup);
+  }
+}
+
 /* Build a short display string from a full session ID (e.g. "ls-234049fd34da990c").
  * Strips the common "ls-" prefix and takes the TAIL (most distinguishing part).
  * Result fits in a 16-char buffer: up to 12 hex chars shown. */
@@ -2361,10 +2389,10 @@ void bb_ui_agent_chat_voice_unsent(void) {
   /* ADR-040: 用户在回复落地前撤销/打断了这一回合。它的问题气泡仍留在 transcript
    * 里(与前后句拼在一起、像正常回合那样连续显示),但这一句并没有走完发送→回复
    * 的闭环。原来设备对此毫无指示,用户分不清某句是"已发"还是"没发出去"。这里在
-   * 顶栏说话状态显示「未发送」把这个状态显式化。下一次 PTT(LISTEN..)或收到
-   * SESSION/state 帧时由 post_session 还原成真实会话 id。 */
-  ESP_LOGI(TAG, "voice_unsent → topbar '未发送' (turn cancelled before reply)");
-  post_session("未发送");
+   * 顶栏说话状态显示「草稿」把这个状态显式化(用户反馈：要「草稿」而不是「就绪」)。
+   * 下一次 PTT(LISTEN..)或收到 SESSION/state 帧时由 post_session 还原成真实会话 id。 */
+  ESP_LOGI(TAG, "voice_unsent → topbar '草稿' (turn cancelled before reply)");
+  post_session("草稿");
 }
 
 /* ADR-040 — async arg for the LVGL-task reconcile of an authoritative committed
