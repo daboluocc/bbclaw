@@ -122,63 +122,22 @@ esp_err_t bb_ota_init(void) {
     return ESP_OK;
 }
 
-// 本地 dev 构建判定。`make flash` 烧录的固件 esp_app_desc.version 来自
-// `git describe --tags --dirty`，形如 "v0.5.17-69-g7544427" 或 "...-dirty"：
-//   - "-dirty"      工作区有未提交改动
-//   - "-<N>-g<hash>" 落后/超前最新 tag N 个 commit（git describe 的"提交数+短哈希"段）
-// 干净发布（CI 注入 tag）是精确的 "vX.Y.Z"，release_local 推送是 "vM.m.p-g<hash>"
-// （"-g" 前没有提交数段），两者都不会命中，仍正常走 OTA。
-static bool bb_ota_is_dev_build(const char* v) {
-    if (v == NULL || v[0] == '\0') {
-        return false;
-    }
-    if (strstr(v, "-dirty") != NULL) {
-        return true;
-    }
-    for (const char* d = strchr(v, '-'); d != NULL; d = strchr(d + 1, '-')) {
-        const char* p = d + 1;
-        if (*p < '0' || *p > '9') {
-            continue;  // 需要 "-数字" 开头
-        }
-        while (*p >= '0' && *p <= '9') {
-            p++;
-        }
-        if (p[0] == '-' && p[1] == 'g') {
-            return true;  // 命中 "-<N>-g"
-        }
-    }
-    return false;
-}
-
 esp_err_t bb_ota_check(ota_update_info_t* info) {
-    // 开机 / 静默自动检查：保留 dev/dirty 护栏（不打扰正在调试的 make flash 固件）。
-    return bb_ota_check_ex(info, /*allow_dev_build=*/false);
+    return bb_ota_check_ex(info, /*manual_check=*/false);
 }
 
-esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool allow_dev_build) {
+esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool manual_check) {
+    // dev/dirty 护栏已取消（用户要求：dev/dirty 构建也要能 OTA 升级）。原来 make flash 的
+    // dev 构建（版本带 "-dirty" / "-<N>-g<hash>"）会在开机自动检查里被短路跳过，导致测试
+    // 设备永远拉不到 OTA；现在是否升级一律由云端 /v1/ota/check 决定——固件侧不再做 OTA
+    // eligibility 判断（原则：OTA 判断只放后台，后台可随时改，固件改不动）。
+    // 注意取舍：dev 版 M.m.p 常落后于 active，会每次开机被判「有更新」并弹确认页——但只是
+    // 确认页（按 OK 才下载/烧录），可以拒，不会静默覆盖你正在调的固件。
     if (info == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
     memset(info, 0, sizeof(*info));
-
-    // 本地 dev 构建护栏：云端 VersionGreater 只比较 M.m.p，而最新 tag 永远落后于
-    // 已推 OTA 的 active 版本，于是 `make flash` 的 dev 构建每次开机都被判"有更新"
-    // → 无谓升级弹窗，甚至把刚烧的调试固件 OTA 覆盖掉。dev 构建不该被自动顶替，
-    // 这里直接短路、连云端都不打。正式发布 / release_local 推送不受影响。
-    //
-    // allow_dev_build=true（用户在菜单主动点「Check Update」）跳过护栏：明确要升级就
-    // 照常查云端，dirty 也能被识别升级——但只在主动触发，不在开机自动路径，避免调试
-    // 固件每次开机被升级弹窗顶掉。
-    const char* cur = bb_ota_get_current_version();
-    if (!allow_dev_build && bb_ota_is_dev_build(cur)) {
-        ESP_LOGW(TAG, "OTA check skipped: dev/dirty build %s — local git build never auto-OTA", cur);
-        s_state = OTA_STATE_IDLE;
-        return ESP_OK;  // info 已清零 → has_update=false
-    }
-    if (allow_dev_build && bb_ota_is_dev_build(cur)) {
-        ESP_LOGI(TAG, "OTA check: dev/dirty build %s — 手动 Check Update 放行 dev 护栏", cur);
-    }
 
     s_state = OTA_STATE_CHECKING;
 
@@ -317,16 +276,16 @@ esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool allow_dev_build) {
     // 故在此退避，让设备正常进入主流程。这是软件侧兜底，根因仍需发布构建注入
     // 递增版本号（见 CLAUDE.md 发布约束 / release_local.sh）。
     //
-    // ⚠️ 仅在开机/自动检查路径（allow_dev_build=false）执行这段 NVS 读：
+    // ⚠️ 仅在开机/自动检查路径（manual_check=false）执行这段 NVS 读：
     // ota_nvs_get_last_try 读 NVS → SPI flash 读 → 冻结 flash cache，期间 PSRAM
     // 不可访问。开机自动检查跑在内部 RAM 栈任务上，安全;但菜单「Check Update」
-    // (allow_dev_build=true) 跑在 PSRAM 栈任务 spawn_ota_check_task() 上——在那里
+    // (manual_check=true) 跑在 PSRAM 栈任务 spawn_ota_check_task() 上——在那里
     // 读 NVS 会触发 esp_task_stack_is_sane_cache_disabled assert，设备直接重启
     // （bug: 菜单页面检查升级触发设备重启）。死循环护栏本就是为了挡开机「自动」
     // 无限重刷;菜单是用户一次性手动触发、不会自动成环，跳过护栏即可——开机路径
     // 仍保留护栏。后续若菜单也要护栏，需把这次 NVS 读挪到内部 RAM 栈
     //（参见 bb_ui_agent_chat.c 的 load_nvs_on_internal_stack 范式）。
-    if (!allow_dev_build && info->has_update && info->version[0] != '\0') {
+    if (!manual_check && info->has_update && info->version[0] != '\0') {
         char last_try[sizeof(info->version)] = {0};
         if (ota_nvs_get_last_try(last_try, sizeof(last_try)) == ESP_OK &&
             last_try[0] != '\0' &&
