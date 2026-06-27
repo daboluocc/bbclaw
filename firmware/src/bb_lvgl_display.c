@@ -1186,17 +1186,22 @@ static void create_ui(void) {
   lv_obj_set_scrollbar_mode(s_view_active, LV_SCROLLBAR_MODE_OFF);
 
   /* Status bar */
-  /* Mode indicator (HOME/CLOUD) - leftmost */
-  s_img_mode = lv_image_create(s_view_active);
-  lv_obj_set_size(s_img_mode, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
-  lv_obj_set_pos(s_img_mode, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2);
-  lv_image_set_src(s_img_mode, s_cloud_mode ? &bb_img_mode_cloud : &bb_img_mode_home);
+  /* Brand wordmark "BBClaw" — leftmost. Replaces the old HOME/CLOUD mode glyph
+   * (cloud/home 不再在页头单独显示;s_cloud_mode 仍在别处跟踪)。宽度按字体实测,
+   * 后面的状态图标 / 活动点 / 状态文字据此右移。 */
+  s_img_mode = lv_label_create(s_view_active);
+  lv_label_set_text(s_img_mode, "BBClaw");
+  lv_obj_set_style_text_font(s_img_mode, font, 0);
+  lv_obj_set_style_text_color(s_img_mode, lv_color_hex(BB_UI_ACCENT), 0);
+  lv_obj_set_pos(s_img_mode, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - lh) / 2);
+  lv_obj_update_layout(s_img_mode);
+  const int brand_w = lv_obj_get_width(s_img_mode);
 
-  /* Status icon - after mode indicator */
+  /* Status icon - after the wordmark */
   s_img_status = lv_image_create(s_view_active);
   lv_image_set_src(s_img_status, &bb_img_ready);
   lv_obj_set_size(s_img_status, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
-  const int status_icon_x = UI_SAFE_LEFT + UI_STATUS_ICON_SZ + 4;
+  const int status_icon_x = UI_SAFE_LEFT + brand_w + 6;
   const int status_icon_y = UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2;
   lv_obj_set_pos(s_img_status, status_icon_x, status_icon_y);
 
@@ -1225,14 +1230,15 @@ static void create_ui(void) {
     const int batpct_gap = battery_enabled ? 3 : 0;
     const int wifi_gap = 6;
     const int clock_w = 40;
-    const int status_text_x = UI_SAFE_LEFT + (UI_STATUS_ICON_SZ + 4) * 2 + 4;
+    const int status_text_x = status_icon_x + UI_STATUS_ICON_SZ + 4;
 
     const int right = UI_SAFE_LEFT + body_w;
     const int clock_x = right - clock_w;
     const int batt_x = clock_x - 6 - battery_w;
     const int batpct_x = batt_x - batpct_gap - batpct_w; /* == batt_x when battery disabled */
     const int wifi_x = batpct_x - wifi_gap - wifi_w;
-    const int status_label_w = wifi_x - status_text_x - 8;
+    int status_label_w = wifi_x - status_text_x - 8;
+    if (status_label_w < 24) status_label_w = 24; /* 字标较宽时给状态文字保底,靠 SCROLL 滚动显示 */
     const int row_y = UI_SAFE_TOP + (status_h - lh - 2) / 2;
 
     s_lbl_status = lv_label_create(s_view_active);
@@ -2025,10 +2031,8 @@ void bb_display_chat_focus_ai(void) {
 }
 
 void bb_display_set_cloud_mode(int is_cloud) {
+  /* 页头不再用图标区分 cloud/home(已换成 BBClaw 字标);s_cloud_mode 仍保留给其它逻辑用。 */
   s_cloud_mode = is_cloud ? 1 : 0;
-  if (s_ready && s_img_mode != NULL) {
-    lv_image_set_src(s_img_mode, s_cloud_mode ? &bb_img_mode_cloud : &bb_img_mode_home);
-  }
 }
 
 void bb_display_set_locked(int locked) {
