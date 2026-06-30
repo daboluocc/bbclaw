@@ -230,6 +230,16 @@ func (s *Session) Status() Status {
 	return s.status
 }
 
+// VisibleText returns the current visible-screen text (no ANSI), read off the
+// mirrored screen under the session lock. Callers use it to detect readiness —
+// e.g. the web composer waits for claude's idle "❯" prompt before injecting a
+// freshly-spawned session's first turn, the same heuristic deviceapi warmup uses.
+func (s *Session) VisibleText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.screen.VisibleText()
+}
+
 // Size reports the session's current grid size (cols, rows), read off the
 // mirrored screen under the session lock. termchan sends this in the
 // reconnected message so a joining terminal client sizes its xterm.js to match

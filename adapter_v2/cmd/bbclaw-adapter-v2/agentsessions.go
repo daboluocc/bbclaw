@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
@@ -68,12 +70,16 @@ func agentSessionsRoutes(mux *http.ServeMux, mgr *session.Manager, dev *butler.D
 	// POST /v1/agent/sessions/{id}/input → type a text turn into the conversation,
 	// the web composer's equivalent of the device's voice turn. Body: {"text":"…"}.
 	//
-	// Only the ACTIVE conversation has a running PTY (the shared default session),
-	// so we inject into session.DefaultID exactly the way deviceapi.SubmitVoiceTurn
-	// does at an idle prompt — the transcript text plus a single Enter, in one
-	// write. Input aimed at any non-active id is rejected with 409 so the client
-	// switches first (POST .../activate) rather than silently dropping the turn into
-	// a conversation with no live process.
+	// The active conversation runs in the shared default session (session.DefaultID).
+	// That PTY is spawned LAZILY (on the first /ws connect or device attach) and the
+	// GC reaps it after 5min with no clients — so a #sessions page open on its own,
+	// with no terminal tab or device, often has NO live PTY ("no live session" is
+	// just "nobody started it / it was reaped", not a crash). So instead of failing,
+	// we GetOrCreate the default session here exactly like the /ws handler, then —
+	// only when WE had to spawn it — wait for claude to reach its idle "❯" prompt
+	// before injecting, so the first turn isn't swallowed by startup (the same
+	// readiness gate deviceapi warmup uses). Input aimed at any non-active id is
+	// rejected with 409 so the client switches first (POST .../activate).
 	mux.HandleFunc("POST /v1/agent/sessions/{id}/input", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSpace(r.PathValue("id"))
 		var body struct {
@@ -94,10 +100,19 @@ func agentSessionsRoutes(mux *http.ServeMux, mgr *session.Manager, dev *butler.D
 			writeAgentError(w, http.StatusConflict, "session is not active; switch to it first")
 			return
 		}
-		sess := mgr.Get(session.DefaultID)
-		if sess == nil {
-			writeAgentError(w, http.StatusServiceUnavailable, "no live session")
+		// Spawn-if-absent: a #sessions-only page may have no live default PTY yet.
+		spawned := mgr.Get(session.DefaultID) == nil
+		sess, err := mgr.GetOrCreate(session.DefaultID, dev.Config())
+		if err != nil {
+			writeAgentError(w, http.StatusServiceUnavailable, "failed to start session: "+err.Error())
 			return
+		}
+		// A freshly-spawned claude needs a moment to clear its startup (the
+		// configured auto-Enter keys dismiss the trust/upsell dialogs) and paint its
+		// idle prompt; injecting before then loses the turn. An already-live session
+		// (terminal open / device attached) is assumed ready, like a human typing.
+		if spawned {
+			waitForIdlePrompt(r.Context(), sess)
 		}
 		if err := sess.Write([]byte(text + "\r")); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, err.Error())
@@ -121,6 +136,36 @@ func agentSessionsRoutes(mux *http.ServeMux, mgr *session.Manager, dev *butler.D
 		}
 		writeAgentJSON(w, map[string]any{"active": active})
 	})
+}
+
+// waitForIdlePrompt blocks until a freshly-spawned claude session has reached its
+// idle "❯" input prompt — so the first injected turn lands at the prompt instead
+// of in claude's startup trust/upsell dialogs (which the configured auto-Enter
+// keys clear) and is lost. Best-effort and bounded: on timeout (or a dead PTY /
+// cancelled request) it returns anyway and lets the write try — the same
+// "proceed rather than wedge" stance as deviceapi warmup. The "❯" heuristic
+// mirrors that warmup's readiness check.
+func waitForIdlePrompt(ctx context.Context, sess *session.Session) {
+	const (
+		timeout = 12 * time.Second
+		poll    = 150 * time.Millisecond
+	)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(poll)
+	defer tick.Stop()
+	for {
+		if strings.Contains(sess.VisibleText(), "❯") {
+			return // idle prompt up → ready
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func writeAgentJSON(w http.ResponseWriter, data any) {
