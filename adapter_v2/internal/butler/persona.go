@@ -55,9 +55,27 @@ func DeviceSystemPrompt(cwd, deviceID string, projects []projectstore.Project) s
 		b.WriteString("- 当前工作目录(你的 workspace):" + c + "\n")
 	}
 	b.WriteString(deviceControlSection)
+	b.WriteString(voiceCommandsSection)
 	b.WriteString(renderProjectsSection(projects))
 	return b.String()
 }
+
+// voiceCommandsSection tells the butler about the quick voice commands the
+// ADAPTER intercepts before the model (ADR-042 command router): they short-
+// circuit in deviceapi.SubmitVoiceTurn, so the model never receives them. It is
+// listed here ONLY so the butler can tell the user "你可以直接说……" when asked
+// what shortcuts exist — the butler must NOT try to act on them itself (e.g. it
+// has no need to "stop" or "create a reminder" via tools; the adapter already
+// did). Reminders that DO reach the model are normal turns (the adapter ran the
+// reminder's prompt as if the user spoke it).
+const voiceCommandsSection = "\n## 便捷口令(设备直接处理,你收不到)\n" +
+	"下面这些短口令由 BBClaw 设备在你之前就拦截执行了,**不会**作为对话发给你," +
+	"你也无需用工具去做。仅当用户问「我能说什么 / 有哪些快捷口令」时,告诉他们可以直接说:\n" +
+	"- 「停止 / 取消」——打断你正在进行的回答\n" +
+	"- 「状态 / 现在怎样」——播报当前模式和会话\n" +
+	"- 「新对话 / 清空」——开始一段全新对话\n" +
+	"- 「X 分钟后 / X 小时后 / 明天几点 提醒我……」——设一个定时提醒,到点设备会主动念给他听\n" +
+	"- 「看提醒 / 有哪些提醒」——念出待提醒的任务\n"
 
 // renderProjectsSection renders the registered project list into the system prompt
 // (ADR-036 §决策二/五). Empty list → "" (no section). Each line is a compact

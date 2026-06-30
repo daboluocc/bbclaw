@@ -32,6 +32,22 @@ func TestDeviceSystemPromptDeviceControl(t *testing.T) {
 	}
 }
 
+// TestDeviceSystemPromptVoiceCommands asserts the ADR-042 command list is taught
+// to the butler so it can tell the user which spoken shortcuts exist.
+func TestDeviceSystemPromptVoiceCommands(t *testing.T) {
+	p := DeviceSystemPrompt("/ws", "", nil)
+	for _, want := range []string{
+		"## 便捷口令",
+		"停止 / 取消",
+		"新对话 / 清空",
+		"提醒我",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("DeviceSystemPrompt missing voice-command hint %q", want)
+		}
+	}
+}
+
 // TestDeviceSystemPromptProjects asserts a registered project is rendered with its
 // purpose + directory + CLI status (ADR-036).
 func TestDeviceSystemPromptProjects(t *testing.T) {
