@@ -19,6 +19,7 @@ package cloudrelay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -133,6 +134,55 @@ type Relay struct {
 	// signal — presence is inferred from traffic.
 	presenceMu sync.Mutex
 	lastSeen   map[string]time.Time
+
+	// sendMu guards send, the writer onto the LIVE cloud WS conn. Run sets it on
+	// connect and clears it on disconnect, so Notify (called off-band by the
+	// reminder scheduler) can push an unsolicited envelope without owning the conn.
+	// nil ⇒ the adapter's own cloud link is down.
+	sendMu sync.Mutex
+	send   func(Envelope) error
+}
+
+// setSend publishes (or clears, with nil) the live cloud-conn writer for Notify.
+func (r *Relay) setSend(fn func(Envelope) error) {
+	r.sendMu.Lock()
+	r.send = fn
+	r.sendMu.Unlock()
+}
+
+// Notify pushes an unsolicited session.notification to a device through the cloud
+// hub (ADR-042 §3.1, Cloud-first proactive push). This reuses the EXISTING
+// multi-session notification channel end-to-end: the hub forwards it when the
+// device is online and buffers it (pendingNotifs, flush-on-reconnect) when it is
+// offline, and the firmware renders preview as a toast + unread badge. No cloud
+// or firmware change is needed.
+//
+// preview is the device-visible reminder text. It returns an error only when the
+// adapter's OWN cloud link is down (device-offline is handled by the hub, not an
+// error here); the caller may then fall back to a local outbox (Task #5, M3).
+func (r *Relay) Notify(deviceID, preview, sessionID string) error {
+	if deviceID == "" {
+		return errors.New("cloudrelay: notify needs a deviceId")
+	}
+	r.sendMu.Lock()
+	send := r.send
+	r.sendMu.Unlock()
+	if send == nil {
+		return errors.New("cloudrelay: not connected to cloud")
+	}
+	return send(Envelope{
+		Type:       "event",
+		Kind:       "session.notification",
+		DeviceID:   deviceID,
+		HomeSiteID: r.cfg.HomeSiteID,
+		Payload: map[string]any{
+			"sessionId": sessionID,
+			"driver":    "reminder",
+			"type":      "reminder",
+			"preview":   preview,
+			"timestamp": time.Now().UnixMilli(),
+		},
+	})
 }
 
 // presenceGap is how long a device must be silent before its next request is
@@ -215,6 +265,11 @@ func (r *Relay) runOnce(ctx context.Context) error {
 		defer cancel()
 		return wsjson.Write(wctx, conn, env)
 	}
+	// Publish the live writer so Notify (reminder scheduler) can push unsolicited
+	// session.notification envelopes; clear it when this connection ends so a
+	// stale writer is never used after the WS drops.
+	r.setSend(write)
+	defer r.setSend(nil)
 
 	// App-level JSON ping keepalive.
 	pingCtx, stopPing := context.WithCancel(ctx)

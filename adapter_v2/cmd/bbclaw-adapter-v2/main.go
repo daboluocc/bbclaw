@@ -39,6 +39,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
@@ -155,13 +156,22 @@ func main() {
 		log.Printf("bbclaw-adapter-v2: reminders load error (using empty store): %v", rerr)
 	}
 	cmdHooks := buildCommandHooks(remStore, devSess)
+	// relay is assigned below if cloud_saas is enabled; the scheduler closure
+	// captures the variable and reads it at fire time.
+	var relay *cloudrelay.Relay
 	scheduler := reminder.NewScheduler(remStore, reminder.InjectorFunc(func(_ context.Context, r reminder.Reminder) error {
-		b := hub.Active()
-		if b == nil {
-			return fmt.Errorf("no active device line for reminder %s", r.ID)
+		// Cloud-first proactive delivery (ADR-042 §3.1): push the reminder as a
+		// session.notification through the cloud relay. The cloud hub forwards it
+		// when the device is online and buffers it when offline (flush-on-reconnect),
+		// reusing the existing notification channel. LAN direct push is deferred.
+		if relay == nil {
+			return fmt.Errorf("reminder %s: cloud relay disabled (LAN proactive deferred)", r.ID)
 		}
-		log.Printf("bbclaw-adapter-v2: firing reminder %s: %q", r.ID, r.Prompt)
-		return b.SubmitVoiceTurn(r.Prompt)
+		if r.Target.DeviceID == "" {
+			return fmt.Errorf("reminder %s: no target deviceId", r.ID)
+		}
+		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s: %q", r.ID, r.Target.DeviceID, r.Prompt)
+		return relay.Notify(r.Target.DeviceID, "提醒："+r.Prompt, r.Target.SessionID)
 	}), 0, nil)
 
 	srv := &http.Server{
@@ -182,7 +192,7 @@ func main() {
 		if rc, err := cloudrelay.LoadConfig(); err != nil {
 			log.Printf("bbclaw-adapter-v2: cloud relay disabled (config error): %v", err)
 		} else {
-			relay := cloudrelay.New(mgr, devSess, rc, log.Printf)
+			relay = cloudrelay.New(mgr, devSess, rc, log.Printf)
 			relay.SetCommandRouter(cmdHooks, hub) // ADR-042: cloud path gets the same router + hub
 			go relay.Run(relayCtx)
 		}
@@ -348,7 +358,14 @@ func buildCommandHooks(remStore *reminder.Store, devSess *butler.DeviceSession) 
 			r, err := remStore.Add(reminder.Reminder{
 				Prompt: prompt,
 				RunAt:  runAt,
-				Target: reminder.Target{SessionID: devSess.ActiveID()},
+				// Bind to the device + conversation that set it, so firing routes the
+				// notification back to this device (ADR-042 §3). DeviceID comes from
+				// curdevice (the last device the adapter saw); empty on a dev box with
+				// no paired device, in which case firing reports "no target".
+				Target: reminder.Target{
+					DeviceID:  curdevice.Get(),
+					SessionID: devSess.ActiveID(),
+				},
 			}, now)
 			if err != nil {
 				return "", err
