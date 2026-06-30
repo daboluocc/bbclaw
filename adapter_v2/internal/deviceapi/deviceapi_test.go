@@ -572,6 +572,87 @@ func b(s *session.Session) *Bridge {
 	return New(s, nil, nil, nil, Config{Cols: 80, Rows: 24})
 }
 
+// TestCommandRouterInterceptsCancel asserts a "停止" command with hooks wired is
+// NOT injected into the PTY (it would otherwise echo "ANSWER: 停止") — the router
+// short-circuits it to Interrupt (ADR-042).
+func TestCommandRouterInterceptsCancel(t *testing.T) {
+	_, s := newMockSession(t)
+	client, _, _ := s.Attach()
+	defer s.Detach(client)
+
+	br := b(s)
+	br.SetCommandHooks(&CommandHooks{}) // hooks present ⇒ router active
+	if err := br.SubmitVoiceTurn("停止"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if drainContains(client.Out, "ANSWER: 停止", 800*time.Millisecond) {
+		t.Fatal("命令「停止」被注入了 PTY；应被口令路由短路")
+	}
+}
+
+// TestCommandRouterReminderCreate asserts a reminder phrase is parsed and handed
+// to the ReminderCreate hook (not injected as a CLI turn), with the time arg.
+func TestCommandRouterReminderCreate(t *testing.T) {
+	_, s := newMockSession(t)
+	client, _, _ := s.Attach()
+	defer s.Detach(client)
+
+	var gotArgs map[string]string
+	br := b(s)
+	br.SetCommandHooks(&CommandHooks{
+		ReminderCreate: func(args map[string]string) (string, error) {
+			gotArgs = args
+			return "已设置 30 分钟后提醒", nil
+		},
+	})
+	if err := br.SubmitVoiceTurn("30分钟后提醒我看日志"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if gotArgs["delay"] != "30m" {
+		t.Errorf("ReminderCreate delay = %q, want 30m (args=%v)", gotArgs["delay"], gotArgs)
+	}
+	if gotArgs["prompt"] != "看日志" {
+		t.Errorf("ReminderCreate prompt = %q, want 看日志", gotArgs["prompt"])
+	}
+	if drainContains(client.Out, "ANSWER: 30", 600*time.Millisecond) {
+		t.Fatal("提醒口令被注入了 PTY；应被路由处理")
+	}
+}
+
+// TestCommandRouterDisabledFallsThrough asserts that without hooks the SAME
+// "停止" phrase is treated as an ordinary turn and reaches the CLI — i.e. the
+// router is strictly opt-in and never changes pre-ADR-042 behaviour.
+func TestCommandRouterDisabledFallsThrough(t *testing.T) {
+	_, s := newMockSession(t)
+	client, _, _ := s.Attach()
+	defer s.Detach(client)
+
+	br := b(s) // no SetCommandHooks
+	if err := br.SubmitVoiceTurn("停止"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if !drainContains(client.Out, "ANSWER: 停止", 3*time.Second) {
+		t.Fatal("无 hooks 时「停止」应作为普通 turn 注入 CLI")
+	}
+}
+
+// TestCommandRouterReminderUnwiredFallsThrough asserts reminder.* falls through
+// to a CLI turn when the scheduler hook is not wired (graceful degrade pre-M2).
+func TestCommandRouterReminderUnwiredFallsThrough(t *testing.T) {
+	_, s := newMockSession(t)
+	client, _, _ := s.Attach()
+	defer s.Detach(client)
+
+	br := b(s)
+	br.SetCommandHooks(&CommandHooks{}) // router on, but ReminderCreate nil
+	if err := br.SubmitVoiceTurn("30分钟后提醒我看日志"); err != nil {
+		t.Fatalf("SubmitVoiceTurn: %v", err)
+	}
+	if !drainContains(client.Out, "ANSWER: 30", 3*time.Second) {
+		t.Fatal("未接调度器时提醒应降级为普通 CLI turn")
+	}
+}
+
 // drainContains reads from a session client channel until want is seen or the
 // deadline passes.
 func drainContains(ch <-chan []byte, want string, d time.Duration) bool {

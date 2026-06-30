@@ -48,6 +48,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/command"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/extract"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
@@ -335,6 +336,31 @@ type Bridge struct {
 	// lingers across many repaints, so we log it once and re-log only when the row
 	// set actually changes. Read/written only on Run's goroutine.
 	lastTaskProbeSig string
+
+	// cmdHooks is the optional command-router wiring (ADR-042): when set,
+	// SubmitVoiceTurn first runs the transcript through command.Parse and, on a
+	// match, executes it instead of injecting a billable CLI turn. nil ⇒ no
+	// interception (every transcript goes to the PTY, the pre-ADR-042 behaviour).
+	cmdHooks *CommandHooks
+}
+
+// CommandHooks supplies the side-effects the command router needs without
+// deviceapi importing the scheduler/status providers (ADR-042 §2.1). The Bridge
+// owns turn.cancel (Interrupt) and session.new (inject the CLI's /clear) itself;
+// the wiring fills in the rest. Any nil func means "not wired" — for reminder.*
+// that makes the phrase fall through to a normal CLI turn (graceful degrade
+// until the scheduler lands), so a reminder said before M2 is at worst typed at
+// the CLI rather than dropped.
+type CommandHooks struct {
+	// Status returns the spoken status line for status.show (driver / session /
+	// cloud). nil ⇒ a minimal built-in fallback is spoken.
+	Status func() string
+	// ReminderCreate persists a reminder and returns the spoken confirmation
+	// ("已设置 30 分钟后提醒"). nil ⇒ reminder.create falls through to a CLI turn.
+	ReminderCreate func(args map[string]string) (confirm string, err error)
+	// ReminderList returns the spoken summary of pending reminders. nil ⇒ falls
+	// through to a CLI turn.
+	ReminderList func() string
 }
 
 // pendingPrompt is the Bridge's record of the menu currently forwarded to the
@@ -379,6 +405,111 @@ func (b *Bridge) SetEvents(e Events) {
 	b.promptObs, _ = e.(PromptObserver)
 }
 
+// SetCommandHooks attaches the command router (ADR-042). Call before Run. nil
+// disables interception (every transcript goes to the CLI). Safe to call once at
+// wiring time; not goroutine-safe vs. an in-flight SubmitVoiceTurn.
+func (b *Bridge) SetCommandHooks(h *CommandHooks) { b.cmdHooks = h }
+
+// handleCommand runs transcript through the command router and executes a match,
+// returning handled=true so SubmitVoiceTurn short-circuits the CLI turn. A nil
+// hooks set, a non-command phrase, or an unwired reminder.* returns false so the
+// transcript falls through to the normal PTY injection.
+func (b *Bridge) handleCommand(transcript string) bool {
+	if b.cmdHooks == nil {
+		return false
+	}
+	in := command.Parse(transcript, "voice")
+	if in == nil {
+		return false
+	}
+	switch in.Kind {
+	case command.KindCancel:
+		// "停止 / 取消": abort the in-flight turn (no-op at an idle prompt). Never
+		// reaches the LLM.
+		_ = b.Interrupt()
+		return true
+	case command.KindNewSession:
+		// "新对话 / 清空": interrupt any live turn, then send the CLI's own /clear
+		// slash command (a CLI command, not a billable LLM turn).
+		b.newSession()
+		return true
+	case command.KindStatus:
+		b.speakStatus()
+		return true
+	case command.KindReminderCreate:
+		if b.cmdHooks.ReminderCreate == nil {
+			return false // scheduler not wired (pre-M2) → fall through to a CLI turn
+		}
+		confirm, err := b.cmdHooks.ReminderCreate(in.Args)
+		if err != nil {
+			log.Printf("deviceapi: reminder.create failed: %v", err)
+			b.speakBackground("没设置成功，请再说一次时间。")
+			return true
+		}
+		if confirm == "" {
+			confirm = "已设置提醒。"
+		}
+		b.speakBackground(confirm)
+		return true
+	case command.KindReminderList:
+		if b.cmdHooks.ReminderList == nil {
+			return false
+		}
+		b.speakBackground(b.cmdHooks.ReminderList())
+		return true
+	}
+	return false
+}
+
+// newSession starts a fresh CLI conversation: interrupt a live turn first (so the
+// /clear isn't swallowed mid-reply), then inject the CLI's /clear slash command.
+// /clear is a CLI command (not an LLM turn), so this costs nothing and clears the
+// context the next PTT starts from.
+func (b *Bridge) newSession() {
+	if b.inFlight.Load() {
+		_ = b.Interrupt()
+		time.Sleep(injectPause)
+	}
+	if err := b.sess.Write([]byte("/clear" + enterKey)); err != nil {
+		log.Printf("deviceapi: newSession write: %v", err)
+		return
+	}
+	b.signalRearm()
+	b.speakBackground("好的，开始新对话。")
+}
+
+// speakStatus voices the current status line (status.show command). Uses the
+// wired Status hook, or a minimal fallback when none is set.
+func (b *Bridge) speakStatus() {
+	text := "设备在线，会话正常。"
+	if b.cmdHooks != nil && b.cmdHooks.Status != nil {
+		if s := b.cmdHooks.Status(); s != "" {
+			text = s
+		}
+	}
+	b.speakBackground(text)
+}
+
+// speakBackground voices a short adapter-originated line (command ack, status)
+// outside the turn loop. It mirrors maybeSpeak's reply path so the device shows
+// and speaks it: ReplyComplete updates the screen subtitle, speak plays TTS, and
+// TurnIdle hands control back. Best-effort — a synth/sink error is logged, not
+// surfaced, since a failed ack must not wedge the device.
+func (b *Bridge) speakBackground(text string) {
+	if isBlank(text) {
+		return
+	}
+	if b.events != nil {
+		b.events.ReplyComplete(text)
+	}
+	if err := b.speak(context.Background(), text); err != nil {
+		log.Printf("deviceapi: speakBackground: %v", err)
+	}
+	if b.events != nil {
+		b.events.TurnIdle()
+	}
+}
+
 // SubmitVoicePTT is the full PTT entry point: recognise the audio, then inject
 // the transcript as a user turn. Empty/whitespace transcripts are dropped (a
 // silent or unrecognised utterance must not poke the CLI).
@@ -415,6 +546,14 @@ func (b *Bridge) SubmitVoicePTT(ctx context.Context, audio []byte) error {
 // A blank transcript is a no-op so a misfire never interrupts a live turn.
 func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 	if isBlank(transcript) {
+		return nil
+	}
+	// Command router (ADR-042): intercept short commands ("停止"/"状态"/"新对话"/
+	// reminders) BEFORE injecting, so they don't become a billable CLI turn. A
+	// matched command is executed here and the turn short-circuits; everything else
+	// falls through to PTY injection unchanged. turn.cancel intentionally runs
+	// before the ready gate (you can cancel during warmup); the others are cheap.
+	if b.handleCommand(transcript) {
 		return nil
 	}
 	// Wait until the session is ready (warmup done: trust cleared, idle prompt up),
