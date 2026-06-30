@@ -7,14 +7,16 @@ import (
 	"strings"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
 
 // agentSessionsRoutes registers the LOCAL HTTP endpoints the web SPA uses to browse
-// conversations: list, view a transcript, and switch the active one. They drive
-// butler.DeviceSession directly — the same data the cloud-relay proxy exposes over
-// the cloud WS, here served to the LAN/local web. Not loopback-gated: these carry
-// no secrets (titles + transcript text), same exposure as the terminal at "/".
-func agentSessionsRoutes(mux *http.ServeMux, dev *butler.DeviceSession) {
+// conversations: list, view a transcript, switch the active one, and type into it.
+// They drive butler.DeviceSession directly — the same data the cloud-relay proxy
+// exposes over the cloud WS, here served to the LAN/local web. Not loopback-gated:
+// these carry no secrets (titles + transcript text), same exposure as the terminal
+// at "/". mgr is used by the text-input route to reach the live default PTY.
+func agentSessionsRoutes(mux *http.ServeMux, mgr *session.Manager, dev *butler.DeviceSession) {
 	// GET /v1/agent/sessions → {sessions:[{id,title,lastUsedAt,active}], active}
 	mux.HandleFunc("GET /v1/agent/sessions", func(w http.ResponseWriter, r *http.Request) {
 		active := dev.ActiveID()
@@ -61,6 +63,47 @@ func agentSessionsRoutes(mux *http.ServeMux, dev *butler.DeviceSession) {
 	mux.HandleFunc("POST /v1/agent/sessions/new", func(w http.ResponseWriter, r *http.Request) {
 		id := dev.New()
 		writeAgentJSON(w, map[string]any{"active": id})
+	})
+
+	// POST /v1/agent/sessions/{id}/input → type a text turn into the conversation,
+	// the web composer's equivalent of the device's voice turn. Body: {"text":"…"}.
+	//
+	// Only the ACTIVE conversation has a running PTY (the shared default session),
+	// so we inject into session.DefaultID exactly the way deviceapi.SubmitVoiceTurn
+	// does at an idle prompt — the transcript text plus a single Enter, in one
+	// write. Input aimed at any non-active id is rejected with 409 so the client
+	// switches first (POST .../activate) rather than silently dropping the turn into
+	// a conversation with no live process.
+	mux.HandleFunc("POST /v1/agent/sessions/{id}/input", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		var body struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeAgentError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		// Strip any trailing newline the composer sent; we append our own Enter so
+		// the turn submits as one keystroke (matching the device's idle-prompt path).
+		text := strings.TrimRight(body.Text, "\r\n")
+		if strings.TrimSpace(text) == "" {
+			writeAgentError(w, http.StatusBadRequest, "text required")
+			return
+		}
+		if id == "" || id != dev.ActiveID() {
+			writeAgentError(w, http.StatusConflict, "session is not active; switch to it first")
+			return
+		}
+		sess := mgr.Get(session.DefaultID)
+		if sess == nil {
+			writeAgentError(w, http.StatusServiceUnavailable, "no live session")
+			return
+		}
+		if err := sess.Write([]byte(text + "\r")); err != nil {
+			writeAgentError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeAgentJSON(w, map[string]any{"sent": true})
 	})
 
 	// DELETE /v1/agent/sessions/{id} → remove a conversation. Deleting the active

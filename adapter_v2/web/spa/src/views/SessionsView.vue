@@ -16,6 +16,15 @@ const msgError = ref("");
 const busy = ref(false); // new/activate in flight
 const toast = ref<{ text: string; err: boolean } | null>(null);
 
+// Composer: a text turn typed into the live conversation. Only the active session
+// has a running PTY, so the box is enabled only when viewing it; for any other
+// session the header's "Switch" button activates it first.
+const draft = ref("");
+const sending = ref(false);
+const canType = computed(
+  () => !!selectedId.value && selectedId.value === activeId.value
+);
+
 // autoFollow keeps the view pinned to the live (active) conversation: the list
 // + transcript refresh on a timer and the selection tracks the active session
 // as new turns land. Clicking a non-active session to browse history turns it
@@ -206,6 +215,33 @@ async function newSession() {
   }
 }
 
+// sendDraft submits the composer's text as a user turn into the active session's
+// PTY (same effect as speaking it to the device). Enter sends; Shift+Enter inserts
+// a newline. We clear the box optimistically, then let the 3s poll — kicked once
+// here — pull the new user turn and the assistant's reply into the transcript.
+async function sendDraft() {
+  const text = draft.value.trim();
+  if (!text || sending.value) return;
+  if (!canType.value) {
+    showToast("请先切换到此会话 Switch to this session first", true);
+    return;
+  }
+  sending.value = true;
+  const target = selectedId.value;
+  try {
+    await api.sendInput(target, text);
+    draft.value = "";
+    // Pull the just-submitted turn (and, on the next ticks, the reply) without
+    // waiting for the timer; keep following the live conversation.
+    autoFollow.value = true;
+    await loadMessages(target, { silent: true, scroll: true });
+  } catch (e) {
+    showToast((e as Error).message, true);
+  } finally {
+    sending.value = false;
+  }
+}
+
 async function activate(id: string) {
   busy.value = true;
   try {
@@ -368,6 +404,29 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+
+      <!-- composer: type a text turn into the live conversation -->
+      <form v-if="selectedId" class="composer" @submit.prevent="sendDraft">
+        <textarea
+          v-model="draft"
+          class="composer-input"
+          rows="1"
+          :disabled="!canType || sending"
+          :placeholder="
+            canType
+              ? '输入消息，Enter 发送，Shift+Enter 换行 · Type a message…'
+              : '切换到此会话后可输入 · Switch to this session to type'
+          "
+          @keydown.enter.exact.prevent="sendDraft"
+        ></textarea>
+        <button
+          type="submit"
+          class="send"
+          :disabled="!canType || sending || !draft.trim()"
+        >
+          {{ sending ? "发送中…" : "发送 Send" }}
+        </button>
+      </form>
     </section>
 
     <div v-if="toast" class="toast" :class="{ err: toast.err }">
@@ -605,6 +664,40 @@ onUnmounted(() => {
   color: var(--lit);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── composer ────────────────────────────────────────────────────────── */
+.composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--ghost);
+  background: rgba(7, 11, 14, 0.55);
+}
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  max-height: 140px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--ghost);
+  background: rgba(13, 18, 22, 0.78);
+  color: var(--lit);
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.composer-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.composer-input:disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+}
+.send {
+  flex: none;
 }
 
 /* ── states ──────────────────────────────────────────────────────────── */

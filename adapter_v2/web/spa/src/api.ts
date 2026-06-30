@@ -83,6 +83,16 @@ export const api = {
     );
   },
 
+  // sendInput types a text turn into a conversation (the web composer's
+  // equivalent of a voice turn). Only the active session has a live PTY, so the
+  // server rejects input to any other id with 409 — switch (activate) first.
+  sendInput(id: string, text: string): Promise<{ sent: boolean }> {
+    return request<{ sent: boolean }>(
+      `/v1/agent/sessions/${encodeURIComponent(id)}/input`,
+      { method: "POST", body: JSON.stringify({ text }) }
+    );
+  },
+
   newSession(): Promise<{ active: string }> {
     return request<{ active: string }>("/v1/agent/sessions/new", {
       method: "POST",
