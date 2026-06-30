@@ -8,6 +8,7 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
@@ -298,6 +299,9 @@ type bridgeManager struct {
 	mgr *session.Manager
 	dev *butler.DeviceSession // supplies the default session's spawn config
 
+	cmdHooks *deviceapi.CommandHooks // ADR-042 command router (nil ⇒ no interception)
+	hub      *devicehub.Hub          // active-bridge registry for the reminder scheduler
+
 	mu      sync.Mutex
 	bridges map[string]*cloudBridge
 }
@@ -361,6 +365,16 @@ func (m *bridgeManager) get(deviceID string) (*cloudBridge, error) {
 		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
 	})
 	bridge.SetEvents(ev)
+	// ADR-042: attach the command router and register this bridge as the active
+	// device line so the reminder scheduler can inject a turn here. The cloud
+	// bridge is long-lived (process lifetime), so there is no per-connection
+	// teardown to Clear against — last creator wins the hub slot.
+	if m.cmdHooks != nil {
+		bridge.SetCommandHooks(m.cmdHooks)
+	}
+	if m.hub != nil {
+		m.hub.Set(bridge)
+	}
 	go bridge.Run(context.Background())
 	cb := &cloudBridge{sess: sess, bridge: bridge, ev: ev}
 	m.bridges[session.DefaultID] = cb

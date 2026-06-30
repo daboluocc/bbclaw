@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -38,9 +39,12 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/cloudrelay"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/reminder"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/termchan"
@@ -140,9 +144,29 @@ func main() {
 		}
 	}
 
+	// ADR-042 command router + reminder scheduler. hub is the single active-bridge
+	// slot both device transports (LAN + cloud relay) register into; cmdHooks gives
+	// every device bridge quick-command interception ("停止"/"状态"/reminders); the
+	// scheduler injects a due reminder's prompt into whatever bridge is live, or —
+	// when none is — marks it failed (the notify outbox / offline-defer is M3).
+	hub := devicehub.New()
+	remStore, rerr := reminder.Open(filepath.Join(settingsstore.DataDir(), "reminders.json"))
+	if rerr != nil {
+		log.Printf("bbclaw-adapter-v2: reminders load error (using empty store): %v", rerr)
+	}
+	cmdHooks := buildCommandHooks(remStore, devSess)
+	scheduler := reminder.NewScheduler(remStore, reminder.InjectorFunc(func(_ context.Context, r reminder.Reminder) error {
+		b := hub.Active()
+		if b == nil {
+			return fmt.Errorf("no active device line for reminder %s", r.ID)
+		}
+		log.Printf("bbclaw-adapter-v2: firing reminder %s: %q", r.ID, r.Prompt)
+		return b.SubmitVoiceTurn(r.Prompt)
+	}), 0, nil)
+
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg, devSess, store, projStore, restartFlag, derive),
+		Handler: newRouter(mgr, cfg, devSess, store, projStore, restartFlag, derive, cmdHooks, hub),
 	}
 	log.Printf("bbclaw-adapter-v2: settings file %s", store.Path())
 	log.Printf("bbclaw-adapter-v2: admin at http://127.0.0.1%s/admin", cfg.Addr)
@@ -159,9 +183,15 @@ func main() {
 			log.Printf("bbclaw-adapter-v2: cloud relay disabled (config error): %v", err)
 		} else {
 			relay := cloudrelay.New(mgr, devSess, rc, log.Printf)
+			relay.SetCommandRouter(cmdHooks, hub) // ADR-042: cloud path gets the same router + hub
 			go relay.Run(relayCtx)
 		}
 	}
+
+	// Reminder scheduler (ADR-042): polls the store and fires due reminders into
+	// the active device bridge. Shares the app-lifetime relayCtx so it stops on
+	// shutdown.
+	go scheduler.Run(relayCtx)
 
 	// Run the listener in the background so main can block on signals and then
 	// drive a graceful shutdown. serveErr surfaces a startup failure (e.g. the
@@ -238,7 +268,7 @@ func mergeProjectHotwords(projects []projectstore.Project) {
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, projStore *projectstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, projStore *projectstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived, cmdHooks *deviceapi.CommandHooks, hub *devicehub.Hub) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(mgr, cfg, devSess))
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -282,6 +312,8 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 		Decode:           voicekit.DecodeUplink,
 		StreamReplyDelta: streamDelta,
 		SegmentTTS:       segmentTTS,
+		CommandHooks:     cmdHooks,
+		Hub:              hub,
 	})
 	mux.HandleFunc("/v2/dev/ws", devSrv.Handler())
 	// Local HTTP session browser for the web SPA: list / view transcript / switch.
@@ -291,6 +323,67 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	// requests those two don't claim.
 	mux.Handle("/", web.Handler())
 	return mux
+}
+
+// buildCommandHooks assembles the ADR-042 command-router side-effects the device
+// bridges call: status.show summarises the runtime; reminder.create/list persist
+// and read from the reminder store, binding each new reminder to the active
+// conversation (so it fires back there). turn.cancel and session.new are owned by
+// the Bridge itself and need no hook.
+func buildCommandHooks(remStore *reminder.Store, devSess *butler.DeviceSession) *deviceapi.CommandHooks {
+	return &deviceapi.CommandHooks{
+		Status: func() string {
+			mode := "本地"
+			if cloudrelay.Enabled() {
+				mode = "云端配对"
+			}
+			return fmt.Sprintf("当前%s模式，会话 %s 正常。", mode, shortID(devSess.ActiveID()))
+		},
+		ReminderCreate: func(args map[string]string) (string, error) {
+			now := time.Now()
+			runAt, prompt, err := reminder.Resolve(args, now)
+			if err != nil {
+				return "", err
+			}
+			r, err := remStore.Add(reminder.Reminder{
+				Prompt: prompt,
+				RunAt:  runAt,
+				Target: reminder.Target{SessionID: devSess.ActiveID()},
+			}, now)
+			if err != nil {
+				return "", err
+			}
+			return reminder.ConfirmText(r, now), nil
+		},
+		ReminderList: func() string {
+			now := time.Now()
+			var pending []reminder.Reminder
+			for _, r := range remStore.List() {
+				if r.State == reminder.StateScheduled {
+					pending = append(pending, r)
+				}
+			}
+			if len(pending) == 0 {
+				return "当前没有待提醒的任务。"
+			}
+			head := pending[0]
+			if len(pending) == 1 {
+				return "有 1 条提醒：" + reminder.ConfirmText(head, now)
+			}
+			return fmt.Sprintf("有 %d 条提醒，最近一条是%s", len(pending), reminder.ConfirmText(head, now))
+		},
+	}
+}
+
+// shortID trims a conversation UUID to its first segment for a speakable status.
+func shortID(id string) string {
+	if i := strings.IndexByte(id, '-'); i > 0 {
+		return id[:i]
+	}
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // envBool reads a boolean env var (1/true/yes/on = true, 0/false/no/off = false),

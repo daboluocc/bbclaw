@@ -33,6 +33,8 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/buildinfo"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
 )
@@ -162,6 +164,15 @@ func (r *Relay) notePresence(deviceID string) {
 // logger (e.g. log.Printf).
 func New(mgr *session.Manager, dev *butler.DeviceSession, cfg Config, log func(string, ...any)) *Relay {
 	return &Relay{cfg: cfg, dev: dev, bridges: newBridgeManager(mgr, dev), log: log, lastSeen: make(map[string]time.Time)}
+}
+
+// SetCommandRouter wires the ADR-042 command router + active-bridge hub onto the
+// relay's bridges, so cloud-path voice turns get quick-command interception and
+// the reminder scheduler can inject into the cloud bridge. Call before Run; nil
+// args leave the path untouched (pre-ADR-042 behaviour).
+func (r *Relay) SetCommandRouter(hooks *deviceapi.CommandHooks, hub *devicehub.Hub) {
+	r.bridges.cmdHooks = hooks
+	r.bridges.hub = hub
 }
 
 // Run connects to the cloud and serves relayed requests until ctx is cancelled,

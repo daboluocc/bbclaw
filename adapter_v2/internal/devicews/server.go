@@ -14,6 +14,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/curdevice"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
@@ -54,6 +55,8 @@ type Server struct {
 	decode      func(ctx context.Context, codec string, rate, ch int, payload []byte) ([]byte, error)
 	streamDelta bool
 	segmentTTS  bool
+	cmdHooks    *deviceapi.CommandHooks // ADR-042 command router (nil ⇒ no interception)
+	hub         *devicehub.Hub          // active-bridge registry for the reminder scheduler
 }
 
 // Options carries the optional knobs for New.
@@ -73,6 +76,15 @@ type Options struct {
 	// SegmentTTS (Phase B) speaks the reply sentence-by-sentence instead of once at
 	// turn end. Opt-in (higher risk). Off → one-shot TTS (Phase A behaviour).
 	SegmentTTS bool
+
+	// CommandHooks wires the ADR-042 command router onto each device bridge so
+	// quick voice commands ("停止"/"状态"/reminders) short-circuit the LLM. nil ⇒
+	// no interception.
+	CommandHooks *deviceapi.CommandHooks
+	// Hub registers each live device bridge so the reminder scheduler can inject a
+	// turn into the active session. nil ⇒ not registered (reminders can't fire on
+	// this path).
+	Hub *devicehub.Hub
 }
 
 // New builds a device-WS server. asr/tts are the voice providers (a mock ASR and
@@ -89,7 +101,7 @@ func New(mgr *session.Manager, asr deviceapi.Recognizer, tts deviceapi.Synthesiz
 	if opt.Rows <= 0 {
 		opt.Rows = session.DefaultGridRows
 	}
-	return &Server{mgr: mgr, asr: asr, tts: tts, dev: dev, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS}
+	return &Server{mgr: mgr, asr: asr, tts: tts, dev: dev, auth: opt.Auth, cols: opt.Cols, rows: opt.Rows, decode: opt.Decode, streamDelta: opt.StreamReplyDelta, segmentTTS: opt.SegmentTTS, cmdHooks: opt.CommandHooks, hub: opt.Hub}
 }
 
 // Handler upgrades GET /v2/dev/ws and runs one device session on it.
@@ -358,6 +370,16 @@ func (s *Server) serve(parent context.Context, conn wsConn) {
 		ConfirmPrompts: settingsstore.ConfirmOnDeviceEnabled(),
 	})
 	bridge.SetEvents(dc)
+	// ADR-042: attach the command router and register this bridge as the active
+	// device line so the reminder scheduler can inject a turn here. Clear on
+	// disconnect (compare-and-clear, so a newer connection's bridge survives).
+	if s.cmdHooks != nil {
+		bridge.SetCommandHooks(s.cmdHooks)
+	}
+	if s.hub != nil {
+		s.hub.Set(bridge)
+		defer s.hub.Clear(bridge)
+	}
 	go bridge.Run(ctx)
 
 	// 3. hello.ok.

@@ -28,7 +28,8 @@ func testRouter(mgr *session.Manager) http.Handler {
 	store, _ := settingsstore.Open("", settingsstore.Settings{})
 	projStore, _ := projectstore.Open("")
 	derive := func() adminapi.Derived { return adminapi.Derived{} }
-	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, projStore, &adminapi.RestartFlag{}, derive)
+	// nil cmdHooks/hub: routing tests don't exercise the ADR-042 command router.
+	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, projStore, &adminapi.RestartFlag{}, derive, nil, nil)
 }
 
 // testConfig launches a trivial long-running CLI under the PTY so a created
