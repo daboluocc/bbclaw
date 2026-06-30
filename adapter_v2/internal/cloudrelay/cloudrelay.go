@@ -157,10 +157,16 @@ func (r *Relay) setSend(fn func(Envelope) error) {
 // offline, and the firmware renders preview as a toast + unread badge. No cloud
 // or firmware change is needed.
 //
-// preview is the device-visible reminder text. It returns an error only when the
-// adapter's OWN cloud link is down (device-offline is handled by the hub, not an
-// error here); the caller may then fall back to a local outbox (Task #5, M3).
-func (r *Relay) Notify(deviceID, preview, sessionID string) error {
+// preview is the device-visible reminder text (toast). ttsText, when non-empty,
+// asks the device to ALSO speak the reminder: the payload carries speak=true +
+// ttsText, and the firmware fetches audio from the cloud's /v1/tts/synthesize and
+// plays it (ADR-042 §3.2, firmware-initiated fetch — no cloud change). A device on
+// old firmware ignores the extra fields and just shows the toast.
+//
+// It returns an error only when the adapter's OWN cloud link is down (device-
+// offline is handled by the hub, not an error here); the caller may then fall back
+// to a local outbox (Task #5, M3).
+func (r *Relay) Notify(deviceID, preview, ttsText, sessionID string) error {
 	if deviceID == "" {
 		return errors.New("cloudrelay: notify needs a deviceId")
 	}
@@ -170,18 +176,23 @@ func (r *Relay) Notify(deviceID, preview, sessionID string) error {
 	if send == nil {
 		return errors.New("cloudrelay: not connected to cloud")
 	}
+	payload := map[string]any{
+		"sessionId": sessionID,
+		"driver":    "reminder",
+		"type":      "reminder",
+		"preview":   preview,
+		"timestamp": time.Now().UnixMilli(),
+	}
+	if strings.TrimSpace(ttsText) != "" {
+		payload["speak"] = true
+		payload["ttsText"] = ttsText
+	}
 	return send(Envelope{
 		Type:       "event",
 		Kind:       "session.notification",
 		DeviceID:   deviceID,
 		HomeSiteID: r.cfg.HomeSiteID,
-		Payload: map[string]any{
-			"sessionId": sessionID,
-			"driver":    "reminder",
-			"type":      "reminder",
-			"preview":   preview,
-			"timestamp": time.Now().UnixMilli(),
-		},
+		Payload:    payload,
 	})
 }
 

@@ -91,6 +91,19 @@ type Reminder struct {
 - cloud 主动推送要补：① reminder 记 `Target.DeviceID`（create 时从 curdevice 拿）；② relay 暴露 **relay 级 `Send(Envelope)`**（底层单 conn 的 write 已存在）；③ 新增 server→device 主动 envelope kind `notify.*`；④ **云端 hub 路由 adapter→device 主动帧**（跨仓库 bbclaw-reference cloud，先部署云侧再发固件——CLAUDE.md 协议同步表）；⑤ 固件侧 `notify.*` 处理（亮屏/展示/播 TTS/ack）。
 - 离线：cloud WS 断或设备离线 → outbox 缓存重连补投（§4）。
 
+## 3.2 主动 TTS 播报（在视觉通知之上，2026-06-30）—— **固件拉取式，云端零改动**
+
+视觉通知（§3.1）只弹 toast。要让设备到点**主动念出来**，关键约束（实测云/固件代码）：
+
+- cloud_saas 下 **TTS 音频走「设备发起的流式 HTTP 请求」**（设备 PTT→POST transcript→NDJSON 流里夹 `tts.chunk`），控制 WS 只走 `session.notification` 等控制帧。**没有**服务端→设备的常驻音频推送通道。
+- 因此主动 TTS 用**固件拉取式**最自然：通知(WS)带 `ttsText`/`speak` → 固件收到后**自己发 HTTP** 到云现有 `POST /v1/tts/synthesize`(`{text,deviceId,codec:pcm16}`→音频)→播放。
+
+**三端改动（决定）**：
+- **adapter_v2**：`session.notification` payload 加 `ttsText` + `speak:true`（reminder 到点带上）。
+- **cloud**：**零改动**——hub 透传 payload 新字段；`/v1/tts/synthesize` 已存在。
+- **固件**：`bb_adapter_client.c` 的 `session.notification` 分支：除现有 toast 外，若带 `speak` → 调 `/v1/tts/synthesize` 取 PCM16 播放（复用现有 HTTP+I2S 播放栈）。对话/录音中收到先入队不打断。**需 OTA 烧录验证**。
+- 备选（未选）：云端对通知主动 TTS 后推音频——但音频不在控制 WS 上，需新增推送通道，比固件拉取重。
+
 ## 4. 通知 outbox（P0）
 
 把「主动结果投递」从「设备显示任务」里抽出来——显示只是投递方式之一，后续还可投 Cloud/Web/admin。

@@ -171,7 +171,9 @@ func main() {
 			return fmt.Errorf("reminder %s: no target deviceId", r.ID)
 		}
 		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s: %q", r.ID, r.Target.DeviceID, r.Prompt)
-		return relay.Notify(r.Target.DeviceID, "提醒："+r.Prompt, r.Target.SessionID)
+		// preview = toast text; ttsText asks the device to also speak it (ADR-042
+		// §3.2). Same wording for both; the comma makes the spoken line flow.
+		return relay.Notify(r.Target.DeviceID, "提醒："+r.Prompt, "提醒，"+r.Prompt, r.Target.SessionID)
 	}), 0, nil)
 
 	srv := &http.Server{

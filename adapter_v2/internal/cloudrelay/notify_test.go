@@ -7,7 +7,7 @@ func TestNotifyEmitsSessionNotification(t *testing.T) {
 	var got Envelope
 	r.setSend(func(e Envelope) error { got = e; return nil })
 
-	if err := r.Notify("dev-1", "提醒：检查烧录日志", "ls-7"); err != nil {
+	if err := r.Notify("dev-1", "提醒：检查烧录日志", "提醒，检查烧录日志", "ls-7"); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
 	if got.Type != "event" || got.Kind != "session.notification" {
@@ -22,12 +22,34 @@ func TestNotifyEmitsSessionNotification(t *testing.T) {
 	if got.Payload["sessionId"] != "ls-7" {
 		t.Errorf("sessionId = %v", got.Payload["sessionId"])
 	}
+	// TTS opt-in: speak flag + ttsText present when ttsText is supplied.
+	if got.Payload["speak"] != true {
+		t.Errorf("speak = %v, want true", got.Payload["speak"])
+	}
+	if got.Payload["ttsText"] != "提醒，检查烧录日志" {
+		t.Errorf("ttsText = %v", got.Payload["ttsText"])
+	}
+}
+
+func TestNotifyWithoutTTSOmitsSpeak(t *testing.T) {
+	r := &Relay{cfg: Config{HomeSiteID: "site"}}
+	var got Envelope
+	r.setSend(func(e Envelope) error { got = e; return nil })
+	if err := r.Notify("dev-1", "提醒：看日志", "", "ls-1"); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	if _, ok := got.Payload["speak"]; ok {
+		t.Error("empty ttsText should not set speak (old-firmware = toast only)")
+	}
+	if _, ok := got.Payload["ttsText"]; ok {
+		t.Error("empty ttsText should not be present in payload")
+	}
 }
 
 func TestNotifyErrorsWhenDisconnected(t *testing.T) {
 	r := &Relay{cfg: Config{HomeSiteID: "site"}}
 	// send is nil (never connected) → Notify must surface an error, not panic.
-	if err := r.Notify("dev-1", "x", "s"); err == nil {
+	if err := r.Notify("dev-1", "x", "", "s"); err == nil {
 		t.Error("Notify with no cloud link = nil err, want error")
 	}
 }
@@ -35,7 +57,7 @@ func TestNotifyErrorsWhenDisconnected(t *testing.T) {
 func TestNotifyRequiresDeviceID(t *testing.T) {
 	r := &Relay{cfg: Config{HomeSiteID: "site"}}
 	r.setSend(func(Envelope) error { return nil })
-	if err := r.Notify("", "x", "s"); err == nil {
+	if err := r.Notify("", "x", "", "s"); err == nil {
 		t.Error("Notify with empty deviceId = nil err, want error")
 	}
 }
