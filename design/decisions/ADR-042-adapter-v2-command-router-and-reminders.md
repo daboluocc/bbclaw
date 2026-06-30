@@ -82,6 +82,15 @@ type Reminder struct {
   - 目标设备/会话**离线**：不丢——转入 §4 notify outbox，重连后补投（与「主动通知」同一条离线补投路径）。
 - P0 先只 `once`：最贴语音设备、最易端到端验证。周期 `cron` 留 P1。
 
+## 3.1 主动推送优先级（2026-06-30 决定）—— **Cloud 优先，LAN 暂缓**
+
+「服务端主动推 TTS」要把回合模型从纯 PTT 发起扩展出「服务端发起」一条主动帧。两条路都走 WebSocket（非 HTTP），但**先只做 cloud_saas 路径，LAN 直连暂不实现**：
+
+- **优先 cloud**：真实出货设备走云端配对；先把 cloud 链路打通。
+- **LAN 暂缓**：`devicews` 的本地直连主动帧留到云路径验证后再补（同一套设备协议帧，复用即可）。
+- cloud 主动推送要补：① reminder 记 `Target.DeviceID`（create 时从 curdevice 拿）；② relay 暴露 **relay 级 `Send(Envelope)`**（底层单 conn 的 write 已存在）；③ 新增 server→device 主动 envelope kind `notify.*`；④ **云端 hub 路由 adapter→device 主动帧**（跨仓库 bbclaw-reference cloud，先部署云侧再发固件——CLAUDE.md 协议同步表）；⑤ 固件侧 `notify.*` 处理（亮屏/展示/播 TTS/ack）。
+- 离线：cloud WS 断或设备离线 → outbox 缓存重连补投（§4）。
+
 ## 4. 通知 outbox（P0）
 
 把「主动结果投递」从「设备显示任务」里抽出来——显示只是投递方式之一，后续还可投 Cloud/Web/admin。
