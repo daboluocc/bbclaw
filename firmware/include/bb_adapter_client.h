@@ -145,6 +145,10 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
 esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result);
 esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio, int seg_idx);
 void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);
+/* ADR-042 §3.2: speak a proactive notification's ttsText aloud (cloud_saas only).
+ * Spawns a PSRAM-stack worker that synthesizes via the cloud and plays the PCM16;
+ * no-op off cloud_saas, on empty text, or while another spoken notification runs. */
+void bb_adapter_speak_notification(const char* tts_text);
 void bb_adapter_tts_chunks_free(bb_tts_chunk_t* head);
 esp_err_t bb_adapter_display_pull(bb_display_task_t* out_task);
 esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);

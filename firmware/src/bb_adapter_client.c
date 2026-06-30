@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "bb_audio.h" /* ADR-042 §3.2: play notification TTS (synth+blocking play) */
 #include "bb_bbwire2.h"
 #include "bb_prompt.h"
 #include "bb_device_config.h"
@@ -864,6 +865,63 @@ esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
   return ESP_OK;
 }
 
+/* ── ADR-042 §3.2: proactive notification TTS ─────────────────────────────────
+ * A reminder/notification arrives over the control WS carrying ttsText (see the
+ * session.notification branch). Speaking it means: POST /v1/tts/synthesize to the
+ * cloud (active_base_url() is the cloud in cloud_saas; bb_adapter_tts_synthesize_
+ * pcm16 already targets it) and play the PCM16 — both BLOCKING for seconds, so
+ * they run on a dedicated worker, NOT the WS task. The stack lives in PSRAM
+ * because internal RAM is too fragmented for xTaskCreate on real hardware (same
+ * lesson as turn_cancel / the ws task). One speak at a time; overlaps are dropped.
+ */
+static volatile int s_notif_tts_inflight = 0;
+
+static void notif_tts_task(void* arg) {
+  char* text = (char*)arg;
+  /* Don't talk over a live voice turn's playback — drop this notification's
+   * speech if audio is already going (the toast still showed it). */
+  if (text != NULL && text[0] != '\0' && !bb_audio_is_playback_active()) {
+    bb_tts_audio_t audio;
+    esp_err_t err = bb_adapter_tts_synthesize_pcm16(text, &audio, 0);
+    if (err == ESP_OK && audio.pcm_data != NULL && audio.pcm_len > 0) {
+      ESP_LOGI(TAG, "notif-tts: play %u pcm bytes", (unsigned)audio.pcm_len);
+      bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len);
+    } else {
+      ESP_LOGW(TAG, "notif-tts: synth empty/failed err=%d", (int)err);
+    }
+    bb_adapter_tts_audio_free(&audio);
+  }
+  free(text);
+  s_notif_tts_inflight = 0;
+  vTaskDelete(NULL);
+}
+
+void bb_adapter_speak_notification(const char* tts_text) {
+  if (tts_text == NULL || tts_text[0] == '\0') {
+    return;
+  }
+  /* On-demand synth is only available in cloud_saas (the cloud serves
+   * /v1/tts/synthesize; local_home_v2 has no synth RPC — see synthesize guard). */
+  if (!bb_transport_is_cloud_saas()) {
+    return;
+  }
+  if (s_notif_tts_inflight) {
+    return; /* one spoken notification at a time; drop overlaps */
+  }
+  s_notif_tts_inflight = 1;
+  char* copy = strdup(tts_text);
+  if (copy == NULL) {
+    s_notif_tts_inflight = 0;
+    return;
+  }
+  if (xTaskCreateWithCaps(notif_tts_task, "bb_notif_tts", 16384, copy, 5, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "notif-tts: task spawn failed (no mem)");
+    free(copy);
+    s_notif_tts_inflight = 0;
+  }
+}
+
 /* ── PTT edge observability: report EVERY physical PTT button edge ─────────
  * Otherwise the adapter only learns about PTT indirectly (voice.transcript
  * after VAD/ASR succeeds, or turn.cancel on barge-in) — an empty tap, a press
@@ -1278,12 +1336,21 @@ static void ws_handle_text_message(const char* msg) {
         char drv[24] = {0};
         char ntype[16] = {0};
         char preview[48] = {0};
+        char tts_text[256] = {0};
         json_extract_string(brace, "sessionId", sid, sizeof(sid));
         json_extract_string(brace, "driver", drv, sizeof(drv));
         json_extract_string(brace, "type", ntype, sizeof(ntype));
         json_extract_string(brace, "preview", preview, sizeof(preview));
+        json_extract_string(brace, "ttsText", tts_text, sizeof(tts_text));
         if (sid[0] != '\0') {
           bb_notification_on_ws_event(sid, drv, ntype, preview);
+        }
+        /* ADR-042 §3.2: a notification carrying ttsText (e.g. a reminder) is
+         * spoken aloud, not just toasted. Gated on ttsText presence (the adapter
+         * sets it with speak=true); fires regardless of sid so a session-less
+         * reminder still speaks. */
+        if (tts_text[0] != '\0') {
+          bb_adapter_speak_notification(tts_text);
         }
       }
     }
