@@ -78,6 +78,8 @@ type Reminder struct {
 
 - Store：`$BBCLAW_DATA_DIR/reminders.json`（与 settingsstore/projectstore 同款 JSON 落盘）。
 - 触发：到点 `reminder` 起一个 **Butler turn**（走 v2 既定的交互式 PTY 路线，订阅内计费——**不得退回 `claude -p`**，见 ADR-035），结果交给 §4 notify。
+- **触发归属（2026-06-30 决定）**：提醒**回到创建它的目标会话**触发（`Reminder.Target` 在 create 时记录 deviceID/sessionID/cwdName）。Scheduler 通过 `Injector` 把 prompt 注入该设备**当前活着的 Bridge**（等价于 adapter 替用户说了一句）。Bridge 是按连接生命周期创建的（`devicews` / `cloudrelay` 各自 `deviceapi.New`），故需要一个**按 deviceID 索引的 bridge 注册表**：连接建立时注册、断开时注销。
+  - 目标设备/会话**离线**：不丢——转入 §4 notify outbox，重连后补投（与「主动通知」同一条离线补投路径）。
 - P0 先只 `once`：最贴语音设备、最易端到端验证。周期 `cron` 留 P1。
 
 ## 4. 通知 outbox（P0）
