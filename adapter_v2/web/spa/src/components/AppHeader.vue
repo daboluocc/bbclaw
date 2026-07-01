@@ -1,6 +1,8 @@
 <script setup lang="ts">
-defineProps<{ current: "terminal" | "sessions" }>();
-const emit = defineEmits<{ (e: "nav", v: "terminal" | "sessions"): void }>();
+defineProps<{ current: "terminal" | "sessions" | "reminders" }>();
+const emit = defineEmits<{
+  (e: "nav", v: "terminal" | "sessions" | "reminders"): void;
+}>();
 </script>
 
 <template>
@@ -27,6 +29,13 @@ const emit = defineEmits<{ (e: "nav", v: "terminal" | "sessions"): void }>();
         @click="emit('nav', 'sessions')"
       >
         会话 Sessions
+      </button>
+      <button
+        class="tab"
+        :class="{ on: current === 'reminders' }"
+        @click="emit('nav', 'reminders')"
+      >
+        提醒 Reminders
       </button>
     </nav>
     <span class="spacer"></span>

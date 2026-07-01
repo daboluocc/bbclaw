@@ -3,16 +3,18 @@ import { ref, onMounted, onUnmounted, computed } from "vue";
 import AppHeader from "./components/AppHeader.vue";
 import TerminalView from "./views/TerminalView.vue";
 import SessionsView from "./views/SessionsView.vue";
+import RemindersView from "./views/RemindersView.vue";
 
-type View = "terminal" | "sessions";
+type View = "terminal" | "sessions" | "reminders";
 
 // Tiny hash router — keeps deps minimal (no vue-router). "#sessions" → Sessions,
-// anything else → Terminal. /admin is a normal anchor (full-page nav), so it
-// never reaches this switch.
+// "#reminders" → Reminders, anything else → Terminal. /admin is a normal anchor
+// (full-page nav), so it never reaches this switch.
 function viewFromHash(): View {
-  return location.hash.replace(/^#\/?/, "") === "sessions"
-    ? "sessions"
-    : "terminal";
+  const h = location.hash.replace(/^#\/?/, "");
+  if (h === "sessions") return "sessions";
+  if (h === "reminders") return "reminders";
+  return "terminal";
 }
 
 const current = ref<View>(viewFromHash());
@@ -22,7 +24,7 @@ function onHashChange() {
 }
 
 function nav(v: View) {
-  location.hash = v === "sessions" ? "#sessions" : "#terminal";
+  location.hash = v === "terminal" ? "#terminal" : `#${v}`;
   current.value = v;
 }
 
@@ -39,6 +41,7 @@ const activeKey = computed(() => current.value);
   <AppHeader :current="current" @nav="nav" />
   <main class="view">
     <TerminalView v-if="current === 'terminal'" :key="activeKey" />
-    <SessionsView v-else :key="activeKey" />
+    <SessionsView v-else-if="current === 'sessions'" :key="activeKey" />
+    <RemindersView v-else :key="activeKey" />
   </main>
 </template>

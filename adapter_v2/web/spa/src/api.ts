@@ -29,6 +29,16 @@ export interface MessagesPayload {
   hasMore: boolean;
 }
 
+export interface Reminder {
+  id: string;
+  mode: "notify" | "task";
+  prompt: string;
+  runAt: number; // unix seconds
+  state: string; // scheduled | running | done | failed | canceled
+  deviceId?: string;
+  createdAt: number;
+}
+
 interface Envelope<T> {
   ok: boolean;
   data?: T;
@@ -102,6 +112,32 @@ export const api = {
   deleteSession(id: string): Promise<{ active: string }> {
     return request<{ active: string }>(
       `/v1/agent/sessions/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+  },
+
+  // Reminders (ADR-042 §2.4). listReminders returns all reminders soonest-first;
+  // createReminder takes a prompt + a time (delay like "30m" OR at like
+  // "tomorrow 09:30") + mode; cancelReminder cancels a scheduled one.
+  listReminders(): Promise<{ reminders: Reminder[] }> {
+    return request<{ reminders: Reminder[] }>("/v1/reminders");
+  },
+
+  createReminder(body: {
+    prompt: string;
+    delay?: string;
+    at?: string;
+    mode?: "notify" | "task";
+  }): Promise<{ reminder: Reminder }> {
+    return request<{ reminder: Reminder }>("/v1/reminders", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  cancelReminder(id: string): Promise<{ canceled: string }> {
+    return request<{ canceled: string }>(
+      `/v1/reminders/${encodeURIComponent(id)}`,
       { method: "DELETE" }
     );
   },
