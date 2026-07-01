@@ -218,7 +218,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: newRouter(mgr, cfg, devSess, store, projStore, restartFlag, derive, cmdHooks, hub),
+		Handler: newRouter(mgr, cfg, devSess, store, projStore, restartFlag, derive, cmdHooks, hub, remStore),
 	}
 	log.Printf("bbclaw-adapter-v2: settings file %s", store.Path())
 	log.Printf("bbclaw-adapter-v2: admin at http://127.0.0.1%s/admin", cfg.Addr)
@@ -320,7 +320,7 @@ func mergeProjectHotwords(projects []projectstore.Project) {
 // newRouter builds the Phase 1 HTTP mux: the terminal WebSocket endpoint and a
 // health probe. It is a separate constructor so tests can exercise routing
 // without binding a real listener.
-func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, projStore *projectstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived, cmdHooks *deviceapi.CommandHooks, hub *devicehub.Hub) http.Handler {
+func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSession, store *settingsstore.Store, projStore *projectstore.Store, restart *adminapi.RestartFlag, derive func() adminapi.Derived, cmdHooks *deviceapi.CommandHooks, hub *devicehub.Hub, remStore *reminder.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(mgr, cfg, devSess))
 	mux.HandleFunc("/healthz", healthzHandler)
@@ -339,6 +339,14 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	// The MEMORY/projects.md enrichment scanner is a separate follow-up (§决策三).
 	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore)))
 	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore)))
+	// Reminders management (ADR-042 §2.4, Task #7): list / create / cancel. A
+	// web-created reminder targets the current device (curdevice) + active
+	// conversation, mirroring the voice create. Loopback-only like the rest.
+	reminderTarget := func() reminder.Target {
+		return reminder.Target{DeviceID: curdevice.Get(), SessionID: devSess.ActiveID()}
+	}
+	mux.HandleFunc("/v1/reminders", adminapi.LocalOnly(adminapi.Reminders(remStore, reminderTarget)))
+	mux.HandleFunc("/v1/reminders/", adminapi.LocalOnly(adminapi.ReminderByID(remStore)))
 	mux.HandleFunc("/v1/admin/pick-dir", adminapi.LocalOnly(adminapi.PickDir()))
 	// Read-only view of the butler's user-profile / memory files (ADR-020/022):
 	// workspace MEMORY/*.md, so the operator can see what the butler knows.

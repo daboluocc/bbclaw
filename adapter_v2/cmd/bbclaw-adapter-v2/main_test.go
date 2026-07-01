@@ -16,6 +16,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/config"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/reminder"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/settingsstore"
 )
@@ -29,7 +30,8 @@ func testRouter(mgr *session.Manager) http.Handler {
 	projStore, _ := projectstore.Open("")
 	derive := func() adminapi.Derived { return adminapi.Derived{} }
 	// nil cmdHooks/hub: routing tests don't exercise the ADR-042 command router.
-	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, projStore, &adminapi.RestartFlag{}, derive, nil, nil)
+	remStore, _ := reminder.Open("")
+	return newRouter(mgr, cfg, butler.NewDeviceSession(mgr, cfg.Argv, cfg.Cwd), store, projStore, &adminapi.RestartFlag{}, derive, nil, nil, remStore)
 }
 
 // testConfig launches a trivial long-running CLI under the PTY so a created
