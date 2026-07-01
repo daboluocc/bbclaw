@@ -98,6 +98,28 @@ func (d *DeviceSession) Config() ptyhost.Config {
 	return cfg
 }
 
+// WorkerConfig builds a ptyhost.Config for an ISOLATED headless worker session
+// (ADR-042 §3.3, the proactive turn runner). It runs the same claude persona in
+// the same workspace as the device session — so it has CLAUDE.md / memory / the
+// project list and can do real tasks — but in its OWN fresh conversation
+// (a random --session-id), so a scheduled task never touches or resumes the
+// user's live device chat. baseArgv is butler.DeviceClaudeArgs' output (persona +
+// permissions, no resume flag); cwd is the butler workspace. A non-claude argv
+// (e.g. a test's `cat`) passes through with no resume/startup flags.
+func WorkerConfig(baseArgv []string, cwd string) ptyhost.Config {
+	out := append([]string{}, baseArgv...)
+	isClaude := len(out) > 0 && strings.Contains(strings.ToLower(filepath.Base(out[0])), "claude")
+	if isClaude {
+		out = append(out, "--session-id", uuid.New().String()) // always a fresh, isolated conversation
+	}
+	cfg := ptyhost.Config{Argv: out, Cwd: cwd}
+	cfg.InitialSize = ptyhost.Size{Cols: session.DefaultGridCols, Rows: session.DefaultGridRows}
+	if isClaude {
+		cfg.StartupInput = claudeStartupKeys()
+	}
+	return cfg
+}
+
 // claudeStartupKeys returns the keystrokes injected after a claude PTY spawns to
 // auto-dismiss its first-run "Try the new fullscreen renderer?" upsell (driven by
 // fullscreenUpsellSeenCount in ~/.claude.json) and any similar blocking prompt:

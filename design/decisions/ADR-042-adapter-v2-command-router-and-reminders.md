@@ -104,6 +104,20 @@ type Reminder struct {
 - **固件**：`bb_adapter_client.c` 的 `session.notification` 分支：除现有 toast 外，若带 `speak` → 调 `/v1/tts/synthesize` 取 PCM16 播放（复用现有 HTTP+I2S 播放栈）。对话/录音中收到先入队不打断。**需 OTA 烧录验证**。
 - 备选（未选）：云端对通知主动 TTS 后推音频——但音频不在控制 WS 上，需新增推送通道，比固件拉取重。
 
+## 3.3 主动跑任务并汇报结果（proactive turn runner，Task #10）
+
+一次性提醒（§3）是**闹钟**：到点念提醒词，不跑任务。cc-connect 研究的愿景是 adapter **不等 PTT 主动跑一个 Agent 回合，把结果汇报给用户**（「每天早上汇报 open issues」「半小时后查烧录日志有没有报错并告诉我」）。
+
+**障碍**：云的回复通道是**请求作用域**——`cloudrelay.cloudEvents` 只在有 in-flight 请求 env 时才转发 reply；主动注入的回合没有请求 env，回复无处接。所以「跑」和「投递」必须解耦。
+
+**决定：独立 headless worker 会话 +（复用）§3.1 通知投递。**
+- **worker 会话**：一条**专用** PTY（`session.Manager` 独立 id `reminder-worker`），在**同一 butler workspace** 跑 claude（带 CLAUDE.md / memory / 项目清单，有工具与上下文），但**独立对话**（fresh `--session-id`），**不碰用户的设备对话**——隔离、不争用、不污染 chat，也符合「用户不盯着时跑」的安全边界（§5）。
+- **跑一轮拿回复**：复用 `deviceapi.Bridge` 的回合边界检测 + 抽取，但挂一个**捕获式 `Events`**（`ReplyComplete`→channel），`RunOnce(prompt)` 注入后等 `ReplyComplete`/`TurnIdle`/timeout 拿到纯文本回复。asr/tts/sink 全 nil（headless 无音频）。串行（一次一轮）。
+- **投递**：把回复文本经 §3.1 `Notify` 投出去（preview=摘要、ttsText=回复），在线推屏+念、离线走 outbox。
+- **安全（§5）**：worker 只读优先、绑已授权 workspace、有 timeout（默认 2–5 分钟）、输出截断摘要；destructive 操作默认不做。
+
+**提醒的两种模式**：`Reminder.Mode` = `notify`（默认，闹钟念提醒词）| `task`（跑 worker 回合、汇报结果）。命令路由按简单动词启发式判 mode（查/看/检查/跑/汇报/帮我… → task），模糊 NLU 归 P1。
+
 ## 4. 通知 outbox（P0）
 
 把「主动结果投递」从「设备显示任务」里抽出来——显示只是投递方式之一，后续还可投 Cloud/Web/admin。
