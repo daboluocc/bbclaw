@@ -3405,6 +3405,15 @@ static void stream_task(void* arg) {
         continue;
       }
 
+      /* #14: 后台重连(provision-retry)在配网态成功连上后,s_mode 已不是
+       * provisioning,上面的分支不再进,但配网页 overlay 还挂在屏上。收掉它,让
+       * 下面的心跳(发 BB_EVT_NET_UP、连云、解禁 PTT)+ 正常界面接管——否则 WiFi
+       * 其实已连上,用户却看着配网页以为"没反应"(真机实测 #14 的收尾缺口)。 */
+      if (bb_page_apconfig_active()) {
+        bb_page_apconfig_dismiss();
+        ESP_LOGI(TAG, "wifi recovered at runtime (bg retry), dismissed apconfig page");
+      }
+
       /* 运行期 Wi-Fi 自动重连中（issue #170）：显示 RECONNECTING 状态，
        * 暂停 transport heartbeat，等待 IP 恢复后由 BB_EVT_NET_UP 路径接管。 */
       if (bb_wifi_get_mode() == BB_WIFI_MODE_STA_RECONNECTING) {
