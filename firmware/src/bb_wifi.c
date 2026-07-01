@@ -59,6 +59,14 @@ static uint32_t s_reconnect_backoff_ms;
 static int s_reconnect_attempt;   /* 自动重连累计尝试次数（快速重试 + backoff 合计） */
 static int64_t s_reconnect_start_ms; /* 开始自动重连的时间戳（esp_timer_get_time() / 1000） */
 
+/* ── #14 配网期后台重连：设备启动没连上进 AP 配网后,后台每 30s 扫一次,
+ * 保存过的 WiFi 一旦重新出现就直接连上退出配网(免用户重启)。──────────────── */
+#define PROVISION_RETRY_INTERVAL_MS 30000
+static TaskHandle_t s_provision_retry_task;   /* 只跑一个,NULL=未跑 */
+/* 后台重连尝试进行中:让 STA 断开事件走"快速重试→FAIL_BIT"而非配网态的静默
+ * return,使 start_sta_connection 在目标其实不可达时能及时失败返回、恢复门户。 */
+static volatile int s_provision_retry_active;
+
 static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 
 static int is_nonempty(const char* value) {
@@ -915,6 +923,83 @@ static esp_err_t start_sta_connection(const char* ssid, const char* password) {
   return ESP_FAIL;
 }
 
+static esp_err_t start_ap_provisioning_mode(void);
+
+/* #14: 在不拆掉 AP 门户的前提下(APSTA 并发扫描),看某个"保存过的" WiFi 是否
+ * 重新出现在周围。命中即把它的 ssid/password 填出并返回 1;没命中把模式切回纯
+ * AP(门户完好),返回 0。整段扫描期间 softAP 一直在,故门户不闪断。 */
+static int find_reachable_saved_network(char* ssid_out, size_t ssid_sz, char* pw_out, size_t pw_sz) {
+  wifi_mode_t mode = WIFI_MODE_NULL;
+  if (esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_AP) {
+    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
+      return 0; /* 加不了 STA 接口就放弃这轮扫描,门户不受影响 */
+    }
+  }
+  wifi_ap_record_t records[WIFI_SCAN_RESULT_MAX];
+  memset(records, 0, sizeof(records));
+  uint16_t count = 0;
+  esp_err_t err = wifi_scan_collect(records, &count);
+  int found = 0;
+  if (err == ESP_OK) {
+    char sssid[BB_WIFI_SSID_BUF];
+    char spw[sizeof(((wifi_sta_config_t*)0)->password)];
+    for (int i = 0; i < BBCLAW_WIFI_MAX_SAVED && !found; i++) {
+      if (load_saved_wifi_slot(i, sssid, sizeof(sssid), spw, sizeof(spw)) != ESP_OK || !is_nonempty(sssid)) {
+        continue;
+      }
+      for (uint16_t j = 0; j < count; j++) {
+        if (strcmp((const char*)records[j].ssid, sssid) == 0) {
+          copy_string(ssid_out, ssid_sz, sssid);
+          copy_string(pw_out, pw_sz, spw);
+          found = 1;
+          break;
+        }
+      }
+    }
+  } else {
+    ESP_LOGW(TAG, "provision-retry: scan failed err=%s", esp_err_to_name(err));
+  }
+  if (!found) {
+    /* 没命中:切回纯 AP,保持一个干净的配网门户等下一轮。 */
+    (void)esp_wifi_set_mode(WIFI_MODE_AP);
+  }
+  return found;
+}
+
+/* #14: 配网态后台重连任务。每 30s 扫一次,保存过的 WiFi 回来了就直接连上;连上
+ * 即 s_mode=STA_CONNECTED,应用主循环下一拍自然退出配网分支(见 bb_radio_app.c)。
+ * 连接失败则恢复 AP 门户继续等。设备不深睡、此任务只在配网态存活,连上即自删。 */
+static void provision_retry_task(void* arg) {
+  (void)arg;
+  ESP_LOGI(TAG, "provision-retry: background task started (interval=%dms)", PROVISION_RETRY_INTERVAL_MS);
+  while (s_mode == BB_WIFI_MODE_AP_PROVISIONING) {
+    vTaskDelay(pdMS_TO_TICKS(PROVISION_RETRY_INTERVAL_MS));
+    if (s_mode != BB_WIFI_MODE_AP_PROVISIONING) {
+      break;
+    }
+    char ssid[BB_WIFI_SSID_BUF];
+    char pw[sizeof(((wifi_sta_config_t*)0)->password)];
+    if (!find_reachable_saved_network(ssid, sizeof(ssid), pw, sizeof(pw))) {
+      continue; /* 保存的网还没回来,门户维持,下轮再扫 */
+    }
+    ESP_LOGI(TAG, "provision-retry: saved ssid=%s reappeared, connecting", ssid);
+    s_provision_retry_active = 1;
+    esp_err_t r = start_sta_connection(ssid, pw);
+    s_provision_retry_active = 0;
+    if (r == ESP_OK) {
+      ESP_LOGI(TAG, "provision-retry: connected, leaving provisioning");
+      break; /* s_mode 已置 STA_CONNECTED,应用主循环会退出配网页 */
+    }
+    ESP_LOGW(TAG, "provision-retry: connect failed, restoring AP portal");
+    if (s_mode != BB_WIFI_MODE_STA_CONNECTED) {
+      (void)start_ap_provisioning_mode(); /* 已有 retry 任务时不会重复 spawn(下方 guard) */
+    }
+  }
+  ESP_LOGI(TAG, "provision-retry: task exit (mode=%d)", (int)s_mode);
+  s_provision_retry_task = NULL;
+  vTaskDelete(NULL);
+}
+
 static esp_err_t start_ap_provisioning_mode(void) {
   uint8_t mac[6] = {0};
   if (esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP) == ESP_OK) {
@@ -977,6 +1062,15 @@ static esp_err_t start_ap_provisioning_mode(void) {
   s_active_ssid[0] = '\0';
   ESP_LOGW(TAG, "wifi provisioning ap ready ssid=%s password=%s ip=%s", s_ap_ssid,
            is_nonempty(s_ap_password) ? s_ap_password : "(open)", s_ap_ip);
+  /* #14: 开一个后台任务,门户挂着的同时每 30s 扫一次,保存过的 WiFi 一回来就
+   * 自动连上退出配网——用户不用重启。只 spawn 一个(重连失败时本函数会被再调,
+   * guard 防重复)。spawn 失败只是没有后台重连,门户与手动配网照常,不影响主路径。 */
+  if (s_provision_retry_task == NULL) {
+    if (xTaskCreate(provision_retry_task, "wifi_prov_retry", 6144, NULL, 4, &s_provision_retry_task) != pdPASS) {
+      s_provision_retry_task = NULL;
+      ESP_LOGW(TAG, "provision-retry: task spawn failed (no mem) — manual provisioning only");
+    }
+  }
   return ESP_OK;
 }
 
@@ -996,6 +1090,17 @@ static void on_wifi_event(void* arg, esp_event_base_t event_base, int32_t event_
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
     s_connected = 0;
     if (s_mode == BB_WIFI_MODE_AP_PROVISIONING) {
+      /* #14: 配网态下平时忽略 STA 断开(门户模式无 STA 连接)。但后台重连尝试
+       * 进行中时,要走"快速重试→耗尽置 FAIL_BIT",这样 start_sta_connection 在目标
+       * 其实不可达时能及时失败返回(而不是干等超时),好尽快恢复 AP 门户。 */
+      if (s_provision_retry_active) {
+        if (s_retry_num < BBCLAW_WIFI_STA_MAX_RETRY) {
+          s_retry_num++;
+          (void)esp_wifi_connect();
+        } else {
+          xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+      }
       return;
     }
 
