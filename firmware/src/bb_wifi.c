@@ -61,7 +61,9 @@ static int64_t s_reconnect_start_ms; /* 开始自动重连的时间戳（esp_tim
 
 /* ── #14 配网期后台重连：设备启动没连上进 AP 配网后,后台每 30s 扫一次,
  * 保存过的 WiFi 一旦重新出现就直接连上退出配网(免用户重启)。──────────────── */
-#define PROVISION_RETRY_INTERVAL_MS 30000
+/* 配网期后台搜网间隔。8s 比 30s 跟手得多(WiFi 回来后 ~8-11s 内自动连上),
+ * 每次扫描切 APSTA ~2-3s;等 WiFi 回来这场景一般没人在配门户,可以偏激进。 */
+#define PROVISION_RETRY_INTERVAL_MS 8000
 static TaskHandle_t s_provision_retry_task;   /* 只跑一个,NULL=未跑 */
 /* 后台重连尝试进行中:让 STA 断开事件走"快速重试→FAIL_BIT"而非配网态的静默
  * return,使 start_sta_connection 在目标其实不可达时能及时失败返回、恢复门户。 */
