@@ -929,9 +929,14 @@ static esp_err_t start_ap_provisioning_mode(void);
  * 重新出现在周围。命中即把它的 ssid/password 填出并返回 1;没命中把模式切回纯
  * AP(门户完好),返回 0。整段扫描期间 softAP 一直在,故门户不闪断。 */
 static int find_reachable_saved_network(char* ssid_out, size_t ssid_sz, char* pw_out, size_t pw_sz) {
+  /* 关键:切到 APSTA 会触发 STA_START,事件处理器默认会自动 esp_wifi_connect(),
+   * 那会搅黄扫描(扫描期间不能同时在连)。和启动扫描路径一样,先抑制自动连,扫完
+   * 再放开——放开后本轮若命中,下面 start_sta_connection 的连接流程才正常工作。 */
+  s_suppress_autoconnect = true;
   wifi_mode_t mode = WIFI_MODE_NULL;
   if (esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_AP) {
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
+      s_suppress_autoconnect = false;
       return 0; /* 加不了 STA 接口就放弃这轮扫描,门户不受影响 */
     }
   }
@@ -963,6 +968,9 @@ static int find_reachable_saved_network(char* ssid_out, size_t ssid_sz, char* pw
     /* 没命中:切回纯 AP,保持一个干净的配网门户等下一轮。 */
     (void)esp_wifi_set_mode(WIFI_MODE_AP);
   }
+  /* 放开自动连:命中时下面 start_sta_connection 的连接流程要靠它;没命中也需
+   * 复位,免得影响后续。 */
+  s_suppress_autoconnect = false;
   return found;
 }
 
