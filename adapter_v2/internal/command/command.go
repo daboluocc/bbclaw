@@ -112,8 +112,8 @@ func normalize(s string) string {
 // still parses (prompt defaults empty; the executor supplies a default).
 
 var (
-	reMinutes = regexp.MustCompile(`(\d+)\s*分钟?后`)
-	reHours   = regexp.MustCompile(`(\d+)\s*(?:个)?\s*小时后`)
+	reMinutes  = regexp.MustCompile(`(\d+)\s*分钟?后`)
+	reHours    = regexp.MustCompile(`(\d+)\s*(?:个)?\s*小时后`)
 	reTomorrow = regexp.MustCompile(`明天\s*(\d{1,2})[:：点](\d{1,2})?`)
 )
 
@@ -149,7 +149,27 @@ func reminder(args map[string]string, rest, original, source string) *Intent {
 	if prompt != "" {
 		args["prompt"] = prompt
 	}
+	args["mode"] = inferMode(prompt)
 	return &Intent{Kind: KindReminderCreate, Text: original, Source: source, Args: args}
+}
+
+// taskCues are explicit "do a task for me" verbs. Their presence flips a reminder
+// from a plain alarm (ModeNotify) to a proactive task the adapter RUNS and reports
+// (ModeTask, ADR-042 §3.3). Kept conservative — bare "看/查" alone stays an alarm;
+// only clear delegation ("帮我…", "…并告诉我", "汇报") triggers a task, so a simple
+// "提醒我看日志" isn't turned into an autonomous agent run by surprise.
+var taskCues = []string{"帮我", "汇报", "报告", "告诉我", "统计", "分析", "总结", "查一下", "检查一下", "run ", "report"}
+
+// inferMode returns "task" when the prompt asks the adapter to DO something and
+// report back, else "notify" (a plain reminder). Fuzzy NLU is P1 (ADR-042 §2.4).
+func inferMode(prompt string) string {
+	low := strings.ToLower(prompt)
+	for _, c := range taskCues {
+		if strings.Contains(low, c) {
+			return "task"
+		}
+	}
+	return "notify"
 }
 
 // stripTime removes the matched time token from the phrase, leaving prompt text.

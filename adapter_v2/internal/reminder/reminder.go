@@ -28,6 +28,14 @@ const (
 	KindOnce = "once"
 )
 
+// Mode values (ADR-042 §3.3). ModeNotify is an alarm — the reminder text is
+// spoken/shown at RunAt. ModeTask runs the prompt as a headless Agent turn and
+// reports the RESULT.
+const (
+	ModeNotify = "notify"
+	ModeTask   = "task"
+)
+
 // State machine for a reminder's lifecycle.
 const (
 	StateScheduled = "scheduled"
@@ -49,6 +57,7 @@ type Target struct {
 type Reminder struct {
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"` // KindOnce (P0)
+	Mode      string    `json:"mode"` // ModeNotify (default) | ModeTask
 	Title     string    `json:"title,omitempty"`
 	Prompt    string    `json:"prompt"`
 	RunAt     time.Time `json:"runAt"`

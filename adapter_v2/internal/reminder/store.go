@@ -67,6 +67,9 @@ func (s *Store) Add(r Reminder, now time.Time) (Reminder, error) {
 	if r.Kind == "" {
 		r.Kind = KindOnce
 	}
+	if r.Mode == "" {
+		r.Mode = ModeNotify
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seq++

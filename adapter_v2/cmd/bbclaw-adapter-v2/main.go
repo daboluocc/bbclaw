@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,7 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicehub"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/devicews"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/proactive"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/projectstore"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/reminder"
@@ -159,21 +161,59 @@ func main() {
 	// relay is assigned below if cloud_saas is enabled; the scheduler closure
 	// captures the variable and reads it at fire time.
 	var relay *cloudrelay.Relay
+	// ensureRunner lazily spawns the isolated worker session for ModeTask reminders
+	// (ADR-042 §3.3) — only the first task reminder pays the extra claude process,
+	// so a device that only sets alarms never spawns it. context.Background: the
+	// worker outlives the HTTP server like every other session (main's shutdown
+	// leaves sessions running).
+	var runnerMu sync.Mutex
+	var runner *proactive.Runner
+	var runnerTried bool
+	ensureRunner := func() *proactive.Runner {
+		runnerMu.Lock()
+		defer runnerMu.Unlock()
+		if runnerTried {
+			return runner
+		}
+		runnerTried = true
+		rn, err := proactive.New(context.Background(), mgr, "reminder-worker",
+			butler.WorkerConfig(baseArgv, defaultCwd), session.DefaultGridCols, session.DefaultGridRows)
+		if err != nil {
+			log.Printf("bbclaw-adapter-v2: reminder worker spawn failed: %v", err)
+			return nil
+		}
+		runner = rn
+		return runner
+	}
 	scheduler := reminder.NewScheduler(remStore, reminder.InjectorFunc(func(_ context.Context, r reminder.Reminder) error {
-		// Cloud-first proactive delivery (ADR-042 §3.1): push the reminder as a
-		// session.notification through the cloud relay. The cloud hub forwards it
-		// when the device is online and buffers it when offline (flush-on-reconnect),
-		// reusing the existing notification channel. LAN direct push is deferred.
 		if relay == nil {
 			return fmt.Errorf("reminder %s: cloud relay disabled (LAN proactive deferred)", r.ID)
 		}
 		if r.Target.DeviceID == "" {
 			return fmt.Errorf("reminder %s: no target deviceId", r.ID)
 		}
-		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s: %q", r.ID, r.Target.DeviceID, r.Prompt)
-		// preview = toast text; ttsText asks the device to also speak it (ADR-042
-		// §3.2). Same wording for both; the comma makes the spoken line flow.
-		return relay.Notify(r.Target.DeviceID, "提醒："+r.Prompt, "提醒，"+r.Prompt, r.Target.SessionID)
+		preview, ttsText := "提醒："+r.Prompt, "提醒，"+r.Prompt
+		if r.Mode == reminder.ModeTask {
+			// Run the prompt as a headless Agent turn and report its RESULT (ADR-042
+			// §3.3), instead of just echoing the reminder text. The worker inherits the
+			// device persona, so replies are already short + speakable.
+			rn := ensureRunner()
+			if rn == nil {
+				return fmt.Errorf("reminder %s: task mode but no worker", r.ID)
+			}
+			log.Printf("bbclaw-adapter-v2: running task reminder %s: %q", r.ID, r.Prompt)
+			reply, err := rn.RunOnce(context.Background(), r.Prompt, 0)
+			if err != nil {
+				return fmt.Errorf("reminder %s task failed: %w", r.ID, err)
+			}
+			if strings.TrimSpace(reply) == "" {
+				reply = "任务已执行，没有产生可播报的结果。"
+			}
+			preview, ttsText = "提醒结果："+capRunes(reply, 40), reply
+		}
+		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s", r.ID, r.Target.DeviceID)
+		// preview = toast text; ttsText asks the device to also speak it (ADR-042 §3.2).
+		return relay.Notify(r.Target.DeviceID, preview, ttsText, r.Target.SessionID)
 	}), 0, nil)
 
 	srv := &http.Server{
@@ -359,6 +399,7 @@ func buildCommandHooks(remStore *reminder.Store, devSess *butler.DeviceSession) 
 			}
 			r, err := remStore.Add(reminder.Reminder{
 				Prompt: prompt,
+				Mode:   args["mode"], // "" → store defaults to ModeNotify
 				RunAt:  runAt,
 				// Bind to the device + conversation that set it, so firing routes the
 				// notification back to this device (ADR-042 §3). DeviceID comes from
@@ -392,6 +433,16 @@ func buildCommandHooks(remStore *reminder.Store, devSess *butler.DeviceSession) 
 			return fmt.Sprintf("有 %d 条提醒，最近一条是%s", len(pending), reminder.ConfirmText(head, now))
 		},
 	}
+}
+
+// capRunes truncates s to at most n runes (adding "…" if cut), for a toast
+// preview built from a possibly-long task result.
+func capRunes(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
 }
 
 // shortID trims a conversation UUID to its first segment for a speakable status.

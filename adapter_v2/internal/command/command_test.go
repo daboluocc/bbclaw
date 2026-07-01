@@ -87,6 +87,28 @@ func TestParseReminderTomorrow(t *testing.T) {
 	}
 }
 
+func TestParseReminderMode(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantMode string
+	}{
+		{"30分钟后提醒我喝水", "notify"},           // plain alarm
+		{"30分钟后提醒我看日志", "notify"},          // bare 看 stays an alarm
+		{"半小时后提醒我帮我查烧录日志有没有报错", "task"},    // 帮我 → delegated task
+		{"2小时后提醒我汇报一下 open issue", "task"}, // 汇报 → task
+		{"明天9点提醒我总结昨天的提交", "task"},         // 总结 → task
+	}
+	for _, c := range cases {
+		got := Parse(c.in, "voice")
+		if got == nil || got.Kind != KindReminderCreate {
+			t.Fatalf("Parse(%q) = %+v, want reminder.create", c.in, got)
+		}
+		if got.Args["mode"] != c.wantMode {
+			t.Errorf("Parse(%q) mode = %q, want %q", c.in, got.Args["mode"], c.wantMode)
+		}
+	}
+}
+
 func TestParseReminderTomorrowChinesePoint(t *testing.T) {
 	// "明天9点" → minutes default 00
 	got := Parse("明天9点提醒我", "voice")
