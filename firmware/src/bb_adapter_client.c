@@ -791,7 +791,60 @@ static esp_err_t ws_client_ensure_connected(void) {
  * the device holds a persistent WS whenever it is awake + network-healthy. No-op
  * off cloud_saas; returns fast when already connected. */
 esp_err_t bb_adapter_client_keep_ws_alive(void) {
-  return ws_client_ensure_connected();
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+  /* Fast path: already connected → nothing to do. Cheap + non-blocking. */
+  if (s_ws.initialized && s_ws.client != NULL && esp_websocket_client_is_connected(s_ws.client)) {
+    return ESP_OK;
+  }
+  /* Lazy one-time init of lock/events (mirror ws_client_ensure_connected). */
+  if (!s_ws.initialized) {
+    memset(&s_ws, 0, sizeof(s_ws));
+    s_ws.lock = xSemaphoreCreateMutex();
+    s_ws.events = xEventGroupCreate();
+    if (s_ws.lock == NULL || s_ws.events == NULL) {
+      return ESP_ERR_NO_MEM;
+    }
+    s_ws.initialized = 1;
+  }
+  /* CRUCIAL (fix for "重连后 UI 卡顿"): this runs on the stream/UI task's heartbeat.
+   * ws_client_ensure_connected BLOCKS up to HTTP_TIMEOUT(5s) waiting for CONNECTED
+   * (and destroys the client on timeout → re-blocks next tick), which freezes nav/UI
+   * after a reconnect. Here we only START the client once if missing and return
+   * IMMEDIATELY — esp_websocket auto-reconnects in its OWN task, so a single kick is
+   * enough to keep it alive. If the client exists but is momentarily disconnected,
+   * we leave it: it is already reconnecting on its own. Never wait, never destroy. */
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  esp_err_t err = ESP_OK;
+  if (s_ws.client == NULL) {
+    char ws_url[320] = {0};
+    build_cloud_ws_url(ws_url, sizeof(ws_url));
+    esp_websocket_client_config_t cfg = {
+        .uri = ws_url,
+        .buffer_size = 1024,
+        .network_timeout_ms = BBCLAW_HTTP_TIMEOUT_MS,
+        .reconnect_timeout_ms = 2000,
+        .task_stack = 8192,
+        .disable_auto_reconnect = false,
+        .task_name = "bbclaw_ws",
+        .ping_interval_sec = 15,
+        .disable_pingpong_discon = true,
+        .crt_bundle_attach = strncmp(ws_url, "wss", 3) == 0 ? esp_crt_bundle_attach : NULL,
+    };
+    s_ws.client = esp_websocket_client_init(&cfg);
+    if (s_ws.client == NULL) {
+      xSemaphoreGive(s_ws.lock);
+      return ESP_ERR_NO_MEM;
+    }
+    esp_websocket_register_events(s_ws.client, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
+    if (esp_websocket_client_start(s_ws.client) != ESP_OK) {
+      ws_reset_client_locked();
+      err = ESP_FAIL;
+    }
+  }
+  xSemaphoreGive(s_ws.lock);
+  return err;
 }
 
 static esp_err_t ws_send_text_message(const char* payload) {
