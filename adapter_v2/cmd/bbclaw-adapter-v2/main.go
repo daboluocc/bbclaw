@@ -189,8 +189,19 @@ func main() {
 		if relay == nil {
 			return fmt.Errorf("reminder %s: cloud relay disabled (LAN proactive deferred)", r.ID)
 		}
-		if r.Target.DeviceID == "" {
-			return fmt.Errorf("reminder %s: no target deviceId", r.ID)
+		// Resolve the target device at FIRE time, not create time: the reminder may
+		// have been created while no device was connected (right after a restart, or
+		// the device offline), in which case Target.DeviceID is stale/empty and would
+		// mis-route (verified live: a reminder set before the device connected was
+		// enqueued under a stale id and never delivered). BBClaw is single-device
+		// today, so "the device connected now" (curdevice) is the right target; fall
+		// back to the stored id only if nothing is currently connected.
+		deviceID := curdevice.Get()
+		if deviceID == "" {
+			deviceID = r.Target.DeviceID
+		}
+		if deviceID == "" {
+			return fmt.Errorf("reminder %s: no device to deliver to", r.ID)
 		}
 		preview, ttsText := "提醒："+r.Prompt, "提醒，"+r.Prompt
 		if r.Mode == reminder.ModeTask {
@@ -211,9 +222,9 @@ func main() {
 			}
 			preview, ttsText = "提醒结果："+capRunes(reply, 40), reply
 		}
-		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s", r.ID, r.Target.DeviceID)
+		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s", r.ID, deviceID)
 		// preview = toast text; ttsText asks the device to also speak it (ADR-042 §3.2).
-		return relay.Notify(r.Target.DeviceID, preview, ttsText, r.Target.SessionID)
+		return relay.Notify(deviceID, preview, ttsText, r.Target.SessionID)
 	}), 0, nil)
 
 	srv := &http.Server{
