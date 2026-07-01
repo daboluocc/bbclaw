@@ -141,13 +141,65 @@ type Relay struct {
 	// nil ⇒ the adapter's own cloud link is down.
 	sendMu sync.Mutex
 	send   func(Envelope) error
+
+	// outbox buffers notifications produced while the adapter's OWN cloud link is
+	// down (Task #5, M3). The cloud hub buffers for a device that is offline, but
+	// only once a notification reaches it — if THIS adapter can't reach the cloud
+	// at fire time, the notification would be lost. Notify enqueues here instead,
+	// and Run flushes on reconnect. Best-effort + in-memory: a bounded FIFO (older
+	// dropped past cap), lost across an adapter restart (acceptable for P0).
+	outboxMu sync.Mutex
+	outbox   []queuedNotify
 }
+
+// queuedNotify is one notification deferred while the cloud link was down.
+type queuedNotify struct{ deviceID, preview, ttsText, sessionID string }
+
+// maxOutbox bounds the deferred-notification FIFO so a long cloud outage can't
+// grow memory without limit; the oldest is dropped past this (logged).
+const maxOutbox = 64
 
 // setSend publishes (or clears, with nil) the live cloud-conn writer for Notify.
 func (r *Relay) setSend(fn func(Envelope) error) {
 	r.sendMu.Lock()
 	r.send = fn
 	r.sendMu.Unlock()
+}
+
+// enqueueOutbox appends a deferred notification, dropping the oldest past cap.
+func (r *Relay) enqueueOutbox(q queuedNotify) {
+	r.outboxMu.Lock()
+	defer r.outboxMu.Unlock()
+	if len(r.outbox) >= maxOutbox {
+		dropped := r.outbox[0]
+		r.outbox = r.outbox[1:]
+		r.log("cloudrelay: outbox full, dropped oldest notification device=%s", dropped.deviceID)
+	}
+	r.outbox = append(r.outbox, q)
+}
+
+// flushOutbox re-sends every deferred notification through send, in FIFO order.
+// Called by Run right after the link comes up. A send failure re-buffers the
+// remainder (the link dropped again) and returns, so nothing is lost or reordered.
+func (r *Relay) flushOutbox(send func(Envelope) error) {
+	r.outboxMu.Lock()
+	pending := r.outbox
+	r.outbox = nil
+	r.outboxMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	r.log("cloudrelay: flushing %d deferred notification(s) after reconnect", len(pending))
+	for i, q := range pending {
+		if err := send(notifyEnvelope(r.cfg.HomeSiteID, q)); err != nil {
+			r.log("cloudrelay: outbox flush interrupted at %d/%d: %v", i, len(pending), err)
+			// Re-buffer the ones we didn't get to (prepend, preserving order).
+			r.outboxMu.Lock()
+			r.outbox = append(append([]queuedNotify(nil), pending[i:]...), r.outbox...)
+			r.outboxMu.Unlock()
+			return
+		}
+	}
 }
 
 // Notify pushes an unsolicited session.notification to a device through the cloud
@@ -170,30 +222,42 @@ func (r *Relay) Notify(deviceID, preview, ttsText, sessionID string) error {
 	if deviceID == "" {
 		return errors.New("cloudrelay: notify needs a deviceId")
 	}
+	q := queuedNotify{deviceID: deviceID, preview: preview, ttsText: ttsText, sessionID: sessionID}
 	r.sendMu.Lock()
 	send := r.send
 	r.sendMu.Unlock()
 	if send == nil {
-		return errors.New("cloudrelay: not connected to cloud")
+		// Adapter's own cloud link is down: buffer for redelivery on reconnect
+		// (Task #5) rather than lose or fail — the reminder is delivered late, not
+		// dropped. Returns nil so the scheduler marks the reminder done (the outbox
+		// owns redelivery from here).
+		r.enqueueOutbox(q)
+		r.log("cloudrelay: cloud link down, buffered notification device=%s", deviceID)
+		return nil
 	}
+	return send(notifyEnvelope(r.cfg.HomeSiteID, q))
+}
+
+// notifyEnvelope builds the session.notification envelope for a queued notify.
+func notifyEnvelope(homeSiteID string, q queuedNotify) Envelope {
 	payload := map[string]any{
-		"sessionId": sessionID,
+		"sessionId": q.sessionID,
 		"driver":    "reminder",
 		"type":      "reminder",
-		"preview":   preview,
+		"preview":   q.preview,
 		"timestamp": time.Now().UnixMilli(),
 	}
-	if strings.TrimSpace(ttsText) != "" {
+	if strings.TrimSpace(q.ttsText) != "" {
 		payload["speak"] = true
-		payload["ttsText"] = ttsText
+		payload["ttsText"] = q.ttsText
 	}
-	return send(Envelope{
+	return Envelope{
 		Type:       "event",
 		Kind:       "session.notification",
-		DeviceID:   deviceID,
-		HomeSiteID: r.cfg.HomeSiteID,
+		DeviceID:   q.deviceID,
+		HomeSiteID: homeSiteID,
 		Payload:    payload,
-	})
+	}
 }
 
 // presenceGap is how long a device must be silent before its next request is
@@ -281,6 +345,8 @@ func (r *Relay) runOnce(ctx context.Context) error {
 	// stale writer is never used after the WS drops.
 	r.setSend(write)
 	defer r.setSend(nil)
+	// Redeliver any notifications buffered while the cloud link was down (Task #5).
+	r.flushOutbox(write)
 
 	// App-level JSON ping keepalive.
 	pingCtx, stopPing := context.WithCancel(ctx)
