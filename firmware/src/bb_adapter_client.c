@@ -781,6 +781,19 @@ static esp_err_t ws_client_ensure_connected(void) {
   return ESP_FAIL;
 }
 
+/* Keep the cloud device WS up while idle so SERVER-INITIATED pushes (proactive
+ * reminders / session.notification, ADR-042) can reach the device. The WS is
+ * otherwise established lazily only when the device itself starts an op (PTT /
+ * voice), so after boot — or after any drop — it stays disconnected until the
+ * user speaks, and a notification firing in that window is buffered by the cloud
+ * and never delivered (verified live: device did HTTP heartbeats but held no WS
+ * → notifications enqueued offline). Called from the stream loop's heartbeat so
+ * the device holds a persistent WS whenever it is awake + network-healthy. No-op
+ * off cloud_saas; returns fast when already connected. */
+esp_err_t bb_adapter_client_keep_ws_alive(void) {
+  return ws_client_ensure_connected();
+}
+
 static esp_err_t ws_send_text_message(const char* payload) {
   if (payload == NULL) {
     return ESP_ERR_INVALID_ARG;

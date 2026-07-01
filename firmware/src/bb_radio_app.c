@@ -3441,6 +3441,13 @@ static void stream_task(void* arg) {
         }
         remember_transport_state(&state);
         if (health_err == ESP_OK && bb_transport_is_cloud_saas()) {
+          /* ADR-042 §3.3: hold the cloud device WS up while idle so proactive
+           * pushes (reminders / notifications) land. The WS is otherwise only
+           * established on a user PTT, so after boot/drop it stays down and a
+           * firing reminder is buffered offline, never delivered. Network is
+           * confirmed healthy here, so re-establishing is safe; a no-op when the
+           * WS is already connected. */
+          (void)bb_adapter_client_keep_ws_alive();
           if (state.cloud_volume_pct >= 0) {
             /* The locally-saved volume (applied at boot + via the on-device
              * Volume setting) is the source of truth. Only let the cloud value

@@ -149,6 +149,11 @@ void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);
  * Spawns a PSRAM-stack worker that synthesizes via the cloud and plays the PCM16;
  * no-op off cloud_saas, on empty text, or while another spoken notification runs. */
 void bb_adapter_speak_notification(const char* tts_text);
+
+/* ADR-042 §3.3: keep the cloud device WS connected while idle so server-initiated
+ * pushes (reminders / notifications) can reach the device. Call periodically (from
+ * the heartbeat). No-op off cloud_saas; fast when already connected. */
+esp_err_t bb_adapter_client_keep_ws_alive(void);
 void bb_adapter_tts_chunks_free(bb_tts_chunk_t* head);
 esp_err_t bb_adapter_display_pull(bb_display_task_t* out_task);
 esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
