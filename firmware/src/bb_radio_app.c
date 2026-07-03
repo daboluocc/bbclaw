@@ -623,9 +623,9 @@ static volatile int s_settings_ptt_exit_req; /* PTT pressed while in settings �
 static lv_obj_t* s_settings_root;
 
 /* settings_overlay_enter: entry point for the SETTINGS overlay.
- * as_menu=1 opens the 精简主菜单 (对话/提醒/设置) — the STANDBY entry (ADR-021
- * §9.1); as_menu=0 opens straight into the Settings list — the CHAT entry. */
-static int settings_overlay_enter(int as_menu) {
+ * Opened by OK from STANDBY or CHAT. There is ONE menu = Settings (the 提醒
+ * 页 is a row inside it, ADR-021 §9.2). */
+static int settings_overlay_enter(void) {
   if (s_settings_active) return 0;
   if (!lvgl_port_lock(500)) {
     ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
@@ -644,14 +644,10 @@ static int settings_overlay_enter(int as_menu) {
   lv_obj_set_style_bg_color(s_settings_root, lv_color_hex(BB_UI_BG), 0);
   lv_obj_set_style_bg_opa(s_settings_root, LV_OPA_COVER, 0);
   lv_obj_move_foreground(s_settings_root);
-  if (as_menu) {
-    bb_ui_settings_show_menu(s_settings_root);
-  } else {
-    bb_ui_settings_show(s_settings_root);
-  }
+  bb_ui_settings_show(s_settings_root);
   lvgl_port_unlock();
   s_settings_active = 1;
-  ESP_LOGI(TAG, "settings: ENTER (%s)", as_menu ? "menu" : "settings");
+  ESP_LOGI(TAG, "settings: ENTER");
   return 0;
 }
 
@@ -694,15 +690,6 @@ static void settings_exit_to_chat(void) {
   }
 }
 
-/* Exit the overlay back to the STANDBY idle screen (idle clock / lock screen),
- * NOT the conversation. Used when BACK is pressed at the top of the 精简主菜单
- * (ADR-021 §9.1) — the user came from idle, so return them there. Standby is not
- * a distinct state: it's CHAT state showing the idle page (agent_chat inactive). */
-static void settings_exit_to_standby(void) {
-  settings_overlay_exit();
-  set_radio_app_state(BBCLAW_STATE_CHAT);
-  show_idle_ready_or_locked();
-}
 
 /* Wrapper helpers for nav events under lvgl lock. ADR-016 revision:
  *   - LEFT/RIGHT no longer used (hardware has only ↑/↓/OK/BACK).
@@ -727,14 +714,9 @@ static void settings_click_locked(void) {
     }
     lvgl_port_unlock();
   }
-  /* Exit codes (ADR-021 §9.1): 1 = to chat (对话 / Settings back), 2 = to
-   * STANDBY idle (top of the 精简主菜单). */
+  /* Exit at the main level → tear down + return to chat. */
   if (want_exit && s_settings_active) {
-    if (want_exit == 2) {
-      settings_exit_to_standby();
-    } else {
-      settings_exit_to_chat();
-    }
+    settings_exit_to_chat();
   }
 }
 static void settings_back_locked(void) {
@@ -743,17 +725,11 @@ static void settings_back_locked(void) {
     want_exit = bb_ui_settings_handle_back();
     lvgl_port_unlock();
   }
-  /* BACK at the main level → exit; on a sub-picker we just popped one
-   * level and stay inside the overlay. Code 2 = exit to STANDBY idle (top of
-   * the 精简主菜单, ADR-021 §9.1); 1 = exit to chat. */
+  /* BACK at the main level → exit; on a sub-page we just popped one
+   * level and stay inside the overlay. */
   if (want_exit && s_settings_active) {
-    if (want_exit == 2) {
-      settings_exit_to_standby();
-      ESP_LOGI(TAG, "MENU: BACK -> STANDBY");
-    } else {
-      settings_exit_to_chat();
-      ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT (chat overlay)");
-    }
+    settings_exit_to_chat();
+    ESP_LOGI(TAG, "SETTINGS: BACK -> CHAT (chat overlay)");
   }
 }
 
@@ -2247,11 +2223,9 @@ static void stream_task(void* arg) {
                * directly, so OK is a consistent "open settings" gesture in every
                * unlocked state. Other nav keys (and PTT) still wake into chat. */
               if (nav == BB_NAV_EVENT_OK) {
-                /* ADR-021 §9.1: STANDBY OK opens the 精简主菜单 (对话/提醒/设置),
-                 * not the Settings list directly. */
-                if (settings_overlay_enter(1) == 0) {
+                if (settings_overlay_enter() == 0) {
                   set_radio_app_state(BBCLAW_STATE_SETTINGS);
-                  ESP_LOGI(TAG, "STANDBY: OK -> MENU");
+                  ESP_LOGI(TAG, "STANDBY: OK -> SETTINGS");
                 }
                 break;
               }
@@ -2333,7 +2307,7 @@ static void stream_task(void* arg) {
                    * before the threshold, so it never fired), and the Task List
                    * on short-OK was dropped as unneeded. Settings is safe to
                    * enter mid-reply; long-press (BACK) still cancels a busy turn. */
-                  if (settings_overlay_enter(0) == 0) {
+                  if (settings_overlay_enter() == 0) {
                     set_radio_app_state(BBCLAW_STATE_SETTINGS);
                     ESP_LOGI(TAG, "CHAT: OK -> SETTINGS");
                   }
@@ -2348,7 +2322,7 @@ static void stream_task(void* arg) {
                   if (busy) {
                     bb_ui_agent_chat_cancel();
                     ESP_LOGI(TAG, "CHAT: BACK cancelled in-flight turn");
-                  } else if (settings_overlay_enter(0) == 0) {
+                  } else if (settings_overlay_enter() == 0) {
                     set_radio_app_state(BBCLAW_STATE_SETTINGS);
                     ESP_LOGI(TAG, "CHAT: BACK -> SETTINGS");
                   }

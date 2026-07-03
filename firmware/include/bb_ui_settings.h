@@ -33,9 +33,6 @@
  */
 
 void bb_ui_settings_show(lv_obj_t* parent);
-/* Open the overlay at the 精简主菜单 (对话 / 提醒 / 设置) instead of straight into
- * the Settings list — the STANDBY entry point (ADR-021-firmware-ui §9.1). */
-void bb_ui_settings_show_menu(lv_obj_t* parent);
 void bb_ui_settings_hide(void);
 int  bb_ui_settings_is_active(void);
 
@@ -53,14 +50,12 @@ void bb_ui_settings_handle_rotate(int delta);
  *    (caller still must call bb_ui_settings_hide).
  *  - picker: commits the highlighted choice via async PUT, then pops back to
  *    the main page.
- * Returns 1 if the overlay should be torn down to CHAT (对话 in the 精简主菜单),
- * 2 to tear down to STANDBY idle, 0 otherwise. Caller (bb_radio_app) drives the
- * state transition. */
+ * Returns 1 if the overlay should be torn down (exit at the main level), 0
+ * otherwise. Caller (bb_radio_app) drives the state transition. */
 int  bb_ui_settings_handle_click(void);
 
 /* BACK navigation:
- *  - on a sub-picker: pops back to main without committing. Returns 0.
- *  - on the Settings main page (opened from chat): returns 1 (→ chat).
- *  - at the top of the 精简主菜单 (opened from standby): returns 2 (→ standby).
+ *  - on a sub-page (picker / 提醒页): pops back to main without committing. 0.
+ *  - on the main page: returns 1 so the caller can tear down + switch state.
  * Keeps "BACK is always one level up" consistent across the whole overlay. */
 int  bb_ui_settings_handle_back(void);

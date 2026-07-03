@@ -120,19 +120,11 @@ typedef enum {
   LEVEL_SESSION_PICKER,
   LEVEL_VOLUME_ADJUST,
   LEVEL_SYSINFO, /* read-only "About" page (firmware ver / device / mode / heap) */
-  /* ADR-021-firmware-ui §9: the precede-settings 精简主菜单 (对话 / 提醒 / 设置)
-   * shown when the overlay is opened from STANDBY; 设置 drills into LEVEL_MAIN. */
-  LEVEL_MAINMENU,
-  LEVEL_REMINDERS, /* §9.2 提醒页 — 已提醒 list from the notification store (F1) */
+  /* ADR-021-firmware-ui §9.2 提醒页 — 已提醒 list from the notification store.
+   * Reached as a row in the Settings list (there is ONE menu = Settings; no
+   * separate standby main-menu). */
+  LEVEL_REMINDERS,
 } settings_level_t;
-
-/* Main-menu rows (LEVEL_MAINMENU). Order = on-screen order. */
-typedef enum {
-  MM_ROW_CHAT = 0,
-  MM_ROW_REMINDERS,
-  MM_ROW_SETTINGS,
-  MM_ROW_COUNT,
-} mainmenu_row_t;
 
 /* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
  * cloud_saas mode, so the on-screen row order/count is dynamic — see
@@ -141,6 +133,7 @@ typedef enum {
 typedef enum {
   MAIN_ROW_DRIVER = 0,
   MAIN_ROW_MODEL,
+  MAIN_ROW_REMINDERS,    /* 提醒 — opens the 已提醒 page (LEVEL_REMINDERS) */
   MAIN_ROW_ADAPTER,
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
@@ -364,6 +357,10 @@ static const char* current_model_label(const bb_agent_driver_info_t* d) {
 
 static int main_visible_rows(main_row_t* out) {
   int n = 0;
+  /* 提醒 first — the primary "查看提醒" entry (ADR-021 §9.2). Always shown; reads
+   * the on-device notification store, which is populated in both cloud_saas and
+   * local_home. */
+  out[n++] = MAIN_ROW_REMINDERS;
   /* Driver/Model are intentionally NOT shown: the agent backend (driver + model)
    * is configured on the adapter side now, not per-device. The picker/fetch code
    * is left in place (harmless, and the driver fetch still drives the post-switch
@@ -489,6 +486,12 @@ static void render_main(void) {
       case MAIN_ROW_MODEL:
         snprintf(buf, sizeof(buf), "Model: %s", current_model_label(active));
         break;
+      case MAIN_ROW_REMINDERS: {
+        int unread = bb_notification_unread_count();
+        if (unread > 0) snprintf(buf, sizeof(buf), "提醒 · %d", unread);
+        else snprintf(buf, sizeof(buf), "提醒");
+        break;
+      }
       case MAIN_ROW_ADAPTER:
         snprintf(buf, sizeof(buf), "Adapter: %s", current_site_label());
         break;
@@ -827,32 +830,6 @@ static void render_sysinfo(void) {
   highlight_selected();
 }
 
-/* ── Render: 精简主菜单 (LEVEL_MAINMENU, ADR-021 §9.1) ── */
-
-static void render_mainmenu(void) {
-  if (s_st.root == NULL) return;
-  lv_label_set_text(s_st.header_lbl, "菜单");
-  build_rows_box(MM_ROW_COUNT);
-
-  int unread = bb_notification_unread_count();
-  char rem[24];
-  if (unread > 0) {
-    snprintf(rem, sizeof(rem), "提醒 · %d", unread);
-  } else {
-    snprintf(rem, sizeof(rem), "提醒");
-  }
-  lv_label_set_text(s_st.rows[MM_ROW_CHAT], "对话");
-  lv_label_set_text(s_st.rows[MM_ROW_REMINDERS], rem);
-  lv_label_set_text(s_st.rows[MM_ROW_SETTINGS], "设置");
-  highlight_selected();
-
-  s_st.hint_lbl = lv_label_create(s_st.root);
-  lv_obj_set_style_text_color(s_st.hint_lbl, lv_color_hex(BB_UI_TEXT_DIM), 0);
-  lv_obj_set_style_text_font(s_st.hint_lbl, ui_font(), 0);
-  lv_label_set_text(s_st.hint_lbl, "长按返回");
-  lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
-}
-
 /* ── Render: 提醒页 (LEVEL_REMINDERS, ADR-021 §9.2) ──
  * F1 shows only 已提醒 — the notifications the device already received over the
  * control WS (bb_notification store, cloud-free). 即将 (scheduled pull) lands in
@@ -897,7 +874,6 @@ static void rerender(void) {
     case LEVEL_SESSION_PICKER: render_session_picker(); break;
     case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
     case LEVEL_SYSINFO:        render_sysinfo(); break;
-    case LEVEL_MAINMENU:       render_mainmenu(); break;
     case LEVEL_REMINDERS:      render_reminders(); break;
   }
 }
@@ -1610,9 +1586,7 @@ static void return_to_main(main_row_t row) {
 
 /* ── Public lifecycle ── */
 
-/* start_menu: 1 = open at the 精简主菜单 (LEVEL_MAINMENU, from STANDBY); 0 = open
- * straight into the Settings list (LEVEL_MAIN, from CHAT). See ADR-021 §9.1. */
-static void settings_show_common(lv_obj_t* parent, int start_menu) {
+void bb_ui_settings_show(lv_obj_t* parent) {
   if (parent == NULL) {
     ESP_LOGE(TAG, "show: parent NULL");
     return;
@@ -1623,10 +1597,8 @@ static void settings_show_common(lv_obj_t* parent, int start_menu) {
   }
 
   /* Initialise level + cursor before any LVGL work. sel is an index into the
-   * VISIBLE row list, so the first row is simply index 0 (Driver/Model are
-   * hidden; the first visible row is Adapter in cloud_saas, Volume otherwise). */
-  s_st.from_mainmenu = start_menu ? 1 : 0;
-  s_st.level = start_menu ? LEVEL_MAINMENU : LEVEL_MAIN;
+   * VISIBLE row list, so the first row is index 0 (提醒, then the settings rows). */
+  s_st.level = LEVEL_MAIN;
   s_st.sel = 0;
   /* Load current volume from persisted config. */
   s_st.volume_pct = bb_device_config_get()->volume_pct;
@@ -1679,14 +1651,8 @@ static void settings_show_common(lv_obj_t* parent, int start_menu) {
   spawn_session_fetch_task();
   rerender();
 
-  ESP_LOGI(TAG, "show level=%s", start_menu ? "MAINMENU" : "MAIN");
+  ESP_LOGI(TAG, "show level=MAIN");
 }
-
-/* Open straight into the Settings list (CHAT path — behaviour unchanged). */
-void bb_ui_settings_show(lv_obj_t* parent) { settings_show_common(parent, 0); }
-
-/* Open at the 精简主菜单 (STANDBY path, ADR-021 §9.1). */
-void bb_ui_settings_show_menu(lv_obj_t* parent) { settings_show_common(parent, 1); }
 
 void bb_ui_settings_hide(void) {
   if (!s_st.active) return;
@@ -1797,9 +1763,6 @@ void bb_ui_settings_handle_rotate(int delta) {
     case LEVEL_SYSINFO:
       row_count = SYSINFO_ROW_COUNT; /* read-only, but cursor drives scroll */
       break;
-    case LEVEL_MAINMENU:
-      row_count = MM_ROW_COUNT;
-      break;
     case LEVEL_REMINDERS: {
       static bb_notification_t tmp[BB_NOTIFY_MAX];
       int cnt = bb_notification_list(tmp, BB_NOTIFY_MAX);
@@ -1845,6 +1808,9 @@ int bb_ui_settings_handle_click(void) {
           }
           break;
         }
+        case MAIN_ROW_REMINDERS:
+          enter_reminders();
+          break;
         case MAIN_ROW_ADAPTER:
           enter_adapter_picker();
           break;
@@ -2007,28 +1973,9 @@ int bb_ui_settings_handle_click(void) {
       return_to_main(MAIN_ROW_SYSINFO);
       return 0;
 
-    case LEVEL_MAINMENU:
-      /* ADR-021 §9.1: 对话 → exit to chat; 提醒 → 提醒页; 设置 → drill into the
-       * existing settings list. */
-      switch (s_st.sel) {
-        case MM_ROW_CHAT:
-          return 1; /* caller tears down overlay → shows chat */
-        case MM_ROW_REMINDERS:
-          enter_reminders();
-          return 0;
-        case MM_ROW_SETTINGS:
-        default:
-          s_st.level = LEVEL_MAIN;
-          s_st.sel = 0;
-          rerender();
-          return 0;
-      }
-
     case LEVEL_REMINDERS:
-      /* F1: read-only list. OK returns to the menu (like BACK). */
-      s_st.level = LEVEL_MAINMENU;
-      s_st.sel = MM_ROW_REMINDERS;
-      rerender();
+      /* Read-only list. OK returns to the Settings list (like BACK). */
+      return_to_main(MAIN_ROW_REMINDERS);
       return 0;
   }
   return 0;
@@ -2038,22 +1985,9 @@ int bb_ui_settings_handle_back(void) {
   if (!s_st.active) return 0;
   switch (s_st.level) {
     case LEVEL_MAIN:
-      /* ADR-021 §9.1: when the overlay was opened via the main menu (from
-       * STANDBY), BACK returns to the menu; when opened straight into Settings
-       * (from CHAT), BACK exits to chat as before. */
-      if (s_st.from_mainmenu) {
-        s_st.level = LEVEL_MAINMENU;
-        s_st.sel = MM_ROW_SETTINGS;
-        rerender();
-        return 0;
-      }
       return 1; /* caller exits to chat */
-    case LEVEL_MAINMENU:
-      return 2; /* top of the menu — caller exits to STANDBY (idle), not chat */
     case LEVEL_REMINDERS:
-      s_st.level = LEVEL_MAINMENU;
-      s_st.sel = MM_ROW_REMINDERS;
-      rerender();
+      return_to_main(MAIN_ROW_REMINDERS);
       return 0;
     case LEVEL_DRIVER_PICKER:
       return_to_main(MAIN_ROW_DRIVER);
