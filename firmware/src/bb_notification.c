@@ -322,6 +322,18 @@ int bb_notification_unread_count(void) {
     return s_store.unread_total;
 }
 
+int bb_notification_list(bb_notification_t* out, int max) {
+    if (!s_initialized || out == NULL || max <= 0) return 0;
+    if (xSemaphoreTake(s_store.lock, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
+    /* Newest first — the store appends in arrival order, so copy back-to-front. */
+    int n = 0;
+    for (int i = s_store.count - 1; i >= 0 && n < max; --i) {
+        out[n++] = s_store.items[i];
+    }
+    xSemaphoreGive(s_store.lock);
+    return n;
+}
+
 int bb_notification_unread_for_session(const char* session_id) {
     if (!s_initialized || session_id == NULL) return 0;
     int count = 0;
@@ -353,4 +365,15 @@ void bb_notification_mark_read(const char* session_id) {
 void bb_notification_ack(const char* session_id) {
     bb_notification_mark_read(session_id);
     send_ws_ack(session_id);
+}
+
+void bb_notification_mark_all_read(void) {
+    if (!s_initialized) return;
+    if (xSemaphoreTake(s_store.lock, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    for (int i = 0; i < s_store.count; ++i) {
+        s_store.items[i].read = 1;
+    }
+    s_store.unread_total = 0;
+    xSemaphoreGive(s_store.lock);
+    update_theme_badge();
 }
