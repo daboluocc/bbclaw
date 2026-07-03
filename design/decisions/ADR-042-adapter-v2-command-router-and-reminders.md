@@ -78,7 +78,7 @@ type Reminder struct {
 
 - Store：`$BBCLAW_DATA_DIR/reminders.json`（与 settingsstore/projectstore 同款 JSON 落盘）。
 - 触发：到点 `reminder` 起一个 **Butler turn**（走 v2 既定的交互式 PTY 路线，订阅内计费——**不得退回 `claude -p`**，见 ADR-035），结果交给 §4 notify。
-- **触发归属（2026-06-30 决定）**：提醒**回到创建它的目标会话**触发（`Reminder.Target` 在 create 时记录 deviceID/sessionID/cwdName）。Scheduler 通过 `Injector` 把 prompt 注入该设备**当前活着的 Bridge**（等价于 adapter 替用户说了一句）。Bridge 是按连接生命周期创建的（`devicews` / `cloudrelay` 各自 `deviceapi.New`），故需要一个**按 deviceID 索引的 bridge 注册表**：连接建立时注册、断开时注销。
+- **触发归属（2026-06-30 决定，⚠ 已被 §10 revise：改为归 adapter + 广播投递，`Target`→`Origin` 仅溯源）**：提醒**回到创建它的目标会话**触发（`Reminder.Target` 在 create 时记录 deviceID/sessionID/cwdName）。Scheduler 通过 `Injector` 把 prompt 注入该设备**当前活着的 Bridge**（等价于 adapter 替用户说了一句）。Bridge 是按连接生命周期创建的（`devicews` / `cloudrelay` 各自 `deviceapi.New`），故需要一个**按 deviceID 索引的 bridge 注册表**：连接建立时注册、断开时注销。
   - 目标设备/会话**离线**：不丢——转入 §4 notify outbox，重连后补投（与「主动通知」同一条离线补投路径）。
 - P0 先只 `once`：最贴语音设备、最易端到端验证。周期 `cron` 留 P1。
 
@@ -178,3 +178,47 @@ ADR-034 的 "task-list channel" 指 **CLI 自己派发的子任务列表显示**
 - 主动任务可能触危险操作 → 默认只读报告。
 - 设备离线 + cloud 重连致重复通知 → `note.ID` 去重 + ack。
 - 周期任务长期累噪 → 静默 / 失败降噪 / 取消口令（P1）。
+
+## 10. 提醒归 adapter，不归设备（2026-07-03 决定，**revise §3 / §3.1**）
+
+**动机**：§3 把提醒「归创建它的目标会话」（`Target.DeviceID` 建时写死），语义上像「这条提醒是这台设备的」。但真实心智是：**提醒属于「机器」（Home Adapter），设备只是一个可切换的投递面 + 查询面**——同一 adapter 可绑多台设备（ADR-027），用户换设备、家里多台设备时，提醒和历史都应「跟着 adapter 走」，而不是卡在某一台上。
+
+存储上其实**已经**成立（`reminders.json` 在 adapter 数据目录，非设备）。本节把**数据模型语义、投递、历史查询**三处对齐到这个心智。
+
+### 10.1 归属正名：`Target` → `Origin`（只做溯源，不决定投给谁）
+
+- `Reminder.Target{DeviceID,SessionID,CwdName}` 更名 `Reminder.Origin{DeviceID,SessionID}` —— 语义从「必须投这台」降级为「**是哪台/哪个会话创建的**」，仅用于历史里显示「谁设的」。
+- **投给谁与 Origin 无关**，永远在 fire 时解析（见 §10.2）。这样「归属」与「投递面」彻底解耦：换设备、离线再上线、admin 页创建（无 origin 设备）都不影响投递。
+- 迁移：老 `reminders.json` 里的 `target` 字段读入映射到 `origin`（`fileFormatVersion` +1，加一次性迁移；缺字段即空 origin）。
+
+### 10.2 投递：广播到该 Home Adapter 当前绑定的所有设备（**需改云端**）
+
+§3.1 的 cloud 主动推送原本是**单设备定向**（`Notify(deviceID,...)`，deviceID 建时取 `curdevice`）。改为 **adapter 级广播**：
+
+- fire 时 adapter 发一条**不指定 deviceId**（或 `deviceId:""` / `broadcast:true`）的 `session.notification`，云端**扇出给绑定到该 home site 的全部在线设备**。
+- **这是真正的「跟 adapter 走」**：多设备全收到；单设备家庭行为等价于旧的定向投递。
+- **跨仓库改动（bbclaw-reference cloud，先部署云再发固件——CLAUDE.md 协议同步表）**：
+  1. cloud hub：`session.notification` 支持 `deviceId` 为空 ⇒ **按 homeSiteId 查该 site 绑定设备集合，逐个投递 + 各自离线入 `pendingNotifs`**（复用现有 32/设备 FIFO 与重连 flush）。
+  2. adapter `cloudrelay.Notify`：签名支持广播（deviceId 传空 / 显式 `broadcast` 标志），envelope 带 `homeSiteId`（relay 已知）。
+  3. 固件：**无需改**——收到的仍是同款 `session.notification` envelope（§3.2 的 toast + 拉取式 TTS 都不变）。
+- **离线语义**：广播下「离线」是**每台设备各自**的——A 在线即投 A，B 离线入 B 的 outbox，B 重连各自 flush。§4 的 `Note.DeviceID` 去重键仍按单设备成立。
+- **fallback（云端未升级 / 单设备）**：adapter 侧保留「deviceId 非空则定向」的旧路径；云端不认广播时退化为投 `curdevice` 单台，功能不回退，只是不广播。
+
+### 10.3 历史：fire 过的提醒可单独查看，且是「adapter 级」共享的
+
+任何绑到该 adapter 的设备、任何 admin 会话，看到的是**同一份**提醒历史（因为归 adapter）。
+
+- **数据**：`Reminder` 加 `FiredAt time.Time` + `Outcome string`（notify=念的文本；task=汇报摘要；failed=错误码/原因）。done/failed/canceled **不删**——它们就是历史。
+- **保留上限**：持久化时对**非 scheduled** 的记录做保留裁剪（保留最近 N=200 条 **或** 年龄 > 30 天裁掉，二者取先触发），防止 `reminders.json` 无限膨胀。scheduled 永不裁。
+- **视图拆两段**：
+  - **即将提醒**（`state=scheduled`，按 RunAt 升序）——现有列表。
+  - **历史**（已触发，按 FiredAt 降序，带 Outcome + Origin）——新增。
+- **API**：`GET /v1/reminders?view=scheduled|history`（缺省 `scheduled` 保持兼容；`history` 返回非 scheduled）。管理页「提醒」tab 拆成「即将 / 历史」两区。
+- **设备语音（可选，P1）**：新增 intent「提醒历史 / 我最近提醒了啥」→ 念最近几条 fire 过的（与「看提醒」只念 scheduled 区分开）。
+
+### 10.4 落地增量（在 §7 之上）
+
+- **M3.5（adapter，本仓库）**：`Target`→`Origin` 正名 + 迁移；`FiredAt`/`Outcome` + 保留裁剪；`/v1/reminders?view=` + 管理页历史区。**不依赖云端**，可先落。
+- **M3.6（cloud，bbclaw-reference）**：`session.notification` 广播路由（deviceId 空 ⇒ 按 site 扇出 + 各自 outbox）。**先部署再让 adapter 发广播**。
+- **M3.7（adapter）**：`cloudrelay.Notify` 切广播；云端未升级时自动退化定向。
+- 设备侧全程无改动（envelope 不变）。
