@@ -45,12 +45,14 @@ const (
 	StateCanceled  = "canceled"
 )
 
-// Target binds a reminder to the session that created it, so firing routes back
-// there (ADR-042 §3). Empty fields mean "the default device/session".
-type Target struct {
+// Origin records WHICH device/session created the reminder — attribution only,
+// for history display ("谁设的"). It does NOT decide where the reminder fires:
+// firing resolves the current device at fire time (ADR-042 §10.1). Empty fields
+// mean "created out-of-band" (e.g. the admin page on a dev box). Renamed from the
+// old Target (ADR-042 §10.1); the on-disk `target` key still migrates in (store).
+type Origin struct {
 	DeviceID  string `json:"deviceId,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
-	CwdName   string `json:"cwdName,omitempty"`
 }
 
 // Reminder is one scheduled prompt.
@@ -61,9 +63,15 @@ type Reminder struct {
 	Title     string    `json:"title,omitempty"`
 	Prompt    string    `json:"prompt"`
 	RunAt     time.Time `json:"runAt"`
-	Target    Target    `json:"target,omitempty"`
+	Origin    Origin    `json:"origin,omitempty"`
 	State     string    `json:"state"`
 	CreatedAt time.Time `json:"createdAt"`
+	// FiredAt / Outcome are set when the reminder leaves scheduled (ADR-042 §10.3
+	// history). FiredAt is when the scheduler fired it; Outcome is the spoken text
+	// (notify) / task report summary (task) / failure reason (failed). Both zero
+	// while scheduled.
+	FiredAt time.Time `json:"firedAt,omitempty"`
+	Outcome string    `json:"outcome,omitempty"`
 }
 
 // defaultPrompt is used when the user set a time but no task ("30 分钟后提醒我").

@@ -37,6 +37,8 @@ export interface Reminder {
   state: string; // scheduled | running | done | failed | canceled
   deviceId?: string;
   createdAt: number;
+  firedAt?: number; // unix seconds; set once fired (history, ADR-042 §10.3)
+  outcome?: string; // spoken text / task report / failure reason
 }
 
 interface Envelope<T> {
@@ -116,11 +118,16 @@ export const api = {
     );
   },
 
-  // Reminders (ADR-042 §2.4). listReminders returns all reminders soonest-first;
+  // Reminders (ADR-042 §2.4 / §10.3). view selects the list: "scheduled" (即将,
+  // default), "history" (已提醒: done/failed/canceled, newest first), or "all".
   // createReminder takes a prompt + a time (delay like "30m" OR at like
   // "tomorrow 09:30") + mode; cancelReminder cancels a scheduled one.
-  listReminders(): Promise<{ reminders: Reminder[] }> {
-    return request<{ reminders: Reminder[] }>("/v1/reminders");
+  listReminders(
+    view: "scheduled" | "history" | "all" = "scheduled"
+  ): Promise<{ reminders: Reminder[] }> {
+    return request<{ reminders: Reminder[] }>(
+      `/v1/reminders?view=${view}`
+    );
   },
 
   createReminder(body: {

@@ -121,11 +121,11 @@ func TestSchedulerFiresDueOnce(t *testing.T) {
 
 	var mu sync.Mutex
 	var fired []Reminder
-	inj := InjectorFunc(func(_ context.Context, r Reminder) error {
+	inj := InjectorFunc(func(_ context.Context, r Reminder) (string, error) {
 		mu.Lock()
 		fired = append(fired, r)
 		mu.Unlock()
-		return nil
+		return "", nil
 	})
 
 	// Clock advanced past RunAt; tiny tick so Run loops fast.
@@ -168,7 +168,7 @@ func TestSchedulerMarksFailedOnInjectorError(t *testing.T) {
 	s, _ := Open(filepath.Join(t.TempDir(), "r.json"))
 	s.Add(Reminder{Prompt: "ping", RunAt: now.Add(time.Minute)}, now)
 
-	inj := InjectorFunc(func(_ context.Context, _ Reminder) error { return context.DeadlineExceeded })
+	inj := InjectorFunc(func(_ context.Context, _ Reminder) (string, error) { return "", context.DeadlineExceeded })
 	clock := now.Add(2 * time.Minute)
 	sch := NewScheduler(s, inj, time.Millisecond, func() time.Time { return clock })
 	sch.fireDue(context.Background()) // synchronous single pass

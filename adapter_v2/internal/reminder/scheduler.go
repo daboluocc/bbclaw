@@ -6,19 +6,21 @@ import (
 	"time"
 )
 
-// Injector fires one due reminder: it routes the reminder's Prompt back to its
-// Target session's live bridge (ADR-042 §3) and returns nil once the turn has
-// been accepted. An offline target should NOT error — the wiring defers it to the
-// notify outbox (M3) and still returns nil so the reminder is marked done (the
-// outbox owns redelivery). A returned error marks the reminder failed.
+// Injector fires one due reminder: it resolves the current delivery device at
+// fire time (ADR-042 §10.2) and routes the reminder's Prompt/result there,
+// returning the outcome text (the spoken/reported text — recorded as history,
+// ADR-042 §10.3) and nil once the turn has been accepted. An offline target
+// should NOT error — the wiring defers it to the notify outbox and still returns
+// nil so the reminder is marked done (the outbox owns redelivery). A returned
+// error marks the reminder failed; the outcome string is then the failure note.
 type Injector interface {
-	Fire(ctx context.Context, r Reminder) error
+	Fire(ctx context.Context, r Reminder) (outcome string, err error)
 }
 
 // InjectorFunc adapts a function to Injector.
-type InjectorFunc func(ctx context.Context, r Reminder) error
+type InjectorFunc func(ctx context.Context, r Reminder) (string, error)
 
-func (f InjectorFunc) Fire(ctx context.Context, r Reminder) error { return f(ctx, r) }
+func (f InjectorFunc) Fire(ctx context.Context, r Reminder) (string, error) { return f(ctx, r) }
 
 // Scheduler polls the Store and fires due reminders through the Injector. One
 // goroutine, started by Run, stopped by cancelling its ctx. The clock is
@@ -70,11 +72,17 @@ func (s *Scheduler) fireDue(ctx context.Context) {
 			log.Printf("reminder: mark running %s: %v", r.ID, err)
 			continue
 		}
-		if err := s.inj.Fire(ctx, r); err != nil {
+		outcome, err := s.inj.Fire(ctx, r)
+		firedAt := s.now()
+		if err != nil {
 			log.Printf("reminder: fire %s failed: %v", r.ID, err)
-			_ = s.store.SetState(r.ID, StateFailed)
+			note := outcome
+			if note == "" {
+				note = err.Error()
+			}
+			_ = s.store.Complete(r.ID, StateFailed, note, firedAt)
 			continue
 		}
-		_ = s.store.SetState(r.ID, StateDone)
+		_ = s.store.Complete(r.ID, StateDone, outcome, firedAt)
 	}
 }

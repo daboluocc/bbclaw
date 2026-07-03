@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { api, type Reminder } from "../api";
 
-const reminders = ref<Reminder[]>([]);
+const tab = ref<"scheduled" | "history">("scheduled");
+const scheduled = ref<Reminder[]>([]);
+const history = ref<Reminder[]>([]);
 const loading = ref(false);
 const listError = ref("");
 
@@ -47,6 +49,10 @@ function relTime(epoch: number): string {
   return secs >= 0 ? `${days} 天后` : `${days} 天前`;
 }
 
+const rows = computed(() =>
+  tab.value === "scheduled" ? scheduled.value : history.value
+);
+
 const stateLabel: Record<string, string> = {
   scheduled: "计划中",
   running: "运行中",
@@ -59,8 +65,13 @@ async function load(silent = false) {
   if (!silent) loading.value = true;
   listError.value = "";
   try {
-    const data = await api.listReminders();
-    reminders.value = data.reminders || [];
+    // Two independent views (ADR-042 §10.3): 即将 (scheduled) + 已提醒 (history).
+    const [s, h] = await Promise.all([
+      api.listReminders("scheduled"),
+      api.listReminders("history"),
+    ]);
+    scheduled.value = s.reminders || [];
+    history.value = h.reminders || [];
   } catch (e) {
     listError.value = (e as Error).message;
   } finally {
@@ -146,19 +157,45 @@ onUnmounted(() => {
       「提醒」到点念出提醒词；「跑任务」到点由助手执行并把结果念给你听。
     </p>
 
+    <!-- tabs: 即将 / 已提醒 -->
+    <div class="tabs">
+      <button
+        class="tab"
+        :class="{ on: tab === 'scheduled' }"
+        @click="tab = 'scheduled'"
+      >
+        即将 <span class="count">{{ scheduled.length }}</span>
+      </button>
+      <button
+        class="tab"
+        :class="{ on: tab === 'history' }"
+        @click="tab = 'history'"
+      >
+        已提醒 <span class="count">{{ history.length }}</span>
+      </button>
+    </div>
+
     <!-- list -->
     <div v-if="listError" class="err-line">加载失败：{{ listError }}</div>
-    <div v-else-if="loading && !reminders.length" class="muted">加载中…</div>
-    <div v-else-if="!reminders.length" class="muted">还没有提醒。</div>
+    <div v-else-if="loading && !rows.length" class="muted">加载中…</div>
+    <div v-else-if="!rows.length" class="muted">
+      {{ tab === "scheduled" ? "没有即将到来的提醒。" : "还没有触发过的提醒。" }}
+    </div>
     <ul v-else class="list">
-      <li v-for="r in reminders" :key="r.id" class="row" :class="r.state">
+      <li v-for="r in rows" :key="r.id" class="row" :class="r.state">
         <span class="mode-chip" :class="r.mode">{{
           r.mode === "task" ? "任务" : "提醒"
         }}</span>
         <span class="body">
           <span class="prompt-txt">{{ r.prompt }}</span>
-          <span class="meta">
+          <span v-if="tab === 'scheduled'" class="meta">
             {{ fmtTime(r.runAt) }} · {{ relTime(r.runAt) }}
+          </span>
+          <span v-else class="meta">
+            {{ fmtTime(r.firedAt || r.runAt) }} · {{ relTime(r.firedAt || r.runAt) }}
+          </span>
+          <span v-if="tab === 'history' && r.outcome" class="outcome">
+            {{ r.outcome }}
           </span>
         </span>
         <span class="state" :class="r.state">{{
@@ -246,6 +283,41 @@ onUnmounted(() => {
   font-size: 12px;
   margin: 8px 2px 18px;
 }
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 12px;
+  border-bottom: 1px solid var(--ghost);
+}
+.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  padding: 6px 10px 8px;
+  cursor: pointer;
+  font: inherit;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  color: var(--lit);
+}
+.tab.on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab .count {
+  font-size: 11px;
+  color: var(--dim);
+  border: 1px solid var(--ghost);
+  border-radius: 8px;
+  padding: 0 6px;
+  margin-left: 2px;
+}
+.tab.on .count {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .list {
   list-style: none;
   margin: 0;
@@ -253,6 +325,13 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.outcome {
+  color: var(--dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .row {
   display: flex;

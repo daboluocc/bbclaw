@@ -185,23 +185,23 @@ func main() {
 		runner = rn
 		return runner
 	}
-	scheduler := reminder.NewScheduler(remStore, reminder.InjectorFunc(func(_ context.Context, r reminder.Reminder) error {
+	scheduler := reminder.NewScheduler(remStore, reminder.InjectorFunc(func(_ context.Context, r reminder.Reminder) (string, error) {
 		if relay == nil {
-			return fmt.Errorf("reminder %s: cloud relay disabled (LAN proactive deferred)", r.ID)
+			return "", fmt.Errorf("reminder %s: cloud relay disabled (LAN proactive deferred)", r.ID)
 		}
-		// Resolve the target device at FIRE time, not create time: the reminder may
-		// have been created while no device was connected (right after a restart, or
-		// the device offline), in which case Target.DeviceID is stale/empty and would
-		// mis-route (verified live: a reminder set before the device connected was
-		// enqueued under a stale id and never delivered). BBClaw is single-device
-		// today, so "the device connected now" (curdevice) is the right target; fall
-		// back to the stored id only if nothing is currently connected.
+		// Resolve the delivery device at FIRE time, not create time (ADR-042 §10.2):
+		// the reminder belongs to the adapter, not the creating device — the device
+		// may have switched or been offline at create time, so Origin.DeviceID is
+		// stale/attribution-only. BBClaw is single-device today, so "the device
+		// connected now" (curdevice) is the right target; fall back to the origin id
+		// only if nothing is currently connected. (Broadcast to all bound devices is
+		// M3.7, needs cloud fan-out.)
 		deviceID := curdevice.Get()
 		if deviceID == "" {
-			deviceID = r.Target.DeviceID
+			deviceID = r.Origin.DeviceID
 		}
 		if deviceID == "" {
-			return fmt.Errorf("reminder %s: no device to deliver to", r.ID)
+			return "", fmt.Errorf("reminder %s: no device to deliver to", r.ID)
 		}
 		preview, ttsText := "提醒："+r.Prompt, "提醒，"+r.Prompt
 		if r.Mode == reminder.ModeTask {
@@ -210,12 +210,12 @@ func main() {
 			// device persona, so replies are already short + speakable.
 			rn := ensureRunner()
 			if rn == nil {
-				return fmt.Errorf("reminder %s: task mode but no worker", r.ID)
+				return "", fmt.Errorf("reminder %s: task mode but no worker", r.ID)
 			}
 			log.Printf("bbclaw-adapter-v2: running task reminder %s: %q", r.ID, r.Prompt)
 			reply, err := rn.RunOnce(context.Background(), r.Prompt, 0)
 			if err != nil {
-				return fmt.Errorf("reminder %s task failed: %w", r.ID, err)
+				return "", fmt.Errorf("reminder %s task failed: %w", r.ID, err)
 			}
 			if strings.TrimSpace(reply) == "" {
 				reply = "任务已执行，没有产生可播报的结果。"
@@ -224,7 +224,11 @@ func main() {
 		}
 		log.Printf("bbclaw-adapter-v2: firing reminder %s → device %s", r.ID, deviceID)
 		// preview = toast text; ttsText asks the device to also speak it (ADR-042 §3.2).
-		return relay.Notify(deviceID, preview, ttsText, r.Target.SessionID)
+		if err := relay.Notify(deviceID, preview, ttsText, r.Origin.SessionID); err != nil {
+			return "", err
+		}
+		// ttsText is the human-facing outcome recorded as history (ADR-042 §10.3).
+		return ttsText, nil
 	}), 0, nil)
 
 	srv := &http.Server{
@@ -351,12 +355,12 @@ func newRouter(mgr *session.Manager, cfg config.Config, devSess *butler.DeviceSe
 	mux.HandleFunc("/v1/projects", adminapi.LocalOnly(adminapi.Projects(projStore)))
 	mux.HandleFunc("/v1/projects/", adminapi.LocalOnly(adminapi.ProjectByName(projStore)))
 	// Reminders management (ADR-042 §2.4, Task #7): list / create / cancel. A
-	// web-created reminder targets the current device (curdevice) + active
-	// conversation, mirroring the voice create. Loopback-only like the rest.
-	reminderTarget := func() reminder.Target {
-		return reminder.Target{DeviceID: curdevice.Get(), SessionID: devSess.ActiveID()}
+	// web-created reminder is attributed to the current device (curdevice) + active
+	// conversation (Origin = attribution only; ADR-042 §10.1). Loopback-only.
+	reminderOrigin := func() reminder.Origin {
+		return reminder.Origin{DeviceID: curdevice.Get(), SessionID: devSess.ActiveID()}
 	}
-	mux.HandleFunc("/v1/reminders", adminapi.LocalOnly(adminapi.Reminders(remStore, reminderTarget)))
+	mux.HandleFunc("/v1/reminders", adminapi.LocalOnly(adminapi.Reminders(remStore, reminderOrigin)))
 	mux.HandleFunc("/v1/reminders/", adminapi.LocalOnly(adminapi.ReminderByID(remStore)))
 	mux.HandleFunc("/v1/admin/pick-dir", adminapi.LocalOnly(adminapi.PickDir()))
 	// Read-only view of the butler's user-profile / memory files (ADR-020/022):
@@ -420,11 +424,11 @@ func buildCommandHooks(remStore *reminder.Store, devSess *butler.DeviceSession) 
 				Prompt: prompt,
 				Mode:   args["mode"], // "" → store defaults to ModeNotify
 				RunAt:  runAt,
-				// Bind to the device + conversation that set it, so firing routes the
-				// notification back to this device (ADR-042 §3). DeviceID comes from
-				// curdevice (the last device the adapter saw); empty on a dev box with
-				// no paired device, in which case firing reports "no target".
-				Target: reminder.Target{
+				// Attribute to the device + conversation that set it (Origin = who set
+				// it, ADR-042 §10.1) — this does NOT decide delivery: firing resolves
+				// the current device at fire time. DeviceID comes from curdevice (the
+				// last device the adapter saw); empty on a dev box with no paired device.
+				Origin: reminder.Origin{
 					DeviceID:  curdevice.Get(),
 					SessionID: devSess.ActiveID(),
 				},

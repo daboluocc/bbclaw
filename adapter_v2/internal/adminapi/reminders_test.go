@@ -22,8 +22,8 @@ func newTestReminderStore(t *testing.T) *reminder.Store {
 
 func TestRemindersCreateAndList(t *testing.T) {
 	store := newTestReminderStore(t)
-	target := func() reminder.Target { return reminder.Target{DeviceID: "dev-9"} }
-	h := Reminders(store, target)
+	origin := func() reminder.Origin { return reminder.Origin{DeviceID: "dev-9"} }
+	h := Reminders(store, origin)
 
 	// POST a reminder.
 	req := httptest.NewRequest(http.MethodPost, "/v1/reminders",
