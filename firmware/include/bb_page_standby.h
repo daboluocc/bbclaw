@@ -10,3 +10,7 @@ void bb_page_standby_create(lv_obj_t* scr);
 void bb_page_standby_set_visible(int visible);
 void bb_page_standby_refresh_clock(const char* hm);
 void bb_page_standby_update_battery(int supported, int available, int percent, int low, int charging);
+
+/* Show/refresh the unread-reminder badge on the idle screen (ADR-021 §9.3).
+ * count<=0 hides it. Fed from bb_notification_unread_count() by the display tick. */
+void bb_page_standby_set_unread(int count);

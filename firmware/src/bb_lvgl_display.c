@@ -7,6 +7,7 @@
  */
 #include "bb_display.h"
 #include "bb_page_standby.h"
+#include "bb_notification.h" /* unread count for the standby reminder badge (ADR-021 §9.3) */
 #include "bb_page_locked.h"
 #include "bb_chat_recording.h"
 #include "bb_status.h"
@@ -1029,6 +1030,9 @@ static void refresh_clock_only(void) {
   if (!lvgl_port_lock(0)) return;
   if (mode == UI_VIEW_STANDBY) {
     bb_page_standby_refresh_clock(hm);
+    /* Per-second poll so a reminder firing at standby lights the badge within 1s
+     * (the full refresh_ui only runs on state changes). Idempotent (ADR-021 §9.3). */
+    bb_page_standby_set_unread(bb_notification_unread_count());
   } else if (mode == UI_VIEW_ACTIVE) {
     lv_label_set_text(s_lbl_status_clock, hm);
   }
@@ -1490,6 +1494,10 @@ static void refresh_ui(void) {
       portEXIT_CRITICAL(&s_state_lock);
       bb_page_standby_update_battery(bat_supported, bat_available, bat_percent, bat_low, bat_charging);
     }
+    /* Unread-reminder badge on the idle screen (ADR-021 §9.3) — poll the store
+     * each refresh so a reminder firing at standby is visible without opening
+     * the menu. Cleared when the user views 已提醒 (mark_all_read → count 0). */
+    bb_page_standby_set_unread(bb_notification_unread_count());
     s_record_view_visible = 0;
   } else if (mode == UI_VIEW_LOCKED) {
     bb_page_locked_update_status(status);

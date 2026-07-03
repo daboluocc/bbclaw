@@ -1408,7 +1408,12 @@ static void ws_handle_text_message(const char* msg) {
         json_extract_string(brace, "type", ntype, sizeof(ntype));
         json_extract_string(brace, "preview", preview, sizeof(preview));
         json_extract_string(brace, "ttsText", tts_text, sizeof(tts_text));
-        if (sid[0] != '\0') {
+        /* Record into the notification store for the 提醒 page + unread badge
+         * (ADR-021 §9). Reminders are SESSION-LESS (empty sessionId), so do NOT
+         * gate on sid — that dropped every reminder from the store (badge stayed
+         * 0, 已提醒 empty). Record whenever there's something to show (sid or a
+         * preview); on_ws_event tolerates an empty sid. */
+        if (sid[0] != '\0' || preview[0] != '\0') {
           bb_notification_on_ws_event(sid, drv, ntype, preview);
         }
         /* ADR-042 §3.2: a notification carrying ttsText (e.g. a reminder) is
