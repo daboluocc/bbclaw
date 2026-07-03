@@ -12,9 +12,13 @@ TARGET ?= esp32s3
 # 钉死发布版本，覆盖此默认。配合 bb_ota.c 的 dev 构建护栏（dev 版本不自动 OTA）。
 FW_VERSION ?=
 
-# 本地快速发版从这台云端机器取 OTA admin key（CLOUD_OTA_ADMIN_KEY）。可覆盖：
-#   make release-local VERSION=vX.Y.Z OTA_DEPLOY_HOST=root@other-host
-OTA_DEPLOY_HOST ?= root@daboluo.cc
+# 本地快速发版可自动从部署主机取 OTA admin key。为不把生产运维细节写进公开仓库，
+# 主机 / cloud.env 路径 / key 变量名默认留空，在 gitignored 的 firmware/.release.local
+# 里设置（见 .release.local.example）。也可临时 export / 命令行覆盖，或直接 OTA_ADMIN_KEY=xxx。
+OTA_DEPLOY_HOST ?=
+OTA_KEY_ENV_PATH ?=
+OTA_KEY_ENV_VAR ?=
+-include .release.local
 
 # Serial port for flash/monitor/erase.
 # Auto-detect: newest USB serial device (macOS: cu.*/tty.*, Linux: ttyUSB*/ttyACM*).
@@ -126,7 +130,7 @@ build: stamp-version
 # 本地快速发版（默认发布路线）：本机用生产配置构建固件 + 生成 OTA bundle + 推到 OTA
 # 服务器，跳过 GitHub Actions 的慢 round-trip。设备下次 /v1/ota/check 即升级（全量，非灰度）。
 # 自动：① 内层 make build 自带 $(IDF_SOURCE) 自源 ESP-IDF（无需先 get_idf）；
-#       ② 未设 OTA_ADMIN_KEY 时自动 ssh $(OTA_DEPLOY_HOST) 从生产 cloud.env 取；
+#       ② 未设 OTA_ADMIN_KEY 且 .release.local 配好了部署主机时，自动 ssh 取；否则跳过推送；
 #       ③ 不传 VERSION 时按 OTA 当前 active 版本 patch+1 + -g<短哈希>[-dirty] 自动定版。
 # 约定：tag→CI 发布（push v* tag 触发 release.yml）只在显式要求时做；默认走本地快速发版这条。
 #   make release-local                                # 自动版本（OTA active +1，如 v0.5.19-gabc123）
@@ -137,11 +141,15 @@ build: stamp-version
 release-local:
 	@set -e; \
 	if [ -z "$$OTA_ADMIN_KEY" ]; then \
-		echo "[release-local] OTA_ADMIN_KEY 未设置，从 $(OTA_DEPLOY_HOST) 取 …"; \
-		OTA_ADMIN_KEY=$$(ssh -o BatchMode=yes -o ConnectTimeout=8 $(OTA_DEPLOY_HOST) 'grep "^CLOUD_OTA_ADMIN_KEY=" /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-'); \
-		export OTA_ADMIN_KEY; \
-		if [ -n "$$OTA_ADMIN_KEY" ]; then echo "[release-local] key 已取 (len=$${#OTA_ADMIN_KEY})"; \
-		else echo "::warning:: 取 key 失败 → 仅构建+stage、跳过 OTA 推送（可手动 export OTA_ADMIN_KEY 重跑）"; fi; \
+		if [ -n "$(OTA_DEPLOY_HOST)" ] && [ -n "$(OTA_KEY_ENV_PATH)" ] && [ -n "$(OTA_KEY_ENV_VAR)" ]; then \
+			echo "[release-local] OTA_ADMIN_KEY 未设置，从部署主机取 …"; \
+			OTA_ADMIN_KEY=$$(ssh -o BatchMode=yes -o ConnectTimeout=8 $(OTA_DEPLOY_HOST) "grep \"^$(OTA_KEY_ENV_VAR)=\" $(OTA_KEY_ENV_PATH) | cut -d= -f2-"); \
+			export OTA_ADMIN_KEY; \
+			if [ -n "$$OTA_ADMIN_KEY" ]; then echo "[release-local] key 已取 (len=$${#OTA_ADMIN_KEY})"; \
+			else echo "::warning:: 取 key 失败 → 仅构建+stage、跳过 OTA 推送（可手动 export OTA_ADMIN_KEY 重跑）"; fi; \
+		else \
+			echo "::warning:: OTA_ADMIN_KEY 未设置且未配置部署主机（见 firmware/.release.local.example）→ 仅构建+stage、跳过 OTA 推送"; \
+		fi; \
 	fi; \
 	scripts/release_local.sh $(VERSION) $(RELEASE_ARGS)
 

@@ -26,8 +26,7 @@ description: "发布 BBClaw 固件 OTA 版本。支持两条路径：(A) 本地�
 get_idf   # 或 source ~/esp/esp-idf/export.sh
 
 # 2. 获取 OTA admin key（在能 ssh 到云端的机器上）
-export OTA_ADMIN_KEY=$(ssh root@daboluo.cc \
-  "grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-")
+export OTA_ADMIN_KEY=<从私有运维渠道获取，勿写入仓库>
 ```
 
 ### 发布命令
@@ -68,7 +67,7 @@ cat > .claude/skills/publish-ota/releases/v0.5.2.md <<'EOF'
 
 ## 命令
 ```bash
-export OTA_ADMIN_KEY=$(ssh root@daboluo.cc "grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-")
+export OTA_ADMIN_KEY=<从私有运维渠道获取，勿写入仓库>
 get_idf
 cd firmware
 ./scripts/release_local.sh v0.5.2

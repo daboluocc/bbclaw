@@ -52,3 +52,6 @@ Thumbs.db
 *.lock
 
 videos/
+
+# Local release ops config (deploy host + key source) — never commit
+firmware/.release.local

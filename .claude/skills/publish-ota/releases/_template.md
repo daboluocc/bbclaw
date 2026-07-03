@@ -8,7 +8,7 @@
 
 ### 前置环境
 ```bash
-export OTA_ADMIN_KEY=$(ssh root@daboluo.cc "grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-")
+export OTA_ADMIN_KEY=<从私有运维渠道获取，勿写入仓库>
 get_idf  # 或 source ~/esp/esp-idf/export.sh
 ```
 
@@ -69,7 +69,7 @@ curl https://bbclaw.daboluo.cc/v1/ota/flash-bundles?platform=esp32s3 | jq '.data
 
 ```bash
 # 1. 在能登云端的机器上，停用本版本 (设置 inactive)
-ssh root@daboluo.cc <<'CMD'
+ssh <部署主机> <<'CMD'
   curl -X PUT https://localhost:8443/v1/ota/flash-bundles/esp32s3/vX.Y.Z/deactivate \
     -H "X-OTA-Admin-Key: <KEY>"
 CMD

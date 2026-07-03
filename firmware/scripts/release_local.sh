@@ -11,9 +11,8 @@
 #   firmware/scripts/release_local.sh v0.4.19 --gh-release   # 顺带把 4 个 bin 传到 GitHub Release
 #   firmware/scripts/release_local.sh v0.4.19 --no-ota       # 只构建+stage，不推 OTA
 #
-# 获取 admin key（在能 ssh 到云端的机器上）：
-#   export OTA_ADMIN_KEY=$(ssh root@daboluo.cc \
-#     "grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-")
+# 获取 admin key：从私有运维渠道取（部署主机 / 密钥路径见 firmware/.release.local，
+# 不写入仓库），或直接 `export OTA_ADMIN_KEY=<key>` 后运行。
 set -euo pipefail
 
 FW_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -96,7 +95,7 @@ PART_APP="bbclaw-firmware-${VERSION}-esp32s3.bin"
 if [[ $DO_OTA -eq 1 ]]; then
   if [[ -z "${OTA_ADMIN_KEY:-}" ]]; then
     echo "::warning:: OTA_ADMIN_KEY 未设置 —— 跳过 OTA 推送（产物已 stage）。" >&2
-    echo "  设置后重跑：export OTA_ADMIN_KEY=\$(ssh root@daboluo.cc \"grep '^CLOUD_OTA_ADMIN_KEY=' /opt/bbclaw-cloud/config/cloud.env | cut -d= -f2-\")" >&2
+    echo "  设置后重跑：export OTA_ADMIN_KEY=<从私有运维渠道获取>（见 firmware/.release.local.example）" >&2
   else
     MANIFEST=$(jq -nc --arg v "$VERSION" --arg b "$PART_BOOT" --arg p "$PART_PT" --arg o "$PART_OTA" --arg a "$PART_APP" \
       '{version:$v, platform:"esp32s3", chipFamily:"ESP32-S3",
