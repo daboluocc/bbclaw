@@ -208,18 +208,16 @@ void bb_page_standby_create(lv_obj_t* scr) {
 
   /* Unread-reminder badge — top-center, accent color, hidden when 0 (ADR-021
    * §9.3). The idle screen is where the user usually is when a reminder fires,
-   * so this is the "看得见" surface without opening the menu. CJK font for 提醒. */
-  {
-    extern const lv_font_t lv_font_bbclaw_cjk;
-    s_notif_badge = lv_label_create(s_view);
-    lv_obj_set_style_text_color(s_notif_badge, lv_color_hex(UI_ACCENT), 0);
-    lv_obj_set_style_text_font(s_notif_badge, &lv_font_bbclaw_cjk, 0);
-    lv_obj_set_width(s_notif_badge, DISP_W);
-    lv_obj_set_style_text_align(s_notif_badge, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_notif_badge, "");
-    lv_obj_set_pos(s_notif_badge, 0, 6);
-    lv_obj_add_flag(s_notif_badge, LV_OBJ_FLAG_HIDDEN);
-  }
+   * so this is the visible surface without opening the menu. ASCII label, small
+   * font to match the wordmark/version styling. */
+  s_notif_badge = lv_label_create(s_view);
+  lv_obj_set_style_text_color(s_notif_badge, lv_color_hex(UI_ACCENT), 0);
+  lv_obj_set_style_text_font(s_notif_badge, small_font, 0);
+  lv_obj_set_width(s_notif_badge, DISP_W);
+  lv_obj_set_style_text_align(s_notif_badge, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(s_notif_badge, "");
+  lv_obj_set_pos(s_notif_badge, 0, 6);
+  lv_obj_add_flag(s_notif_badge, LV_OBJ_FLAG_HIDDEN);
 
   /* Compact footer battery — right edge; percent sits to its left. */
   const int bat_x = DISP_W - 14 - FB_FRAME_W - FB_CAP_W;
@@ -279,7 +277,7 @@ void bb_page_standby_set_unread(int count) {
   last = count;
   if (count > 0) {
     char buf[24];
-    snprintf(buf, sizeof(buf), "提醒 %d", count);
+    snprintf(buf, sizeof(buf), count == 1 ? "%d reminder" : "%d reminders", count);
     lv_label_set_text(s_notif_badge, buf);
     lv_obj_clear_flag(s_notif_badge, LV_OBJ_FLAG_HIDDEN);
   } else {

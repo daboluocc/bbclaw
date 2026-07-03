@@ -488,8 +488,8 @@ static void render_main(void) {
         break;
       case MAIN_ROW_REMINDERS: {
         int unread = bb_notification_unread_count();
-        if (unread > 0) snprintf(buf, sizeof(buf), "提醒 · %d", unread);
-        else snprintf(buf, sizeof(buf), "提醒");
+        if (unread > 0) snprintf(buf, sizeof(buf), "Reminders · %d", unread);
+        else snprintf(buf, sizeof(buf), "Reminders");
         break;
       }
       case MAIN_ROW_ADAPTER:
@@ -840,9 +840,9 @@ static void render_reminders(void) {
   int unread = bb_notification_unread_count();
   char hdr[32];
   if (unread > 0) {
-    snprintf(hdr, sizeof(hdr), "提醒 · %d 未读", unread);
+    snprintf(hdr, sizeof(hdr), "Reminders · %d", unread);
   } else {
-    snprintf(hdr, sizeof(hdr), "提醒");
+    snprintf(hdr, sizeof(hdr), "Reminders");
   }
   lv_label_set_text(s_st.header_lbl, hdr);
 
@@ -850,16 +850,16 @@ static void render_reminders(void) {
   int n = bb_notification_list(items, BB_NOTIFY_MAX);
   if (n <= 0) {
     build_rows_box(1);
-    lv_label_set_text(s_st.rows[0], "还没有提醒");
+    lv_label_set_text(s_st.rows[0], "No reminders yet");
     highlight_selected();
     return;
   }
   build_rows_box(n);
   for (int i = 0; i < n; ++i) {
     char buf[80];
-    /* 未读行前置一个圆点作高亮标记（已读留两空对齐）。 */
+    /* Unread rows get a leading dot marker (read rows pad two spaces to align). */
     snprintf(buf, sizeof(buf), "%s%s", items[i].read ? "  " : "• ",
-             items[i].preview[0] != '\0' ? items[i].preview : "(通知)");
+             items[i].preview[0] != '\0' ? items[i].preview : "(notification)");
     lv_label_set_text(s_st.rows[i], buf);
   }
   highlight_selected();
