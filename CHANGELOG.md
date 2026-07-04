@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     REQ_REBOOT 走 usb_persist+ROM 复位(esp_restart 在 WiFi 活跃时挂死,芯片复位
     但 USB 假死曾被误判"整机冻结");CDC 写主机不拉数据时限时放弃(原无限自旋)。
   - 新增 `scripts/watch_screenshot.sh` 手表拉屏脚本(410×502 一帧 1.5s,AI 迭代 UI 用)。
+  - **手表触屏**(ADR-040 §UI.5):FT3168 手势→导航事件注入(tap=OK/上下滑/长按右滑=BACK),
+    UI 层零改动全页面可触摸。
+  - **手表竖屏 UI 适配启动**(ADR-040 §UI,设计文档先行):
+    - 圆角安全区机制 `bb_ui_layout.h`(板级 CORNER_RADIUS→0.293r 内缩两档安全区,
+      方屏板行为不变);ACTIVE 顶栏/底线自动离角。
+    - 待机表盘竖屏形态:点阵时钟 hero 1.8x 居中偏上 + 底部居中簇。
+    - 模拟器支持手表分辨率(`make sim-build-watch`,零烧录 PNG 出图迭代)。
 
 ### Changed
 - **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:
