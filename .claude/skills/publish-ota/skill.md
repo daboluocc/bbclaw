@@ -1,6 +1,6 @@
 ---
 name: publish-ota
-description: "发布 BBClaw 固件 OTA 版本。统一走 tag → GitHub Actions：make bump 递增版本 → 打 v* tag → CI 构建固件 + adapter 5 平台二进制 + GitHub Release + 推 OTA（用 CI 托管的 OTA_ADMIN_KEY secret）。本地不再直推 OTA。Triggers: \"发布\", \"publish\", \"OTA\", \"release\", \"beta\", \"打 tag\", \"发版\", \"推 OTA\", \"出版本\", \"出固件\", \"ota发布\"."
+description: "发布 BBClaw 固件 OTA 版本。统一走 tag → GitHub Actions：打 v* tag → CI 构建固件 + adapter 5 平台二进制 + GitHub Release + 推 OTA（用 CI 托管的 OTA_ADMIN_KEY secret）。版本号即 tag（无仓库版本文件）。本地不再直推 OTA。Triggers: \"发布\", \"publish\", \"OTA\", \"release\", \"beta\", \"打 tag\", \"发版\", \"推 OTA\", \"出版本\", \"出固件\", \"ota发布\"."
 ---
 
 # BBClaw OTA 发布
@@ -19,18 +19,11 @@ description: "发布 BBClaw 固件 OTA 版本。统一走 tag → GitHub Actions
 
 ```bash
 # 1. 确认要发布的所有 commit 都在 origin/main 上（CI 从 tag 指向的 commit 构建）
-git log --oneline origin/main..HEAD   # 应为空
+git log --oneline origin/main..HEAD   # 应为空；有则先 git push
 
-# 2. 递增版本基线并提交（真相来源 = git 跟踪的 firmware/VERSION）
-cd firmware
-make bump                 # v0.6.0 → v0.6.1（patch）
-#   make bump LEVEL=minor # → v0.7.0
-#   make bump LEVEL=major # → v1.0.0
-git push                  # 把 bump commit 推上去
-
-# 3. 打 tag 并推 → 触发 release.yml
-git tag v0.6.1
-git push origin v0.6.1
+# 2. 打 tag 并推 → 触发 release.yml（版本号即 tag，自己选下一个语义化版本）
+git tag v0.6.2            # 上一个是 v0.6.1 → patch+1
+git push origin v0.6.2
 ```
 
 > ⚠️ **打 tag + push 会触发 CI 构建并推送 OTA（全量：所有查更新的设备都会被推该版本，
@@ -48,10 +41,12 @@ git push origin v0.6.1
 
 ### 版本号从哪来
 
-- 真相来源是 git 跟踪的 **`firmware/VERSION`**（如 `v0.6.1`），用 `make bump` 递增。
-- 本地 `make build` 自动 stamp 出 `<VERSION>-g<短哈希>[-dirty]`，可追溯到 commit。
+- **单一真相来源 = git tag**（无仓库版本文件）。发版就是选一个新 tag，`vMAJOR.MINOR.PATCH`。
 - CI 发版时 `release.yml` 用 `FW_VERSION=<tag>` 钉死版本写进 `esp_app_desc.version`。
-- **tag 名应与 `firmware/VERSION` 一致**（先 `make bump` 再打同名 tag）。
+- 本地 `make build` 用 `git describe --tags --dirty --always` 自动推导（如
+  `v0.6.1-3-g7544427-dirty`：最近 tag + 落后提交数 + 脏标记），无需手工维护版本。
+- 新 tag 必须 **> 当前 OTA active**（单 active 模型 + 只比 M.m.p）。查当前 active：
+  `curl "$OTA_SERVER_URL/v1/ota/flash-bundles?platform=esp32s3" | jq '.data[]|select(.isActive)|.version'`
 
 ### 监控 CI
 
@@ -91,11 +86,10 @@ cat > .claude/skills/publish-ota/releases/v0.6.1.md <<'EOF'
 # Release v0.6.1 (2026-07-04)
 
 ## 命令
-make bump && git push && git tag v0.6.1 && git push origin v0.6.1
+git tag v0.6.1 && git push origin v0.6.1
 
 ## 前置状态
 - git: <commit> (main, pushed)
-- firmware/VERSION: v0.6.1
 
 ## 关键改动
 - fix(firmware): 云健康检查移出输入循环，弱网按键不再卡死
@@ -138,4 +132,4 @@ make boot-recover   # 擦 otadata → 下次 boot 回 factory 槽
 
 **tag 打错 / 想重发**
 → 删除远端 tag（`git push origin :v0.6.1`）+ 本地 tag（`git tag -d v0.6.1`）后重打；
-或直接 `make bump` 到下一个版本重发（更干净，避免 tag 复用）。
+或直接打下一个版本 tag 重发（更干净，避免 tag 复用）。
