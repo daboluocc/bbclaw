@@ -101,6 +101,10 @@
 /* CO5300 要求刷新区域 2px 对齐（起点取偶、终点取奇），见硬件参考文档 §怪癖2 */
 #define BBCLAW_DISPLAY_PIXEL_ALIGN  2
 
+/* 玻璃窗口物理圆角 R4.5mm ≈ 56px（外形图 + 12.4px/mm），设防取整 60；
+ * 安全区推导见 bb_ui_layout.h / UI_DESIGN_LANGUAGE.md §2.1。待实机角尺标定校准。 */
+#define BBCLAW_DISPLAY_CORNER_RADIUS 60
+
 /* LVGL 缓冲：必须内部 DMA 单缓冲（410*40*2 ≈ 32.8KB，display init 时一次分配）。
  * 不能学官方 BSP 放 PSRAM：esp_lcd SPI 对非 DMA 缓冲每次刷屏都会 malloc 同尺寸的
  * 内部反弹缓冲，softAP 起来后内部 DMA largest(40960) < flush 块(41000) → flush 失败

@@ -17,6 +17,7 @@
 
 #include "bb_config.h"
 #include "bb_ota.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -34,18 +35,30 @@ LV_FONT_DECLARE(lv_font_montserrat_14)
 #define UI_ACCENT     BB_UI_ACCENT    /* teal — breathing colon          */
 #define UI_WORDMARK   BB_UI_WORDMARK  /* dim teal-grey — footer wordmark */
 
-/* ── dot-matrix geometry ── */
+/* ── dot-matrix geometry（竖屏手表 hero 放大 ~1.8x；方屏板保持原值） ── */
+#if BB_UI_PORTRAIT
+#define MX_DOT     9
+#define MX_PITCH   16
+#define DIGIT_GAP  14          /* gap between paired digits        */
+#define COLON_GAP  21          /* gap each side of the colon       */
+#else
 #define MX_DOT     5            /* dot diameter                    */
 #define MX_PITCH   9            /* center-to-center spacing        */
-#define MX_COLS    5
-#define MX_ROWS    7
-#define DIGIT_W    ((MX_COLS - 1) * MX_PITCH + MX_DOT)  /* 41 */
-#define DIGIT_H    ((MX_ROWS - 1) * MX_PITCH + MX_DOT)  /* 59 */
 #define DIGIT_GAP  8           /* gap between paired digits        */
 #define COLON_GAP  12          /* gap each side of the colon       */
-#define MATRIX_W   (4 * DIGIT_W + 2 * DIGIT_GAP + 2 * COLON_GAP + MX_DOT) /* 209 */
+#endif
+#define MX_COLS    5
+#define MX_ROWS    7
+#define DIGIT_W    ((MX_COLS - 1) * MX_PITCH + MX_DOT)  /* 41 / 73 */
+#define DIGIT_H    ((MX_ROWS - 1) * MX_PITCH + MX_DOT)  /* 59 / 105 */
+#define MATRIX_W   (4 * DIGIT_W + 2 * DIGIT_GAP + 2 * COLON_GAP + MX_DOT) /* 209 / 371 */
 #define MATRIX_X   ((DISP_W - MATRIX_W) / 2)
+#if BB_UI_PORTRAIT
+/* 时钟 hero 居中偏上（~40% 高度，ADR-040 §UI.2） */
+#define MATRIX_TOP (((DISP_H - DIGIT_H) * 2) / 5)
+#else
 #define MATRIX_TOP 26
+#endif
 
 /* ── compact footer battery ── */
 #define FB_FRAME_W 26
@@ -53,7 +66,12 @@ LV_FONT_DECLARE(lv_font_montserrat_14)
 #define FB_CAP_W    3
 #define FB_CAP_H    6
 #define FB_INSET    2
-#define FB_Y      148
+#if BB_UI_PORTRAIT
+/* 底部居中簇：电池行 + 字标行 + 版本行（居中构图天然圆角安全） */
+#define FB_Y (DISP_H - BB_UI_SAFE_BOTTOM - 56)
+#else
+#define FB_Y 148
+#endif
 
 /* 5×7 numerals, MSB→LSB = leftmost→rightmost of 5 columns. */
 static const uint8_t GLYPH[10][MX_ROWS] = {
@@ -185,6 +203,24 @@ void bb_page_standby_create(lv_obj_t* scr) {
 
   const lv_font_t* small_font = small_font_fn();
 
+#if BB_UI_PORTRAIT
+  /* 竖屏页脚：居中簇（电池行 FB_Y → 字标 → 版本，逐行向下） */
+  lv_obj_t* mark = lv_label_create(s_view);
+  lv_obj_set_style_text_color(mark, lv_color_hex(UI_WORDMARK), 0);
+  lv_obj_set_style_text_font(mark, small_font, 0);
+  lv_obj_set_width(mark, DISP_W);
+  lv_obj_set_style_text_align(mark, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(mark, "bbclaw");
+  lv_obj_set_pos(mark, 0, FB_Y + FB_FRAME_H + 10);
+
+  lv_obj_t* ver = lv_label_create(s_view);
+  lv_obj_set_style_text_color(ver, lv_color_hex(UI_WORDMARK), 0);
+  lv_obj_set_style_text_font(ver, small_font, 0);
+  lv_obj_set_width(ver, DISP_W);
+  lv_obj_set_style_text_align(ver, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(ver, bb_ota_get_current_version());
+  lv_obj_set_pos(ver, 0, FB_Y + FB_FRAME_H + 30);
+#else
   /* Footer wordmark — lowercase, dim, left aligned */
   lv_obj_t* mark = lv_label_create(s_view);
   lv_obj_set_style_text_color(mark, lv_color_hex(UI_WORDMARK), 0);
@@ -203,6 +239,7 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_obj_set_style_text_align(ver, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(ver, bb_ota_get_current_version());
   lv_obj_set_pos(ver, 0, FB_Y - 22);
+#endif
 
   /* __APPEND_CREATE__ */
 
@@ -216,11 +253,21 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_obj_set_width(s_notif_badge, DISP_W);
   lv_obj_set_style_text_align(s_notif_badge, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(s_notif_badge, "");
+#if BB_UI_PORTRAIT
+  /* 竖屏：徽标移到时钟下方居中（顶部中央贴边会碰圆角安全带边缘） */
+  lv_obj_set_pos(s_notif_badge, 0, MATRIX_TOP + DIGIT_H + 26);
+#else
   lv_obj_set_pos(s_notif_badge, 0, 6);
+#endif
   lv_obj_add_flag(s_notif_badge, LV_OBJ_FLAG_HIDDEN);
 
+#if BB_UI_PORTRAIT
+  /* 竖屏：电池簇整体居中（百分比在左、图标在右） */
+  const int bat_x = DISP_W / 2 + 4;
+#else
   /* Compact footer battery — right edge; percent sits to its left. */
   const int bat_x = DISP_W - 14 - FB_FRAME_W - FB_CAP_W;
+#endif
 
   s_bat_box = lv_obj_create(s_view);
   lv_obj_remove_style_all(s_bat_box);

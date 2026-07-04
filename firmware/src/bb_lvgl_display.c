@@ -11,6 +11,7 @@
 #include "bb_page_locked.h"
 #include "bb_chat_recording.h"
 #include "bb_status.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 
 #if defined(BBCLAW_SIMULATOR)
@@ -105,11 +106,11 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 #define UI_STATUS_FG     BB_UI_TEXT_DIM
 #define UI_ME_ACCENT     BB_UI_ACCENT
 
-/* Layout */
-#define UI_SAFE_LEFT     10
-#define UI_SAFE_RIGHT    12
-#define UI_SAFE_TOP      8
-#define UI_SAFE_BOTTOM   10
+/* Layout — 安全内缩接 bb_ui_layout.h（圆角屏两档机制，方屏退化为原值） */
+#define UI_SAFE_LEFT     BB_UI_MAX(10, BB_UI_CORNER_INSET)
+#define UI_SAFE_RIGHT    BB_UI_MAX(12, BB_UI_CORNER_INSET)
+#define UI_SAFE_TOP      BB_UI_SAFE_TOP
+#define UI_SAFE_BOTTOM   BB_UI_SAFE_BOTTOM
 #define UI_GAP           2
 #define UI_STATUS_ICON_SZ 16
 
