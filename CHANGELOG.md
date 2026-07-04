@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       云端按 platform 精确匹配 active → 不会把 bbclaw 正式板固件推给引脚完全不同的
       拓展板(否则 cloud 模式一联网就被 OTA 成黑屏)。既有板默认 `esp32s3` 不变。
   - 新增 `firmware/sdkconfig.cloud` 通用 overlay:任意板叠加即得 cloud_saas 构建。
+  - **手表音频全链路打通**(PTT→双 mic→Opus→云 ASR→回复→TTS):
+    - 喇叭:ES8311 DAC OSR 0x20→0x10(16kHz 正确系数)+ REG01 时钟门控须在
+      MCLK 运行后写入 + 官方三步复位序。
+    - 麦克风:原理图证实 MIC1/MIC2 挂独立 **ES7210**(0x40),非 ES8311——新增
+      ES7210 最小驱动(I2S slave 16bit/30dB/双 mic),AEC 回环通道预留。
+    - AXP2101 最小初始化(ALDO1 MIC 电轨/充电 200mA@4.1V/长按 4s 关机/关 TS)。
+  - **devmon 手表适配三修**:worker 栈 4K→12K PSRAM(大屏 lv_snapshot 栈溢出秒崩);
+    REQ_REBOOT 走 usb_persist+ROM 复位(esp_restart 在 WiFi 活跃时挂死,芯片复位
+    但 USB 假死曾被误判"整机冻结");CDC 写主机不拉数据时限时放弃(原无限自旋)。
+  - 新增 `scripts/watch_screenshot.sh` 手表拉屏脚本(410×502 一帧 1.5s,AI 迭代 UI 用)。
 
 ### Changed
 - **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:
