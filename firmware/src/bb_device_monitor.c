@@ -55,6 +55,11 @@
 #include "esp_system.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
+#if CONFIG_IDF_TARGET_ESP32S3
+#include "esp32s3/rom/usb/chip_usb_dw_wrapper.h"
+#include "esp32s3/rom/usb/usb_dc.h"
+#include "esp32s3/rom/usb/usb_persist.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -166,15 +171,24 @@ static esp_err_t devmon_cdc_write(const uint8_t* data, size_t len) {
    * buffer fills up (queue returned 0). Per-chunk flushes added too much
    * overhead and caused the 110 KB screenshot path to time out. */
   size_t offset = 0;
+  int stalled_flushes = 0;
   while (offset < len) {
     const size_t queued =
         tinyusb_cdcacm_write_queue(BB_DEVMON_CDC_PROTOCOL,
                                    data + offset, len - offset);
     if (queued > 0) {
       offset += queued;
+      stalled_flushes = 0;
     } else {
-      /* Buffer full — flush to make room. */
+      /* Buffer full — flush to make room. 主机不拉数据（发完命令就关端口）时
+       * flush 永远排不动，旧实现在这里无限自旋把 devmon worker 卡死。
+       * 连续 6 次（约 3s）排不动就放弃本帧。 */
       tinyusb_cdcacm_write_flush(BB_DEVMON_CDC_PROTOCOL, pdMS_TO_TICKS(500));
+      if (++stalled_flushes >= 6) {
+        ESP_LOGW(TAG, "cdc write stalled (host not draining), dropping %u/%u bytes",
+                 (unsigned)(len - offset), (unsigned)len);
+        return ESP_ERR_TIMEOUT;
+      }
     }
   }
   /* Final flush so the last partial buffer is pushed to host. */
@@ -355,18 +369,31 @@ static void devmon_worker_task(void* arg) {
         break;
 
       case KIND_REQ_REBOOT_TO_BOOTLOADER: {
-        /* Set FORCE_DOWNLOAD_BOOT bit in RTC OPTION1 (preserve other bits),
-         * then trigger a ROM-level system reset — esp_restart() does a
-         * higher-level reset that may not cause ROM to re-check the flag.
-         * esp_rom_software_reset_system() goes through the same path as a
-         * watchdog reset and is honored by the ROM bootloader. */
+        /* 进 ROM 下载模式。单口 USB 板（手表：OTG/TinyUSB 与 USJ 复用同一个口）
+         * 必须先把 USB 控制器交还并置 OTG 持久化标志，否则 ROM 起来后 USB 不
+         * 枚举——芯片复位成功但外界看是"整机冻死"（AMOLED 自带显存还显示最后
+         * 一帧，时钟停走）。配方来自 arduino-esp32 usb_persist（S3 单口板实证）：
+         * prepare_persist + PERSIST_ENA + FORCE_DOWNLOAD_BOOT + esp_restart。
+         * 旧实现 esp_rom_software_reset_system() 在 bbclaw PCB（USJ 走独立
+         * hub 通道）上可用，在手表上间歇性挂死。 */
         ESP_LOGI(TAG, "REQ_REBOOT_TO_BOOTLOADER seq=%u", msg.seq);
         const uint8_t ack = 0;
         devmon_send_frame(KIND_RES_REBOOT_ACK, msg.seq, &ack, 1);
         /* Let the ACK clear the USB pipe before yanking the bus. */
         vTaskDelay(pdMS_TO_TICKS(150));
+        ESP_LOGI(TAG, "reboot: ack sent, preparing usb persist");
+#if CONFIG_IDF_TARGET_ESP32S3
+        /* 不走 esp_restart()：WiFi/WS 活跃时其 shutdown handler 可能阻塞
+         * （运行数分钟后重启命令挂死的候选路径之一）。persist 标志设好后
+         * 直接 ROM 复位——寄存器操作 + ROM 调用，无可阻塞点。 */
+        usb_dc_prepare_persist();
+        chip_usb_set_persist_flags(USBDC_PERSIST_ENA);
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        esp_rom_software_reset_system();
+#else
         SET_PERI_REG_MASK(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_rom_software_reset_system();
+#endif
         /* Unreachable. */
         break;
       }
