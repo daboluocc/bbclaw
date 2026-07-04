@@ -31,10 +31,11 @@ MONITOR_FILTER_CMD := rg -v "$(MONITOR_FILTER)" 2>/dev/null || true
 
 SIM_DIR := $(CURDIR)/simulator
 SIM_BUILD_DIR := $(SIM_DIR)/build
+SIM_BUILD_DIR_WATCH := $(SIM_DIR)/build-watch
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure stamp-version build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
+.PHONY: help idf-env init set-target reconfigure stamp-version build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-config-watch sim-build-watch sim-run-watch sim-export-feedback set-board list-ports
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
@@ -234,6 +235,16 @@ gen-lvgl-elements:
 
 sim-config:
 	@cmake -S "$(SIM_DIR)" -B "$(SIM_BUILD_DIR)"
+
+# 手表(410x502 竖屏)本地预览：分辨率取自 build-ws206/config 的板选择
+sim-config-watch:
+	@cmake -S "$(SIM_DIR)" -B "$(SIM_BUILD_DIR_WATCH)" -DBBCLAW_SIM_CONFIG_DIR="$(CURDIR)/build-ws206/config"
+
+sim-build-watch: sim-config-watch
+	@cmake --build "$(SIM_BUILD_DIR_WATCH)" -j
+
+sim-run-watch: sim-build-watch
+	@"$(SIM_BUILD_DIR_WATCH)/bbclaw_lvgl_sim" $(SIM_ARGS)
 
 sim-build: sim-config
 	@cmake --build "$(SIM_BUILD_DIR)" -j

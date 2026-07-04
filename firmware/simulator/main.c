@@ -20,8 +20,10 @@
 #include "src/drivers/sdl/lv_sdl_mousewheel.h"
 #include "src/drivers/sdl/lv_sdl_window.h"
 
-#define DISP_W 320
-#define DISP_H 172
+/* 分辨率跟随板级配置（sdkconfig.h 来自 cmake 的 BBCLAW_SIM_CONFIG_DIR，
+ * 默认 ../build/config；指到 ../build-ws206/config 即可模拟 410x502 手表屏） */
+#define DISP_W BBCLAW_ST7789_WIDTH
+#define DISP_H BBCLAW_ST7789_HEIGHT
 #define APP_TEXT_LEN 192
 
 typedef enum {
@@ -446,7 +448,7 @@ int main(int argc, char** argv) {
   populate_preview_state(&state);
   state.start_tick = lv_tick_get();
 
-  printf("BBClaw LVGL simulator: 320x172, zoom=%.2f\n", state.zoom);
+  printf("BBClaw LVGL simulator: %dx%d, zoom=%.2f\n", DISP_W, DISP_H, state.zoom);
   printf("status=%s mode=%d timeout_ms=%u\n", state.status, (int)state.mode, state.timeout_ms);
 
   while (!s_exit_requested) {

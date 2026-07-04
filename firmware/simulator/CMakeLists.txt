@@ -28,6 +28,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_time_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_wifi_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_chat_cache_stub.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/bb_notification_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_assets.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_display.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_standby.c"
@@ -48,11 +49,16 @@ endif()
 
 add_executable(bbclaw_lvgl_sim ${_sim_srcs})
 
+# sdkconfig.h 来源目录决定模拟哪块板（CONFIG_BBCLAW_BOARD_* → board_config → 分辨率）。
+# 默认共享 build/；模拟手表: cmake -DBBCLAW_SIM_CONFIG_DIR=.../firmware/build-ws206/config
+set(BBCLAW_SIM_CONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../build/config" CACHE PATH
+    "Directory containing sdkconfig.h used for board selection")
+
 target_include_directories(bbclaw_lvgl_sim PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/../include"
   "${CMAKE_CURRENT_SOURCE_DIR}/../generated"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../build/config"
+  "${BBCLAW_SIM_CONFIG_DIR}"
   ${SDL2_INCLUDE_DIRS}
 )
 
