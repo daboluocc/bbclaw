@@ -112,7 +112,10 @@
 #endif
 
 #ifndef BBCLAW_WIFI_MAX_SAVED
-#define BBCLAW_WIFI_MAX_SAVED 4
+/* Field test 2026-07-04: 4 was too few — a device that roams home/office/hotspot
+ * hit the ceiling and couldn't add the phone hotspot on site. NVS slot keys go up
+ * to "sta_pass_15" (11 chars, fits key[16]); 8 is plenty and cheap. */
+#define BBCLAW_WIFI_MAX_SAVED 8
 #endif
 
 #ifndef BBCLAW_WIFI_AP_SSID_PREFIX

@@ -569,9 +569,11 @@ static esp_err_t handle_scan_get(httpd_req_t* req) {
 }
 
 static esp_err_t handle_root_get(httpd_req_t* req) {
-  /* static buffers — httpd is single-threaded per connection */
-  static char saved_html[400];
-  static char html[6200];
+  /* static buffers — httpd is single-threaded per connection.
+   * saved_html holds one <div> row per saved network (~120 B each incl. SSID),
+   * so it must scale with BBCLAW_WIFI_MAX_SAVED. */
+  static char saved_html[BBCLAW_WIFI_MAX_SAVED * 160 + 128];
+  static char html[8192];
   saved_html[0] = '\0';
   int spos = 0;
   char ssid[sizeof(((wifi_sta_config_t*)0)->ssid)];
@@ -625,9 +627,11 @@ static esp_err_t handle_root_get(httpd_req_t* req) {
       "document.getElementById('scan-status').textContent='Tap a network to fill the form.';renderWifi(data.networks||[]);"
       "}).catch(function(){document.getElementById('scan-status').textContent='Scan failed. Try again.';"
       "document.getElementById('scan-list').innerHTML='';});}"
-      "function del(i){if(!confirm('Delete?'))return;"
-      "fetch('/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
-      "body:'index='+i}).then(()=>location.reload());}"
+      "function del(i){if(!confirm('Delete this network?'))return;"
+      "fetch('/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'index='+i})"
+      ".then(function(r){return r.json().catch(function(){return{};}).then(function(d){"
+      "if(r.ok&&d&&d.ok){location.reload();}else{alert('Delete failed, please try again.');}});})"
+      ".catch(function(){alert('Delete failed (network lost). Please try again.');});}"
       "scanWifi();"
       "</script></body></html>";
 
@@ -665,6 +669,24 @@ static esp_err_t handle_configure_post(httpd_req_t* req) {
   (void)get_form_value(body, "password", password, sizeof(password));
 
   esp_err_t err = save_sta_credentials(ssid, password);
+  if (err == ESP_ERR_NO_MEM) {
+    /* All slots full — don't dump a raw 500. Tell the user exactly what to do
+     * (delete one on the setup page) so they can recover on site. */
+    ESP_LOGW(TAG, "wifi save rejected: all %d slots full", BBCLAW_WIFI_MAX_SAVED);
+    static char full_html[512];
+    snprintf(full_html, sizeof(full_html),
+             "<!doctype html><meta charset='utf-8'>"
+             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+             "<body style='font-family:sans-serif;max-width:520px;margin:32px auto;padding:0 16px;line-height:1.5'>"
+             "<h3>Wi-Fi list full</h3>"
+             "<p>All %d saved networks are in use. Delete one under "
+             "\xe2\x80\x9cSaved WiFi\xe2\x80\x9d, then add this one again.</p>"
+             "<p><a href='/'>\xe2\x86\x90 Back to setup</a></p></body>",
+             BBCLAW_WIFI_MAX_SAVED);
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_sendstr(req, full_html);
+  }
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "wifi nvs save failed err=%s", esp_err_to_name(err));
     return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
