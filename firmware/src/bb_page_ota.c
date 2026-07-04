@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -47,13 +48,26 @@ static const char* TAG = "bb_page_ota";
 
 /* ── progress-bar geometry — a row of dot cells ── */
 #define OTA_CELLS      24
-#define OTA_CELL_DOT   6
-#define OTA_CELL_PITCH 9
-#define OTA_BAR_W      ((OTA_CELLS - 1) * OTA_CELL_PITCH + OTA_CELL_DOT)
+#if BB_UI_PORTRAIT
+/* 竖屏手表（410×502）：dot/pitch 放大 ~1.6x，内容组整体垂直居中——居中构图
+ * 天然避开 R60 物理圆角（UI_DESIGN_LANGUAGE.md §2.1 / ADR-040 §UI）。 */
+#define OTA_CELL_DOT    10
+#define OTA_CELL_PITCH  14
+#define OTA_CELL_RADIUS 2   /* 圆角随 cell 等比放大 */
+#define OTA_BAR_Y      ((BB_DISP_H - OTA_CELL_DOT) / 2)      /* bar 垂直居中 */
+#define OTA_TITLE_Y    (OTA_BAR_Y - 64)
+#define OTA_PCT_Y      (OTA_BAR_Y + OTA_CELL_DOT + 26)
+#define OTA_VER_Y      (OTA_PCT_Y + 34)
+#else
+#define OTA_CELL_DOT    6
+#define OTA_CELL_PITCH  9
+#define OTA_CELL_RADIUS 1
 #define OTA_BAR_Y      104
 #define OTA_TITLE_Y    62
 #define OTA_PCT_Y      120
 #define OTA_VER_Y      146
+#endif
+#define OTA_BAR_W      ((OTA_CELLS - 1) * OTA_CELL_PITCH + OTA_CELL_DOT)
 
 #define OTA_TICK_MS 120
 
@@ -175,7 +189,7 @@ void bb_page_ota_show(const char* version) {
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, OTA_CELL_DOT, OTA_CELL_DOT);
     lv_obj_set_pos(c, x0 + i * OTA_CELL_PITCH, OTA_BAR_Y);
-    lv_obj_set_style_radius(c, 1, 0);
+    lv_obj_set_style_radius(c, OTA_CELL_RADIUS, 0);
     lv_obj_set_style_bg_color(c, lv_color_hex(UI_DOT_GHOST), 0);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);

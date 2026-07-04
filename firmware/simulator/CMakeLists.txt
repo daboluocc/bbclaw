@@ -38,6 +38,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_ota_confirm.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_prompt_select.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_locked.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_boot.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_transcript.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_chat_recording.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../generated/bb_lvgl_element_assets.c"

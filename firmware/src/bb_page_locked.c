@@ -8,7 +8,9 @@
  * while a passphrase is being captured/verified, and the body flashes
  * red for the VERIFY_ERR beat. Title/hint live in a block right of the
  * glyph (the old layout put them at y=208/230 — off-screen on the 172px
- * panel). See design/UI_DESIGN_LANGUAGE.md.
+ * panel). Portrait watch (BB_UI_PORTRAIT): padlock enlarged ~1.8x centered
+ * upper-third, title/hint centered below, big battery bottom-center cluster.
+ * See design/UI_DESIGN_LANGUAGE.md §2.1 and ADR-040 §UI.
  */
 #include "bb_page_locked.h"
 
@@ -17,6 +19,7 @@
 
 #include "bb_config.h"
 #include "bb_status.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -33,33 +36,65 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 #define UI_ME_ACCENT    BB_UI_ACCENT
 #define UI_SAFE_RIGHT   12
 
-/* ── dot-matrix padlock geometry ── */
-#define MX_DOT        5
-#define MX_PITCH      9
+/* ── dot-matrix padlock geometry（竖屏手表挂锁 ~1.8x 放大、水平居中；
+ *    方屏板保持原值，ADR-040 §UI / UI_DESIGN_LANGUAGE.md §2.1） ── */
 #define BODY_COLS     5
 #define BODY_ROWS     4
 #define SHACKLE_DOTS  7
+#if BB_UI_PORTRAIT
+#define MX_DOT        9
+#define MX_PITCH      16
+/* glyph anchor: body top-left dot position — hero 居中偏上（居中构图圆角安全） */
+#define BODY_W        ((BODY_COLS - 1) * MX_PITCH + MX_DOT) /* 73 */
+#define BODY_X        ((BB_DISP_W - BODY_W) / 2)
+#define BODY_Y        185
+/* 锁梁端点对齐体外侧两列、悬于首行上方一个栅距——放大后按点阵网格咬合，
+ * 避免端点与体首行挤成一团（小屏比例直接 ×1.8 会糊） */
+#define SHACKLE_CY    (BODY_Y - MX_PITCH + MX_DOT / 2)
+#else
+#define MX_DOT        5
+#define MX_PITCH      9
 /* glyph anchor: body top-left dot position */
 #define BODY_X        58
 #define BODY_Y        70
+#define SHACKLE_CY    (BODY_Y - 2)
+#endif
 #define BODY_CX       (BODY_X + 2 * MX_PITCH + MX_DOT / 2) /* keyhole column */
 /* keyhole = body dot (col 2, row 1) */
 #define KEYHOLE_COL   2
 #define KEYHOLE_ROW   1
 
-/* Shackle arc — dot-center offsets from (BODY_CX, BODY_Y - 2), radius 14,
- * semicircle 180°→0° (same offset-table idiom as bb_page_netconn rings). */
+/* Shackle arc — dot-center offsets from (BODY_CX, SHACKLE_CY), radius 14
+ * (portrait: 32), semicircle 180°→0° (same offset-table idiom as
+ * bb_page_netconn rings). */
 typedef struct {
   int8_t dx;
   int8_t dy;
 } arc_off_t;
+#if BB_UI_PORTRAIT
+/* radius 32 = 2×MX_PITCH → 弧上相邻点距 ≈ 栅距，端点 x=±32 正对体外侧列 */
+static const arc_off_t SHACKLE[SHACKLE_DOTS] = {
+    {-32, 0}, {-28, -16}, {-16, -28}, {0, -32}, {16, -28}, {28, -16}, {32, 0},
+};
+#else
 static const arc_off_t SHACKLE[SHACKLE_DOTS] = {
     {-14, 0}, {-12, -7}, {-7, -12}, {0, -14}, {7, -12}, {12, -7}, {14, 0},
 };
+#endif
 
+#if BB_UI_PORTRAIT
+/* ── 竖屏：状态文字挂锁下方整宽居中 ── */
+#define TEXT_X  40
+#define TEXT_W  (BB_DISP_W - 2 * TEXT_X)
+#define TITLE_Y (BODY_Y + (BODY_ROWS - 1) * MX_PITCH + MX_DOT + 34)
+#define HINT_Y  (TITLE_Y + 34)
+#else
 /* ── right text block ── */
 #define TEXT_X 126
 #define TEXT_W (DISP_W - TEXT_X - UI_SAFE_RIGHT)
+#define TITLE_Y 52
+#define HINT_Y  76
+#endif
 
 static lv_obj_t* s_view;
 static lv_obj_t* s_body_dots[BODY_ROWS][BODY_COLS];
@@ -78,14 +113,29 @@ static lv_obj_t* s_bat_cap;
 static lv_obj_t* s_bat_charge_lbl;
 static lv_obj_t* s_bat_pct_lbl;
 
+#if BB_UI_PORTRAIT
+/* 竖屏：大电池收底部居中簇（离底 BB_UI_SAFE_BOTTOM；居中构图圆角安全） */
+#define BAT_LG_FRAME_W   56
+#define BAT_LG_FRAME_H   24
+#define BAT_LG_FILL_W    48
+#define BAT_LG_FILL_H    16
+#define BAT_LG_INSET      4
+#define BAT_LG_CAP_W      4
+#define BAT_LG_CAP_H     10
+/* 组合宽 ≈ frame+cap+8+"NN%"（~35px）→ 左缘取屏心 −52 视觉居中 */
+#define BAT_LG_X         (BB_DISP_W / 2 - 52)
+#define BAT_LG_Y         (BB_DISP_H - BB_UI_SAFE_BOTTOM - BAT_LG_FRAME_H)
+#else
 #define BAT_LG_FRAME_W   40
 #define BAT_LG_FRAME_H   18
 #define BAT_LG_FILL_W    34
 #define BAT_LG_FILL_H    12
+#define BAT_LG_INSET      3
 #define BAT_LG_CAP_W      3
 #define BAT_LG_CAP_H      8
 #define BAT_LG_X         (TEXT_X + 36)
 #define BAT_LG_Y         116
+#endif
 
 static const lv_font_t* ui_font(void) {
 #ifdef BBCLAW_HAVE_CJK_FONT
@@ -159,7 +209,7 @@ void bb_page_locked_create(lv_obj_t* scr) {
   /* ── dot-matrix padlock ── */
   for (int i = 0; i < SHACKLE_DOTS; i++) {
     s_shackle_dots[i] = make_dot(s_view, BODY_CX + SHACKLE[i].dx,
-                                 BODY_Y - 2 + SHACKLE[i].dy, BB_UI_DOT_LIT);
+                                 SHACKLE_CY + SHACKLE[i].dy, BB_UI_DOT_LIT);
   }
   for (int r = 0; r < BODY_ROWS; r++) {
     for (int c = 0; c < BODY_COLS; c++) {
@@ -180,7 +230,7 @@ void bb_page_locked_create(lv_obj_t* scr) {
   lv_obj_set_style_text_font(s_lbl_title, font, 0);
   lv_obj_set_style_text_align(s_lbl_title, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(s_lbl_title, "设备已锁定");
-  lv_obj_set_pos(s_lbl_title, TEXT_X, 52);
+  lv_obj_set_pos(s_lbl_title, TEXT_X, TITLE_Y);
 
   s_lbl_hint = lv_label_create(s_view);
   lv_obj_set_width(s_lbl_hint, TEXT_W);
@@ -189,7 +239,7 @@ void bb_page_locked_create(lv_obj_t* scr) {
   lv_obj_set_style_text_align(s_lbl_hint, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_long_mode(s_lbl_hint, LV_LABEL_LONG_MODE_WRAP);
   lv_label_set_text(s_lbl_hint, "请按住说话键后说出密语");
-  lv_obj_set_pos(s_lbl_hint, TEXT_X, 76);
+  lv_obj_set_pos(s_lbl_hint, TEXT_X, HINT_Y);
 
   /* ── battery — one line in the right block: frame+cap, percent right ── */
   {
@@ -202,7 +252,7 @@ void bb_page_locked_create(lv_obj_t* scr) {
     s_bat_fill = lv_obj_create(s_bat_container);
     lv_obj_remove_style_all(s_bat_fill);
     lv_obj_set_size(s_bat_fill, BAT_LG_FILL_W, BAT_LG_FILL_H);
-    lv_obj_set_pos(s_bat_fill, 3, 3);
+    lv_obj_set_pos(s_bat_fill, BAT_LG_INSET, BAT_LG_INSET);
     lv_obj_set_style_radius(s_bat_fill, 2, 0);
     lv_obj_set_style_bg_color(s_bat_fill, lv_color_hex(UI_ME_ACCENT), 0);
     lv_obj_set_style_bg_opa(s_bat_fill, LV_OPA_COVER, 0);

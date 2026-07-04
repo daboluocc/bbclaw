@@ -27,6 +27,7 @@
 
 #include "bb_config.h"
 #include "bb_time.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "bb_wifi.h"
 #include "lvgl.h"
@@ -57,12 +58,22 @@ static const char* TAG = "bb_page_netconn";
 #define UI_ACCENT    BB_UI_ACCENT
 
 /* ── WiFi glyph geometry — base dot + 3 concentric dot-arcs ── */
-#define MX_DOT       5
+#if BB_UI_PORTRAIT
+/* 竖屏手表：glyph 放大 2x（WiFi 弧本身紧凑，取放大区间上限），glyph 上 + 状态文字下
+ * 整组垂直居中（居中构图天然避开 R60 物理圆角，ADR-040 §UI）。 */
+#define MX_DOT        10
+#define RING_SCALE(v) ((v) * 2)
+#define GLYPH_BASE_Y  ((BB_DISP_H * 51) / 100) /* base-dot center — 组合光学居中 */
+#define LABEL_Y       (GLYPH_BASE_Y + 40)
+#else
+#define MX_DOT        5
+#define RING_SCALE(v) (v)
+#define GLYPH_BASE_Y  92 /* base-dot center, y */
+#define LABEL_Y       (GLYPH_BASE_Y + 20)
+#endif
 #define RING_COUNT   4 /* ring 0 = base dot */
 #define RING_MAX_DOT 7
 #define GLYPH_CX     (BBCLAW_ST7789_WIDTH / 2)
-#define GLYPH_BASE_Y 92 /* base-dot center, y */
-#define LABEL_Y      (GLYPH_BASE_Y + 20)
 
 /* Dot-center offsets from the base dot, per ring (x right, y up-negative).
  * Radii 12/22/32 px, dots spread along a ~100° upward arc. */
@@ -204,7 +215,8 @@ void bb_page_netconn_show(void) {
       lv_obj_t* d = lv_obj_create(s_root);
       lv_obj_remove_style_all(d);
       lv_obj_set_size(d, MX_DOT, MX_DOT);
-      lv_obj_set_pos(d, GLYPH_CX + RINGS[r][i].dx - MX_DOT / 2, GLYPH_BASE_Y + RINGS[r][i].dy - MX_DOT / 2);
+      lv_obj_set_pos(d, GLYPH_CX + RING_SCALE(RINGS[r][i].dx) - MX_DOT / 2,
+                     GLYPH_BASE_Y + RING_SCALE(RINGS[r][i].dy) - MX_DOT / 2);
       lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
       lv_obj_set_style_bg_color(d, lv_color_hex(UI_DOT_GHOST), 0);
       lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);

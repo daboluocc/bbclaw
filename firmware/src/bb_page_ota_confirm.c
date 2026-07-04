@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -42,17 +43,35 @@ static const char *TAG = "bb_page_ota_confirm";
 #define UI_TEXT_DIM  BB_UI_TEXT_DIM
 
 /* ── countdown bar geometry ── */
-#define CDOWN_CELLS      30
-#define CDOWN_CELL_DOT   5
-#define CDOWN_CELL_PITCH 8
+#define CDOWN_CELLS      30  /* 30 cells = 30 s，一秒灭一格（倒计时语义勿动） */
+#if BB_UI_PORTRAIT
+/* 竖屏手表（410×502）：dot/pitch 放大 ~1.6x，cell 数不变只放大几何 */
+#define CDOWN_CELL_DOT    8
+#define CDOWN_CELL_PITCH  12
+#define CDOWN_CELL_RADIUS 2   /* 圆角随 cell 等比放大 */
+#else
+#define CDOWN_CELL_DOT    5
+#define CDOWN_CELL_PITCH  8
+#define CDOWN_CELL_RADIUS 1
+#endif
 #define CDOWN_BAR_W      ((CDOWN_CELLS - 1) * CDOWN_CELL_PITCH + CDOWN_CELL_DOT)
 
 /* ── Y positions ── */
+#if BB_UI_PORTRAIT
+/* 内容组整体垂直居中（行距 ~1.5x）——居中构图天然避开 R60 物理圆角
+ * （UI_DESIGN_LANGUAGE.md §2.1 / ADR-040 §UI）。 */
+#define TITLE_Y    ((BB_DISP_H - 156) / 2)   /* 内容块高 ~156px，垂直居中 */
+#define VER_Y      (TITLE_Y + 40)
+#define SIZE_Y     (VER_Y + 28)
+#define BAR_Y      (SIZE_Y + 36)
+#define HINT_Y     (BAR_Y + CDOWN_CELL_DOT + 28)
+#else
 #define TITLE_Y    18
 #define VER_Y      44
 #define SIZE_Y     62
 #define BAR_Y      86
 #define HINT_Y    108
+#endif
 
 #define TIMEOUT_SEC 30
 
@@ -172,7 +191,7 @@ void bb_page_ota_confirm_show(const char *current_ver,
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, CDOWN_CELL_DOT, CDOWN_CELL_DOT);
     lv_obj_set_pos(c, x0 + i * CDOWN_CELL_PITCH, BAR_Y);
-    lv_obj_set_style_radius(c, 1, 0);
+    lv_obj_set_style_radius(c, CDOWN_CELL_RADIUS, 0);
     lv_obj_set_style_bg_color(c, lv_color_hex(UI_ACCENT), 0);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);

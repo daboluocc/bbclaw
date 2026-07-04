@@ -7,6 +7,11 @@
  *   Y=138  dot countdown bar (auto-deny)
  *   Y=156  "UP/DN move  OK ok  BACK no" hint (dim)
  *
+ * 竖屏手表（410×502, BB_UI_PORTRAIT）：内容组垂直居中（居中构图天然避开
+ * R60 物理圆角），Y 栈按 BB_PROMPT_MAX_OPTIONS=4 预留——修掉方屏遗留的
+ * “4 选项与倒计时条重叠”问题；选项行距 52px（≥48px 未来触摸目标），
+ * 倒计时条 30 cells 语义不变、几何放大 ~1.6x（同 bb_page_ota_confirm）。
+ *
  * Timer design mirrors bb_page_ota_confirm: the 1 Hz LVGL timer only repaints the
  * dot bar and sets s_timed_out — the radio-app main loop drains that and calls
  * handle_nav(0) (deny) so the user callback runs outside the LVGL lock.
@@ -17,6 +22,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "lvgl.h"
 
@@ -40,17 +46,47 @@ static const char *TAG = "bb_page_prompt_select";
 #define UI_TEXT_DIM  BB_UI_TEXT_DIM
 
 /* ── countdown bar geometry (same cells as ota_confirm) ── */
-#define CDOWN_CELLS      30
-#define CDOWN_CELL_DOT   5
-#define CDOWN_CELL_PITCH 8
+#define CDOWN_CELLS      30  /* 30 cells = 30 s，一秒灭一格（倒计时语义勿动） */
+#if BB_UI_PORTRAIT
+/* 竖屏手表：dot/pitch 放大 ~1.6x，cell 数不变只放大几何（同 ota_confirm） */
+#define CDOWN_CELL_DOT    8
+#define CDOWN_CELL_PITCH  12
+#define CDOWN_CELL_RADIUS 2
+#else
+#define CDOWN_CELL_DOT    5
+#define CDOWN_CELL_PITCH  8
+#define CDOWN_CELL_RADIUS 1
+#endif
 #define CDOWN_BAR_W      ((CDOWN_CELLS - 1) * CDOWN_CELL_PITCH + CDOWN_CELL_DOT)
 
-/* ── Y positions ── */
+/* ── geometry / Y positions ── */
+#if BB_UI_PORTRAIT
+/* 内容组整体垂直居中；Y 栈按最大选项数（4）预留，保证 4 行 + 倒计时条 +
+ * hint 三者永不重叠（方屏分支该 bug 原样保留，勿在此回移）。 */
+#define Q_X         36
+#define Q_W         (BB_DISP_W - 2 * Q_X)
+#define Q_H         76  /* ~4 行 montserrat14；超出打点省略，不越入选项区 */
+#define OPT_X       28
+#define OPT_W       (BB_DISP_W - 2 * OPT_X)
+#define OPT_PITCH   52  /* 行距 ≥48px：未来触摸目标（ADR-040 §UI） */
+#define OPT_TEXT_DY 17  /* 文本在 52px 行内垂直居中 */
+#define CONTENT_H   (Q_H + 8 + BB_PROMPT_MAX_OPTIONS * OPT_PITCH + 8 + CDOWN_CELL_DOT + 24 + 18)
+#define Q_Y         ((BB_DISP_H - CONTENT_H) / 2)
+#define OPT_Y0      (Q_Y + Q_H + 8)
+#define BAR_Y       (OPT_Y0 + BB_PROMPT_MAX_OPTIONS * OPT_PITCH + 8)
+#define HINT_Y      (BAR_Y + CDOWN_CELL_DOT + 24)
+#else
+#define Q_X         8
+#define Q_W         (BBCLAW_ST7789_WIDTH - 16)
+#define OPT_X       16
+#define OPT_W       (BBCLAW_ST7789_WIDTH - 24)
+#define OPT_TEXT_DY 0
 #define Q_Y     8
 #define OPT_Y0  64
 #define OPT_PITCH 22
 #define BAR_Y   138
 #define HINT_Y  156
+#endif
 
 #define TIMEOUT_SEC 30 /* under the adapter's PromptTimeout (90s): device denies first */
 
@@ -147,9 +183,15 @@ void bb_page_prompt_select_show(const bb_prompt_t *prompt, bb_page_prompt_select
   lv_obj_set_style_text_color(q, lv_color_hex(UI_DOT_LIT), 0);
   lv_obj_set_style_text_font(q, small_font(), 0);
   lv_obj_set_style_text_align(q, LV_TEXT_ALIGN_CENTER, 0);
+#if BB_UI_PORTRAIT
+  /* 固定问题区高度 + 打点省略：问题再长也不越入选项区 */
+  lv_label_set_long_mode(q, LV_LABEL_LONG_DOT);
+  lv_obj_set_size(q, Q_W, Q_H);
+#else
   lv_label_set_long_mode(q, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(q, BBCLAW_ST7789_WIDTH - 16);
-  lv_obj_set_pos(q, 8, Q_Y);
+  lv_obj_set_width(q, Q_W);
+#endif
+  lv_obj_set_pos(q, Q_X, Q_Y);
   lv_label_set_text(q, s_prompt.question[0] ? s_prompt.question : "Confirm?");
 
   /* Option rows */
@@ -158,8 +200,8 @@ void bb_page_prompt_select_show(const bb_prompt_t *prompt, bb_page_prompt_select
     lv_obj_set_style_text_font(o, small_font(), 0);
     lv_obj_set_style_text_align(o, LV_TEXT_ALIGN_LEFT, 0);
     lv_label_set_long_mode(o, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(o, BBCLAW_ST7789_WIDTH - 24);
-    lv_obj_set_pos(o, 16, OPT_Y0 + i * OPT_PITCH);
+    lv_obj_set_width(o, OPT_W);
+    lv_obj_set_pos(o, OPT_X, OPT_Y0 + i * OPT_PITCH + OPT_TEXT_DY);
     s_opt_lbls[i] = o;
   }
   paint_options();
@@ -171,7 +213,7 @@ void bb_page_prompt_select_show(const bb_prompt_t *prompt, bb_page_prompt_select
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, CDOWN_CELL_DOT, CDOWN_CELL_DOT);
     lv_obj_set_pos(c, x0 + i * CDOWN_CELL_PITCH, BAR_Y);
-    lv_obj_set_style_radius(c, 1, 0);
+    lv_obj_set_style_radius(c, CDOWN_CELL_RADIUS, 0);
     lv_obj_set_style_bg_color(c, lv_color_hex(UI_ACCENT), 0);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);

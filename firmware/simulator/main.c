@@ -10,6 +10,7 @@
 #include "bb_config.h"
 #include "bb_display.h"
 #include "bb_page_apconfig.h"
+#include "bb_page_boot.h"
 #include "bb_page_netconn.h"
 #include "bb_page_ota_confirm.h"
 #include "bb_page_prompt_select.h"
@@ -39,6 +40,7 @@ typedef enum {
   APP_MODE_OTA_CONFIRM = 7,
   APP_MODE_PROMPT_SELECT = 13, /* ADR-033 blocking-prompt confirm page */
   APP_MODE_CHAT = 14,          /* chat overlay active: top-bar activity dot + 中文状态词 */
+  APP_MODE_BOOT = 15,          /* boot splash: BBCLAW 点阵字模逐列扫亮 */
   /* LED preview modes (issue #168): maps to v2 LED states */
   APP_MODE_LED_IDLE = 8,      /* 空闲：绿常亮 */
   APP_MODE_LED_LISTENING = 9, /* 倾听：橙常亮 */
@@ -142,6 +144,8 @@ static void parse_args(app_state_t* state, int argc, char** argv) {
         state->mode = APP_MODE_OTA_CONFIRM;
       } else if (strcmp(argv[i], "prompt_select") == 0) {
         state->mode = APP_MODE_PROMPT_SELECT;
+      } else if (strcmp(argv[i], "boot") == 0) {
+        state->mode = APP_MODE_BOOT;
       } else if (strcmp(argv[i], "error") == 0) {
         state->mode = APP_MODE_LED_ERROR;
       } else if (strcmp(argv[i], "worker") == 0) {
@@ -297,6 +301,15 @@ static void populate_preview_state(const app_state_t* state) {
     return;
   }
 
+  if (state->mode == APP_MODE_BOOT) {
+    /* Boot splash on lv_layer_top over the standby base view — mirrors the
+     * device boot path. Sweep 30 cols × 35 ms + underline ≈ 1.5 s. */
+    bb_display_set_battery(1, 1, 82, 0, 0);
+    (void)bb_display_show_status("READY");
+    bb_page_boot_show();
+    return;
+  }
+
   if (state->mode == APP_MODE_NETCONN) {
     /* Standby beneath, netconn page on lv_layer_top — wifi stub never
      * connects so the page loops its arc animation forever. */
@@ -337,9 +350,19 @@ static void populate_preview_state(const app_state_t* state) {
     p.options[0].is_default = 1;
     snprintf(p.options[1].key, sizeof(p.options[1].key), "2");
     snprintf(p.options[1].label, sizeof(p.options[1].label), "Yes, allow reading etc/ this project");
+#if BBCLAW_ST7789_HEIGHT > BBCLAW_ST7789_WIDTH
+    /* 竖屏手表预览注入 4 选项 = BB_PROMPT_MAX_OPTIONS 最坏情况，验证 Y 栈
+     * （4 行 + 倒计时条 + hint 不重叠）。方屏预览保持原 3 选项不动。 */
+    snprintf(p.options[2].key, sizeof(p.options[2].key), "3");
+    snprintf(p.options[2].label, sizeof(p.options[2].label), "Yes, allow all edits during this session");
+    snprintf(p.options[3].key, sizeof(p.options[3].key), "4");
+    snprintf(p.options[3].label, sizeof(p.options[3].label), "No, and tell Claude what to do differently");
+    p.n_options = 4;
+#else
     snprintf(p.options[2].key, sizeof(p.options[2].key), "3");
     snprintf(p.options[2].label, sizeof(p.options[2].label), "No");
     p.n_options = 3;
+#endif
     bb_page_prompt_select_show(&p, NULL);
     return;
   }
@@ -421,8 +444,10 @@ int main(int argc, char** argv) {
     populate_preview_state(&state);
     /* Pump ~0.7s of virtual time so animated surfaces (bottom-bar sweep,
      * clock colon, record meter) settle into a representative frame instead
-     * of their t=0 initial position. */
-    for (int f = 0; f < 45; f++) {
+     * of their t=0 initial position. Boot splash needs ~1.5s (sweep +
+     * underline), so pump longer to capture its finished frame. */
+    const int pump_frames = (state.mode == APP_MODE_BOOT) ? 150 : 45;
+    for (int f = 0; f < pump_frames; f++) {
       lv_tick_inc(15); /* headless has no SDL tick cb — advance manually */
       lv_timer_handler();
     }

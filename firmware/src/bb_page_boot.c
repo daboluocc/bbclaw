@@ -16,11 +16,24 @@
 #include "bb_page_boot.h"
 
 #include "bb_config.h"
-#include "bb_ota.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
+#include "lvgl.h"
+
+#if defined(BBCLAW_SIMULATOR)
+#define ESP_LOGI(tag, fmt, ...) ((void)(tag))
+#define ESP_LOGW(tag, fmt, ...) ((void)(tag))
+static int lvgl_port_lock(int timeout_ms) {
+  (void)timeout_ms;
+  return 1;
+}
+static void lvgl_port_unlock(void) {}
+static const char* bb_ota_get_current_version(void) { return "v0.0.0-sim"; }
+#else
+#include "bb_ota.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "lvgl.h"
+#endif
 
 #if LV_FONT_MONTSERRAT_14
 LV_FONT_DECLARE(lv_font_montserrat_14)
@@ -35,26 +48,45 @@ static const char* TAG = "bb_page_boot";
 #define UI_ACCENT    BB_UI_ACCENT
 #define UI_TEXT_DIM  BB_UI_TEXT_DIM
 
-/* ── dot-matrix geometry ── */
-#define MX_DOT       5
-#define MX_PITCH     9
+/* ── dot-matrix geometry（竖屏手表放大 ~1.4x；方屏板保持原值） ── */
+#if BB_UI_PORTRAIT
+/* 6 字母 × 5 列受 410px 宽度约束：pitch 12 / dot 7 是居中留边（SAFE_LR≥12）
+ * 下的最大字模。字模垂直严格居中——远离四角 60px 圆弧，天然圆角安全。 */
+#define MX_DOT     7
+#define MX_PITCH   12
+#define LETTER_GAP 10
+#else
+#define MX_DOT     5
+#define MX_PITCH   9
+#define LETTER_GAP 8
+#endif
 #define MX_COLS      5
 #define MX_ROWS      7
 #define LETTER_COUNT 6                                   /* B B C L A W */
-#define LETTER_W     ((MX_COLS - 1) * MX_PITCH + MX_DOT) /* 41 */
-#define LETTER_H     ((MX_ROWS - 1) * MX_PITCH + MX_DOT) /* 59 */
-#define LETTER_GAP   8
-#define WORDMARK_W   (LETTER_COUNT * LETTER_W + (LETTER_COUNT - 1) * LETTER_GAP) /* 286 */
-#define WORDMARK_X   ((BBCLAW_ST7789_WIDTH - WORDMARK_W) / 2)
-#define WORDMARK_Y   ((BBCLAW_ST7789_HEIGHT - LETTER_H) / 2 - 8)
-#define UNDERLINE_Y  (WORDMARK_Y + LETTER_H + 14)
-#define UNDERLINE_H  3
-#define VERSION_Y    (UNDERLINE_Y + UNDERLINE_H + 12)
+#define LETTER_W     ((MX_COLS - 1) * MX_PITCH + MX_DOT) /* 41 / 55 */
+#define LETTER_H     ((MX_ROWS - 1) * MX_PITCH + MX_DOT) /* 59 / 79 */
+#define WORDMARK_W   (LETTER_COUNT * LETTER_W + (LETTER_COUNT - 1) * LETTER_GAP) /* 286 / 380 */
+#define WORDMARK_X   ((BB_DISP_W - WORDMARK_W) / 2)
+#if BB_UI_PORTRAIT
+#define WORDMARK_Y  ((BB_DISP_H - LETTER_H) / 2) /* 严格居中，去掉方屏的 -8 偏置 */
+#define UNDERLINE_Y (WORDMARK_Y + LETTER_H + 20)
+#define UNDERLINE_H 4
+#define VERSION_Y   (UNDERLINE_Y + UNDERLINE_H + 16)
+#else
+#define WORDMARK_Y  ((BB_DISP_H - LETTER_H) / 2 - 8)
+#define UNDERLINE_Y (WORDMARK_Y + LETTER_H + 14)
+#define UNDERLINE_H 3
+#define VERSION_Y   (UNDERLINE_Y + UNDERLINE_H + 12)
+#endif
 
 /* ── timing ── */
-#define BOOT_TICK_MS      35                       /* one column per tick   */
-#define TOTAL_COLS        (LETTER_COUNT * MX_COLS) /* 30 → sweep ≈ 1.05 s   */
-#define UNDERLINE_STEP_PX 26                       /* grow ≈ 0.4 s          */
+#define BOOT_TICK_MS 35                       /* one column per tick   */
+#define TOTAL_COLS   (LETTER_COUNT * MX_COLS) /* 30 → sweep ≈ 1.05 s   */
+#if BB_UI_PORTRAIT
+#define UNDERLINE_STEP_PX 35 /* 380px 同样 ~11 tick 长满，节奏与方屏一致 */
+#else
+#define UNDERLINE_STEP_PX 26 /* grow ≈ 0.4 s          */
+#endif
 
 /* 5×7 letter glyphs, MSB→LSB = leftmost→rightmost of 5 columns. */
 static const uint8_t GLYPH_B[MX_ROWS] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
