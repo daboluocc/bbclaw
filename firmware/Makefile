@@ -45,12 +45,13 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure stamp-version build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
+.PHONY: help idf-env init set-target reconfigure stamp-version bump build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
 	@echo "  make init          # set esp32s3 target + reconfigure"
-	@echo "  make build         # idf.py build"
+	@echo "  make build         # idf.py build (版本 = VERSION 文件 + git 短哈希)"
+	@echo "  make bump          # 递增 VERSION 基线并提交 (LEVEL=patch|minor|major)"
 	@echo "  make flash         # build + flash to ota_0 partition (writes proper otadata)"
 	@echo "  make boot-recover  # rewrite otadata only, recover from boot-loop after bad flash"
 	@echo "  make monitor       # idf.py monitor"
@@ -98,13 +99,25 @@ list-ports:
 			echo "[list-ports] override with: make flash PORT=/dev/cu.usbmodemXXXX"; \
 		fi
 
-# Write esp_app_desc.version into version.txt before building. Dev builds derive
-# it from `git describe`; release paths pin it via FW_VERSION=vX.Y.Z. Only rewrite
-# when the value actually changed, so repeated `make flash` on the same commit
-# don't needlessly re-stamp (and trigger an app_desc rebuild).
+# Base version (esp_app_desc.version 的真相来源) 放在 git 跟踪的 `VERSION` 文件里，
+# 用 `make bump` 递增。dev 构建 stamp 出 <VERSION>-g<短哈希>[-dirty]——每次构建可追溯
+# 到 commit，而 OTA 比较的 M.m.p 基线固定在仓库里（不再依赖落后于 OTA 的 git tag，
+# 也不再被 gitignore 的残留 version.txt 带偏，这是「版本错乱」的根因）。release_local.sh /
+# CI 仍用 FW_VERSION=vX.Y.Z 钉死发布版本，覆盖此默认。version.txt 是生成物(gitignore)，
+# 每次 stamp 从 VERSION 重算，不会残留。
+VERSION_FILE := VERSION
 stamp-version:
 	@v="$(FW_VERSION)"; \
-	if [ -z "$$v" ]; then v="$$(git describe --tags --dirty --always 2>/dev/null)"; fi; \
+	if [ -z "$$v" ]; then \
+		base="$$(cat $(VERSION_FILE) 2>/dev/null | tr -d '[:space:]')"; \
+		if [ -n "$$base" ]; then \
+			short="$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"; \
+			dirty=""; git diff --quiet HEAD 2>/dev/null || dirty="-dirty"; \
+			v="$${base}-g$${short}$${dirty}"; \
+		else \
+			v="$$(git describe --tags --dirty --always 2>/dev/null)"; \
+		fi; \
+	fi; \
 	if [ -n "$$v" ]; then \
 		if [ "$$(cat version.txt 2>/dev/null)" != "$$v" ]; then \
 			printf '%s' "$$v" > version.txt; \
@@ -113,8 +126,31 @@ stamp-version:
 			echo "[version] esp_app_desc.version = $$v (unchanged)"; \
 		fi; \
 	else \
-		echo "[version] WARN: 无法从 git 推导版本且未传 FW_VERSION，沿用现有 version.txt"; \
+		echo "[version] WARN: 无法推导版本(VERSION 缺失且无 git)，沿用现有 version.txt"; \
 	fi
+
+# 递增 VERSION 基线并提交（不打 tag、不发布）。LEVEL=patch(默认)|minor|major。
+#   make bump               # v0.6.0 → v0.6.1
+#   make bump LEVEL=minor   # v0.6.0 → v0.7.0
+bump:
+	@level="$(LEVEL)"; [ -z "$$level" ] && level=patch; \
+	cur="$$(cat $(VERSION_FILE) 2>/dev/null | tr -d '[:space:]' | sed 's/^v//')"; \
+	[ -z "$$cur" ] && cur="0.0.0"; \
+	IFS=. read -r maj min pat <<<"$$cur"; \
+	maj=$${maj:-0}; min=$${min:-0}; pat=$${pat%%[!0-9]*}; pat=$${pat:-0}; \
+	case "$$level" in \
+		major) maj=$$((maj+1)); min=0; pat=0 ;; \
+		minor) min=$$((min+1)); pat=0 ;; \
+		patch) pat=$$((pat+1)) ;; \
+		*) echo "[bump] LEVEL 必须是 patch|minor|major" >&2; exit 1 ;; \
+	esac; \
+	new="v$${maj}.$${min}.$${pat}"; \
+	printf '%s\n' "$$new" > $(VERSION_FILE); \
+	echo "[bump] $(VERSION_FILE): v$${cur} → $$new"; \
+	git add $(VERSION_FILE) 2>/dev/null && \
+		git commit -q -m "chore(firmware): bump version → $$new" -- $(VERSION_FILE) 2>/dev/null \
+		&& echo "[bump] committed $$new" \
+		|| echo "[bump] 已写入 $(VERSION_FILE)（未自动提交，手动 git add/commit 即可）"
 
 build: stamp-version
 	@# Keep the project-root copy of partitions_ota.csv in sync with boards/bbclaw/.
