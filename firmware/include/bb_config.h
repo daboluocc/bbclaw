@@ -24,6 +24,13 @@
 #define BBCLAW_DISPLAY_BUS_QSPI 0
 #endif
 
+/* ── OTA platform tag reported to /v1/ota/check ──
+ * 云端按 platform 匹配 active release；拓展板必须报独立平台名，否则会被推
+ * bbclaw 正式板固件（引脚不同 → 黑屏）。默认值保持既有行为。 */
+#ifndef BBCLAW_OTA_PLATFORM
+#define BBCLAW_OTA_PLATFORM "esp32s3"
+#endif
+
 /* ── Display refresh-area pixel alignment (1 = none; CO5300 AMOLED needs 2) ── */
 #ifndef BBCLAW_DISPLAY_PIXEL_ALIGN
 #define BBCLAW_DISPLAY_PIXEL_ALIGN 1

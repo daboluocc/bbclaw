@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `make set-board` 现在会把 `boards/<name>/sdkconfig.board` 覆盖进 `sdkconfig`,
     OCT/QUAD PSRAM、flash 大小等逐板差异随切板一次切齐(此前要手动改)。
   - 设计文档:`design/boards/` 收录 AMOLED-2.06 与 LCD-1.85(第二块,待适配)硬件参考。
+  - **真机点亮后修复两个上板即踩的坑**:
+    - LVGL 缓冲不能放 PSRAM:esp_lcd SPI 对非 DMA 缓冲每次刷屏 malloc 同尺寸内部
+      反弹缓冲,softAP 起来后内部 DMA largest(40960) < flush 块(41000) → flush 失败
+      → LVGL 持锁整机冻结(UI/devmon/日志全死)。改内部 DMA 单缓冲 40 行常驻。
+    - OTA platform 板级化(`BBCLAW_OTA_PLATFORM`):拓展板报 `esp32s3-ws-amoled-206`,
+      云端按 platform 精确匹配 active → 不会把 bbclaw 正式板固件推给引脚完全不同的
+      拓展板(否则 cloud 模式一联网就被 OTA 成黑屏)。既有板默认 `esp32s3` 不变。
+  - 新增 `firmware/sdkconfig.cloud` 通用 overlay:任意板叠加即得 cloud_saas 构建。
 
 ### Changed
 - **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:

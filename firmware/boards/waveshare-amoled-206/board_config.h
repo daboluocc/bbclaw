@@ -34,6 +34,9 @@
 #define BBCLAW_SPEAKER_SW_GPIO     -1
 #define BBCLAW_PA_EN_PROBE_GPIO1   (-1)
 
+/* ── OTA：独立平台名，云端无此平台的 release → 不会被推 bbclaw 正式板固件 ── */
+#define BBCLAW_OTA_PLATFORM "esp32s3-ws-amoled-206"
+
 /* ── PTT: BOOT 键（板上无侧键/滚轮） ── */
 #define BBCLAW_PTT_GPIO         0
 #define BBCLAW_PTT_ACTIVE_LEVEL 0
@@ -83,8 +86,11 @@
 /* CO5300 要求刷新区域 2px 对齐（起点取偶、终点取奇），见硬件参考文档 §怪癖2 */
 #define BBCLAW_DISPLAY_PIXEL_ALIGN  2
 
-/* LVGL 缓冲：410 宽全屏 402KB，双 DMA 内部缓冲吃不消——照官方 BSP 用
- * PSRAM 单缓冲 50 行（410*50*2 ≈ 40KB） */
-#define BBCLAW_LVGL_BUFF_LINES   50
-#define BBCLAW_LVGL_BUFF_SPIRAM  1
+/* LVGL 缓冲：必须内部 DMA 单缓冲（410*40*2 ≈ 32.8KB，display init 时一次分配）。
+ * 不能学官方 BSP 放 PSRAM：esp_lcd SPI 对非 DMA 缓冲每次刷屏都会 malloc 同尺寸的
+ * 内部反弹缓冲，softAP 起来后内部 DMA largest(40960) < flush 块(41000) → flush 失败
+ * → lvgl_port 永远等不到 flush_ready → LVGL 持锁整机冻结（真机踩过）。
+ * esp_lvgl_port 的 trans_size 分块方案仅 lvgl8 后端实现，LVGL9 不可用。 */
+#define BBCLAW_LVGL_BUFF_LINES   40
+#define BBCLAW_LVGL_BUFF_SPIRAM  0
 #define BBCLAW_LVGL_BUFF_DOUBLE  0

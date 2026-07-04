@@ -155,10 +155,10 @@ esp_err_t bb_ota_check_ex(ota_update_info_t* info, bool manual_check) {
     char url[320];
     if (last_try[0] != '\0') {
         snprintf(url, sizeof(url),
-                 "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3&last_try=%s",
+                 "%s/v1/ota/check?device_id=%s&current_version=%s&platform=" BBCLAW_OTA_PLATFORM "&last_try=%s",
                  BBCLAW_CLOUD_BASE_URL, BBCLAW_DEVICE_ID, bb_ota_get_current_version(), last_try);
     } else {
-        snprintf(url, sizeof(url), "%s/v1/ota/check?device_id=%s&current_version=%s&platform=esp32s3",
+        snprintf(url, sizeof(url), "%s/v1/ota/check?device_id=%s&current_version=%s&platform=" BBCLAW_OTA_PLATFORM,
                  BBCLAW_CLOUD_BASE_URL, BBCLAW_DEVICE_ID, bb_ota_get_current_version());
     }
 
