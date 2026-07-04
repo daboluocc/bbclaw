@@ -68,11 +68,13 @@ func TestParseStreamJSON(t *testing.T) {
 }
 
 // TestParseStreamJSONToolUseEmitsEvToolCall feeds a transcript with a single
-// tool_use block whose command is longer than the 80-char truncation limit
-// and verifies exactly one EvToolCall event is emitted with the expected
-// tool name and truncated hint.
+// tool_use block whose command is longer than the toolHintMaxLen truncation
+// limit and verifies exactly one EvToolCall event is emitted with the expected
+// tool name and truncated hint. Ties the expected prefix to toolHintMaxLen so
+// the test tracks the constant instead of a hardcoded length (was pinned to 80
+// and silently broke when the cap moved to 240 in abee1d1).
 func TestParseStreamJSONToolUseEmitsEvToolCall(t *testing.T) {
-	longCmd := strings.Repeat("x", 120)
+	longCmd := strings.Repeat("x", toolHintMaxLen+40)
 	transcript := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_42","name":"Bash","input":{"command":"` + longCmd + `"}}]}}` + "\n"
 
 	s := &session{
@@ -102,10 +104,10 @@ func TestParseStreamJSONToolUseEmitsEvToolCall(t *testing.T) {
 	if ev.Tool.ID != "tu_42" {
 		t.Errorf("tool id: want tu_42, got %q", ev.Tool.ID)
 	}
-	// Hint must be truncated: 80 chars + the ellipsis suffix.
-	wantPrefix := strings.Repeat("x", 80)
+	// Hint must be truncated: toolHintMaxLen chars + the ellipsis suffix.
+	wantPrefix := strings.Repeat("x", toolHintMaxLen)
 	if !strings.HasPrefix(ev.Tool.Hint, wantPrefix) {
-		t.Errorf("hint prefix: want 80 x's, got %q", ev.Tool.Hint)
+		t.Errorf("hint prefix: want %d x's, got %q", toolHintMaxLen, ev.Tool.Hint)
 	}
 	if !strings.HasSuffix(ev.Tool.Hint, "…") {
 		t.Errorf("hint should end with ellipsis on truncation, got %q", ev.Tool.Hint)
