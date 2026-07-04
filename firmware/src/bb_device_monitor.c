@@ -381,13 +381,18 @@ static void devmon_worker_task(void* arg) {
         devmon_send_frame(KIND_RES_REBOOT_ACK, msg.seq, &ack, 1);
         /* Let the ACK clear the USB pipe before yanking the bus. */
         vTaskDelay(pdMS_TO_TICKS(150));
-        ESP_LOGI(TAG, "reboot: ack sent, preparing usb persist");
+        ESP_LOGI(TAG, "reboot: usb disconnect, then ROM reset");
 #if CONFIG_IDF_TARGET_ESP32S3
-        /* 不走 esp_restart()：WiFi/WS 活跃时其 shutdown handler 可能阻塞
-         * （运行数分钟后重启命令挂死的候选路径之一）。persist 标志设好后
-         * 直接 ROM 复位——寄存器操作 + ROM 调用，无可阻塞点。 */
-        usb_dc_prepare_persist();
-        chip_usb_set_persist_flags(USBDC_PERSIST_ENA);
+        /* 单口 USB 板（手表）的最终方案，前两版的教训：
+         *  v1 esp_restart()+persist——WiFi/WS 活跃时 shutdown handler 阻塞，挂死；
+         *  v2 persist 标志+ROM 复位——长 uptime 下 host 保留旧会话但 ROM 不应答，
+         *     留下 esptool/pyusb 都救不回的僵尸端口（实测两次）。
+         * v3：先 tud_disconnect() 拉掉 D+ 让 host 干净丢弃会话，再清 USB PHY
+         * 选择寄存器（RTC 域，软复位不清），最后 FORCE_DOWNLOAD_BOOT + ROM 复位
+         * ——ROM 以出厂语义全新枚举 USJ 下载口。全程寄存器/ROM 调用，无阻塞点。 */
+        tud_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(300));
+        REG_WRITE(RTC_CNTL_USB_CONF_REG, 0);
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_rom_software_reset_system();
 #else
