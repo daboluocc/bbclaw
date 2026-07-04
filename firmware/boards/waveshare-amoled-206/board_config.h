@@ -22,11 +22,17 @@
 #define BBCLAW_AUDIO_I2S_DO_GPIO  40  /* ESP TX → codec DAC */
 #define BBCLAW_AUDIO_I2S_DI_GPIO  42  /* codec ADC → ESP RX */
 
+/* ADC 数字音量对齐官方 mic 配置（es8311_microphone_config 写 0xC8 ≈ +4dB） */
+#define BBCLAW_ES8311_ADC_VOLUME 0xC8
+
 /* I2C 总线（ES8311 / FT3168 / AXP2101 / QMI8658 / PCF85063 共享） */
 #define BBCLAW_ES8311_I2C_PORT     0
 #define BBCLAW_ES8311_I2C_SDA_GPIO 15
 #define BBCLAW_ES8311_I2C_SCL_GPIO 14
 #define BBCLAW_ES8311_I2C_ADDR     0x18
+
+/* AXP2101（0x34，同 I2C 总线）：ALDO1=MIC 供电轨必须使能 + 充电参数 */
+#define BBCLAW_AXP2101_MINIMAL_INIT 1
 
 /* 功放使能：GPIO46 高有效（官方 BSP pa_pin） */
 #define BBCLAW_PA_EN_GPIO          46

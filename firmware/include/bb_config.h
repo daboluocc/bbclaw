@@ -24,6 +24,11 @@
 #define BBCLAW_DISPLAY_BUS_QSPI 0
 #endif
 
+/* ── AXP2101 PMIC minimal init (MIC rail ALDO1 + charger config), see bb_audio.c ── */
+#ifndef BBCLAW_AXP2101_MINIMAL_INIT
+#define BBCLAW_AXP2101_MINIMAL_INIT 0
+#endif
+
 /* ── OTA platform tag reported to /v1/ota/check ──
  * 云端按 platform 匹配 active release；拓展板必须报独立平台名，否则会被推
  * bbclaw 正式板固件（引脚不同 → 黑屏）。默认值保持既有行为。 */
@@ -1013,10 +1018,11 @@ const char *bbclaw_session_key(void);
 
 /*
  * BBCLAW_ES8311_DAC_OSR — DAC over-sampling ratio, register 0x04.
- * 0x20 = OSR 64 (recommended for 16 kHz, datasheet Table 5).
+ * 0x10 per espressif/es8311 coeff table row {4096000, 16000}（MCLK=256×fs）。
+ * 旧默认 0x20 是 8 kHz 行的值，手表真机上 DAC 无声的元凶候选。
  */
 #ifndef BBCLAW_ES8311_DAC_OSR
-#define BBCLAW_ES8311_DAC_OSR 0x20
+#define BBCLAW_ES8311_DAC_OSR 0x10
 #endif
 
 /*

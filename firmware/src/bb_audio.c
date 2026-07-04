@@ -182,9 +182,10 @@ static void es8311_log_reg_summary(void) {
  */
 static esp_err_t es8311_init_sequence(void) {
   static const es8311_reg_pair_t kInitSeq[] = {
-      /* ── Step 1: chip reset ── */
+      /* ── Step 1: chip reset (官方 es8311 组件三步序：assert → release → CSM on) ── */
       {0x00, 0x1F}, /* assert reset (all blocks) */
-      {0x00, 0x80}, /* release reset, keep MCLK running */
+      {0x00, 0x00}, /* release reset */
+      {0x00, 0x80}, /* CSM power on */
 
       /* ── Step 2: I2C noise immunity (write twice; first write can be
        *            dropped on some ES8311 silicon revisions) ── */
@@ -219,7 +220,7 @@ static esp_err_t es8311_init_sequence(void) {
       {0x14, 0x1A}, /* SYSTEM_8: MIC PGA path select, input coupling */
       {0x15, 0x40}, /* ADC_1: ADC ramp rate (soft-start) */
       {0x16, BBCLAW_ES8311_ADC_PGA_GAIN}, /* ADC_2: MIC PGA gain */
-      {0x17, BBCLAW_ES8311_ADC_VOLUME},   /* ADC_3: ADC digital volume */
+      {0x17, BBCLAW_ES8311_ADC_VOLUME},   /* ADC_3: ADC digital volume（官方 mic 配置用 0xC8） */
 
       /* ── Step 7: ADC high-pass filter (removes DC / low-freq rumble) ── */
       {0x1B, 0x0A}, /* ADC_7: HPF coefficient low byte  (fc ≈ 30 Hz at 16 kHz) */
@@ -238,6 +239,12 @@ static esp_err_t es8311_init_sequence(void) {
 
       /* ── Step 10: clear test mode (must be 0x00 in production) ── */
       {0x45, 0x00},
+
+      /* ── Step 11: open clock gates (esp_codec_dev es8311_start 语义) ──
+       * REG01 低 4 位是 ADC/DAC/BCLK/模拟时钟门控。配置期写 0x30（门关着），
+       * 启用时必须升到 0x3F，否则 I2S 数据照收但 DAC 无时钟 → 数字静音
+       * （手表真机踩过：boot wav "播放成功" 却没声）。MCLK 取自引脚（bit7=0）。 */
+      {0x01, 0x3F},
   };
 
   for (size_t i = 0; i < sizeof(kInitSeq) / sizeof(kInitSeq[0]); ++i) {
@@ -261,7 +268,71 @@ static esp_err_t init_i2c_and_codec(void) {
   return es8311_init_sequence();
 }
 
+#if BBCLAW_AXP2101_MINIMAL_INIT
+/* ── AXP2101 最小上电配置（与 codec 同一条 I2C 总线，地址 0x34）──
+ * 参考 xiaozhi esp32-s3-touch-amoled-1.8（同 PCB 家族）的 Pmic 初始化，但**只加不减**：
+ * 不动任何 DC/LDO 的关闭位——屏幕等外设靠默认电轨已工作，禁用位写错会当场黑屏。
+ *   - ALDO1 = 3.3V 并使能（该家族 MIC 供电轨，不开则收音无声）
+ *   - PWRON 长按关机源使能 + 4s 关机
+ *   - 充电参数：预充 50mA / 恒流 200mA / 截止 25mA / CV 4.1V
+ *   - 关 TS 引脚测温（板上电池无 NTC，不关会充电异常——Waveshare 官方例程同款处理）
+ * 第二阶段做成独立 bb_axp2101 模块（电量/充电状态/PKEY 事件）时迁走。 */
+#define AXP2101_I2C_ADDR 0x34
+
+static esp_err_t axp2101_write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t val) {
+  uint8_t buf[2] = {reg, val};
+  return i2c_master_transmit(dev, buf, sizeof(buf), 100);
+}
+
+static esp_err_t axp2101_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t* out) {
+  return i2c_master_transmit_receive(dev, &reg, 1, out, 1, 100);
+}
+
+static esp_err_t axp2101_minimal_init(void) {
+  i2c_master_dev_handle_t dev = NULL;
+  const i2c_device_config_t cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = AXP2101_I2C_ADDR,
+      .scl_speed_hz = 400000,
+  };
+  ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_i2c_bus, &cfg, &dev), TAG, "axp2101 add dev");
+
+  esp_err_t err = ESP_OK;
+  uint8_t v = 0;
+  err |= axp2101_write_reg(dev, 0x22, 0b110); /* PWRON > OFFLEVEL 作为关机源 */
+  err |= axp2101_write_reg(dev, 0x27, 0x10);  /* 长按 4s 关机 */
+  err |= axp2101_write_reg(dev, 0x92, (3300 - 500) / 100); /* ALDO1 = 3.3V (MIC) */
+  if (axp2101_read_reg(dev, 0x90, &v) == ESP_OK) {
+    err |= axp2101_write_reg(dev, 0x90, v | 0x01); /* 使能 ALDO1，保留其它位 */
+  }
+  err |= axp2101_write_reg(dev, 0x61, 0x02); /* 预充 50mA */
+  err |= axp2101_write_reg(dev, 0x62, 0x08); /* 恒流 200mA（400mAh 电池 0.5C） */
+  err |= axp2101_write_reg(dev, 0x63, 0x01); /* 截止 25mA */
+  err |= axp2101_write_reg(dev, 0x64, 0x02); /* CV 4.1V */
+  if (axp2101_read_reg(dev, 0x30, &v) == ESP_OK) {
+    err |= axp2101_write_reg(dev, 0x30, v & ~0x02); /* 关 TS 测温（无 NTC） */
+  }
+  ESP_LOGI(TAG, "axp2101 minimal init %s (ALDO1=3.3V on, chg 200mA/4.1V, TS off)",
+           err == ESP_OK ? "ok" : "PARTIAL FAIL");
+  return err == ESP_OK ? ESP_OK : ESP_FAIL;
+}
+#endif /* BBCLAW_AXP2101_MINIMAL_INIT */
+
+/* 板级 bring-up 排障用：把 I2C 总线上所有应答地址打出来（一次性，~50ms）。
+ * 手表上用于确认 mic 到底挂 ES8311(0x18) 还是独立 ES7210(0x40/0x41)。 */
+static void log_i2c_bus_scan(void) {
+  char found[96] = {0};
+  size_t off = 0;
+  for (uint8_t addr = 0x08; addr <= 0x77; ++addr) {
+    if (i2c_master_probe(s_i2c_bus, addr, 20) == ESP_OK && off + 6 < sizeof(found)) {
+      off += (size_t)snprintf(found + off, sizeof(found) - off, "0x%02X ", addr);
+    }
+  }
+  ESP_LOGI(TAG, "i2c bus scan: %s", off ? found : "(none)");
+}
+
 static esp_err_t detect_codec_address(void) {
+  log_i2c_bus_scan();
   const uint8_t candidates[] = {BBCLAW_ES8311_I2C_ADDR, 0x19};
   for (size_t i = 0; i < sizeof(candidates); ++i) {
     esp_err_t err = i2c_master_probe(s_i2c_bus, candidates[i], 100);
@@ -704,6 +775,12 @@ esp_err_t bb_audio_init(void) {
                                              },
                                              &s_i2c_bus),
                         TAG, "new i2c master bus");
+#if BBCLAW_AXP2101_MINIMAL_INIT
+    /* PMIC 先于 codec：确保 MIC 电轨（ALDO1）在 ES8311 模拟路径起来前就绪 */
+    if (axp2101_minimal_init() != ESP_OK) {
+      ESP_LOGW(TAG, "axp2101 minimal init failed; continuing (speaker may still work)");
+    }
+#endif
     ESP_RETURN_ON_ERROR(detect_codec_address(), TAG, "codec i2c not found (check wiring + power + addr)");
     ESP_RETURN_ON_ERROR(init_i2c_and_codec(), TAG, "codec init failed");
     es8311_log_reg_summary();
@@ -719,6 +796,18 @@ esp_err_t bb_audio_init(void) {
   s_audio_ready = 1;
   ESP_LOGI(TAG, "audio init done");
   return ESP_OK;
+}
+
+/* ES8311 REG01 时钟门控（低 4 位）在 MCLK 未运行时写不进去（init 阶段 I2S 还没
+ * 启动，写 0x3F 读回仍 0x30——手表真机实测）。在 I2S channel enable（MCLK 已输出）
+ * 之后再断言一次，并读回验证。非 es8311 源为 no-op。 */
+static void es8311_assert_clock_gates(void) {
+  if (!use_es8311_input_source() || s_codec_dev == NULL) return;
+  uint8_t v = 0;
+  (void)es8311_write_reg(0x01, 0x3F);
+  if (es8311_read_reg(0x01, &v) == ESP_OK && v != 0x3F) {
+    ESP_LOGW(TAG, "es8311 clock gates readback=0x%02X (expect 0x3F)", v);
+  }
 }
 
 esp_err_t bb_audio_start_tx(void) {
@@ -757,6 +846,7 @@ esp_err_t bb_audio_start_tx(void) {
       ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_chan), TAG, "enable tx channel");
     }
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_chan), TAG, "enable rx channel");
+    es8311_assert_clock_gates();
     s_tx_active = 1;
     s_rx_enabled = 1;
     ESP_LOGI(TAG, "capture start");
@@ -804,6 +894,7 @@ esp_err_t bb_audio_start_playback(void) {
     }
     ESP_RETURN_ON_FALSE(s_tx_chan != NULL, ESP_ERR_INVALID_STATE, TAG, "tx channel not prepared");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_chan), TAG, "enable tx channel");
+    es8311_assert_clock_gates();
     s_tx_active = 1;
     s_rx_enabled = 0;
     s_playback_interrupt_requested = 0;
