@@ -1324,18 +1324,40 @@ static void create_ui(void) {
 
   {
     const int center_x = body_w / 2;
+#if BB_UI_PORTRAIT
+    /* 竖屏（手表）：徽标放大 + 「光晕/徽标 → 标题 → 状态 → VU」整组垂直居中，
+     * 消灭旧 172px 布局在 410px 高内容区里的中部空洞；提示仍贴底。 */
+    const int badge_size = 64;
+    const int halo_inner = 88;
+    const int halo_outer = 108;
+    const int group_h = halo_outer + 26 + lh + 6 + lh + 28 + UI_RECORD_METER_H;
+    const int group_top = (content_h - group_h) / 2;
+    const int halo_outer_y = group_top;
+    const int halo_inner_y = group_top + (halo_outer - halo_inner) / 2;
+    const int badge_y_abs = group_top + (halo_outer - badge_size) / 2;
+    const int title_y = group_top + halo_outer + 26;
+    const int state_y = title_y + lh + 6;
+    const int meter_y = state_y + lh + 28;
+#else
     const int badge_size = 42;
     const int halo_outer = UI_RECORD_HALO_BASE_PX + 14;
     const int halo_inner = UI_RECORD_HALO_BASE_PX;
-    const int badge_x = center_x - badge_size / 2;
     const int badge_y = 10;
+    const int halo_outer_y = badge_y - 6;
+    const int halo_inner_y = badge_y + 1;
+    const int badge_y_abs = badge_y + 10;
+    const int title_y = 70;
+    const int state_y = 88;
+    const int meter_y = content_h - UI_RECORD_METER_H - 26;
+#endif
+    const int badge_x = center_x - badge_size / 2;
     const int halo_outer_x = center_x - halo_outer / 2;
     const int halo_inner_x = center_x - halo_inner / 2;
 
     s_obj_record_halo_outer = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_halo_outer);
     lv_obj_set_size(s_obj_record_halo_outer, halo_outer, halo_outer);
-    lv_obj_set_pos(s_obj_record_halo_outer, halo_outer_x, badge_y - 6);
+    lv_obj_set_pos(s_obj_record_halo_outer, halo_outer_x, halo_outer_y);
     lv_obj_set_style_radius(s_obj_record_halo_outer, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_obj_record_halo_outer, lv_color_hex(UI_ME_ACCENT), 0);
     lv_obj_set_style_bg_opa(s_obj_record_halo_outer, LV_OPA_0, 0);
@@ -1343,7 +1365,7 @@ static void create_ui(void) {
     s_obj_record_halo_inner = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_halo_inner);
     lv_obj_set_size(s_obj_record_halo_inner, halo_inner, halo_inner);
-    lv_obj_set_pos(s_obj_record_halo_inner, halo_inner_x, badge_y + 1);
+    lv_obj_set_pos(s_obj_record_halo_inner, halo_inner_x, halo_inner_y);
     lv_obj_set_style_radius(s_obj_record_halo_inner, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_obj_record_halo_inner, lv_color_hex(UI_ME_ACCENT), 0);
     lv_obj_set_style_bg_opa(s_obj_record_halo_inner, LV_OPA_0, 0);
@@ -1351,7 +1373,7 @@ static void create_ui(void) {
     s_obj_record_badge = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_badge);
     lv_obj_set_size(s_obj_record_badge, badge_size, badge_size);
-    lv_obj_set_pos(s_obj_record_badge, badge_x, badge_y + 10);
+    lv_obj_set_pos(s_obj_record_badge, badge_x, badge_y_abs);
     lv_obj_set_style_radius(s_obj_record_badge, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(s_obj_record_badge, 1, 0);
     lv_obj_set_style_border_color(s_obj_record_badge, lv_color_hex(UI_TEXT_DIM), 0);
@@ -1368,7 +1390,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(s_lbl_record_title, font, 0);
     lv_obj_set_style_text_align(s_lbl_record_title, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_lbl_record_title, "正在聆听");
-    lv_obj_set_pos(s_lbl_record_title, 0, 70);
+    lv_obj_set_pos(s_lbl_record_title, 0, title_y);
 
     s_lbl_record_state = lv_label_create(s_view_speaking);
     lv_obj_set_width(s_lbl_record_state, body_w);
@@ -1376,7 +1398,7 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(s_lbl_record_state, font, 0);
     lv_obj_set_style_text_align(s_lbl_record_state, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_lbl_record_state, "请靠近麦克风说话");
-    lv_obj_set_pos(s_lbl_record_state, 0, 88);
+    lv_obj_set_pos(s_lbl_record_state, 0, state_y);
 
     s_lbl_record_hint = lv_label_create(s_view_speaking);
     lv_obj_set_width(s_lbl_record_hint, body_w);
@@ -1389,8 +1411,7 @@ static void create_ui(void) {
     s_obj_record_meter = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_meter);
     lv_obj_set_size(s_obj_record_meter, UI_RECORD_METER_W, UI_RECORD_METER_H);
-    lv_obj_set_pos(s_obj_record_meter, (body_w - UI_RECORD_METER_W) / 2,
-                   content_h - UI_RECORD_METER_H - 26);
+    lv_obj_set_pos(s_obj_record_meter, (body_w - UI_RECORD_METER_W) / 2, meter_y);
     lv_obj_clear_flag(s_obj_record_meter, LV_OBJ_FLAG_SCROLLABLE);
 
     /* VU canvas replaces the 10×5 dot object matrix */
