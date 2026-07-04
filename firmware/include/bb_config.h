@@ -29,6 +29,11 @@
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
 #endif
 
+/* ── ES7210 四通道 ADC（mic 不走 ES8311 的板子，如手表），see bb_audio.c ── */
+#ifndef BBCLAW_ES7210_ENABLE
+#define BBCLAW_ES7210_ENABLE 0
+#endif
+
 /* ── OTA platform tag reported to /v1/ota/check ──
  * 云端按 platform 匹配 active release；拓展板必须报独立平台名，否则会被推
  * bbclaw 正式板固件（引脚不同 → 黑屏）。默认值保持既有行为。 */

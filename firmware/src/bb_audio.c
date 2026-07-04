@@ -318,6 +318,118 @@ static esp_err_t axp2101_minimal_init(void) {
 }
 #endif /* BBCLAW_AXP2101_MINIMAL_INIT */
 
+#if BBCLAW_ES7210_ENABLE
+/* ── ES7210 四通道 ADC（手表：两颗板载 mic + AEC 回环全挂它，ES8311 只管 DAC）──
+ * 原理图证实 MIC1/MIC2 接 ES7210，ES8311 模拟输入未接线（其 ADC 恒零）。
+ * 寄存器序列移植自 esp_codec_dev es7210.c（open+start，I2S slave 16bit，
+ * MCLK=256×fs=4.096MHz，系数行 {4096000,16000}: adc_div=1 dll=1 doubler=1
+ * osr=0x20 lrck=0x0100）。输出：MIC1→I2S 左槽、MIC2→右槽，RX 立体声能量
+ * 选路会自动挑有信号的一路。 */
+static i2c_master_dev_handle_t s_es7210_dev;
+/* 状态缓存：boot 期 CDC0 日志有确定性丢失窗口（2.9–3.3s 大量寄存器 dump 把
+ * TX 环打满），es7210 init 的日志十有八九被吞。采集启动时（总线安静）补报。 */
+static esp_err_t s_es7210_status = ESP_ERR_INVALID_STATE;
+static uint8_t s_es7210_addr;
+
+static esp_err_t es7210_write_reg(uint8_t reg, uint8_t val) {
+  uint8_t buf[2] = {reg, val};
+  return i2c_master_transmit(s_es7210_dev, buf, sizeof(buf), 100);
+}
+
+static esp_err_t es7210_update_bits(uint8_t reg, uint8_t mask, uint8_t val) {
+  uint8_t cur = 0;
+  ESP_RETURN_ON_ERROR(i2c_master_transmit_receive(s_es7210_dev, &reg, 1, &cur, 1, 100), TAG,
+                      "es7210 read reg=0x%02X", reg);
+  return es7210_write_reg(reg, (cur & ~mask) | (val & mask));
+}
+
+static esp_err_t es7210_init(void) {
+  const uint8_t candidates[] = {0x40, 0x41, 0x42, 0x43};
+  uint8_t addr = 0;
+  for (size_t i = 0; i < sizeof(candidates); ++i) {
+    if (i2c_master_probe(s_i2c_bus, candidates[i], 100) == ESP_OK) {
+      addr = candidates[i];
+      break;
+    }
+  }
+  if (addr == 0) {
+    ESP_LOGW(TAG, "es7210 not found on i2c (probed 0x40-0x43); mic capture unavailable");
+    return ESP_ERR_NOT_FOUND;
+  }
+  const i2c_device_config_t cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = addr,
+      .scl_speed_hz = 400000,
+  };
+  ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_i2c_bus, &cfg, &s_es7210_dev), TAG, "es7210 add dev");
+
+  /* open */
+  esp_err_t err = ESP_OK;
+  err |= es7210_write_reg(0x00, 0xFF); /* reset */
+  err |= es7210_write_reg(0x00, 0x41);
+  err |= es7210_write_reg(0x01, 0x3F); /* clocks on */
+  err |= es7210_write_reg(0x09, 0x30); /* chip state cycle */
+  err |= es7210_write_reg(0x0A, 0x30); /* power-on state cycle */
+  err |= es7210_write_reg(0x23, 0x2A); /* HPF quick setup */
+  err |= es7210_write_reg(0x22, 0x0A);
+  err |= es7210_write_reg(0x20, 0x0A);
+  err |= es7210_write_reg(0x21, 0x2A);
+  err |= es7210_update_bits(0x08, 0x01, 0x00); /* slave mode */
+  err |= es7210_write_reg(0x40, 0x43);         /* analog power, vdda 3.3V */
+  err |= es7210_write_reg(0x41, 0x70);         /* MIC12 bias 2.87V */
+  err |= es7210_write_reg(0x42, 0x70);         /* MIC34 bias 2.87V */
+  /* clock coeffs {4096000,16000}: reg02 = adc_div|doubler<<6|dll<<7 */
+  err |= es7210_write_reg(0x02, 0xC1);
+  err |= es7210_write_reg(0x07, 0x20); /* OSR */
+  err |= es7210_write_reg(0x04, 0x01); /* LRCK div high */
+  err |= es7210_write_reg(0x05, 0x00); /* LRCK div low */
+  /* SDP: I2S 格式 + 16bit（fmt bits[1:0]=0, bits[7:5]=0b011） */
+  err |= es7210_write_reg(0x11, 0x60);
+  err |= es7210_write_reg(0x12, 0x00); /* 非 TDM */
+  /* mic select：MIC1+MIC2，增益 30dB（0x0A，3dB/步） */
+  err |= es7210_write_reg(0x4B, 0x00); /* MIC12 power on */
+  err |= es7210_write_reg(0x4C, 0xFF); /* MIC34 (AEC 回环) 先关，后续做 AEC 再开 */
+  err |= es7210_update_bits(0x01, 0x0B, 0x00);
+  err |= es7210_write_reg(0x43, 0x10 | 0x0A); /* MIC1 enable + gain */
+  err |= es7210_write_reg(0x44, 0x10 | 0x0A); /* MIC2 enable + gain */
+  /* start */
+  err |= es7210_write_reg(0x06, 0x00); /* power up */
+  err |= es7210_write_reg(0x47, 0x08); /* MIC1 power */
+  err |= es7210_write_reg(0x48, 0x08); /* MIC2 power */
+  err |= es7210_write_reg(0x40, 0x43);
+  err |= es7210_write_reg(0x00, 0x71); /* restart state machine */
+  err |= es7210_write_reg(0x00, 0x41);
+  ESP_LOGI(TAG, "es7210 init %s addr=0x%02X (MIC1+MIC2, 30dB, i2s slave 16bit)",
+           err == ESP_OK ? "ok" : "PARTIAL FAIL", addr);
+  s_es7210_status = (err == ESP_OK) ? ESP_OK : ESP_FAIL;
+  s_es7210_addr = addr;
+  return s_es7210_status;
+}
+
+/* 采集启动时补报 es7210 状态 + 关键寄存器读回（每次采集打一次，量小） */
+static void es7210_log_capture_state(void) {
+  if (s_es7210_status == ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(TAG, "es7210: init never ran");
+    return;
+  }
+  if (s_es7210_dev == NULL) {
+    ESP_LOGW(TAG, "es7210: not found at init (status=%s)", esp_err_to_name(s_es7210_status));
+    return;
+  }
+  static const uint8_t kRegs[] = {0x00, 0x01, 0x02, 0x07, 0x11, 0x40, 0x43, 0x44, 0x47, 0x4B};
+  char dump[96] = {0};
+  size_t off = 0;
+  for (size_t i = 0; i < sizeof(kRegs) && off + 10 < sizeof(dump); ++i) {
+    uint8_t v = 0, reg = kRegs[i];
+    if (i2c_master_transmit_receive(s_es7210_dev, &reg, 1, &v, 1, 50) == ESP_OK) {
+      off += (size_t)snprintf(dump + off, sizeof(dump) - off, "%02X=%02X ", reg, v);
+    }
+  }
+  ESP_LOGI(TAG, "es7210 addr=0x%02X status=%s regs: %s", s_es7210_addr,
+           esp_err_to_name(s_es7210_status), dump);
+}
+#endif /* BBCLAW_ES7210_ENABLE */
+
 /* 板级 bring-up 排障用：把 I2C 总线上所有应答地址打出来（一次性，~50ms）。
  * 手表上用于确认 mic 到底挂 ES8311(0x18) 还是独立 ES7210(0x40/0x41)。 */
 static void log_i2c_bus_scan(void) {
@@ -784,6 +896,11 @@ esp_err_t bb_audio_init(void) {
     ESP_RETURN_ON_ERROR(detect_codec_address(), TAG, "codec i2c not found (check wiring + power + addr)");
     ESP_RETURN_ON_ERROR(init_i2c_and_codec(), TAG, "codec init failed");
     es8311_log_reg_summary();
+#if BBCLAW_ES7210_ENABLE
+    /* 手表：mic 走独立 ES7210 ADC（ES8311 只管 DAC）。失败不阻塞启动——
+     * 喇叭仍可用，只是收音不可用。 */
+    (void)es7210_init();
+#endif
   } else {
     ESP_LOGI(TAG, "audio init start: source=inmp441 i2s(bck=%d ws=%d do=%d di=%d)", BBCLAW_AUDIO_I2S_BCK_GPIO,
              BBCLAW_AUDIO_I2S_WS_GPIO, BBCLAW_AUDIO_I2S_DO_GPIO, BBCLAW_AUDIO_I2S_DI_GPIO);
@@ -847,6 +964,9 @@ esp_err_t bb_audio_start_tx(void) {
     }
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx_chan), TAG, "enable rx channel");
     es8311_assert_clock_gates();
+#if BBCLAW_ES7210_ENABLE
+    es7210_log_capture_state();
+#endif
     s_tx_active = 1;
     s_rx_enabled = 1;
     ESP_LOGI(TAG, "capture start");
@@ -1070,8 +1190,12 @@ esp_err_t bb_audio_read_pcm_frame(uint8_t* out_buf, size_t out_buf_len, size_t* 
       ESP_LOGI(TAG, "inmp441 auto channel lock pick_right=%d energy_l=%lld energy_r=%lld", pick_right,
                (long long)energy_l, (long long)energy_r);
     } else if (use_es8311_input_source()) {
-      ESP_LOGI(TAG, "es8311 stereo energy pick_right=%d energy_l=%lld energy_r=%lld", pick_right,
-               (long long)energy_l, (long long)energy_r);
+      /* 每帧都打会刷爆 CDC0（~45 行/秒），限流到 ~1 行/秒 */
+      static uint32_t s_energy_log_skip;
+      if ((s_energy_log_skip++ % 44U) == 0U) {
+        ESP_LOGI(TAG, "es8311 stereo energy pick_right=%d energy_l=%lld energy_r=%lld", pick_right,
+                 (long long)energy_l, (long long)energy_r);
+      }
     }
   }
   if (!use_es8311_input_source() && BBCLAW_AUDIO_RX_AUTO_CHANNEL_LOCK && s_rx_pick_right_locked >= 0) {

@@ -25,6 +25,10 @@
 /* ADC 数字音量对齐官方 mic 配置（es8311_microphone_config 写 0xC8 ≈ +4dB） */
 #define BBCLAW_ES8311_ADC_VOLUME 0xC8
 
+/* 麦克风走独立 ES7210 四通道 ADC（原理图证实：MIC1/MIC2 + AEC 回环都在它上，
+ * ES8311 模拟输入未接线）。ES7210 输出接 I2S DIN（GPIO42 = ASDOUT）。 */
+#define BBCLAW_ES7210_ENABLE 1
+
 /* I2C 总线（ES8311 / FT3168 / AXP2101 / QMI8658 / PCF85063 共享） */
 #define BBCLAW_ES8311_I2C_PORT     0
 #define BBCLAW_ES8311_I2C_SDA_GPIO 15
