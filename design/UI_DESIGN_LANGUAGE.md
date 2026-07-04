@@ -54,6 +54,30 @@
 daboluo 云黄 = `oklch(0.86 0.17 96)`。Web 侧 `:root` 取值见 `dot-matrix-ui` skill
 （其唯一真相源即本文档）。
 
+## 2.1 布局 Token（多板 / 圆角屏，2026-07 手表适配引入）
+
+代码落地：`firmware/include/bb_ui_layout.h`（唯一布局真相源）。背景见
+ADR-040 §UI。设计事实：手表（waveshare-amoled-206）为 410×502 竖屏 AMOLED，
+玻璃窗口圆角 R4.5mm ≈ **56px**（12.4px/mm，实机标定前按 60px 取整设防）。
+
+| Token | 定义 | 用途 |
+|-------|------|------|
+| `BB_DISP_W` / `BB_DISP_H` | `BBCLAW_ST7789_WIDTH/HEIGHT` 的面板中立别名 | 新代码一律用别名，逐步替换裸引用 |
+| `BBCLAW_DISPLAY_CORNER_RADIUS` | 板级宏：ST7789 板=0，手表=60（待实机标定校准） | 物理圆角半径（px） |
+| `BB_UI_CORNER_INSET` | `r×(1−1/√2) ≈ 0.293r`（手表≈18px） | 角内切内缩量：**全宽贴边条两端**、贴角元素的避让基准 |
+| `BB_UI_SAFE_TOP/BOTTOM` | `max(12, CORNER_INSET)` | 页面顶/底安全内缩（贴边内容） |
+| `BB_UI_SAFE_LR` | `max(10, CORNER_INSET×2/3)` | 左右安全内缩（边中部内容可放宽） |
+
+原则：
+- **两档避让**：只有「角带」被玻璃遮挡；边中部（竖屏左右边中段、底边正中）可用。
+  居中构图天然圆角安全，优先居中而非逐坐标躲避。
+- 安全区通过**页面 root padding**（helper `bb_ui_apply_safe_area()`）接入，
+  页内 `lv_pct/对齐` 布局自动落进安全区；禁止把 `lv_pct()` 编码值与整数加减
+  （已知坑：settings 音量页曾因此实际得到 pct(78)）。
+- AMOLED 底色维持 `BB_UI_BG 0x070b0e`（品牌一致性优先；纯黑省电属未来可选项，
+  改动须先在 §2 登记）。
+- 竖屏形态规范（时钟 hero、聊天三段式、两栏页竖排化）见 ADR-040 §UI。
+
 ## 3. 各页面应用
 
 | 页面 | 文件 | 点阵 motif | 备注 |
