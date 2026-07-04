@@ -24,9 +24,11 @@ adapter_v2 的设备/语音线后端有两条技术路线：
 
 **adapter_v2 坚持路线 B：驱动交互式 claude TUI + 抓屏抽取，刻意不用 `claude -p`。** 两条硬理由，都不是工程整洁度能换的：
 
+> **2026-06-30 复核补记（cc-connect 发现）**：cc-connect 的 Claude Code 后端并不是 ACP，也不是一轮一轮 `claude -p`，而是启动长驻 `claude --input-format stream-json --output-format stream-json --permission-prompt-tool stdio` 进程并往 stdin 写 user 消息。这条路工程上比抓屏干净，但 Claude Code 官方把这些 flag 归在 print / non-interactive / Agent SDK 语义里；因此在产品计费/授权风险上应和 `-p` 归为同一类，而不是等价于人坐在终端 TUI 里使用订阅。它可以作为开发者/API-key/自托管的结构化后端候选，但**不能替代 v2 默认 PTY/TUI 路线的计费理由**。
+
 ### 1. 计费独立性 —— 不踩 `claude -p` 可能的独立收费口子
 
-`claude -p`（print / headless 一次性调用）有可能被官方按**独立于交互式订阅的另一套方案计费**（例如按调用走 API 额度，而不是走用户那份交互式订阅）。BBClaw 的设备/语音线如果走 `-p`，等于每一轮对话都可能触发这套独立收费——成本不可控，且把用户已有的订阅额度晾在一边。
+`claude -p`（print / headless 一次性调用），以及同属 print / non-interactive / Agent SDK 语义的 `--input-format stream-json` 长驻进程，有可能被官方按**独立于交互式订阅的另一套方案计费**（例如按调用走 API 额度，而不是走用户那份交互式订阅）。BBClaw 的设备/语音线如果走这类 headless/SDK 通道，等于每一轮对话都可能触发这套独立收费——成本不可控，且把用户已有的订阅额度晾在一边。
 
 驱动**交互式** claude（和人坐在终端前敲的是同一个进程、同一份会话、同一套订阅），让设备的每一轮就是「人在用 claude」，**留在交互式/订阅计费里**，不触发 `-p` 那条独立收费路径。这是产品成本结构的底线，排在工程整洁度之前。
 
