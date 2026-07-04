@@ -38,6 +38,7 @@
 
 #ifdef CONFIG_BBCLAW_DEVICE_MONITOR
 
+#include "bb_config.h"
 #include "bb_device_monitor.h"
 #include "bb_nav_input.h"
 
@@ -47,6 +48,7 @@
 #include <string.h>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_rom_sys.h"
@@ -260,11 +262,24 @@ static void handle_req_screenshot(uint16_t seq) {
     devmon_send_err(seq, ERR_LVGL_LOCK);
     return;
   }
-  ESP_LOGI(TAG, "lvgl lock acquired, calling lv_snapshot_take");
-
-  lv_draw_buf_t* snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+  /* 分步执行 snapshot（buf 分配 / 渲染分开），崩溃时日志能落在具体一步；
+   * 顺带监控本任务栈水位（曾在 410x502 屏上 4KB 栈溢出秒崩）。 */
+  ESP_LOGI(TAG, "lvgl lock acquired, stack_hwm=%u free_spiram=%u",
+           (unsigned)uxTaskGetStackHighWaterMark(NULL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+  lv_obj_t* scr = lv_screen_active();
+  lv_draw_buf_t* snap = lv_snapshot_create_draw_buf(scr, LV_COLOR_FORMAT_RGB565);
+  ESP_LOGI(TAG, "snapshot draw_buf=%p", snap);
+  if (snap != NULL) {
+    lv_result_t res = lv_snapshot_take_to_draw_buf(scr, LV_COLOR_FORMAT_RGB565, snap);
+    ESP_LOGI(TAG, "snapshot render res=%d stack_hwm=%u", (int)res,
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if (res != LV_RESULT_OK) {
+      lv_draw_buf_destroy(snap);
+      snap = NULL;
+    }
+  }
   lvgl_port_unlock();
-  ESP_LOGI(TAG, "lv_snapshot_take returned %p", snap);
 
   if (snap == NULL || snap->data == NULL || snap->data_size == 0) {
     ESP_LOGE(TAG, "snap empty: ptr=%p data=%p size=%u",
@@ -564,8 +579,12 @@ esp_err_t bb_device_monitor_init(void) {
     ESP_LOGE(TAG, "queue alloc failed");
     return ESP_ERR_NO_MEM;
   }
-  BaseType_t task_ok = xTaskCreate(devmon_worker_task, "bb_devmon_w",
-                                   4096, NULL, 5, NULL);
+  /* 12KB 栈：lv_snapshot_take 在本任务上下文里软渲染整棵 UI 树，4KB 在
+   * 410x502 大屏（手表）上栈溢出秒崩重启。栈随其它音频任务的先例放 PSRAM，
+   * 不挤内部 DRAM。 */
+  BaseType_t task_ok = xTaskCreateWithCaps(devmon_worker_task, "bb_devmon_w",
+                                           12288, NULL, 5, NULL,
+                                           BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (task_ok != pdPASS) {
     ESP_LOGE(TAG, "worker task create failed");
     return ESP_ERR_NO_MEM;
