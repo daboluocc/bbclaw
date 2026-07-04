@@ -48,6 +48,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 
@@ -312,6 +313,19 @@ static volatile int s_transport_audio_streaming_ready;
 static volatile int s_transport_tts_ready;
 static volatile int s_transport_display_ready;
 static volatile int s_transport_adapter_connected;
+/* ── Transport health probe, decoupled from the input loop (field test 2026-07-04) ──
+ * The cloud health check does up to two blocking HTTPS calls (healthz +
+ * pair_request), each up to BBCLAW_HTTP_TIMEOUT_MS. Running it inline on
+ * stream_task froze nav/PTT dispatch for seconds on a slow phone hotspot, so
+ * key presses piled up and got dropped as stale — the device felt unresponsive.
+ * The blocking fetch now runs on transport_probe_task; stream_task only kicks it
+ * (when idle, exactly where the old inline heartbeat ran — so no new concurrent
+ * TLS session with an in-flight voice turn) and consumes the cached result. */
+static TaskHandle_t s_probe_task_handle;
+static SemaphoreHandle_t s_probe_mutex;
+static bb_transport_state_t s_probe_state; /* guarded by s_probe_mutex */
+static esp_err_t s_probe_err = ESP_FAIL;   /* guarded by s_probe_mutex */
+static unsigned s_probe_version;           /* bumped after each completed probe */
 static volatile int s_tts_playback_active;
 static volatile int s_tts_interrupt_requested;
 
@@ -2105,6 +2119,25 @@ static void capture_task(void* arg) {
   }
 }
 
+/* Runs the blocking cloud/adapter health fetch off the input loop. Waits for a
+ * notification from stream_task (one probe per notify), publishes the result +
+ * err under s_probe_mutex, and bumps s_probe_version so stream_task can consume
+ * it without ever blocking on the network. See s_probe_* declarations above. */
+static void transport_probe_task(void* arg) {
+  (void)arg;
+  while (1) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    bb_transport_state_t state = {0};
+    esp_err_t err = bb_transport_refresh_state(&state);
+    if (s_probe_mutex != NULL && xSemaphoreTake(s_probe_mutex, portMAX_DELAY) == pdTRUE) {
+      s_probe_state = state;
+      s_probe_err = err;
+      s_probe_version++;
+      xSemaphoreGive(s_probe_mutex);
+    }
+  }
+}
+
 static void stream_task(void* arg) {
   (void)arg;
   bb_stream_ctx_t stream = {0};
@@ -2129,6 +2162,11 @@ static void stream_task(void* arg) {
       BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD > 0 ? BBCLAW_ADAPTER_HEARTBEAT_FAIL_THRESHOLD : 2;
   int adapter_health_is_up = s_transport_health_ok ? 1 : 0;
   int adapter_health_fail_streak = 0;
+  /* Field test 2026-07-04: health fetch runs on transport_probe_task now.
+   * last_consumed_probe_ver tracks which published result we've already reacted
+   * to; probe_in_flight prevents piling up notifications while one is running. */
+  unsigned last_consumed_probe_ver = s_probe_version;
+  int probe_in_flight = 0;
   /** 按住 PTT 且处于门户配对门闸时，降低 UI/日志刷新频率 */
   int64_t pairing_ptt_ui_last_ms = 0;
   /** ADR-039: 连续处于 LOCKED && 云端不可达 的起始时刻(0=不在此态)，用于离线自动解锁兜底 */
@@ -3425,8 +3463,55 @@ static void stream_task(void* arg) {
       }
 
       int64_t now_ms = bb_now_ms();
-      if (now_ms - last_adapter_heartbeat_ms >= adapter_heartbeat_interval_ms) {
-        int health_status = 0;
+
+      /* Kick off the next health probe when due. It runs on transport_probe_task
+       * so the (up to ~10 s on a bad hotspot) HTTPS fetch never blocks nav/PTT.
+       * This trigger sits inside the idle (!streaming && !s_ptt_pressed) guard,
+       * so a probe is never started during a voice turn — no new concurrent TLS
+       * session vs. the turn's own cloud calls. */
+      if (!probe_in_flight && now_ms - last_adapter_heartbeat_ms >= adapter_heartbeat_interval_ms) {
+        last_adapter_heartbeat_ms = now_ms;
+        if (s_probe_task_handle != NULL) {
+          probe_in_flight = 1;
+          xTaskNotifyGive(s_probe_task_handle);
+        } else {
+          /* Fallback (probe task never came up): fetch inline — blocks like the
+           * pre-fix code, but publish via s_probe_* so the consume path reacts
+           * uniformly below. */
+          bb_transport_state_t st = {0};
+          esp_err_t e = bb_transport_refresh_state(&st);
+          /* No probe task means no concurrent writer, so direct write is safe
+           * even when the mutex is absent. */
+          if (s_probe_mutex == NULL || xSemaphoreTake(s_probe_mutex, portMAX_DELAY) == pdTRUE) {
+            s_probe_state = st;
+            s_probe_err = e;
+            s_probe_version++;
+            if (s_probe_mutex != NULL) {
+              xSemaphoreGive(s_probe_mutex);
+            }
+          }
+        }
+      }
+
+      /* Consume a completed probe result (non-blocking) and react to it. */
+      bb_transport_state_t state = {0};
+      esp_err_t health_err = ESP_FAIL;
+      int have_probe = 0;
+      if (s_probe_version != last_consumed_probe_ver &&
+          (s_probe_mutex == NULL || xSemaphoreTake(s_probe_mutex, 0) == pdTRUE)) {
+        if (s_probe_version != last_consumed_probe_ver) {
+          last_consumed_probe_ver = s_probe_version;
+          state = s_probe_state;
+          health_err = s_probe_err;
+          have_probe = 1;
+        }
+        if (s_probe_mutex != NULL) {
+          xSemaphoreGive(s_probe_mutex);
+        }
+      }
+      if (have_probe) {
+        probe_in_flight = 0;
+        int health_status = state.http_status;
         int prev_ready = s_transport_ready;
         int prev_audio_ready = s_transport_audio_streaming_ready;
         int prev_tts_ready = s_transport_tts_ready;
@@ -3437,10 +3522,6 @@ static void stream_task(void* arg) {
         snprintf(prev_detail, sizeof(prev_detail), "%s", s_transport_detail);
         char prev_reg[sizeof(s_transport_registration_code)];
         snprintf(prev_reg, sizeof(prev_reg), "%s", s_transport_registration_code);
-        last_adapter_heartbeat_ms = now_ms;
-        bb_transport_state_t state = {0};
-        esp_err_t health_err = bb_transport_refresh_state(&state);
-        health_status = state.http_status;
         s_transport_ready = state.ready;
         s_transport_audio_streaming_ready = state.supports_audio_streaming;
         s_transport_tts_ready = state.supports_tts;
@@ -4015,6 +4096,24 @@ esp_err_t bb_radio_app_start(void) {
     return ESP_ERR_NO_MEM;
   }
   log_heap_snapshot("after capture task");
+
+  /* Health-probe plumbing (field test 2026-07-04): the blocking cloud health
+   * fetch runs here so it can't freeze nav/PTT on stream_task. Uses a PSRAM
+   * stack like stream_task (it makes the same TLS calls). If either resource
+   * fails to allocate, stream_task falls back to inline probing (see the
+   * s_probe_task_handle == NULL branch) so health monitoring still works. */
+  s_probe_mutex = xSemaphoreCreateMutex();
+  if (s_probe_mutex == NULL) {
+    /* Without the mutex there is no safe writer/reader handoff, so don't spawn
+     * the probe task at all — stream_task will probe inline & single-threaded. */
+    ESP_LOGE(TAG, "transport probe mutex create failed — inline health probe (no dedicated task)");
+  } else if (xTaskCreateWithCaps(transport_probe_task, "bb_probe", 16384, NULL, 4, &s_probe_task_handle,
+                                 BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "transport probe task create failed — falling back to inline health probe");
+    s_probe_task_handle = NULL;
+  }
+  log_heap_snapshot("after probe task");
+
   /* Stream task uses PSRAM stack. NVS operations (which disable cache) are
    * isolated in separate tasks with internal RAM stacks to avoid PSRAM access
    * during cache-disabled periods. */
