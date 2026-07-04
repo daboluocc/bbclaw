@@ -1,7 +1,0 @@
-# 复制为 .release.local（已被 .gitignore 忽略），填入你的部署主机与密钥来源。
-# `make release-local` 未显式设 OTA_ADMIN_KEY 时，会 ssh 到 OTA_DEPLOY_HOST，
-# 从 OTA_KEY_ENV_PATH 里 grep OTA_KEY_ENV_VAR 取 OTA admin key。三者都留空则跳过
-# 自动取 key（仅构建+stage、不推 OTA）。这些是生产运维细节，不写入公开仓库。
-OTA_DEPLOY_HOST = user@your-deploy-host
-OTA_KEY_ENV_PATH = /path/to/cloud.env
-OTA_KEY_ENV_VAR = YOUR_OTA_ADMIN_KEY_VAR

@@ -5,20 +5,9 @@ IDF_PATH ?= $(HOME)/esp/esp-idf
 IDF_SOURCE = source "$(IDF_PATH)/export.sh" 2>/dev/null &&
 TARGET ?= esp32s3
 
-# esp_app_desc.version 的真相来源（本地构建）：`git describe --tags --dirty`，
-# 形如 v0.5.17-69-g7544427[-dirty]——tag 作前缀 + 落后 tag 的提交数 + 脏标记。
-# 这样 `make flash` 烧的固件总是自报真实 git 状态，而不是 gitignore 掉的、可能很旧
-# 的 version.txt。发布路线（release_local.sh / CI release.yml）显式传 FW_VERSION=vX.Y.Z
-# 钉死发布版本，覆盖此默认。配合 bb_ota.c 的 dev 构建护栏（dev 版本不自动 OTA）。
+# esp_app_desc.version 覆盖钩子：CI 发版（release.yml）显式传 FW_VERSION=vX.Y.Z 钉死
+# 发布版本。本地 `make build` 不设，由 stamp-version 从 VERSION 文件 + git 短哈希推导。
 FW_VERSION ?=
-
-# 本地快速发版可自动从部署主机取 OTA admin key。为不把生产运维细节写进公开仓库，
-# 主机 / cloud.env 路径 / key 变量名默认留空，在 gitignored 的 firmware/.release.local
-# 里设置（见 .release.local.example）。也可临时 export / 命令行覆盖，或直接 OTA_ADMIN_KEY=xxx。
-OTA_DEPLOY_HOST ?=
-OTA_KEY_ENV_PATH ?=
-OTA_KEY_ENV_VAR ?=
--include .release.local
 
 # Serial port for flash/monitor/erase.
 # Auto-detect: newest USB serial device (macOS: cu.*/tty.*, Linux: ttyUSB*/ttyACM*).
@@ -45,18 +34,18 @@ SIM_BUILD_DIR := $(SIM_DIR)/build
 SIM_ARGS ?=
 SIM_FEEDBACK_DIR := $(CURDIR)/.cache/sim-feedback
 
-.PHONY: help idf-env init set-target reconfigure stamp-version bump build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports release-local
+.PHONY: help idf-env init set-target reconfigure stamp-version bump build flash boot-recover erase monitor monitor-log monitor-log-filtered monitor-last monitor-errors menuconfig size clean fullclean all gen gen-lv-font gen-lvgl-assets gen-lvgl-elements lvgl-kconfig-fix sim-config sim-build sim-run sim-export-feedback set-board list-ports
 
 help:
 	@echo "BBClaw firmware (ESP-IDF)"
 	@echo "  make init          # set esp32s3 target + reconfigure"
 	@echo "  make build         # idf.py build (版本 = VERSION 文件 + git 短哈希)"
 	@echo "  make bump          # 递增 VERSION 基线并提交 (LEVEL=patch|minor|major)"
+	@echo "  发版：make bump && git tag vX.Y.Z && git push origin vX.Y.Z  (CI 构建+推 OTA)"
 	@echo "  make flash         # build + flash to ota_0 partition (writes proper otadata)"
 	@echo "  make boot-recover  # rewrite otadata only, recover from boot-loop after bad flash"
 	@echo "  make monitor       # idf.py monitor"
 	@echo "  make all           # build + flash + monitor-log"
-	@echo "  make release-local                  # 本地快速发版：自动版本(OTA active+1)+取key+生产构建+推OTA"
 	@echo "  make list-ports    # list USB serial devices (pick one for PORT=...)"
 	@echo "  make fullclean     # 清 build；若 idf.py 报 Python 环境与 configure 不一致，再 make init && make build"
 	@echo "  make set-board BOARD=bbclaw             # 切换 board（breadboard | bbclaw | atk-dnesp32s3-box）"
@@ -102,9 +91,9 @@ list-ports:
 # Base version (esp_app_desc.version 的真相来源) 放在 git 跟踪的 `VERSION` 文件里，
 # 用 `make bump` 递增。dev 构建 stamp 出 <VERSION>-g<短哈希>[-dirty]——每次构建可追溯
 # 到 commit，而 OTA 比较的 M.m.p 基线固定在仓库里（不再依赖落后于 OTA 的 git tag，
-# 也不再被 gitignore 的残留 version.txt 带偏，这是「版本错乱」的根因）。release_local.sh /
-# CI 仍用 FW_VERSION=vX.Y.Z 钉死发布版本，覆盖此默认。version.txt 是生成物(gitignore)，
-# 每次 stamp 从 VERSION 重算，不会残留。
+# 也不再被 gitignore 的残留 version.txt 带偏，这是「版本错乱」的根因）。CI 发版
+# （release.yml）用 FW_VERSION=vX.Y.Z 钉死发布版本，覆盖此默认。version.txt 是生成物
+# (gitignore)，每次 stamp 从 VERSION 重算，不会残留。
 VERSION_FILE := VERSION
 stamp-version:
 	@v="$(FW_VERSION)"; \
@@ -163,31 +152,10 @@ build: stamp-version
 	fi
 	@$(IDF_SOURCE) idf.py build
 
-# 本地快速发版（默认发布路线）：本机用生产配置构建固件 + 生成 OTA bundle + 推到 OTA
-# 服务器，跳过 GitHub Actions 的慢 round-trip。设备下次 /v1/ota/check 即升级（全量，非灰度）。
-# 自动：① 内层 make build 自带 $(IDF_SOURCE) 自源 ESP-IDF（无需先 get_idf）；
-#       ② 未设 OTA_ADMIN_KEY 且 .release.local 配好了部署主机时，自动 ssh 取；否则跳过推送；
-#       ③ 不传 VERSION 时按 OTA 当前 active 版本 patch+1 + -g<短哈希>[-dirty] 自动定版。
-# 约定：tag→CI 发布（push v* tag 触发 release.yml）只在显式要求时做；默认走本地快速发版这条。
-#   make release-local                                # 自动版本（OTA active +1，如 v0.5.19-gabc123）
-#   make release-local VERSION=v0.5.19                # 手动指定版本
-#   make release-local RELEASE_ARGS=--skip-build      # 复用已构建产物
-#   make release-local RELEASE_ARGS=--gh-release      # 顺带传 GitHub Release
-#   OTA_ADMIN_KEY=xxx make release-local              # 手动给 key，跳过 ssh
-release-local:
-	@set -e; \
-	if [ -z "$$OTA_ADMIN_KEY" ]; then \
-		if [ -n "$(OTA_DEPLOY_HOST)" ] && [ -n "$(OTA_KEY_ENV_PATH)" ] && [ -n "$(OTA_KEY_ENV_VAR)" ]; then \
-			echo "[release-local] OTA_ADMIN_KEY 未设置，从部署主机取 …"; \
-			OTA_ADMIN_KEY=$$(ssh -o BatchMode=yes -o ConnectTimeout=8 $(OTA_DEPLOY_HOST) "grep \"^$(OTA_KEY_ENV_VAR)=\" $(OTA_KEY_ENV_PATH) | cut -d= -f2-"); \
-			export OTA_ADMIN_KEY; \
-			if [ -n "$$OTA_ADMIN_KEY" ]; then echo "[release-local] key 已取 (len=$${#OTA_ADMIN_KEY})"; \
-			else echo "::warning:: 取 key 失败 → 仅构建+stage、跳过 OTA 推送（可手动 export OTA_ADMIN_KEY 重跑）"; fi; \
-		else \
-			echo "::warning:: OTA_ADMIN_KEY 未设置且未配置部署主机（见 firmware/.release.local.example）→ 仅构建+stage、跳过 OTA 推送"; \
-		fi; \
-	fi; \
-	scripts/release_local.sh $(VERSION) $(RELEASE_ARGS)
+# 发版统一走 tag → CI：`make bump` 递增 VERSION 并提交，再 `git tag vX.Y.Z && git push
+# origin vX.Y.Z` 触发 .github/workflows/release.yml（用生产配置构建固件 + 5 平台 adapter，
+# 建 GitHub Release，并用 CI 托管的 OTA_ADMIN_KEY secret 推 OTA）。本地不再直推 OTA——
+# 已撤掉 release_local.sh / make release-local（无需在本机持有生产 OTA admin key）。
 
 # Flash via the IDF default path: bootloader + partition table + ota_data_initial
 # (all-0xFF, bootloader picks factory) + firmware → factory.
