@@ -24,6 +24,13 @@ config BBCLAW_BOARD_ATK_DNESP32S3_BOX
         Alientek ESP32-S3 development box with ES8311 codec, XL9555 IO expander,
         and 320x240 parallel-interface ST7789 display.
 
+config BBCLAW_BOARD_WS_AMOLED_206
+    bool "Waveshare ESP32-S3-Touch-AMOLED-2.06 (ES8311 + QSPI CO5300 410x502)"
+    help
+        Waveshare retail board with 2.06" QSPI AMOLED (CO5300/SH8601), FT3168
+        touch, ES8311 codec, and AXP2101 PMIC. Octal PSRAM — switch boards via
+        make set-board so the sdkconfig.board overlay is applied. See ADR-040.
+
 endchoice
 
 menu "Transport"

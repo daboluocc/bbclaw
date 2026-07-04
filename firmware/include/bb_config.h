@@ -5,6 +5,8 @@
 /* ── Board selection: include board-specific pin map and hardware config ── */
 #if defined(CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX)
 #include "../boards/atk-dnesp32s3-box/board_config.h"
+#elif defined(CONFIG_BBCLAW_BOARD_WS_AMOLED_206)
+#include "../boards/waveshare-amoled-206/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BBCLAW)
 #include "../boards/bbclaw/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BREADBOARD) || !defined(BBCLAW_DISPLAY_BUS_SPI)
@@ -17,6 +19,25 @@
 #endif
 #ifndef BBCLAW_DISPLAY_BUS_I80
 #define BBCLAW_DISPLAY_BUS_I80 0
+#endif
+#ifndef BBCLAW_DISPLAY_BUS_QSPI
+#define BBCLAW_DISPLAY_BUS_QSPI 0
+#endif
+
+/* ── Display refresh-area pixel alignment (1 = none; CO5300 AMOLED needs 2) ── */
+#ifndef BBCLAW_DISPLAY_PIXEL_ALIGN
+#define BBCLAW_DISPLAY_PIXEL_ALIGN 1
+#endif
+
+/* ── LVGL draw buffer shape (lines per buffer / placement / double buffering) ── */
+#ifndef BBCLAW_LVGL_BUFF_LINES
+#define BBCLAW_LVGL_BUFF_LINES 40
+#endif
+#ifndef BBCLAW_LVGL_BUFF_SPIRAM
+#define BBCLAW_LVGL_BUFF_SPIRAM 0
+#endif
+#ifndef BBCLAW_LVGL_BUFF_DOUBLE
+#define BBCLAW_LVGL_BUFF_DOUBLE 1
 #endif
 
 #ifndef BBCLAW_XL9555_ENABLE

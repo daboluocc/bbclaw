@@ -1,0 +1,19 @@
+# Waveshare ESP32-S3-Touch-AMOLED-2.06 板级 sdkconfig 覆盖（ADR-040 §7）
+# make set-board BOARD=waveshare-amoled-206 会把本文件逐行覆盖进 sdkconfig；
+# 独立构建可用 SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/waveshare-amoled-206/sdkconfig.board"
+
+CONFIG_BBCLAW_BOARD_WS_AMOLED_206=y
+# CONFIG_BBCLAW_BOARD_BBCLAW is not set
+# CONFIG_BBCLAW_BOARD_BREADBOARD is not set
+# CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX is not set
+
+# 叠封 PSRAM 是 Octal（sdkconfig.defaults 全局默认 QUAD，不切会 boot loop:
+# "wrong PSRAM line mode"）
+CONFIG_SPIRAM_MODE_OCT=y
+# CONFIG_SPIRAM_MODE_QUAD is not set
+
+# Flash: wiki 标称 32MB，官方 demo 按 16MB QIO 配置（实测 flash_id 后可再调大）
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# CONFIG_ESPTOOLPY_FLASHMODE_DIO is not set

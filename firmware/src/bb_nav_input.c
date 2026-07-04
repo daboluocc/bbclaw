@@ -22,8 +22,35 @@ static const char* TAG = "bb_nav_input";
   (BBCLAW_NAV_FLIPPER_6BUTTON && (BBCLAW_NAV_BTN_UP_GPIO >= 0) && (BBCLAW_NAV_BTN_DOWN_GPIO >= 0) && \
    (BBCLAW_NAV_BTN_OK_GPIO >= 0))
 
-#if BBCLAW_NAV_ENABLE && (BB_NAV_HAS_ENCODER_PINS || BB_NAV_HAS_FLIPPER_PINS)
+/* Callback + inject 常驻编译：无实体导航键的板（触摸/纯语音）仍要靠
+ * device-monitor / UART 的按键注入驱动 UI。 */
 static bb_nav_input_callback_t s_callback;
+
+static const char* nav_event_name(bb_nav_event_t event) {
+  switch (event) {
+    case BB_NAV_EVENT_UP:      return "UP";
+    case BB_NAV_EVENT_DOWN:    return "DOWN";
+    case BB_NAV_EVENT_LEFT:    return "LEFT";
+    case BB_NAV_EVENT_RIGHT:   return "RIGHT";
+    case BB_NAV_EVENT_OK:      return "OK";
+    case BB_NAV_EVENT_BACK:    return "BACK";
+    case BB_NAV_EVENT_OK_LONG: return "OK_LONG";
+    default:                   return "?";
+  }
+}
+
+static void emit_event(bb_nav_event_t event) {
+  ESP_LOGI(TAG, "event=%s", nav_event_name(event));
+  if (s_callback != NULL) {
+    s_callback(event);
+  }
+}
+
+void bb_nav_input_inject(bb_nav_event_t event) {
+  emit_event(event);
+}
+
+#if BBCLAW_NAV_ENABLE && (BB_NAV_HAS_ENCODER_PINS || BB_NAV_HAS_FLIPPER_PINS)
 static esp_timer_handle_t s_timer;
 
 #if BBCLAW_NAV_FLIPPER_6BUTTON
@@ -102,30 +129,6 @@ static int read_key_pressed(void) {
   return level == BBCLAW_NAV_KEY_ACTIVE_LEVEL ? 1 : 0;
 }
 #endif
-
-static const char* nav_event_name(bb_nav_event_t event) {
-  switch (event) {
-    case BB_NAV_EVENT_UP:      return "UP";
-    case BB_NAV_EVENT_DOWN:    return "DOWN";
-    case BB_NAV_EVENT_LEFT:    return "LEFT";
-    case BB_NAV_EVENT_RIGHT:   return "RIGHT";
-    case BB_NAV_EVENT_OK:      return "OK";
-    case BB_NAV_EVENT_BACK:    return "BACK";
-    case BB_NAV_EVENT_OK_LONG: return "OK_LONG";
-    default:                   return "?";
-  }
-}
-
-static void emit_event(bb_nav_event_t event) {
-  ESP_LOGI(TAG, "event=%s", nav_event_name(event));
-  if (s_callback != NULL) {
-    s_callback(event);
-  }
-}
-
-void bb_nav_input_inject(bb_nav_event_t event) {
-  emit_event(event);
-}
 
 #if BBCLAW_NAV_FLIPPER_6BUTTON || BBCLAW_NAV_BUTTONS_INSTEAD_OF_ENC
 /* Debounced edge detection: when raw input matches stable for at least
@@ -464,8 +467,10 @@ esp_err_t bb_nav_input_init(bb_nav_input_callback_t callback) {
 #endif
   return ESP_OK;
 #else
-  (void)callback;
-  ESP_LOGI(TAG, "nav disabled");
+  /* 无实体导航键：仍记录 callback，供 bb_nav_input_inject（device-monitor /
+   * UART 按键注入）走通。 */
+  s_callback = callback;
+  ESP_LOGI(TAG, "nav disabled (inject-only)");
   return ESP_OK;
 #endif
 }

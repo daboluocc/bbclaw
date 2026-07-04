@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **固件:Waveshare ESP32-S3-Touch-AMOLED-2.06 拓展板支持(ADR-040 第一阶段)**:
+  - 新板 `waveshare-amoled-206`:2.06" QSPI AMOLED 410×502(CO5300,SH8601 兼容驱动)+
+    ES8311 codec(既有代码路径首次真机启用)+ BOOT 键 PTT。触摸/AXP2101 电量/IMU/RTC/SD
+    为后续阶段。
+  - `bb_panel` 新增第三种显示总线 `BBCLAW_DISPLAY_BUS_QSPI`;LVGL 侧支持 2px 刷新对齐
+    rounder(CO5300 硬性要求)与逐板缓冲配置(行数/PSRAM/单双缓冲)。
+  - `make set-board` 现在会把 `boards/<name>/sdkconfig.board` 覆盖进 `sdkconfig`,
+    OCT/QUAD PSRAM、flash 大小等逐板差异随切板一次切齐(此前要手动改)。
+  - 设计文档:`design/boards/` 收录 AMOLED-2.06 与 LCD-1.85(第二块,待适配)硬件参考。
+
 ### Changed
 - **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:
   - **开关状态**:Miyu 行不再用裸 `on`/`off`,改 `Enabled` / `Disabled`(后续新增开关共用

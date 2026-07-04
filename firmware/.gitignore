@@ -24,3 +24,5 @@ version.txt
 
 # 本地发版 stage 目录（scripts/release_local.sh 产出）
 release-stage/
+# 隔离构建目录（并行会话时不碰共享 build/，用 idf.py -B build-<name>）
+build-*/

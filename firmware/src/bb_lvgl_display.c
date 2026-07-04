@@ -1154,6 +1154,16 @@ static esp_err_t init_panel(void) {
   return bb_panel_init(&s_panel_io, &s_panel);
 }
 
+#if BBCLAW_DISPLAY_PIXEL_ALIGN == 2
+/* CO5300 AMOLED 要求刷新区域 2px 对齐：起点向下取偶、终点取奇，否则丢写/花屏 */
+static void disp_area_align2_cb(lv_area_t* area) {
+  area->x1 &= ~1;
+  area->y1 &= ~1;
+  area->x2 |= 1;
+  area->y2 |= 1;
+}
+#endif
+
 /* lvgl_flush_cb removed: esp_lvgl_port's internal flush callback (registered by
  * lvgl_port_add_disp) handles draw_bitmap and byte-swapping via flags.swap_bytes.
  * The application no longer overrides lv_display_set_flush_cb, so the port-owned
@@ -1818,8 +1828,8 @@ esp_err_t bb_display_init(void) {
       .io_handle = s_panel_io,
       .panel_handle = s_panel,
       .control_handle = NULL,
-      .buffer_size = (uint32_t)(DISP_W * 40),
-      .double_buffer = true,
+      .buffer_size = (uint32_t)(DISP_W * BBCLAW_LVGL_BUFF_LINES),
+      .double_buffer = (bool)BBCLAW_LVGL_BUFF_DOUBLE,
       .trans_size = 0,
       .hres = (uint32_t)DISP_W,
       .vres = (uint32_t)DISP_H,
@@ -1829,11 +1839,15 @@ esp_err_t bb_display_init(void) {
           .mirror_x = (bool)DISP_MIRROR_X,
           .mirror_y = (bool)DISP_MIRROR_Y,
       },
+#if BBCLAW_DISPLAY_PIXEL_ALIGN == 2
+      .rounder_cb = disp_area_align2_cb,
+#else
       .rounder_cb = NULL,
+#endif
       .color_format = LV_COLOR_FORMAT_RGB565,
       .flags = {
-          .buff_dma = 1,
-          .buff_spiram = 0,
+          .buff_dma = !BBCLAW_LVGL_BUFF_SPIRAM,
+          .buff_spiram = BBCLAW_LVGL_BUFF_SPIRAM,
           .sw_rotate = 0,
           .swap_bytes = 1,
           .full_refresh = 0,
