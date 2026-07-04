@@ -865,6 +865,12 @@ static void log_raw_i2s_diag_pairs(const int32_t* raw_samples, size_t raw_count)
   s_rx_raw_diag_pending = 0;
 }
 
+i2c_master_bus_handle_t bb_audio_shared_i2c_bus(void) {
+  /* 板级共享 I2C 总线（codec/PMIC/触摸/IMU/RTC 同挂）。bb_audio 目前是总线的
+   * 创建者；等出现第二个非音频用户群后再抽独立 bb_i2c 模块。 */
+  return s_i2c_bus;
+}
+
 esp_err_t bb_audio_init(void) {
   s_tx_active = 0;
   s_audio_ready = 0;

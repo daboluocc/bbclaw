@@ -34,6 +34,17 @@
 #define BBCLAW_ES7210_ENABLE 0
 #endif
 
+/* ── FT5x06 兼容触控（手表 FT3168）→ 手势注入导航事件，see bb_touch_input.c ── */
+#ifndef BBCLAW_TOUCH_FT5X06_ENABLE
+#define BBCLAW_TOUCH_FT5X06_ENABLE 0
+#endif
+#ifndef BBCLAW_TOUCH_RST_GPIO
+#define BBCLAW_TOUCH_RST_GPIO (-1)
+#endif
+#ifndef BBCLAW_TOUCH_INT_GPIO
+#define BBCLAW_TOUCH_INT_GPIO (-1)
+#endif
+
 /* ── OTA platform tag reported to /v1/ota/check ──
  * 云端按 platform 匹配 active release；拓展板必须报独立平台名，否则会被推
  * bbclaw 正式板固件（引脚不同 → 黑屏）。默认值保持既有行为。 */

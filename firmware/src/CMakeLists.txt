@@ -33,6 +33,7 @@ set(_bb_srcs
     "bb_motor.c"
     "bb_nav_input.c"
     "bb_notification.c"
+    "bb_touch_input.c"
     "bb_ota.c"
     "bb_ptt.c"
     "bb_uart_cmd.c"

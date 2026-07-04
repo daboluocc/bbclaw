@@ -5,7 +5,13 @@
 
 #include "esp_err.h"
 
+/* 与 driver/i2c_master.h 的 typedef 逐字一致（C11 允许相同 typedef 重复）；
+ * 前向声明是为了模拟器等无 IDF 头的环境也能 include 本头。 */
+typedef struct i2c_master_bus_t *i2c_master_bus_handle_t;
+
 esp_err_t bb_audio_init(void);
+/** 板级共享 I2C 总线（audio init 后有效；触摸/IMU/RTC 共用）。NULL=未初始化。 */
+i2c_master_bus_handle_t bb_audio_shared_i2c_bus(void);
 esp_err_t bb_audio_start_tx(void);
 esp_err_t bb_audio_stop_tx(void);
 esp_err_t bb_audio_start_playback(void);

@@ -52,8 +52,13 @@
 #define BBCLAW_PTT_ACTIVE_LEVEL 0
 #define BBCLAW_PTT_PULL_UP      1
 
-/* ── Navigation: 无实体导航键；触摸 indev 为第二阶段（ADR-040 §5） ── */
+/* ── Navigation: 无实体导航键；触摸手势注入导航事件（ADR-040 §5 第二阶段） ── */
 #define BBCLAW_NAV_ENABLE 0
+
+/* FT3168 触控（I2C 0x38 实测在线；FT5x06 协议兼容） */
+#define BBCLAW_TOUCH_FT5X06_ENABLE 1
+#define BBCLAW_TOUCH_RST_GPIO 9
+#define BBCLAW_TOUCH_INT_GPIO 38
 
 /* ── Motor / 电量 / 状态灯：本板无此硬件 ──
  * 电量在 AXP2101 里（I2C），ADC 分压路径不存在；PMU 驱动属第二阶段。 */

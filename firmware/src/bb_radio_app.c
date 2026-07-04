@@ -18,6 +18,7 @@
 #include "bb_led.h"
 #include "bb_motor.h"
 #include "bb_nav_input.h"
+#include "bb_touch_input.h"
 #include "bb_ogg_opus.h"
 #include "bb_page_apconfig.h"
 #include "bb_page_boot.h"
@@ -3923,6 +3924,10 @@ esp_err_t bb_radio_app_start(void) {
   (void)bb_adapter_ptt_report_init();
   ESP_ERROR_CHECK(bb_ptt_init(BBCLAW_PTT_GPIO, on_ptt_changed));
   ESP_ERROR_CHECK(bb_nav_input_init(on_nav_event));
+  /* 触摸手势 → 导航事件注入（板未启用为 no-op；失败不阻塞——按键仍可用） */
+  if (bb_touch_input_init() != ESP_OK) {
+    ESP_LOGW(TAG, "touch input init failed; continuing without touch");
+  }
   /* Dev-only: accept `key`/`ptt` injection commands over the console UART so a
    * host with only the UART bridge can drive button self-tests (no-op unless
    * CONFIG_BBCLAW_DEVICE_MONITOR). */
