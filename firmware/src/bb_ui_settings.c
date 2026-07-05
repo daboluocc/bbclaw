@@ -231,6 +231,7 @@ typedef struct {
   char recfiles_dir[24];              /* 当前会话目录名 */
   char recfiles_names[16][16];        /* 上限=行池容量 s_st.rows[16](超出越界=悬垂
                                        * 指针 set_text 崩,真机踩过);倒序留最新 16 条 */
+  int recfiles_dur_s[16];             /* 段时长(秒,来自 index.jsonl;-1=未知) */
   int recfiles_count;
   volatile int ota_check_pending;
   volatile uint32_t ota_check_generation;
@@ -1117,6 +1118,32 @@ static void recfiles_scan(void) {
   closedir(d);
   qsort(s_st.recfiles_names, (size_t)s_st.recfiles_count, sizeof(s_st.recfiles_names[0]),
         recfiles_name_cmp_desc);
+
+  for (int i = 0; i < 16; ++i) s_st.recfiles_dur_s[i] = -1;
+  if (s_st.recfiles_mode == 1) {
+    /* 段时长来自 index.jsonl({"seq":N,...,"dur_ms":M,...});逐行最小解析,
+     * 按 seq 对回文件名(000001.opus → seq 1)。 */
+    char ipath[80];
+    snprintf(ipath, sizeof(ipath), "/sdcard/ambient/%s/index.jsonl", s_st.recfiles_dir);
+    FILE* f = fopen(ipath, "r");
+    if (f != NULL) {
+      char line[224];
+      while (fgets(line, sizeof(line), f) != NULL) {
+        const char* ps = strstr(line, "\"seq\":");
+        const char* pd = strstr(line, "\"dur_ms\":");
+        if (ps == NULL || pd == NULL) continue;
+        int seq = atoi(ps + 6);
+        long long dur = atoll(pd + 9);
+        for (int i = 0; i < s_st.recfiles_count; ++i) {
+          if (atoi(s_st.recfiles_names[i]) == seq) {
+            s_st.recfiles_dur_s[i] = (int)(dur / 1000);
+            break;
+          }
+        }
+      }
+      fclose(f);
+    }
+  }
 }
 
 static void render_recfiles(void) {
@@ -1147,7 +1174,13 @@ static void render_recfiles(void) {
       char full[96];
       snprintf(full, sizeof(full), "/sdcard/ambient/%s/%s", s_st.recfiles_dir, s_st.recfiles_names[i]);
       int playing = (strcmp(bb_recplay_current(), full) == 0);
-      snprintf(buf, sizeof(buf), "%s%s", playing ? "> " : "  ", s_st.recfiles_names[i]);
+      int seq = atoi(s_st.recfiles_names[i]);
+      if (s_st.recfiles_dur_s[i] >= 0) {
+        snprintf(buf, sizeof(buf), "%s#%d   %d:%02d", playing ? "> " : "  ", seq,
+                 s_st.recfiles_dur_s[i] / 60, s_st.recfiles_dur_s[i] % 60);
+      } else {
+        snprintf(buf, sizeof(buf), "%s#%d   --:--", playing ? "> " : "  ", seq);
+      }
     }
     lv_label_set_text(s_st.rows[i], buf);
   }
