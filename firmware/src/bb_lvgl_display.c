@@ -162,9 +162,9 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
  * math below leaves the same quiet margin at the bottom of the screen.
  * 竖屏手表：这条带成为屏上 PTT 圆钮区（按住说话，纯触屏的主交互）。 */
 #if BB_UI_PORTRAIT
-#define UI_BOTTOM_BAR_H    116
-#define UI_PTT_BTN_D       92   /* 圆钮直径 */
-#define UI_PTT_BTN_HIT_PAD 18   /* 命中区外扩（实际可点半径 = D/2 + PAD） */
+#define UI_BOTTOM_BAR_H    BB_UI_PTT_ZONE_H
+#define UI_PTT_BTN_D       72   /* 圆钮直径（轻量化：更小、幽灵态、按下才点亮） */
+#define UI_PTT_BTN_HIT_PAD 20   /* 命中区外扩（实际可点半径 = D/2 + PAD） */
 #else
 #define UI_BOTTOM_BAR_H    16
 #endif
@@ -1379,7 +1379,10 @@ static void create_ui(void) {
    * 命中判定在 bb_touch_input 里做纯坐标数学（无 LVGL 锁），这里只负责视觉
    * 并登记圆心/半径；按下反馈由录音视图本身承担（出现即反馈）。 */
   {
-    lv_obj_t* btn = lv_obj_create(s_view_active);
+    /* 挂 lv_layer_top：聊天主题的透明根容器叠在 ACTIVE 视图之上会截走指针
+     * 事件（手势版纯坐标不受影响，指针版才暴露）——顶层永远先收输入。
+     * 可见性由 refresh_ui 随 mode 切换（非 ACTIVE 页隐藏）。 */
+    lv_obj_t* btn = lv_obj_create(lv_layer_top());
     s_obj_ptt_btn = btn;
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, UI_PTT_BTN_D, UI_PTT_BTN_D);
@@ -1387,19 +1390,19 @@ static void create_ui(void) {
     const int btn_y = bottom_bar_y + (UI_BOTTOM_BAR_H - UI_PTT_BTN_D) / 2;
     lv_obj_set_pos(btn, btn_x, btn_y);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    /* 轻量融入：底色=屏幕底（像内容上冲出的一个洞）+ 幽灵描边；
+     * 按下才点亮（accent 描边 + 光晕）——与点阵「点亮节奏」语言一致 */
     lv_obj_set_style_border_width(btn, 2, 0);
-    lv_obj_set_style_border_color(btn, lv_color_hex(UI_TEXT_DIM), 0);
-    /* 悬浮观感：不透明底 + 外发光阴影（半透明底会与滚过的气泡混色发脏） */
-    lv_obj_set_style_bg_color(btn, lv_color_hex(BB_UI_DOT_GHOST), 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(BB_UI_DOT_GHOST), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(UI_SCR_BG), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(btn, 18, 0);
-    lv_obj_set_style_shadow_color(btn, lv_color_hex(UI_ME_ACCENT), 0);
-    lv_obj_set_style_shadow_opa(btn, LV_OPA_30, 0);
-    /* 按下态：accent 描边高亮（原生指针 indev 驱动） */
     lv_obj_set_style_border_color(btn, lv_color_hex(UI_ME_ACCENT), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_opa(btn, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(btn, 22, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_color(btn, lv_color_hex(UI_ME_ACCENT), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_opa(btn, LV_OPA_60, LV_STATE_PRESSED);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN); /* 初始隐藏，进 ACTIVE 再显示 */
 #if !defined(BBCLAW_SIMULATOR)
     lv_obj_add_event_cb(btn, ptt_btn_event_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(btn, ptt_btn_event_cb, LV_EVENT_RELEASED, NULL);
@@ -1568,7 +1571,6 @@ static void create_ui(void) {
   /* 悬浮 PTT 钮遮住底部 ~116px：给滚动区补底部内边距，滚到底时最后一行
    * 停在钮上方；钮本体置顶悬浮。 */
   lv_obj_set_style_pad_bottom(s_scroll_text, UI_BOTTOM_BAR_H, 0);
-  if (s_obj_ptt_btn != NULL) lv_obj_move_foreground(s_obj_ptt_btn);
 #endif
 
   s_lbl_text = lv_label_create(s_scroll_text);
@@ -1671,6 +1673,12 @@ static void refresh_ui(void) {
   bb_page_locked_set_visible(mode == UI_VIEW_LOCKED);
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
   s_ptt_btn_active = (mode == UI_VIEW_ACTIVE);
+#if BB_UI_PORTRAIT
+  if (s_obj_ptt_btn != NULL) {
+    if (mode == UI_VIEW_ACTIVE) lv_obj_clear_flag(s_obj_ptt_btn, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_obj_ptt_btn, LV_OBJ_FLAG_HIDDEN);
+  }
+#endif
 
   if (mode == UI_VIEW_STANDBY) {
     /* Locked-but-idle and unlocked idle both show just the clock — no lock

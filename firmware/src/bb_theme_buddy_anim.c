@@ -166,9 +166,16 @@ static void theme_on_enter(lv_obj_t* parent) {
     if (cont != NULL) {
       lv_obj_align(cont, LV_ALIGN_TOP_MID, 0, cb_y);
 #if BB_UI_PORTRAIT
-      /* 悬浮 PTT 钮遮内容区底部 ~116px：补底部内边距，滚到底时最后一条
-       * 气泡停在钮上方（空白垫层滚到钮后面）。 */
-      lv_obj_set_style_pad_bottom(cont, 116, 0);
+      /* 悬浮 PTT 钮遮内容区底部：补底部内边距，滚到底时最后一条气泡停在
+       * 钮上方（空白垫层滚到钮后面）。 */
+      lv_obj_set_style_pad_bottom(cont, BB_UI_PTT_ZONE_H, 0);
+      /* 滚动条：细 4px、accent 半透明、自动隐藏、离右缘一点 */
+      lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_AUTO);
+      lv_obj_set_style_width(cont, 4, LV_PART_SCROLLBAR);
+      lv_obj_set_style_bg_color(cont, lv_color_hex(BB_UI_ACCENT), LV_PART_SCROLLBAR);
+      lv_obj_set_style_bg_opa(cont, LV_OPA_40, LV_PART_SCROLLBAR);
+      lv_obj_set_style_radius(cont, 2, LV_PART_SCROLLBAR);
+      lv_obj_set_style_pad_right(cont, 6, LV_PART_SCROLLBAR);
 #endif
     }
   }

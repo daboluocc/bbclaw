@@ -31,5 +31,8 @@
 #define BB_UI_SAFE_BOTTOM BB_UI_MAX(10, BB_UI_CORNER_INSET)
 #define BB_UI_SAFE_LR     BB_UI_MAX(10, (BB_UI_CORNER_INSET * 2) / 3)
 
+/* 悬浮 PTT 钮区高度（滚动容器 pad_bottom 与钮定位共用） */
+#define BB_UI_PTT_ZONE_H 96
+
 /* 竖屏判定（手表 502>410；旧屏 172<320）——页面可据此选择构图分支 */
 #define BB_UI_PORTRAIT (BB_DISP_H > BB_DISP_W)
