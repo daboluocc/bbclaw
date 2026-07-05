@@ -17,6 +17,8 @@ void bb_ogg_opus_encoder_destroy(bb_ogg_opus_encoder_t* encoder);
 esp_err_t bb_ogg_opus_encoder_append_pcm16(bb_ogg_opus_encoder_t* encoder, const int16_t* pcm, size_t sample_count,
                                            uint8_t** out_data, size_t* out_len);
 esp_err_t bb_ogg_opus_encoder_flush(bb_ogg_opus_encoder_t* encoder, uint8_t** out_data, size_t* out_len);
+/** 录音场景:显式 CBR 码率+DTX（create 之后调;PTT 路径不调用,默认行为不变） */
+esp_err_t bb_ogg_opus_encoder_set_bitrate(bb_ogg_opus_encoder_t* encoder, int bitrate_bps, int enable_dtx);
 
 bb_ogg_opus_decoder_t* bb_ogg_opus_decoder_create(void);
 void bb_ogg_opus_decoder_destroy(bb_ogg_opus_decoder_t* decoder);

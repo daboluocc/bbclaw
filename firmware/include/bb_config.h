@@ -29,6 +29,20 @@
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
 #endif
 
+/* ── Micro SD（SDMMC 1-bit）：录音本地优先存储，see bb_sdcard.c / ADR-044 ── */
+#ifndef BBCLAW_SDMMC_ENABLE
+#define BBCLAW_SDMMC_ENABLE 0
+#endif
+#ifndef BBCLAW_SDMMC_CLK_GPIO
+#define BBCLAW_SDMMC_CLK_GPIO (-1)
+#endif
+#ifndef BBCLAW_SDMMC_CMD_GPIO
+#define BBCLAW_SDMMC_CMD_GPIO (-1)
+#endif
+#ifndef BBCLAW_SDMMC_D0_GPIO
+#define BBCLAW_SDMMC_D0_GPIO (-1)
+#endif
+
 /* ── 电量数据源：AXP2101 硬件电量计（替代 ADC 分压），see bb_power.c ── */
 #ifndef BBCLAW_POWER_SOURCE_AXP2101
 #define BBCLAW_POWER_SOURCE_AXP2101 0

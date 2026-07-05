@@ -38,6 +38,9 @@ set(_bb_srcs
     "bb_ptt.c"
     "bb_uart_cmd.c"
     "bb_radio_app.c"
+    "bb_page_recorder.c"
+    "bb_recorder.c"
+    "bb_sdcard.c"
     "bb_session_store.c"
     "bb_state.c"
     "bb_theme_buddy_anim.c"
@@ -108,6 +111,9 @@ idf_component_register(
         esp_driver_rmt
         led_strip_encoder
         esp_tinyusb
+        fatfs
+        sdmmc
+        esp_driver_sdmmc
 )
 
 # 新 ESP-IDF toolchain（GCC14）把 strncpy(dst, samesizebuf, sizeof-1) 以及有意截断

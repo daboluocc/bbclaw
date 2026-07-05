@@ -38,6 +38,9 @@
 #include "bb_agent_theme.h"
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_task_list.h"
+#include "bb_page_recorder.h"
+#include "bb_recorder.h"
+#include "bb_sdcard.h"
 #include "bb_session_store.h"
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
@@ -476,6 +479,7 @@ static const char* radio_app_state_name(bb_radio_app_state_t state) {
     case BBCLAW_STATE_LOCKED:   return "LOCKED";
     case BBCLAW_STATE_CHAT:     return "CHAT";
     case BBCLAW_STATE_SETTINGS: return "SETTINGS";
+    case BBCLAW_STATE_RECORDER: return "RECORDER";
   }
   return "?";
 }
@@ -491,6 +495,11 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
      * 并打结构化日志。事件选取遵循"原因优先"原则：解锁 → VERIFY_OK，
      * 进设置 → REQUEST_SETTINGS_ENTER，退设置 → REQUEST_SETTINGS_EXIT。 */
     switch (state) {
+      case BBCLAW_STATE_RECORDER:
+        /* ADR-044:RECORDER 未纳入 bb_state 影子协调器建模(录音与对话互斥,
+         * 无跨态事件)。从 SETTINGS 进入时影子机停留在 settings,退出回 CHAT
+         * 时照常发 REQUEST_SETTINGS_EXIT 对齐——可接受的影子漂移。 */
+        break;
       case BBCLAW_STATE_LOCKED:
         bb_state_dispatch_simple(BB_EVT_VOICE_VERIFY_FAIL);
         break;
@@ -526,6 +535,7 @@ static void set_radio_app_state(bb_radio_app_state_t state) {
  * standby/active views without us needing to mutate bb_lvgl_display.c. */
 static void show_status_idle(const char* status); /* fwd: defined later in file */
 static void show_idle_ready_or_locked(void);       /* fwd: defined later in file */
+static void signal_error_haptic(void);             /* fwd: defined later in file */
 static volatile int s_agent_chat_active;
 static lv_obj_t* s_agent_chat_root;
 static int64_t s_last_activity_ms;
@@ -707,6 +717,60 @@ static void settings_exit_to_chat(void) {
 }
 
 
+/* ── ADR-044 RECORDER 态：进入/退出 ──────────────────────────────────── */
+static int64_t s_rec_exit_armed_ms; /* BACK 第一按时刻（3s 内再按退出） */
+static int s_rec_ptt_prev;          /* RECORDER 态 PTT 边沿检测 */
+
+static int recorder_enter(void) {
+  if (!bb_sdcard_mounted()) {
+    /* 二次机会：卡可能是开机后才插的 */
+    if (bb_sdcard_mount() != ESP_OK) {
+      ESP_LOGW(TAG, "recorder: no SD card");
+      (void)bb_display_show_chat_turn("Recording", "No SD card");
+      signal_error_haptic();
+      return -1;
+    }
+  }
+  if (agent_chat_is_active()) {
+    agent_chat_exit();
+  }
+  /* 清残留采集数据后再启动消费者 */
+  size_t sz = 0;
+  void* it = NULL;
+  while ((it = xRingbufferReceive(s_capture_rb, &sz, 0)) != NULL) {
+    vRingbufferReturnItem(s_capture_rb, it);
+  }
+  if (bb_recorder_start(s_capture_rb) != ESP_OK) {
+    ESP_LOGE(TAG, "recorder start failed");
+    (void)bb_display_show_chat_turn("Recording", "start failed");
+    signal_error_haptic();
+    return -1;
+  }
+  s_capture_active = 1;
+  if (lvgl_port_lock(500)) {
+    bb_page_recorder_show();
+    lvgl_port_unlock();
+  }
+  s_rec_exit_armed_ms = 0;
+  s_rec_ptt_prev = 0;
+  set_radio_app_state(BBCLAW_STATE_RECORDER);
+  ESP_LOGI(TAG, "RECORDER: session started");
+  return 0;
+}
+
+static void recorder_exit(void) {
+  s_capture_active = 0;
+  bb_recorder_stop(); /* 阻塞至当前段落盘收尾 */
+  if (lvgl_port_lock(500)) {
+    bb_page_recorder_hide();
+    lvgl_port_unlock();
+  }
+  set_radio_app_state(BBCLAW_STATE_CHAT);
+  show_idle_ready_or_locked();
+  s_last_activity_ms = bb_now_ms();
+  ESP_LOGI(TAG, "RECORDER: session stopped");
+}
+
 /* Wrapper helpers for nav events under lvgl lock. ADR-016 revision:
  *   - LEFT/RIGHT no longer used (hardware has only ↑/↓/OK/BACK).
  *   - settings_click_locked / settings_back_locked return 1 when the
@@ -730,8 +794,16 @@ static void settings_click_locked(void) {
     }
     lvgl_port_unlock();
   }
-  /* Exit at the main level → tear down + return to chat. */
-  if (want_exit && s_settings_active) {
+  /* Exit at the main level → tear down + return to chat.
+   * 2 = ADR-044 录音入口:退出设置后直接进 RECORDER 态。 */
+  if (want_exit == 2 && s_settings_active) {
+    settings_overlay_exit();
+    if (recorder_enter() != 0) {
+      /* 进录音失败(无卡等)→ 回聊天,与普通退出一致 */
+      set_radio_app_state(BBCLAW_STATE_CHAT);
+      show_idle_ready_or_locked();
+    }
+  } else if (want_exit && s_settings_active) {
     settings_exit_to_chat();
   }
 }
@@ -2246,6 +2318,30 @@ static void stream_task(void* arg) {
         }
 
         switch (s_app_state) {
+          case BBCLAW_STATE_RECORDER: {
+            /* ADR-044:录音中导航极简——BACK(右滑)双按停止,防误触;其余忽略。
+             * 第一按亮提示,3s 内第二按执行退出(recorder_exit 阻塞至落盘)。 */
+            if (nav == BB_NAV_EVENT_BACK) {
+              int64_t now_ms2 = bb_now_ms();
+              if (s_rec_exit_armed_ms != 0 && now_ms2 - s_rec_exit_armed_ms < 3000) {
+                recorder_exit();
+              } else {
+                s_rec_exit_armed_ms = now_ms2;
+                if (lvgl_port_lock(200)) {
+                  bb_page_recorder_exit_hint(1);
+                  lvgl_port_unlock();
+                }
+              }
+            } else if (s_rec_exit_armed_ms != 0 &&
+                       bb_now_ms() - s_rec_exit_armed_ms >= 3000) {
+              s_rec_exit_armed_ms = 0;
+              if (lvgl_port_lock(200)) {
+                bb_page_recorder_exit_hint(0);
+                lvgl_port_unlock();
+              }
+            }
+            break;
+          }
           case BBCLAW_STATE_LOCKED:
             /* Nav events ignored in LOCKED; only PTT (passphrase verify) is alive.
              * (ADR-041 后续：去掉「先唤醒再录」唤醒门，PTT 第一按即录密语。) */
@@ -2563,13 +2659,25 @@ static void stream_task(void* arg) {
       continue;
     }
 
+    if (!s_ptt_pressed) {
+      s_rec_ptt_prev = 0; /* RECORDER 书签边沿复位 */
+    }
     if (s_ptt_pressed && !streaming && !arming && !session_busy) {
       if (bb_audio_is_playback_active()) {
         vTaskDelay(pdMS_TO_TICKS(20));
         continue;
       }
       /* Only start capture in LOCKED (verify) or CHAT (record).
-       * SETTINGS swallows PTT entirely. */
+       * SETTINGS swallows PTT entirely.
+       * RECORDER (ADR-044): PTT 短按=打书签（上升沿一次）,不进对话采集。 */
+      if (s_app_state == BBCLAW_STATE_RECORDER) {
+        if (!s_rec_ptt_prev) {
+          s_rec_ptt_prev = 1;
+          bb_recorder_bookmark();
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
       if (s_app_state != BBCLAW_STATE_LOCKED &&
           s_app_state != BBCLAW_STATE_CHAT) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -4082,6 +4190,9 @@ esp_err_t bb_radio_app_start(void) {
   }
 
   log_heap_snapshot("before ringbuf");
+  /* SD 卡挂载（ADR-044）：无卡是常态,失败只降级(录音入口不可用) */
+  (void)bb_sdcard_mount();
+
   s_capture_rb = xRingbufferCreateWithCaps(CAPTURE_RINGBUF_SIZE, RINGBUF_TYPE_BYTEBUF,
                                            MALLOC_CAP_8BIT);
   if (s_capture_rb == NULL) {

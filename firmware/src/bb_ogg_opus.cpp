@@ -501,6 +501,18 @@ struct bb_ogg_opus_decoder {
 
 extern "C" {
 
+/* 录音场景（ADR-044）：显式 CBR 码率 + DTX（静音段发极小包省流省电）。
+ * PTT 对话路径不调用此函数,默认行为（auto 码率/DTX 关）不变。 */
+esp_err_t bb_ogg_opus_encoder_set_bitrate(bb_ogg_opus_encoder_t* encoder, int bitrate_bps, int enable_dtx) {
+  if (encoder == nullptr || encoder->state.enc == nullptr || bitrate_bps <= 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  opus_encoder_ctl(encoder->state.enc, OPUS_SET_BITRATE(bitrate_bps));
+  opus_encoder_ctl(encoder->state.enc, OPUS_SET_VBR(0)); /* CBR:码率可预算 */
+  opus_encoder_ctl(encoder->state.enc, OPUS_SET_DTX(enable_dtx ? 1 : 0));
+  return ESP_OK;
+}
+
 bb_ogg_opus_encoder_t* bb_ogg_opus_encoder_create(int sample_rate, int channels, int frame_duration_ms) {
   if (sample_rate <= 0 || channels <= 0 || frame_duration_ms <= 0) {
     return nullptr;

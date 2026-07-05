@@ -65,6 +65,12 @@
 #define BBCLAW_MOTOR_GPIO    -1
 #define BBCLAW_STATUS_LED_ENABLE 0
 
+/* ── Micro SD（SDMMC 1-bit）：录音本地优先存储（ADR-044） ── */
+#define BBCLAW_SDMMC_ENABLE   1
+#define BBCLAW_SDMMC_CLK_GPIO 2
+#define BBCLAW_SDMMC_CMD_GPIO 1
+#define BBCLAW_SDMMC_D0_GPIO  3
+
 /* ── 电量：AXP2101 硬件电量计（0xA4 SoC + 0x01 充电方向），无 ADC 分压 ── */
 #define BBCLAW_POWER_ENABLE  1
 #define BBCLAW_POWER_ADC_GPIO -1

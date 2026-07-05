@@ -33,6 +33,9 @@
 
 #include "bb_ui_settings.h"
 
+#include "bb_sdcard.h"
+#include "bb_time.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -171,6 +174,7 @@ typedef enum {
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
   MAIN_ROW_MIYU,
+  MAIN_ROW_RECORDER,     /* ADR-044 长录音入口(有 SD 卡槽的板);双击确认防误进 */
   MAIN_ROW_CHECK_UPDATE, /* cloud_saas only — runs an OTA check (→ confirm page) */
   MAIN_ROW_SYSINFO,      /* read-only "About" page */
   MAIN_ROW_BACK,
@@ -213,6 +217,7 @@ typedef struct {
 
   /* Firmware row OTA check (Settings → Firmware → click). */
   ota_row_status_t ota_status;
+  int64_t recorder_arm_ms; /* ADR-044 录音行双击确认窗口起点(0=未武装) */
   volatile int ota_check_pending;
   volatile uint32_t ota_check_generation;
 
@@ -449,6 +454,10 @@ static int main_visible_rows(main_row_t* out) {
     out[n++] = MAIN_ROW_SESSIONS;
   }
   out[n++] = MAIN_ROW_VOLUME;
+#if BBCLAW_SDMMC_ENABLE
+  /* 长录音(ADR-044):有卡槽的板常显;无卡时行文案提示 no SD card */
+  out[n++] = MAIN_ROW_RECORDER;
+#endif
   /* 密语(锁屏语音解锁) only works in cloud_saas (passphrase_unlock_enabled), so
    * the toggle is only meaningful there — like the ADAPTER/SESSIONS rows (ADR-037). */
   if (bb_transport_is_cloud_saas()) {
@@ -601,6 +610,15 @@ static void render_main(void) {
       }
       case MAIN_ROW_MIYU:
         snprintf(buf, sizeof(buf), "Miyu: %s", toggle_state_label(s_st.miyu_enabled));
+        break;
+      case MAIN_ROW_RECORDER:
+        if (s_st.recorder_arm_ms != 0) {
+          snprintf(buf, sizeof(buf), "Recording · tap again to START");
+        } else if (!bb_sdcard_mounted()) {
+          snprintf(buf, sizeof(buf), "Recording · no SD card");
+        } else {
+          snprintf(buf, sizeof(buf), "Recording");
+        }
         break;
       case MAIN_ROW_CHECK_UPDATE:
         /* Dedicated OTA-check action (the read-only version lives in System
@@ -2033,6 +2051,18 @@ int bb_ui_settings_handle_click(void) {
            * miyu gates lock-on-boot, so we don't lock the user out of Settings now. */
           s_st.miyu_enabled = !s_st.miyu_enabled;
           spawn_persist_int(COMMIT_KIND_MIYU, s_st.miyu_enabled);
+          rerender();
+          break;
+        }
+        case MAIN_ROW_RECORDER: {
+          /* ADR-044:录音是隐私敏感操作,双击确认(5s 窗口)。确认后返回 2,
+           * radio_app 负责退出设置并进 RECORDER 态(含无卡二次挂载重试)。 */
+          int64_t now = bb_now_ms();
+          if (s_st.recorder_arm_ms != 0 && now - s_st.recorder_arm_ms < 5000) {
+            s_st.recorder_arm_ms = 0;
+            return 2;
+          }
+          s_st.recorder_arm_ms = now;
           rerender();
           break;
         }

@@ -19,6 +19,8 @@ typedef enum {
   BBCLAW_STATE_LOCKED = 0,
   BBCLAW_STATE_CHAT = 1,
   BBCLAW_STATE_SETTINGS = 2,
+  /* ADR-044: 长录音形态。与对话互斥；PTT=书签,双 BACK=停止,豁免空闲锁屏 */
+  BBCLAW_STATE_RECORDER = 3,
 } bb_radio_app_state_t;
 
 esp_err_t bb_radio_app_start(void);
