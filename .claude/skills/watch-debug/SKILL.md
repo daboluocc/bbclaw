@@ -87,6 +87,15 @@ python -m esptool --chip esp32s3 -p "$port" -b 460800 --before default_reset \
 
 ## 其它已知坑
 
+- **libopus 栈账**:USE_ALLOCA 编译,一次 opus_encode 吃 ~24KB 调用任务栈——
+  新任务用编码链必须 40KB 栈;PSRAM 栈溢出不 fault(死点飘忽+堆检测全绿),
+  已开 FREERTOS_WATCHPOINT_END_OF_STACK
+- **烧录端口扫描**:桌上若有其它 ESP 板(如 ESP32-C3 在 212201),`grep -vE`
+  排除清单要加上它,否则 esptool 连错板子;手表 bootloader 端口名不固定
+  (212201/212301/212401 都见过)
+- 本板 **panic 输出不可达**(UART0 关+TinyUSB 占 USB):排障靠 RTC noinit
+  面包屑 + boot report(开机 8s 上报 reset_reason+crumb,bb_recorder 有现成模式)
+
 - FT3168 偶发 `I2C read error`：疑自动休眠 NACK，功能正常，别当 bug 修
 - I2C 全家福基线：`0x18 ES8311 / 0x34 AXP2101 / 0x38 FT3168(偶尔漏) / 0x40 ES7210 / 0x51 PCF85063 / 0x6B QMI8658`
 - mic 走 ES7210 不是 ES8311；喇叭无声先查 ES8311 时钟门控 readback 日志

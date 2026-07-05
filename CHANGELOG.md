@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **手表电量+充电展示**:bb_power 新增 AXP2101 硬件电量计后端(0xA4 SoC+
     充电方向+电池在位,I2C 懒加载);待机充电动效(电量→满格循环注入);
     顶栏电量+闪电图标数据链路激活。
+  - **随身长录音 P1a(ADR-044,真机验收 PASS)**:SD 本地优先录音全链路——
+    SDMMC 1-bit 挂载+写自检门禁+自动格式化恢复+热插卡轮询提醒(toast 弹窗);
+    RECORDER 第四态(设置行双击/PWR 键一键启停,PTT=书签,双右滑停止,常显
+    红点指示);60s Opus 分段落 SD+append-only 索引;周期 fsync+devmon 重启
+    前停录。**排障沉淀**:libopus USE_ALLOCA 一次编码吃 ~24KB 任务栈(调用
+    任务必须 ≥40KB 栈);SD 引脚与 UART0 冲突(手表板关 UART0 控制台);
+    FATFS LFN;编码器 append 分片喂入(修"整段只录 60ms"隐蔽 bug)。
+  - **IMU 分支合并**:QMI8658 驱动+息屏管理+CO5300 亮度(feature/imu-sleep-
+    management 收编+编译修复,双板验证)。
 - **固件+adapter_v2:长回合等待改「活动驱动空闲超时」——根治「AI 深思考被设备提前判超时」**:
   两端等待循环原是固定 deadline(90s→5min 只是止痛),事件到达不续期——回复
   生成好时设备已放弃、迟到帧被静默丢弃。现改为:回合内任何流式帧(delta/
