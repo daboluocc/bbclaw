@@ -71,6 +71,14 @@ void bb_sdcard_unmount(void) {
 
 int bb_sdcard_mounted(void) { return s_card != NULL; }
 
+esp_err_t bb_sdcard_format(void) {
+  if (s_card == NULL) return ESP_ERR_INVALID_STATE;
+  ESP_LOGW(TAG, "formatting card (FAT), all data on card will be erased");
+  esp_err_t err = esp_vfs_fat_sdcard_format(MOUNT_POINT, s_card);
+  ESP_LOGI(TAG, "format: %s", esp_err_to_name(err));
+  return err;
+}
+
 esp_err_t bb_sdcard_selftest(void) {
   if (s_card == NULL) return ESP_ERR_INVALID_STATE;
   ESP_LOGI(TAG, "selftest: card=%s cap=%.1fGB", s_card->cid.name,

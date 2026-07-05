@@ -558,18 +558,25 @@ bb_ogg_opus_encoder_t* bb_ogg_opus_encoder_create(int sample_rate, int channels,
     return nullptr;
   }
   wrapper->state.enc = static_cast<OpusEncoder*>(wrapper->state.enc_storage);
+  /* 错误路径统一释放:静态缓冲只清 in_use 标志,不能 heap_caps_free(会炸堆) */
+  auto release_enc_storage = [&]() {
+    if (wrapper->state.enc_storage == s_enc_static_buf) {
+      s_enc_static_in_use = 0;
+    } else {
+      heap_caps_free(wrapper->state.enc_storage);
+    }
+    wrapper->state.enc_storage = nullptr;
+    wrapper->state.enc = nullptr;
+  };
   CodecLockGuard codec_lock(s_codec_mutex);
   if (!codec_lock.ok()) {
-    heap_caps_free(wrapper->state.enc_storage);
-    wrapper->state.enc_storage = nullptr;
+    release_enc_storage();
     delete wrapper;
     return nullptr;
   }
   const int error = opus_encoder_init(wrapper->state.enc, sample_rate, channels, OPUS_APPLICATION_VOIP);
   if (error != OPUS_OK) {
-    heap_caps_free(wrapper->state.enc_storage);
-    wrapper->state.enc_storage = nullptr;
-    wrapper->state.enc = nullptr;
+    release_enc_storage();
     delete wrapper;
     return nullptr;
   }
@@ -589,9 +596,7 @@ bb_ogg_opus_encoder_t* bb_ogg_opus_encoder_create(int sample_rate, int channels,
     pending_region = "internal";
   }
   if (wrapper->state.pending_pcm == nullptr) {
-    heap_caps_free(wrapper->state.enc_storage);
-    wrapper->state.enc_storage = nullptr;
-    wrapper->state.enc = nullptr;
+    release_enc_storage();
     ESP_LOGE(TAG, "pending pcm alloc failed bytes=%u", (unsigned)(wrapper->state.pending_capacity * sizeof(int16_t)));
     log_heap_snapshot("pending pcm alloc failed");
     delete wrapper;
@@ -600,10 +605,8 @@ bb_ogg_opus_encoder_t* bb_ogg_opus_encoder_create(int sample_rate, int channels,
   wrapper->state.encoded_buf = static_cast<uint8_t*>(
       heap_caps_malloc(kEncodedBufSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (wrapper->state.encoded_buf == nullptr) {
-    heap_caps_free(wrapper->state.enc_storage);
+    release_enc_storage();
     heap_caps_free(wrapper->state.pending_pcm);
-    wrapper->state.enc_storage = nullptr;
-    wrapper->state.enc = nullptr;
     wrapper->state.pending_pcm = nullptr;
     ESP_LOGE(TAG, "encoded buf alloc failed");
     delete wrapper;

@@ -23,5 +23,9 @@ int bb_sdcard_mounted(void);
 /** 写自检：根目录建/写/删测试文件,每步带 errno 日志（诊断读好写坏的卡） */
 esp_err_t bb_sdcard_selftest(void);
 
+/** 设备端格式化（FAT,整卡擦除!）。脏 FS 恢复用——SD 是缓存,云端才是归档
+ *  (ADR-044);调用方负责用户知情。需已挂载。 */
+esp_err_t bb_sdcard_format(void);
+
 /** 容量信息（KB）；未挂载返回 ESP_ERR_INVALID_STATE。任意指针可 NULL。 */
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb);

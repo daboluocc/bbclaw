@@ -41,6 +41,7 @@
 #include "bb_page_recorder.h"
 #include "bb_recorder.h"
 #include "bb_sdcard.h"
+#include "esp_system.h"
 #include "bb_session_store.h"
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
@@ -739,12 +740,18 @@ static int recorder_enter(void) {
       return -1;
     }
   }
-  /* SD 写自检门禁:假卡/坏卡对写入撒谎(应答成功不持久,NCard 2GB 实锤),
-   * 录进去的数据全是空气。进录音前一票否决,给明确报错。 */
+  /* SD 写自检门禁:假卡对写入撒谎(NCard 2GB 实锤)、脏 FAT 写路径 EIO
+   * (录音中断电实锤)。失败先走一次设备端格式化自愈(用户已知情拍板:SD 是
+   * 缓存,云端才是归档),仍失败才判卡废。 */
   if (bb_sdcard_selftest() != ESP_OK) {
-    (void)bb_display_show_chat_turn("Recording", "SD card faulty (write test failed) - replace card");
-    signal_error_haptic();
-    return -1;
+    ESP_LOGW(TAG, "recorder: selftest failed -> auto-format recovery");
+    bb_display_toast("SD repair: formatting...", 4000);
+    if (bb_sdcard_format() != ESP_OK || bb_sdcard_selftest() != ESP_OK) {
+      (void)bb_display_show_chat_turn("Recording", "SD card faulty (write test failed) - replace card");
+      signal_error_haptic();
+      return -1;
+    }
+    bb_display_toast("SD card repaired", 2500);
   }
   if (agent_chat_is_active()) {
     agent_chat_exit();
@@ -755,8 +762,18 @@ static int recorder_enter(void) {
   while ((it = xRingbufferReceive(s_capture_rb, &sz, 0)) != NULL) {
     vRingbufferReturnItem(s_capture_rb, it);
   }
+  /* 开麦:I2S RX 通道使能(PTT 路径同款调用;漏掉则 capture_task 读
+   * ESP_ERR_INVALID_STATE 刷屏,会话 0 segments——真机踩过) */
+  esp_err_t tx_err = bb_audio_start_tx();
+  if (tx_err != ESP_OK) {
+    ESP_LOGE(TAG, "recorder: bb_audio_start_tx failed: %s", esp_err_to_name(tx_err));
+    (void)bb_display_show_chat_turn("Recording", "mic start failed");
+    signal_error_haptic();
+    return -1;
+  }
   if (bb_recorder_start(s_capture_rb) != ESP_OK) {
     ESP_LOGE(TAG, "recorder start failed");
+    (void)bb_audio_stop_tx();
     (void)bb_display_show_chat_turn("Recording", "start failed");
     signal_error_haptic();
     return -1;
@@ -775,6 +792,7 @@ static int recorder_enter(void) {
 
 static void recorder_exit(void) {
   s_capture_active = 0;
+  (void)bb_audio_stop_tx(); /* 关麦(与 enter 的 start_tx 配对) */
   bb_recorder_stop(); /* 阻塞至当前段落盘收尾 */
   if (lvgl_port_lock(500)) {
     bb_page_recorder_hide();
@@ -3543,6 +3561,17 @@ static void stream_task(void* arg) {
           refresh_power_display();
         }
         bb_audio_poll_speaker_sw();
+      }
+    }
+
+    /* 开机报告(一次,~8s 后=避开 CDC0 boot 丢失窗):复位原因+录音面包屑。
+     * 本板 panic 输出不可达,这是崩溃排障的第一手证据(RTC noinit 复位存活)。 */
+    {
+      static int s_boot_reported;
+      if (!s_boot_reported && bb_now_ms() > 8000) {
+        s_boot_reported = 1;
+        ESP_LOGW(TAG, "boot report: reset_reason=%d rec_crumb=%d", (int)esp_reset_reason(),
+                 bb_recorder_debug_crumb());
       }
     }
 

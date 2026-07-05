@@ -27,6 +27,8 @@
 #include "bb_time.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
@@ -61,6 +63,13 @@ typedef struct {
 
 static rec_state_t s_rec;
 
+/* 崩溃面包屑(RTC noinit,软复位存活):段轮转路径每步打点,重启后
+ * session start 日志读出死亡位置——本板 panic 输出不可达的替代品。 */
+RTC_NOINIT_ATTR static int s_rec_crumb;
+#define CRUMB(n) do { s_rec_crumb = (n); } while (0)
+/* 1=close:flush 2=close:write 3=close:destroy 4=close:fclose 5=close:index
+ * 6=open:fopen 7=open:enc_create 8=running 0=idle */
+
 /* 索引行追加（O_APPEND 语义;单写者=recorder_task,无并发） */
 static void index_append(const char* line) {
   char path[96];
@@ -78,12 +87,14 @@ static void index_append(const char* line) {
 static int segment_open(void) {
   char path[96];
   snprintf(path, sizeof(path), "%s/%06d.opus", s_rec.dir, s_rec.seg_seq);
+  CRUMB(6);
   s_rec.seg_fp = fopen(path, "wb");
   if (s_rec.seg_fp == NULL) {
     ESP_LOGE(TAG, "segment open failed: %s", path);
     s_rec.write_error = 1;
     return -1;
   }
+  CRUMB(7);
   s_rec.enc = bb_ogg_opus_encoder_create(BBCLAW_AUDIO_SAMPLE_RATE, 1, 60);
   if (s_rec.enc == NULL) {
     ESP_LOGE(TAG, "encoder create failed");
@@ -91,7 +102,11 @@ static int segment_open(void) {
     s_rec.seg_fp = NULL;
     return -1;
   }
-  (void)bb_ogg_opus_encoder_set_bitrate(s_rec.enc, REC_BITRATE_BPS, 1 /*DTX*/);
+  /* 排障:crumb=1=flush 内 PANIC。DTX 已排除;现去掉整个 set_bitrate
+   * (与天天跑的 PTT 编码器完全同配置)验证 CBR/VBR(0) 是否元凶。
+   * auto 码率 ≈19-25kbps,存储账仍可接受。 */
+  /* (void)bb_ogg_opus_encoder_set_bitrate(s_rec.enc, REC_BITRATE_BPS, 0); */
+  CRUMB(8);
   s_rec.seg_pcm_ms = 0;
   s_rec.seg_bytes = 0;
   s_rec.seg_t0_epoch = (int64_t)time(NULL);
@@ -113,17 +128,24 @@ static void segment_close(void) {
   if (s_rec.enc != NULL) {
     uint8_t* out = NULL;
     size_t out_len = 0;
+    CRUMB(10);
+    (void)heap_caps_check_integrity_all(true); /* 轮转前哨兵:crumb=10 崩=append 阶段已坏 */
+    CRUMB(1);
     if (bb_ogg_opus_encoder_flush(s_rec.enc, &out, &out_len) == ESP_OK && out != NULL) {
+      CRUMB(2);
       segment_write(out, out_len);
       bb_ogg_opus_free(out);
     }
+    CRUMB(3);
     bb_ogg_opus_encoder_destroy(s_rec.enc);
     s_rec.enc = NULL;
   }
   if (s_rec.seg_fp != NULL) {
+    CRUMB(4);
     fclose(s_rec.seg_fp);
     s_rec.seg_fp = NULL;
   }
+  CRUMB(5);
   if (s_rec.seg_pcm_ms > 0) {
     char line[192];
     snprintf(line, sizeof(line),
@@ -137,7 +159,11 @@ static void segment_close(void) {
 
 static void recorder_task(void* arg) {
   (void)arg;
-  ESP_LOGI(TAG, "session start dir=%s", s_rec.dir);
+  /* 崩溃排障仪表:本板 panic 输出不可达(UART0 关闭+TinyUSB 占 USB),
+   * 复位原因+周期健康指标是唯一线索。 */
+  ESP_LOGW(TAG, "session start dir=%s (last_reset_reason=%d last_crumb=%d)", s_rec.dir,
+           (int)esp_reset_reason(), s_rec_crumb);
+  CRUMB(8);
   if (segment_open() != 0) {
     s_rec.run = 0;
   }
@@ -178,6 +204,26 @@ static void recorder_task(void* arg) {
     }
     if (s_rec.seg_pcm_ms < s_last_sync_ms) s_last_sync_ms = 0; /* 段轮转后复位 */
 
+    /* 健康指标(每 10s):内部堆水位/最大块 + 本任务栈余量——崩溃前最后一组
+     * 数字即嫌疑方向(OOM/栈溢出)。 */
+    static int64_t s_last_health_ms;
+    if (s_rec.seg_pcm_ms - s_last_health_ms >= 10000 || s_rec.seg_pcm_ms < s_last_health_ms) {
+      s_last_health_ms = s_rec.seg_pcm_ms;
+      ESP_LOGI(TAG, "health: pcm=%llds int_free=%u int_largest=%u stack_hwm=%u",
+               (long long)s_rec.seg_pcm_ms / 1000,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)uxTaskGetStackHighWaterMark(NULL));
+      /* 堆完整性哨兵:crumb=9+第N次检查。崩在这=损坏发生于上一个 10s 窗口内
+       * (append/fwrite 阶段),不在轮转;print_errors=true 但本板 panic 不可见,
+       * 靠 crumb 值判断。 */
+      static int s_check_n;
+      CRUMB(90 + (s_check_n % 9));
+      s_check_n++;
+      (void)heap_caps_check_integrity_all(true);
+      CRUMB(8);
+    }
+
     /* 段轮转 */
     if (s_rec.seg_pcm_ms >= REC_SEGMENT_MS) {
       segment_close();
@@ -195,6 +241,8 @@ static void recorder_task(void* arg) {
   xSemaphoreGive(s_rec.done_sem);
   vTaskDeleteWithCaps(NULL);
 }
+
+int bb_recorder_debug_crumb(void) { return s_rec_crumb; }
 
 esp_err_t bb_recorder_start(RingbufHandle_t rb) {
   if (s_rec.active) return ESP_ERR_INVALID_STATE;

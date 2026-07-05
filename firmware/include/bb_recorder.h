@@ -37,3 +37,6 @@ typedef struct {
   int write_error;      /* 1 = 最近发生写失败（卡满/拔卡） */
 } bb_recorder_status_t;
 void bb_recorder_get_status(bb_recorder_status_t* out);
+
+/** 崩溃面包屑(RTC noinit,复位存活):上次段操作走到哪一步。排障用。 */
+int bb_recorder_debug_crumb(void);

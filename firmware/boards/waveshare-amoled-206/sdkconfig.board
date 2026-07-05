@@ -26,3 +26,7 @@ CONFIG_FATFS_LFN_HEAP=y
 # 控制台留在 UART0 会持续驱动 GPIO1,SD 写操作 errno=5(EIO)。日志本就走
 # TinyUSB CDC0 vprintf tee(bb_device_monitor),关 UART0 控制台无损失。
 CONFIG_ESP_CONSOLE_NONE=y
+
+# 排障(临时可留):全面堆投毒——录音 60s 崩溃死点飘忽(flush/fclose),堆损坏指纹;
+# 投毒让 heap_caps_check_integrity 可靠捕获,配合 bb_recorder 面包屑定位损坏时刻
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y
