@@ -184,4 +184,3 @@ esp_err_t bb_sleep_manager_dump_status(void);
 }
 #endif
 
-#endif  /* BB_SLEEP_MANAGER_H */

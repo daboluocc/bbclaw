@@ -6,8 +6,9 @@
  */
 
 #include "bb_display_control.h"
-#include "bb_board_config.h"
-#include "bb_lvgl_display.h"
+#include "bb_config.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
 
 #include <esp_log.h>
 #include <esp_check.h>

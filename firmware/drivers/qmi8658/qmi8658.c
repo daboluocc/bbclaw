@@ -6,7 +6,8 @@
 
 #include "qmi8658.h"
 #include "bb_imu.h"
-#include "bb_board_config.h"
+#include "bb_config.h"
+#include "esp_timer.h"
 
 #include <string.h>
 #include <esp_log.h>

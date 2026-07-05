@@ -88,5 +88,3 @@ void bb_power_mgmt_dump_status(void);
 #ifdef __cplusplus
 }
 #endif
-
-#endif  /* BB_POWER_MGMT_H */

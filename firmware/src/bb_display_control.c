@@ -6,7 +6,7 @@
  */
 
 #include "bb_display_control.h"
-#include "bb_board_config.h"
+#include "bb_config.h"
 
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>

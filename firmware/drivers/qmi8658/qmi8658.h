@@ -143,4 +143,3 @@ esp_err_t qmi8658_read_gyro_raw(int16_t* x, int16_t* y, int16_t* z);
 }
 #endif
 
-#endif  /* QMI8658_H */

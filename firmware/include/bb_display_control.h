@@ -112,4 +112,3 @@ int bb_display_is_fading(void);
 }
 #endif
 
-#endif  /* BB_DISPLAY_CONTROL_H */

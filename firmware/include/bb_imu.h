@@ -207,4 +207,3 @@ esp_err_t bb_imu_get_raw(int16_t* accel_raw, int16_t* gyro_raw);
 }
 #endif
 
-#endif  /* BB_IMU_H */
