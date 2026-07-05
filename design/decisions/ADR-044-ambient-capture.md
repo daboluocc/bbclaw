@@ -176,7 +176,7 @@ pending → Silero VAD 精切(丢静音) → 火山「录音文件识别」异�
 |----|------|----------|
 | **P1a 本地录音**(先行,无云端依赖) | SD 卡 bring-up(SDMMC 1-bit) + RECORDER 态(入口/常显指示/互斥/PTT=书签) + 60s 分段落 SD + 段索引 | 真机 4h+ 连续录音不丢段;拔电重启索引完好 |
 | **P1b 回网补传** | 固件同步引擎(ambient.* WS kinds) + 云端落盘/ack + 30 天生命周期 + portal 列表/删除;**随包完成 wss 核实**(环境音不明文) | 断网数小时回网后自动补齐;云端可见可删 |
-| **P2 解读** | ambient worker: VAD→批 ASR(火山录音文件异步)→transcript→daily digest;bookmark 锚点入摘要 | 每天自动出 digest,成本 ≤¥7/设备/天 |
+| **P2 解读** | ambient worker: VAD→批 ASR(火山录音文件异步)→transcript→daily digest;bookmark 锚点入摘要;**转写文本下发 adapter**(/admin 新增「录音记录」页,原始音频留云端短保留,文本轻量长价值——2026-07-05 用户补充) | 每天自动出 digest,成本 ≤¥7/设备/天;adapter 页可浏览转写 |
 | **P3 增强** | per-device token、功耗定标(降频/批传/熄屏)、双麦立体声/波束、digest 接入对话上下文;Track B 专用硬件立项(4G) | 续航实测达标 |
 
 ## 7. 决策记录（2026-07-05）
@@ -187,6 +187,8 @@ pending → Silero VAD 精切(丢静音) → 火山「录音文件识别」异�
 3. ASR 供应商：火山录音文件异步识别（批价,与现有 ASR 同一家）。
 4. 安全：wss 核实并入 P1b（补传上线前必须）；per-device token 挪 P3。
 5. 「只留转写」隐私档位：暂不做,P2 后视需要。
+6. 转写展示端（2026-07-05 补充）：文本同步到本地 adapter 管理页展示;
+   云端暂无对象存储(单 VPS 本地盘+30 天生命周期),设备量上来再迁 OSS。
 
 ## 8. 法规红线备忘（中国大陆，要点非法律意见）
 
