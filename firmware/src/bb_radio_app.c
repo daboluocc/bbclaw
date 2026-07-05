@@ -739,6 +739,13 @@ static int recorder_enter(void) {
       return -1;
     }
   }
+  /* SD 写自检门禁:假卡/坏卡对写入撒谎(应答成功不持久,NCard 2GB 实锤),
+   * 录进去的数据全是空气。进录音前一票否决,给明确报错。 */
+  if (bb_sdcard_selftest() != ESP_OK) {
+    (void)bb_display_show_chat_turn("Recording", "SD card faulty (write test failed) - replace card");
+    signal_error_haptic();
+    return -1;
+  }
   if (agent_chat_is_active()) {
     agent_chat_exit();
   }

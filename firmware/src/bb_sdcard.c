@@ -11,6 +11,10 @@
 
 #if BBCLAW_SDMMC_ENABLE
 
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+
 #include "driver/sdmmc_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
@@ -25,7 +29,9 @@ esp_err_t bb_sdcard_mount(void) {
   if (s_card != NULL) return ESP_OK;
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.max_freq_khz = SDMMC_FREQ_DEFAULT; /* 20MHz；1-bit 实际带宽仍远超需求 */
+  host.max_freq_khz = SDMMC_FREQ_DEFAULT; /* 20MHz;1-bit 带宽仍远超录音需求。
+   * 2026-07-05 排障记录:曾疑此处时序问题降到 400kHz,实为坏卡(NCard 2GB
+   * 写入应答成功但不持久,read-back 失败)——selftest 门禁已能识别这类卡。 */
 
   sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
   slot.width = 1;
@@ -59,6 +65,44 @@ void bb_sdcard_unmount(void) {
 }
 
 int bb_sdcard_mounted(void) { return s_card != NULL; }
+
+esp_err_t bb_sdcard_selftest(void) {
+  if (s_card == NULL) return ESP_ERR_INVALID_STATE;
+  ESP_LOGI(TAG, "selftest: card=%s cap=%.1fGB", s_card->cid.name,
+           ((float)s_card->csd.capacity * s_card->csd.sector_size) / (1024.0f * 1024.0f * 1024.0f));
+  errno = 0;
+  FILE* f = fopen(MOUNT_POINT "/bbtest.txt", "w");
+  if (f == NULL) {
+    ESP_LOGE(TAG, "selftest fopen(w) failed errno=%d(%s)", errno, strerror(errno));
+    return ESP_FAIL;
+  }
+  errno = 0;
+  int n = fputs("bbclaw sd selftest\n", f);
+  int fe = (n < 0) ? errno : 0;
+  errno = 0;
+  int cl = fclose(f);
+  ESP_LOGI(TAG, "selftest write: fputs=%d(errno=%d) fclose=%d(errno=%d)", n, fe, cl, errno);
+  if (n < 0 || cl != 0) return ESP_FAIL;
+  /* 读回校验:假卡/坏卡会对写命令应答成功但数据不持久——unlink ENOENT
+   * 已经暗示目录项没落盘,这里终审。 */
+  errno = 0;
+  f = fopen(MOUNT_POINT "/bbtest.txt", "r");
+  if (f == NULL) {
+    ESP_LOGE(TAG, "selftest READ-BACK FAILED errno=%d(%s) — 卡对写入撒谎(假卡/坏卡),换卡",
+             errno, strerror(errno));
+    return ESP_FAIL;
+  }
+  char rb[32] = {0};
+  char* got = fgets(rb, sizeof(rb), f);
+  fclose(f);
+  ESP_LOGI(TAG, "selftest read-back: %s", (got != NULL && strstr(rb, "bbclaw") != NULL) ? "MATCH" : "MISMATCH");
+  errno = 0;
+  if (unlink(MOUNT_POINT "/bbtest.txt") != 0) {
+    ESP_LOGW(TAG, "selftest unlink errno=%d(%s)", errno, strerror(errno));
+  }
+  ESP_LOGI(TAG, "selftest done");
+  return ESP_OK;
+}
 
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
   if (s_card == NULL) return ESP_ERR_INVALID_STATE;

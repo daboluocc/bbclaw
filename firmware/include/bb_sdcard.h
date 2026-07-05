@@ -20,5 +20,8 @@ void bb_sdcard_unmount(void);
 /** 1 = 已挂载可用。 */
 int bb_sdcard_mounted(void);
 
+/** 写自检：根目录建/写/删测试文件,每步带 errno 日志（诊断读好写坏的卡） */
+esp_err_t bb_sdcard_selftest(void);
+
 /** 容量信息（KB）；未挂载返回 ESP_ERR_INVALID_STATE。任意指针可 NULL。 */
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb);

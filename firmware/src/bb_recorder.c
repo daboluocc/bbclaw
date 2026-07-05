@@ -14,6 +14,7 @@
  */
 #include "bb_recorder.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -197,14 +198,18 @@ esp_err_t bb_recorder_start(RingbufHandle_t rb) {
 
   /* 会话目录：墙钟已同步用 epoch 秒,否则 boot 毫秒加 b 前缀（避免撞名） */
   const int64_t now_epoch = (int64_t)time(NULL);
-  (void)mkdir(REC_DIR, 0775);
+  errno = 0;
+  if (mkdir(REC_DIR, 0775) != 0 && errno != EEXIST) {
+    ESP_LOGW(TAG, "mkdir %s: errno=%d(%s)", REC_DIR, errno, strerror(errno));
+  }
   if (now_epoch > 1600000000LL) {
     snprintf(s_rec.dir, sizeof(s_rec.dir), REC_DIR "/%lld", (long long)now_epoch);
   } else {
     snprintf(s_rec.dir, sizeof(s_rec.dir), REC_DIR "/b%lld", (long long)s_rec.session_boot_ms);
   }
+  errno = 0;
   if (mkdir(s_rec.dir, 0775) != 0) {
-    ESP_LOGE(TAG, "mkdir %s failed", s_rec.dir);
+    ESP_LOGE(TAG, "mkdir %s failed errno=%d(%s)", s_rec.dir, errno, strerror(errno));
     return ESP_FAIL;
   }
 

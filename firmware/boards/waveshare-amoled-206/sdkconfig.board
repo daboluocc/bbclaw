@@ -21,3 +21,8 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # SD 卡录音(ADR-044):FATFS 长文件名(默认 8.3 短名,10 位 epoch 目录名与
 # .opus 扩展名都超限,mkdir/fopen 静默失败)。堆分配 LFN 缓冲,每打开文件 ~(255+1)*2B
 CONFIG_FATFS_LFN_HEAP=y
+
+# SD 卡与 UART0 引脚冲突(本板 SD: CMD=GPIO1/D0=GPIO3 恰是 UART0 TX/RX):
+# 控制台留在 UART0 会持续驱动 GPIO1,SD 写操作 errno=5(EIO)。日志本就走
+# TinyUSB CDC0 vprintf tee(bb_device_monitor),关 UART0 控制台无损失。
+CONFIG_ESP_CONSOLE_NONE=y
