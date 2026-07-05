@@ -40,7 +40,9 @@ static const char* TAG = "bb_recorder";
  * SILK 编码 alloca ~23-24KB 任务栈(反汇编实测,silk_encode_frame_FIX 一层
  * 就 9.5KB+动态)。24KB 曾差 400B 溢出——PSRAM 栈溢出不 fault,直接写烂
  * 邻居堆数据,死点飘忽(P1a 60s 崩溃全案根因之一)。PSRAM 栈不心疼。 */
-#define REC_TASK_STACK    40960
+#define REC_TASK_STACK    49152  /* 48KB:40KB 在安静音频下余 14.5KB,有人声
+ * (voiced,SILK pitch stage-3 更深)仍见 crumb=8 随机 panic——再加 8KB 保险;
+ * PSRAM 栈,成本可忽略。结构性根治=libopus 伪栈化(ADR-044 P3) */
 #define REC_DIR           "/sdcard/ambient"
 /* 16kHz mono PCM16: 32 bytes / ms */
 #define PCM_BYTES_PER_MS  32
