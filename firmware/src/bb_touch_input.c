@@ -36,6 +36,11 @@ static void screen_gesture_cb(lv_event_t* e) {
   if (dir == LV_DIR_RIGHT) {
     ESP_LOGI(TAG, "gesture=swipe-right -> BACK");
     bb_nav_input_inject(BB_NAV_EVENT_BACK);
+  } else if (dir == LV_DIR_LEFT) {
+    /* 左滑 → LEFT：竖屏聊天态映射为「打开设置」（回复中也可进，TTS 不断），
+     * 避免用右滑(BACK)进设置——busy 时 BACK 语义是取消回合 */
+    ESP_LOGI(TAG, "gesture=swipe-left -> LEFT");
+    bb_nav_input_inject(BB_NAV_EVENT_LEFT);
   }
 }
 

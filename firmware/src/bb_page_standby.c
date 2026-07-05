@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_nav_input.h"
 #include "bb_ota.h"
 #include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
@@ -182,6 +183,11 @@ static void build_colon(void) {
   }
 }
 
+static void standby_tap_cb(lv_event_t* e) {
+  (void)e;
+  bb_nav_input_inject(BB_NAV_EVENT_UP);
+}
+
 void bb_page_standby_create(lv_obj_t* scr) {
   if (scr == NULL || s_view != NULL) return;
 
@@ -193,6 +199,10 @@ void bb_page_standby_create(lv_obj_t* scr) {
   lv_obj_set_style_bg_opa(s_view, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_view, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scrollbar_mode(s_view, LV_SCROLLBAR_MODE_OFF);
+  /* 触摸：待机点一下 = 唤醒进聊天（注入 UP,唤醒边沿被消费不透传;
+   * 无触摸板上没有指针 indev,CLICKED 永不触发,零行为差异） */
+  lv_obj_add_flag(s_view, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(s_view, standby_tap_cb, LV_EVENT_CLICKED, NULL);
 
   for (int slot = 0; slot < 4; slot++) build_digit(slot);
   build_colon();
