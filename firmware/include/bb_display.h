@@ -16,6 +16,11 @@ void bb_display_get_content_box(int* x, int* y, int* w, int* h);
 /** LVGL display 句柄（触摸 indev 注册用；display init 之后有效） */
 struct _lv_display_t;
 struct _lv_display_t* bb_display_get_lv_display(void);
+/** 悬浮 PTT 钮的主题托管：聊天主题 enter 时收编（overlay 可盖住它），
+ *  exit 时必须先 release（归还顶层并隐藏）再删主题根，否则钮被级联删除。 */
+struct _lv_obj_t;
+void bb_display_ptt_button_adopt(struct _lv_obj_t* new_parent);
+void bb_display_ptt_button_release(void);
 esp_err_t bb_display_show_status(const char* status_line);
 /** ADR-038: 密语解锁失败后，把 ASR 识别到的文本叠到锁屏 hint（「听到「…」请重说」）。
  *  在 bb_display_show_status(BB_STATUS_VERIFY_ERR) 之后调用；空串/NULL 清除。 */

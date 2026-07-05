@@ -1215,6 +1215,20 @@ static void ptt_btn_event_cb(lv_event_t* e) {
 }
 #endif
 
+/* 聊天主题托管悬浮 PTT 钮：进聊天时收编为主题子节点（任何盖在聊天上的
+ * overlay——设置/任务列表等——天然盖住它），退出时归还全局顶层并隐藏。 */
+void bb_display_ptt_button_adopt(lv_obj_t* new_parent) {
+  if (s_obj_ptt_btn == NULL || new_parent == NULL) return;
+  lv_obj_set_parent(s_obj_ptt_btn, new_parent);
+  lv_obj_move_foreground(s_obj_ptt_btn);
+}
+
+void bb_display_ptt_button_release(void) {
+  if (s_obj_ptt_btn == NULL) return;
+  lv_obj_set_parent(s_obj_ptt_btn, lv_layer_top());
+  lv_obj_add_flag(s_obj_ptt_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
 int bb_display_ptt_button_hit(int x, int y) {
   if (!s_ptt_btn_active || s_ptt_btn_r <= 0) return 0;
   const int dx = x - s_ptt_btn_cx;

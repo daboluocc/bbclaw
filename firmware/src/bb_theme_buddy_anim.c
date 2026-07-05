@@ -188,11 +188,20 @@ static void theme_on_enter(lv_obj_t* parent) {
    * the live mic level now feeds the bottom VU instead. */
 
   s_st.active_assistant = NULL;
+#if BB_UI_PORTRAIT
+  /* 收编悬浮 PTT 钮：作为主题根的前景子节点，设置等 overlay 在屏幕层
+   * 天然盖住它（此前钮在全局顶层，浮在设置页之上——bug） */
+  bb_display_ptt_button_adopt(s_st.root);
+#endif
   s_st.built = 1;
 }
 
 static void theme_on_exit(void) {
   if (!s_st.built) return;
+#if BB_UI_PORTRAIT
+  /* 必须先归还（顶层+隐藏）再删根，否则钮被级联删除留下悬垂指针 */
+  bb_display_ptt_button_release();
+#endif
   if (s_st.root != NULL) {
     lv_obj_del(s_st.root);
   }
