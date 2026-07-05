@@ -1180,6 +1180,7 @@ static void disp_area_align2_cb(lv_area_t* area) {
 
 /* ── 屏上 PTT 圆钮：命中几何 + 激活态（纯 int，触摸定时器可无锁读取；
  *    模拟器同编译，便于预览布局） ── */
+static lv_obj_t* s_obj_ptt_btn;
 static int s_ptt_btn_cx = -1;
 static int s_ptt_btn_cy = -1;
 static int s_ptt_btn_r  = 0;
@@ -1219,7 +1220,9 @@ static void create_ui(void) {
   /* 顶栏占用顶部圆角带（把角带让给 chrome、内容让给中心区）：条上移到 y=10，
    * 条内文字按 R114 在该高度带的弧线水平退让（r−√(r²−(r−y)²) ≈ 50，取 52）。 */
   const int topbar_y = 10;
-  const int topbar_inset_x = 52;
+  /* 按条带【顶缘】y=10 的弧线算（此前按中部算 52 导致文字上沿被角吃掉）：
+   * r−√(r²−(r−y)²) = 114−√(114²−104²) ≈ 67 → 取 68 */
+  const int topbar_inset_x = 68;
   const int content_y = topbar_y + status_h + 8;
 #else
   const int topbar_y = UI_SAFE_TOP;
@@ -1227,13 +1230,15 @@ static void create_ui(void) {
   const int content_y = UI_SAFE_TOP + status_h + UI_GAP;
 #endif
 #if BB_UI_PORTRAIT
-  /* PTT 底栏区同理占用底部圆角带：贴底留 8px；圆钮水平居中天然避角
-   * （x∈[159,251] ⊂ [114,296] 底边直线段）。 */
+  /* PTT 圆钮悬浮于内容之上（用户指示）：内容区铺满到底（留 8px），钮的
+   * 锚点仍在底部带；滚动容器用 pad_bottom 让最后一条内容能滚到钮上方。
+   * 圆钮水平居中天然避角（x∈[159,251] ⊂ [114,296] 底边直线段）。 */
   const int bottom_bar_y = DISP_H - 8 - UI_BOTTOM_BAR_H;
+  const int content_h = DISP_H - 8 - content_y;
 #else
   const int bottom_bar_y = DISP_H - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H;
-#endif
   const int content_h = bottom_bar_y - content_y - UI_GAP;
+#endif
 
   /* 内容盒登记（主题/overlay 与主视图对齐用，避免各处重复推导） */
   s_content_box_x = UI_SAFE_LEFT;
@@ -1356,6 +1361,7 @@ static void create_ui(void) {
    * 并登记圆心/半径；按下反馈由录音视图本身承担（出现即反馈）。 */
   {
     lv_obj_t* btn = lv_obj_create(s_view_active);
+    s_obj_ptt_btn = btn;
     lv_obj_remove_style_all(btn);
     lv_obj_set_size(btn, UI_PTT_BTN_D, UI_PTT_BTN_D);
     const int btn_x = (DISP_W - UI_PTT_BTN_D) / 2;
@@ -1414,7 +1420,8 @@ static void create_ui(void) {
     const int halo_inner = 88;
     const int halo_outer = 108;
     const int group_h = halo_outer + 26 + lh + 6 + lh + 28 + UI_RECORD_METER_H;
-    const int group_top = (content_h - group_h) / 2;
+    /* 居中范围排除悬浮钮带，避免 VU 压在钮下 */
+    const int group_top = (content_h - UI_BOTTOM_BAR_H - group_h) / 2;
     const int halo_outer_y = group_top;
     const int halo_inner_y = group_top + (halo_outer - halo_inner) / 2;
     const int badge_y_abs = group_top + (halo_outer - badge_size) / 2;
@@ -1489,7 +1496,11 @@ static void create_ui(void) {
     lv_obj_set_style_text_font(s_lbl_record_hint, font, 0);
     lv_obj_set_style_text_align(s_lbl_record_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_lbl_record_hint, "松开发送");
+#if BB_UI_PORTRAIT
+    lv_obj_set_pos(s_lbl_record_hint, 0, content_h - UI_BOTTOM_BAR_H - 24); /* 悬浮钮上方 */
+#else
     lv_obj_set_pos(s_lbl_record_hint, 0, content_h - 16);
+#endif
 
     s_obj_record_meter = lv_obj_create(s_view_speaking);
     lv_obj_remove_style_all(s_obj_record_meter);
@@ -1520,6 +1531,13 @@ static void create_ui(void) {
   lv_obj_add_flag(s_scroll_text, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_scroll_dir(s_scroll_text, LV_DIR_VER);
   lv_obj_set_scrollbar_mode(s_scroll_text, LV_SCROLLBAR_MODE_OFF);
+
+#if BB_UI_PORTRAIT
+  /* 悬浮 PTT 钮遮住底部 ~116px：给滚动区补底部内边距，滚到底时最后一行
+   * 停在钮上方；钮本体置顶悬浮。 */
+  lv_obj_set_style_pad_bottom(s_scroll_text, UI_BOTTOM_BAR_H, 0);
+  if (s_obj_ptt_btn != NULL) lv_obj_move_foreground(s_obj_ptt_btn);
+#endif
 
   s_lbl_text = lv_label_create(s_scroll_text);
   lv_obj_set_width(s_lbl_text, body_w - 4);

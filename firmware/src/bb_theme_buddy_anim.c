@@ -5,6 +5,7 @@
 #include "bb_chat_recording.h"
 #include "bb_chat_transcript.h"
 #include "bb_display.h"
+#include "bb_ui_layout.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_power.h"
@@ -162,7 +163,14 @@ static void theme_on_enter(lv_obj_t* parent) {
   s_st.transcript = bb_chat_transcript_create(s_st.root, cb_w, cb_h, cb_y);
   {
     lv_obj_t* cont = bb_chat_transcript_get_container();
-    if (cont != NULL) lv_obj_align(cont, LV_ALIGN_TOP_MID, 0, cb_y);
+    if (cont != NULL) {
+      lv_obj_align(cont, LV_ALIGN_TOP_MID, 0, cb_y);
+#if BB_UI_PORTRAIT
+      /* 悬浮 PTT 钮遮内容区底部 ~116px：补底部内边距，滚到底时最后一条
+       * 气泡停在钮上方（空白垫层滚到钮后面）。 */
+      lv_obj_set_style_pad_bottom(cont, 116, 0);
+#endif
+    }
   }
 
   /* Recording state is shown by the ACTIVE view's bottom bar (BAR_LISTEN /
