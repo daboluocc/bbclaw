@@ -659,25 +659,36 @@ esp_err_t bb_ogg_opus_encoder_append_pcm16(bb_ogg_opus_encoder_t* encoder, const
   ESP_RETURN_ON_ERROR(ensure_codec_mutex(), TAG, "codec mutex unavailable");
   *out_data = nullptr;
   *out_len = 0;
-  if (pcm != nullptr && sample_count > 0U) {
-    if (sample_count > encoder->state.pending_capacity - encoder->state.pending_samples) {
-      ESP_LOGE(TAG, "append overflow sample_count=%u pending=%u capacity=%u pcm=%p(%s)", (unsigned)sample_count,
-               (unsigned)encoder->state.pending_samples, (unsigned)encoder->state.pending_capacity, pcm,
-               ptr_region(pcm));
-      return ESP_ERR_INVALID_SIZE;
-    }
-    memcpy(encoder->state.pending_pcm + encoder->state.pending_samples, pcm, sample_count * sizeof(int16_t));
-    encoder->state.pending_samples += sample_count;
-  }
   size_t encoded_len = 0;
   CodecLockGuard codec_lock(s_codec_mutex);
   if (!codec_lock.ok()) {
     return ESP_ERR_INVALID_STATE;
   }
-  esp_err_t err = encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len);
-  if (err != ESP_OK) {
-    return err;
-  }
+  /* 分片喂入:pending 容量恰好一帧(960),历史上调用方块尺寸(512)与帧长不整除时
+   * 第二块必 ESP_ERR_INVALID_SIZE 且永久卡死(录音 P1a 实锤:整段只录进 ~60ms)。
+   * 改为内部循环 копи→满帧即编码→继续,任意 sample_count 都可消化;
+   * encoded_len 跨迭代累积(append_ogg_page_to_buffer 按 *out_len 追加)。 */
+  size_t consumed = 0;
+  do {
+    if (pcm != nullptr && consumed < sample_count) {
+      const size_t space = encoder->state.pending_capacity - encoder->state.pending_samples;
+      size_t chunk = sample_count - consumed;
+      if (chunk > space) chunk = space;
+      if (chunk == 0U) {
+        ESP_LOGE(TAG, "append stall: pending=%u capacity=%u", (unsigned)encoder->state.pending_samples,
+                 (unsigned)encoder->state.pending_capacity);
+        return ESP_ERR_INVALID_STATE;
+      }
+      memcpy(encoder->state.pending_pcm + encoder->state.pending_samples, pcm + consumed,
+             chunk * sizeof(int16_t));
+      encoder->state.pending_samples += chunk;
+      consumed += chunk;
+    }
+    esp_err_t err = encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len);
+    if (err != ESP_OK) {
+      return err;
+    }
+  } while (pcm != nullptr && consumed < sample_count);
   return malloc_copy(encoder->state.encoded_buf, encoded_len, out_data, out_len);
 }
 

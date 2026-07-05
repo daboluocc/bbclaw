@@ -36,7 +36,11 @@ static const char* TAG = "bb_recorder";
 
 #define REC_BITRATE_BPS   16000
 #define REC_SEGMENT_MS    60000
-#define REC_TASK_STACK    16384
+/* 40KB(对齐 BB_STREAM_TASK_STACK):libopus 是 USE_ALLOCA 编译,一次完整
+ * SILK 编码 alloca ~23-24KB 任务栈(反汇编实测,silk_encode_frame_FIX 一层
+ * 就 9.5KB+动态)。24KB 曾差 400B 溢出——PSRAM 栈溢出不 fault,直接写烂
+ * 邻居堆数据,死点飘忽(P1a 60s 崩溃全案根因之一)。PSRAM 栈不心疼。 */
+#define REC_TASK_STACK    40960
 #define REC_DIR           "/sdcard/ambient"
 /* 16kHz mono PCM16: 32 bytes / ms */
 #define PCM_BYTES_PER_MS  32
@@ -102,10 +106,10 @@ static int segment_open(void) {
     s_rec.seg_fp = NULL;
     return -1;
   }
-  /* 排障:crumb=1=flush 内 PANIC。DTX 已排除;现去掉整个 set_bitrate
-   * (与天天跑的 PTT 编码器完全同配置)验证 CBR/VBR(0) 是否元凶。
-   * auto 码率 ≈19-25kbps,存储账仍可接受。 */
-  /* (void)bb_ogg_opus_encoder_set_bitrate(s_rec.enc, REC_BITRATE_BPS, 0); */
+  /* ⚠️ 不设 CBR——真凶终审:OPUS_SET_VBR(0)(CBR)让 opus_encode 栈消耗
+   * 暴涨 ~12KB(SILK CBR 多趟编码栈缓冲),16KB 栈直接溢出 PANIC(死点飘忽=
+   * 栈被打烂);24KB 栈也仅剩 408B。默认 VBR 实测轮转栈深 ~12KB,稳定。
+   * auto 码率 ≈20-25kbps(9-11MB/h),存储账可接受(ADR-044 §3.3 修订)。 */
   CRUMB(8);
   s_rec.seg_pcm_ms = 0;
   s_rec.seg_bytes = 0;
@@ -154,6 +158,9 @@ static void segment_close(void) {
              (long long)s_rec.seg_pcm_ms, (long long)s_rec.seg_bytes);
     index_append(line);
     s_rec.seg_done++;
+    ESP_LOGI(TAG, "seg %d closed dur=%llds bytes=%lld (%.1fkbps)", s_rec.seg_seq,
+             (long long)s_rec.seg_pcm_ms / 1000, (long long)s_rec.seg_bytes,
+             s_rec.seg_pcm_ms > 0 ? (double)s_rec.seg_bytes * 8.0 / (double)s_rec.seg_pcm_ms : 0.0);
   }
 }
 
@@ -191,6 +198,10 @@ static void recorder_task(void* arg) {
     if (err == ESP_OK && out != NULL) {
       segment_write(out, out_len);
       bb_ogg_opus_free(out);
+    } else if (err != ESP_OK) {
+      /* 编码失败不可静默(P1a 教训:静默吞错让"整段只录 60ms"隐身了一整天) */
+      ESP_LOGE(TAG, "append_pcm16 failed: %s", esp_err_to_name(err));
+      s_rec.write_error = 1;
     }
     s_rec.seg_pcm_ms += (int64_t)item_size / PCM_BYTES_PER_MS;
 
