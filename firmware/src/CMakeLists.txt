@@ -41,6 +41,7 @@ set(_bb_srcs
     "bb_page_recorder.c"
     "bb_panic_crumb.c"
     "bb_recorder.c"
+    "bb_recplay.c"
     "bb_sdcard.c"
     "bb_session_store.c"
     "bb_state.c"

@@ -33,6 +33,11 @@
 
 #include "bb_ui_settings.h"
 
+#include <dirent.h>
+#include <time.h>
+
+#include "bb_recorder.h"
+#include "bb_recplay.h"
 #include "bb_sdcard.h"
 #include "bb_time.h"
 
@@ -160,6 +165,7 @@ typedef enum {
    * Reached as a row in the Settings list (there is ONE menu = Settings; no
    * separate standby main-menu). */
   LEVEL_REMINDERS,
+  LEVEL_RECFILES,   /* ADR-044:SD 录音浏览(会话→段→点按播放) */
 } settings_level_t;
 
 /* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
@@ -175,6 +181,7 @@ typedef enum {
   MAIN_ROW_VOLUME,
   MAIN_ROW_MIYU,
   MAIN_ROW_RECORDER,     /* ADR-044 长录音入口(有 SD 卡槽的板);双击确认防误进 */
+  MAIN_ROW_RECFILES,     /* ADR-044:SD 录音浏览+设备端回放 */
   MAIN_ROW_CHECK_UPDATE, /* cloud_saas only — runs an OTA check (→ confirm page) */
   MAIN_ROW_SYSINFO,      /* read-only "About" page */
   MAIN_ROW_BACK,
@@ -219,6 +226,12 @@ typedef struct {
   ota_row_status_t ota_status;
   int64_t recorder_arm_ms; /* ADR-044 录音行双击确认窗口起点(0=未武装) */
   int64_t miyu_arm_ms;     /* 密语开关双击确认窗口起点(0=未武装,用户要求状态修改需确认) */
+  /* ADR-044 录音浏览器:0=会话列表 1=段列表;条目名缓存(会话=epoch 目录名,段=文件名) */
+  int recfiles_mode;
+  char recfiles_dir[24];              /* 当前会话目录名 */
+  char recfiles_names[16][16];        /* 上限=行池容量 s_st.rows[16](超出越界=悬垂
+                                       * 指针 set_text 崩,真机踩过);倒序留最新 16 条 */
+  int recfiles_count;
   volatile int ota_check_pending;
   volatile uint32_t ota_check_generation;
 
@@ -458,6 +471,7 @@ static int main_visible_rows(main_row_t* out) {
 #if BBCLAW_SDMMC_ENABLE
   /* 长录音(ADR-044):有卡槽的板常显;无卡时行文案提示 no SD card */
   out[n++] = MAIN_ROW_RECORDER;
+  out[n++] = MAIN_ROW_RECFILES;
 #endif
   /* 密语(锁屏语音解锁) only works in cloud_saas (passphrase_unlock_enabled), so
    * the toggle is only meaningful there — like the ADAPTER/SESSIONS rows (ADR-037). */
@@ -625,6 +639,9 @@ static void render_main(void) {
         } else {
           snprintf(buf, sizeof(buf), "Recording");
         }
+        break;
+      case MAIN_ROW_RECFILES:
+        snprintf(buf, sizeof(buf), "Recordings");
         break;
       case MAIN_ROW_CHECK_UPDATE:
         /* Dedicated OTA-check action (the read-only version lives in System
@@ -1042,6 +1059,8 @@ static void render_reminders(void) {
   highlight_selected();
 }
 
+static void render_recfiles(void); /* fwd: 定义在 rerender 之后 */
+
 static void rerender(void) {
   switch (s_st.level) {
     case LEVEL_MAIN:           render_main(); break;
@@ -1052,6 +1071,7 @@ static void rerender(void) {
     case LEVEL_VOLUME_ADJUST:  render_volume_adjust(); break;
     case LEVEL_SYSINFO:        render_sysinfo(); break;
     case LEVEL_REMINDERS:      render_reminders(); break;
+    case LEVEL_RECFILES:       render_recfiles(); break;
   }
 }
 
@@ -1060,6 +1080,85 @@ static void enter_reminders(void) {
   s_st.sel = 0;
   /* Opening the 已提醒 list = the user has seen them → clear unread (badge)。 */
   bb_notification_mark_all_read();
+  rerender();
+}
+
+/* ── Render: 录音浏览页 (LEVEL_RECFILES, ADR-044) ──
+ * 会话列表(目录名=epoch,格式化为日期)→段列表(.opus,点按播放/再点停止)。
+ * FS 扫描只在进入/切层时做一次并缓存;录音进行中不进段播放(FATFS 单用户)。 */
+
+static int recfiles_name_cmp_desc(const void* a, const void* b) {
+  return strcmp((const char*)b, (const char*)a); /* 倒序:最新在前 */
+}
+
+static void recfiles_scan(void) {
+  s_st.recfiles_count = 0;
+  char path[64];
+  if (s_st.recfiles_mode == 0) {
+    snprintf(path, sizeof(path), "/sdcard/ambient");
+  } else {
+    snprintf(path, sizeof(path), "/sdcard/ambient/%s", s_st.recfiles_dir);
+  }
+  DIR* d = opendir(path);
+  if (d == NULL) return;
+  struct dirent* e;
+  while ((e = readdir(d)) != NULL && s_st.recfiles_count < 16) {
+    if (e->d_name[0] == '.') continue;
+    if (s_st.recfiles_mode == 0) {
+      if (e->d_type != DT_DIR) continue;
+    } else {
+      if (strstr(e->d_name, ".opus") == NULL) continue;
+    }
+    /* d_name 最长 255,显式截断到槽宽(目录名=epoch 10 位/段名 11 位,实际不会截) */
+    strncpy(s_st.recfiles_names[s_st.recfiles_count], e->d_name, sizeof(s_st.recfiles_names[0]) - 1);
+    s_st.recfiles_names[s_st.recfiles_count][sizeof(s_st.recfiles_names[0]) - 1] = '\0';
+    s_st.recfiles_count++;
+  }
+  closedir(d);
+  qsort(s_st.recfiles_names, (size_t)s_st.recfiles_count, sizeof(s_st.recfiles_names[0]),
+        recfiles_name_cmp_desc);
+}
+
+static void render_recfiles(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, s_st.recfiles_mode == 0 ? "Recordings" : "Segments");
+  if (s_st.recfiles_count <= 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], s_st.recfiles_mode == 0 ? "No recordings yet" : "(empty)");
+    highlight_selected();
+    return;
+  }
+  build_rows_box(s_st.recfiles_count);
+  for (int i = 0; i < s_st.recfiles_count; ++i) {
+    char buf[64];
+    if (s_st.recfiles_mode == 0) {
+      /* 目录名=epoch 秒 → "07-05 23:14";b 前缀(无墙钟)原样显示 */
+      long long ep = atoll(s_st.recfiles_names[i]);
+      if (ep > 1600000000LL) {
+        time_t tt = (time_t)ep;
+        struct tm tmv;
+        localtime_r(&tt, &tmv);
+        snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour,
+                 tmv.tm_min);
+      } else {
+        snprintf(buf, sizeof(buf), "%s", s_st.recfiles_names[i]);
+      }
+    } else {
+      char full[96];
+      snprintf(full, sizeof(full), "/sdcard/ambient/%s/%s", s_st.recfiles_dir, s_st.recfiles_names[i]);
+      int playing = (strcmp(bb_recplay_current(), full) == 0);
+      snprintf(buf, sizeof(buf), "%s%s", playing ? "> " : "  ", s_st.recfiles_names[i]);
+    }
+    lv_label_set_text(s_st.rows[i], buf);
+  }
+  highlight_selected();
+}
+
+static void enter_recfiles(void) {
+  s_st.level = LEVEL_RECFILES;
+  s_st.recfiles_mode = 0;
+  s_st.sel = 0;
+  recfiles_scan();
   rerender();
 }
 
@@ -1995,6 +2094,9 @@ void bb_ui_settings_handle_rotate(int delta) {
       row_count = cnt > 0 ? cnt : 1; /* the "还没有提醒" placeholder is 1 row */
       break;
     }
+    case LEVEL_RECFILES:
+      row_count = s_st.recfiles_count > 0 ? s_st.recfiles_count : 1;
+      break;
     default:
       return;
   }
@@ -2068,6 +2170,9 @@ int bb_ui_settings_handle_click(void) {
           rerender();
           break;
         }
+        case MAIN_ROW_RECFILES:
+          enter_recfiles();
+          break;
         case MAIN_ROW_RECORDER: {
           /* ADR-044:录音是隐私敏感操作,双击确认(5s 窗口)。确认后返回 2,
            * radio_app 负责退出设置并进 RECORDER 态(含无卡二次挂载重试)。 */
@@ -2223,6 +2328,33 @@ int bb_ui_settings_handle_click(void) {
       /* Read-only list. OK returns to the Settings list (like BACK). */
       return_to_main(MAIN_ROW_REMINDERS);
       return 0;
+
+    case LEVEL_RECFILES: {
+      if (s_st.recfiles_count <= 0) {
+        return_to_main(MAIN_ROW_RECFILES);
+        return 0;
+      }
+      if (s_st.sel < 0 || s_st.sel >= s_st.recfiles_count) return 0;
+      if (s_st.recfiles_mode == 0) {
+        /* 会话 → 段列表 */
+        snprintf(s_st.recfiles_dir, sizeof(s_st.recfiles_dir), "%s", s_st.recfiles_names[s_st.sel]);
+        s_st.recfiles_mode = 1;
+        s_st.sel = 0;
+        recfiles_scan();
+        rerender();
+        return 0;
+      }
+      /* 段 → 播放/停止(录音中或 TTS 占用时拒绝并提示) */
+      char full[96];
+      snprintf(full, sizeof(full), "/sdcard/ambient/%s/%s", s_st.recfiles_dir,
+               s_st.recfiles_names[s_st.sel]);
+      esp_err_t perr = bb_recplay_toggle(full);
+      if (perr == ESP_ERR_INVALID_STATE) {
+        lv_label_set_text(s_st.header_lbl, "Busy (recording/TTS)");
+      }
+      rerender();
+      return 0;
+    }
   }
   return 0;
 }
@@ -2234,6 +2366,17 @@ int bb_ui_settings_handle_back(void) {
       return 1; /* caller exits to chat */
     case LEVEL_REMINDERS:
       return_to_main(MAIN_ROW_REMINDERS);
+      return 0;
+    case LEVEL_RECFILES:
+      bb_recplay_stop(); /* 离开浏览层即停播 */
+      if (s_st.recfiles_mode == 1) {
+        s_st.recfiles_mode = 0;
+        s_st.sel = 0;
+        recfiles_scan();
+        rerender();
+        return 0;
+      }
+      return_to_main(MAIN_ROW_RECFILES);
       return 0;
     case LEVEL_DRIVER_PICKER:
       return_to_main(MAIN_ROW_DRIVER);
