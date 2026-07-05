@@ -15,6 +15,7 @@
 #include "bb_display.h"
 #include "bb_notification.h"
 #include "bb_session_store.h"
+#include "bb_ui_layout.h" /* BB_DISP_W/H, BB_UI_PORTRAIT, BB_UI_SAFE_* — 竖屏 picker 几何 */
 #include "bb_ui_theme.h"
 #include "bb_state.h"
 #include "bb_time.h"
@@ -161,9 +162,9 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 #define BB_CHAT_PICKER_MAX_ITEMS 12
 #define BB_CHAT_DRIVER_CACHE_MAX 6
 
-/* Session picker removed (ADR-021-firmware-ui v2, issue #103).
- * BB_SESSION_PICKER_ROW_H kept for history-fetch row sizing compatibility. */
-#define BB_SESSION_PICKER_ROW_H    20
+/* Session picker removed (ADR-021-firmware-ui v2, issue #103); its leftover
+ * BB_SESSION_PICKER_ROW_H define was dead (zero references) and was dropped
+ * during the portrait-watch layout pass. */
 
 /* Phase S3 — history replay tunables.
  *  - PAGE_SIZE: how many messages we ask for in one round trip. 50 fits a
@@ -228,6 +229,9 @@ typedef struct {
   const char* const* picker_phrases;  /* 调用方持有；不含 Settings 行 */
   int picker_count;            /* 包含首行 Settings；= caller_count + 1 */
   int picker_sel;
+  int picker_visible;          /* 可见行数。方屏=BB_PICKER_VISIBLE(3) 不变；
+                                * 竖屏由 content box 可用高度运行时推导（铁律：
+                                * 触屏行高固定、行数不写死），见 picker_show。 */
   /* 当前模式：picker 或 settings */
   bb_chat_mode_t mode;
 
@@ -1650,6 +1654,10 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
  * theme drew there (text-only theme reserves a 20px input row that says
  * "(input not wired yet)"; we cover it).
  *
+ * 竖屏手表（BB_UI_PORTRAIT，410×502）：改为悬浮面板——底缘对齐 content box
+ * 底（即 PTT 圆钮带上方），左右各内缩 BB_UI_SAFE_LR；64px 触摸行高，可见
+ * 行数由可用高度运行时推导（上限 5）。方屏分支行为一字不改。
+ *
  * Visual model: a column of label rows. The selected row gets a brighter
  * background. There is no LVGL focus group here (single source of truth is
  * s_chat.picker_sel + an explicit re-render).
@@ -1662,33 +1670,77 @@ esp_err_t bb_ui_agent_chat_send(const char* text) {
 #define BB_PICKER_FG_DIM   BB_UI_TEXT_DIM
 #define BB_PICKER_SEL_BG   BB_UI_DOT_GHOST
 #define BB_PICKER_SEL_FG   BB_UI_DOT_LIT
+#if BB_UI_PORTRAIT
+/* 竖屏手表（410×502，R114 物理圆角 → BB_UI_CORNER_INSET=34，BB_UI_SAFE_LR=22）：
+ * 纯触屏设备，行=触摸目标 ≥56px（ADR-040 §UI）——取 64 与 bb_ui_settings.c 的
+ * ROW_H 对齐，行内文字（CJK line_height=20）用上下 pad 垂直居中。可见行数不
+ * 写死：picker_show 里由 bb_display_get_content_box() 的可用高度运行时推导
+ * （content box 已扣除顶栏与底部 116px PTT 圆钮带），上限 5。 */
+#define BB_PICKER_ROW_H       64
+#define BB_PICKER_VISIBLE_MAX 5   /* 推导上限；当前几何 (336-8)/64=5 行整 */
+#define BB_PICKER_PAD         4   /* picker_root pad_all */
+#define BB_PICKER_ROW_PAD_LR  14  /* 行内文字左右内缩（同 settings ROW_PAD_LR） */
+#define BB_PICKER_ROW_RADIUS  8
+#define BB_PICKER_SEL_BAR_W   6   /* 选中行左缘 accent 竖条（同 settings SEL_BAR_W） */
+#define BB_PICKER_PANEL_RADIUS 12 /* 悬浮面板圆角——也给顶角留出遮罩余量 */
+#else
 #define BB_PICKER_ROW_H    16
 #define BB_PICKER_VISIBLE  3   /* show 3 rows; user sees current + neighbors */
+#define BB_PICKER_PAD      2
+#define BB_PICKER_ROW_PAD_LR 4
+#define BB_PICKER_ROW_RADIUS 3
+#define BB_PICKER_SEL_BAR_W  3
+#endif
+
+#if BB_UI_PORTRAIT
+/* 竖屏 picker 行显式设字体（方屏沿用继承字体，行为一字不改）。与
+ * bb_theme_text_only.c / bb_lvgl_display.c 同一 idiom：有 CJK 字库用 CJK，
+ * 否则退回 LVGL 默认。 */
+#ifdef BBCLAW_HAVE_CJK_FONT
+extern const lv_font_t lv_font_bbclaw_cjk;
+#endif
+static const lv_font_t* picker_font(void) {
+#ifdef BBCLAW_HAVE_CJK_FONT
+  return &lv_font_bbclaw_cjk;
+#else
+  return lv_font_get_default();
+#endif
+}
+#endif /* BB_UI_PORTRAIT */
 
 static void picker_apply_styles(void) {
   if (s_chat.picker_count == 0) return;
-  /* "viewport" = which contiguous slice of items is visible */
-  int first = s_chat.picker_sel - BB_PICKER_VISIBLE / 2;
+  /* "viewport" = which contiguous slice of items is visible.
+   * 可见行数：方屏恒 3（编译期），竖屏在 picker_show 里运行时推导。 */
+  const int n_vis = s_chat.picker_visible;
+  int first = s_chat.picker_sel - n_vis / 2;
   if (first < 0) first = 0;
-  if (first + BB_PICKER_VISIBLE > s_chat.picker_count) {
-    first = s_chat.picker_count - BB_PICKER_VISIBLE;
+  if (first + n_vis > s_chat.picker_count) {
+    first = s_chat.picker_count - n_vis;
     if (first < 0) first = 0;
   }
   for (int i = 0; i < s_chat.picker_count; ++i) {
     lv_obj_t* row = s_chat.picker_items[i];
     if (row == NULL) continue;
-    int visible = (i >= first && i < first + BB_PICKER_VISIBLE);
+    int visible = (i >= first && i < first + n_vis);
     if (visible) {
       lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
     if (i == s_chat.picker_sel) {
+#if BB_UI_PORTRAIT
+      /* 选中行 = accent@40% 高亮（同 bb_ui_settings.c highlight_selected 的
+       * 对比度修正：DOT_GHOST 与屏底色都极暗，AMOLED 上几乎不可辨）。 */
+      lv_obj_set_style_bg_color(row, lv_color_hex(BB_UI_ACCENT), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_40, 0);
+#else
       lv_obj_set_style_bg_color(row, lv_color_hex(BB_PICKER_SEL_BG), 0);
       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+#endif
       lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_SEL_FG), 0);
       lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_width(row, BB_PICKER_SEL_BAR_W, 0);
       lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -1720,15 +1772,53 @@ void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
   s_chat.picker_sel = 0;
   s_chat.mode = BB_CHAT_MODE_PICKER;
 
+#if BB_UI_PORTRAIT
+  /* ── 竖屏几何推导（全部运行时，铁律：行高固定=触摸目标，行数不写死）──
+   * content box 由 bb_lvgl_display.c create_ui 注册，已扣掉顶栏与底部
+   * PTT 带：cb_y = topbar_y(10)+status_h(22)+8 = 40；
+   *         cb_h = (502-8-116[PTT带]) - 40 - 2 = 336；cb 底缘 y=376，
+   * 即天然在 PTT 圆钮带（y∈[378,494]）与 R114 底角带之上。
+   *  - 可见行 vis = (336-2*4)/64 = 5（clamp 到 [1..5]，短语更少则取 count）
+   *  - picker_h = 5*64+8 = 328 → 面板 y∈[48,376]
+   *  - 左右各内缩 BB_UI_SAFE_LR(22) → 宽 366，x∈[22,388]
+   *  - 顶角校核：面板左上角 (22,48) 距 R114 圆心 (114,114) ≈113.2 <114 可见；
+   *    面板自身 12px 圆角再让 ~5px，余量足。 */
+  int cb_x = 0, cb_y = 0, cb_w = 0, cb_h = 0;
+  bb_display_get_content_box(&cb_x, &cb_y, &cb_w, &cb_h);
+  if (cb_h <= 0) {
+    /* 防御：content box 未注册（理论不可达——chat 页在 create_ui 之后才存在）。
+     * 保守取屏中段下半，仍不进 PTT 带。 */
+    cb_y = BB_UI_SAFE_TOP;
+    cb_h = BB_DISP_H / 2;
+  }
+  int vis = (cb_h - 2 * BB_PICKER_PAD) / BB_PICKER_ROW_H;
+  if (vis > BB_PICKER_VISIBLE_MAX) vis = BB_PICKER_VISIBLE_MAX;
+  if (vis < 1) vis = 1;
+  s_chat.picker_visible = vis;
+  const int shown = total < vis ? total : vis; /* 短语少于可见行 → 面板收身 */
+  const int picker_h = shown * BB_PICKER_ROW_H + 2 * BB_PICKER_PAD;
+  const int bottom_off = -(BB_DISP_H - (cb_y + cb_h)); /* 面板底=content box 底 */
+#else
+  s_chat.picker_visible = BB_PICKER_VISIBLE;
   const int picker_h = BB_PICKER_ROW_H * BB_PICKER_VISIBLE + 4;
+#endif
 
   s_chat.picker_root = lv_obj_create(s_chat.parent);
   lv_obj_remove_style_all(s_chat.picker_root);
+#if BB_UI_PORTRAIT
+  /* 悬浮面板：不再贴死底边全宽（那会压进 PTT 圆钮带 + R114 底角遮罩）。 */
+  lv_obj_set_size(s_chat.picker_root, BB_DISP_W - 2 * BB_UI_SAFE_LR, picker_h);
+  lv_obj_align(s_chat.picker_root, LV_ALIGN_BOTTOM_MID, 0, bottom_off);
+  lv_obj_set_style_radius(s_chat.picker_root, BB_PICKER_PANEL_RADIUS, 0);
+  lv_obj_set_style_border_width(s_chat.picker_root, 1, 0);
+  lv_obj_set_style_border_color(s_chat.picker_root, lv_color_hex(BB_UI_DOT_GHOST), 0);
+#else
   lv_obj_set_size(s_chat.picker_root, lv_pct(100), picker_h);
   lv_obj_align(s_chat.picker_root, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+#endif
   lv_obj_set_style_bg_color(s_chat.picker_root, lv_color_hex(BB_PICKER_BG), 0);
   lv_obj_set_style_bg_opa(s_chat.picker_root, LV_OPA_COVER, 0);
-  lv_obj_set_style_pad_all(s_chat.picker_root, 2, 0);
+  lv_obj_set_style_pad_all(s_chat.picker_root, BB_PICKER_PAD, 0);
   lv_obj_set_flex_flow(s_chat.picker_root, LV_FLEX_FLOW_COLUMN);
   lv_obj_clear_flag(s_chat.picker_root, LV_OBJ_FLAG_SCROLLABLE);
   /* Make sure picker overlays the theme's input area. */
@@ -1737,9 +1827,19 @@ void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
   for (int i = 0; i < total; ++i) {
     lv_obj_t* row = lv_label_create(s_chat.picker_root);
     lv_obj_set_size(row, lv_pct(100), BB_PICKER_ROW_H);
-    lv_obj_set_style_pad_left(row, 4, 0);
-    lv_obj_set_style_pad_right(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_pad_left(row, BB_PICKER_ROW_PAD_LR, 0);
+    lv_obj_set_style_pad_right(row, BB_PICKER_ROW_PAD_LR, 0);
+#if BB_UI_PORTRAIT
+    /* 显式字体 + 行内垂直居中：上下 pad 对称收口，使 label 内容区高度恰为
+     * 一个 line_height（64-2*22=20）——LONG_DOTS 在单行内打点省略，不会因
+     * 内容区能塞两行而折行破坏居中。运行时取 line_height，换字库不失中。 */
+    lv_obj_set_style_text_font(row, picker_font(), 0);
+    int pad_v = (BB_PICKER_ROW_H - (int)lv_font_get_line_height(picker_font())) / 2;
+    if (pad_v < 0) pad_v = 0;
+    lv_obj_set_style_pad_top(row, pad_v, 0);
+    lv_obj_set_style_pad_bottom(row, pad_v, 0);
+#endif
+    lv_obj_set_style_radius(row, BB_PICKER_ROW_RADIUS, 0);
     lv_obj_set_style_text_color(row, lv_color_hex(BB_PICKER_FG), 0);
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
     const char* p = phrases[i];

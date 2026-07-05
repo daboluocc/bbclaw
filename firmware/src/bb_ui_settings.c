@@ -47,6 +47,7 @@
 #include "bb_session_store.h"
 #include "bb_transport.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -101,14 +102,44 @@ static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
 #define UI_ROW_SEL_BG  BB_UI_DOT_GHOST
 #define UI_ROW_CHECK_FG BB_UI_ACCENT
 
+#if BB_UI_PORTRAIT
+/* 竖屏手表 410×502，R60 物理圆角（顶角遮挡区 y<60，底角区 y>502-60=442）：
+ *  - HEADER_H=64：list 首行（全宽高亮底）从 y=64 起 → 完全在顶角区之下；标题
+ *    文字水平+垂直居中（pad_top=(64-20)/2，字面 line_height=20），居中构图避角。
+ *  - ROW_H=64：纯触屏设备，行=触摸目标，≥56px（ADR-040 §UI）；行内文字
+ *    pad_top 垂直居中。可见行数不写死——build_rows_box 用
+ *    avail_h = DISP_H-HEADER_H-FOOTER_H 运行时推导（(502-64-64-8)/64 ≈ 5.7
+ *    → 5 行整 + 半行滚动暗示）。
+ *  - FOOTER_H=64：list 底缘 502-64=438 < 442 → 行不进底角区；footer 提示
+ *    居中放在这条带里。 */
+#define HEADER_H 64
+#define ROW_H    64
+#define FOOTER_H 64
+/* 行内缩/选中条/滚动条按 64px 行高与安全区同步放大 */
+#define ROW_PAD_LR        14
+#define ROW_RADIUS        8
+#define SEL_BAR_W         6
+#define SCROLLBAR_W       5
+#define SCROLLBAR_PAD_R   BB_UI_SAFE_LR /* 滚动条离右缘 ≥ SAFE_LR(12)，不再贴边 */
+#define FOOTER_HINT_INSET 22 /* 提示行在 64px footer 带内垂直居中：(64-20)/2 */
+#define BOUNCE_PEAK       16 /* 过滚回弹幅度随 502px 高度放大（方屏 8px） */
+#else
 #define HEADER_H 22
 #define ROW_H    26
-/* System Info ("About") page rows: Firmware / Device / Mode / Heap. */
-#define SYSINFO_ROW_COUNT 4
 /* Reserve the bottom strip for the footer hint ("Hold to exit") — the
  * "reminder" the list must never overlap. The bbclaw panel is only 172px tall,
  * so the rows live in [HEADER_H, DISP_H - FOOTER_H] and scroll within it. */
 #define FOOTER_H 22
+#define ROW_PAD_LR        6
+#define ROW_RADIUS        3
+#define SEL_BAR_W         4
+#define SCROLLBAR_W       3
+#define SCROLLBAR_PAD_R   1
+#define FOOTER_HINT_INSET 4
+#define BOUNCE_PEAK       8
+#endif
+/* System Info ("About") page rows: Firmware / Device / Mode / Heap. */
+#define SYSINFO_ROW_COUNT 4
 
 /* ── Level / row enums ── */
 
@@ -270,6 +301,13 @@ static void build_rows_box(int row_count) {
   lv_obj_align(s_st.rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
   lv_obj_set_flex_flow(s_st.rows_box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_all(s_st.rows_box, 4, 0);
+#if BB_UI_PORTRAIT
+  /* 行两侧离屏缘 SAFE_LR(12)：list 在竖向中段（y∈[64,438]），圆角只吃四角，
+   * 边中部横向内缩 SAFE_LR 已足（贴角才需 CORNER_INSET）。上下 pad 保持 4，
+   * content_h 的 +8 数学不变。 */
+  lv_obj_set_style_pad_left(s_st.rows_box, BB_UI_SAFE_LR, 0);
+  lv_obj_set_style_pad_right(s_st.rows_box, BB_UI_SAFE_LR, 0);
+#endif
   lv_obj_set_style_pad_row(s_st.rows_box, 0, 0); /* exact ROW_H spacing for box_h math */
   /* Encoder-driven vertical scroll; lock the axis to vertical so a long marquee
    * row can't drag the list sideways. MODE_AUTO draws a thumb only when there's
@@ -281,18 +319,26 @@ static void build_rows_box(int row_count) {
   lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
   /* Scrollbar thumb — thin teal accent to match the selection idiom (dot-matrix
    * design language). Needs bg_opa > MIN or LVGL skips drawing it entirely. */
-  lv_obj_set_style_width(s_st.rows_box, 3, LV_PART_SCROLLBAR);
-  lv_obj_set_style_pad_right(s_st.rows_box, 1, LV_PART_SCROLLBAR);
+  lv_obj_set_style_width(s_st.rows_box, SCROLLBAR_W, LV_PART_SCROLLBAR);
+  lv_obj_set_style_pad_right(s_st.rows_box, SCROLLBAR_PAD_R, LV_PART_SCROLLBAR);
   lv_obj_set_style_radius(s_st.rows_box, 2, LV_PART_SCROLLBAR);
   lv_obj_set_style_bg_color(s_st.rows_box, lv_color_hex(BB_UI_ACCENT), LV_PART_SCROLLBAR);
   lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_70, LV_PART_SCROLLBAR);
   for (int i = 0; i < row_count && i < (int)(sizeof(s_st.rows) / sizeof(s_st.rows[0])); ++i) {
     lv_obj_t* row = lv_label_create(s_st.rows_box);
     lv_obj_set_size(row, lv_pct(100), ROW_H);
-    lv_obj_set_style_pad_left(row, 6, 0);
-    lv_obj_set_style_pad_right(row, 6, 0);
+    lv_obj_set_style_pad_left(row, ROW_PAD_LR, 0);
+    lv_obj_set_style_pad_right(row, ROW_PAD_LR, 0);
+#if BB_UI_PORTRAIT
+    /* 行=64px 触摸目标；文字（line_height=20）在行内垂直居中：
+     * pad_top=(64-20)/2=22 → 字面 y∈[22,42]，上下各余 22。运行时取
+     * line_height，换字库不失中。 */
+    lv_obj_set_style_pad_top(
+        row, (ROW_H - (int)lv_font_get_line_height(ui_font())) / 2, 0);
+#else
     lv_obj_set_style_pad_top(row, 4, 0);
-    lv_obj_set_style_radius(row, 3, 0);
+#endif
+    lv_obj_set_style_radius(row, ROW_RADIUS, 0);
     lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_FG), 0);
     lv_obj_set_style_text_font(row, ui_font(), 0);
     /* SCROLL (marquee) so long Chinese session titles in the picker scroll
@@ -317,7 +363,7 @@ static void highlight_selected(void) {
       lv_obj_set_style_bg_opa(row, LV_OPA_40, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(UI_ROW_SEL_FG), 0);
       lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-      lv_obj_set_style_border_width(row, 4, 0);
+      lv_obj_set_style_border_width(row, SEL_BAR_W, 0);
       lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -567,7 +613,9 @@ static void render_main(void) {
   s_st.hint_lbl = lv_label_create(s_st.root);
   lv_obj_set_style_text_color(s_st.hint_lbl, lv_color_hex(BB_UI_TEXT_DIM), 0);
   lv_label_set_text(s_st.hint_lbl, "Hold to exit");
-  lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -4);
+  /* 竖屏：提示在 64px footer 带内垂直居中（-22 → y∈[460,480]），水平居中
+   * 天然避开底部两角（底角遮挡区 y>442 且 x<60 / x>350）。方屏保持 -4。 */
+  lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -FOOTER_HINT_INSET);
 }
 
 /* ── Render: Driver picker ── */
@@ -712,11 +760,37 @@ static void render_model_picker(void) {
 
 /* ── Render: Volume adjust page ── */
 
+#if BB_UI_PORTRAIT
+/* 竖屏：控件组垂直居中 + 放大（方屏原版绝对 Y 聚顶）。
+ * 组高 = 条48 + 间距24 + 百分比20 + 间距12 + 提示20 = 124px；
+ * 可用带 = [HEADER_H, DISP_H - SAFE_BOTTOM] = [64, 484]，高 420 →
+ * VOL_BAR_Y = 64 + (420-124)/2 = 212，组占 y∈[212,336]，居中构图远离
+ * 上（y<60）下（y>442）圆角区。条宽 410-2×36=338（x∈[36,374]，边中部
+ * 只需 ≥SAFE_LR=12，富余）。 */
+#define VOL_BAR_X      36
+#define VOL_BAR_H      48
+#define VOL_BAR_BORDER 3
+#define VOL_FILL_R     6
+#define VOL_FRAME_R    10
+#define VOL_GAP_BAR_PCT  24 /* 条底 → 百分比标签 */
+#define VOL_GAP_PCT_HINT 12 /* 百分比 → 提示行 */
+#define VOL_TEXT_H       20 /* lv_font_bbclaw_cjk line_height */
+#define VOL_GROUP_H \
+  (VOL_BAR_H + VOL_GAP_BAR_PCT + VOL_TEXT_H + VOL_GAP_PCT_HINT + VOL_TEXT_H)
+#define VOL_BAR_Y \
+  (HEADER_H + (BB_DISP_H - HEADER_H - BB_UI_SAFE_BOTTOM - VOL_GROUP_H) / 2)
+#define VOL_PCT_LABEL_Y (VOL_BAR_Y + VOL_BAR_H + VOL_GAP_BAR_PCT)
+#define VOL_HINT_DY     (VOL_TEXT_H + VOL_GAP_PCT_HINT)
+#else
 #define VOL_BAR_X      8
 #define VOL_BAR_Y      48
 #define VOL_BAR_H      28
 #define VOL_BAR_BORDER 2
+#define VOL_FILL_R     2
+#define VOL_FRAME_R    3
 #define VOL_PCT_LABEL_Y  84
+#define VOL_HINT_DY    20
+#endif
 
 static void render_volume_adjust(void) {
   if (s_st.root == NULL) return;
@@ -727,7 +801,13 @@ static void render_volume_adjust(void) {
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.rows_box);
+#if BB_UI_PORTRAIT
+  /* lv_pct() 是编码值，不能与整数加减——方屏那行 lv_pct(100)-HEADER_H 实际
+   * 解码成 pct(78)，纯属巧合能看。竖屏直接用像素高度（方屏原状保留，勿动）。 */
+  lv_obj_set_size(s_st.rows_box, lv_pct(100), BB_DISP_H - HEADER_H);
+#else
   lv_obj_set_size(s_st.rows_box, lv_pct(100), lv_pct(100) - HEADER_H);
+#endif
   lv_obj_align(s_st.rows_box, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
   lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_opa(s_st.rows_box, LV_OPA_TRANSP, 0);
@@ -754,7 +834,7 @@ static void render_volume_adjust(void) {
   lv_obj_remove_style_all(fill);
   lv_obj_set_size(fill, fill_w, VOL_BAR_H - VOL_BAR_BORDER * 2);
   lv_obj_set_pos(fill, VOL_BAR_BORDER, VOL_BAR_BORDER);
-  lv_obj_set_style_radius(fill, 2, 0);
+  lv_obj_set_style_radius(fill, VOL_FILL_R, 0);
   lv_obj_set_style_bg_color(fill, lv_color_hex(BB_UI_ACCENT), 0);
   lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
   s_st.vol_fill = fill;
@@ -764,7 +844,7 @@ static void render_volume_adjust(void) {
   lv_obj_remove_style_all(frame);
   lv_obj_set_size(frame, bar_w, VOL_BAR_H);
   lv_obj_set_pos(frame, 0, 0);
-  lv_obj_set_style_radius(frame, 3, 0);
+  lv_obj_set_style_radius(frame, VOL_FRAME_R, 0);
   lv_obj_set_style_border_width(frame, VOL_BAR_BORDER, 0);
   lv_obj_set_style_border_color(frame, lv_color_hex(BB_UI_ACCENT), 0);
   lv_obj_set_style_border_opa(frame, LV_OPA_COVER, 0);
@@ -778,6 +858,11 @@ static void render_volume_adjust(void) {
   char buf[16];
   snprintf(buf, sizeof(buf), "%d%%", pct);
   lv_label_set_text(pct_lbl, buf);
+#if BB_UI_PORTRAIT
+  /* 百分比/提示与条同宽并居中——竖屏中置构图（方屏保持左对齐原状）。 */
+  lv_obj_set_width(pct_lbl, bar_w);
+  lv_obj_set_style_text_align(pct_lbl, LV_TEXT_ALIGN_CENTER, 0);
+#endif
   lv_obj_set_pos(pct_lbl, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H);
   s_st.vol_pct_lbl = pct_lbl;
 
@@ -786,7 +871,11 @@ static void render_volume_adjust(void) {
   lv_obj_set_style_text_color(hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
   lv_obj_set_style_text_font(hint, ui_font(), 0);
   lv_label_set_text(hint, "Up/Down adjust  OK to save");
-  lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + 20);
+#if BB_UI_PORTRAIT
+  lv_obj_set_width(hint, bar_w);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+#endif
+  lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + VOL_HINT_DY);
 }
 
 /* Partial update — only change fill width and label; no object rebuild */
@@ -1633,8 +1722,18 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   lv_obj_align(s_st.header_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
   lv_obj_set_style_text_color(s_st.header_lbl, lv_color_hex(UI_HEADER_FG), 0);
   lv_obj_set_style_text_font(s_st.header_lbl, ui_font(), 0);
+#if BB_UI_PORTRAIT
+  /* 标题水平+垂直居中于 64px header 带（方屏是贴左上 (0,0)+6px，那会撞
+   * R60 顶角）。文字 y∈[22,42]；顶角遮挡区在 y=22 处仅 x<14 / x>396
+   * （(x-60)²+(22-60)²>60² → x<13.6），居中文本远离两角。 */
+  lv_obj_set_style_text_align(s_st.header_lbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_pad_top(
+      s_st.header_lbl,
+      (HEADER_H - (int)lv_font_get_line_height(ui_font())) / 2, 0);
+#else
   lv_obj_set_style_pad_left(s_st.header_lbl, 6, 0);
   lv_obj_set_style_pad_top(s_st.header_lbl, 4, 0);
+#endif
 
   s_st.active = 1;
 
@@ -1708,8 +1807,9 @@ static void rows_box_translate_cb(void* obj, int32_t v) {
 static void overscroll_bounce(int dir) {
   if (s_st.rows_box == NULL) return;
   /* dir > 0 = tried to go past the bottom → nudge content UP and spring back;
-   * dir < 0 = past the top → nudge DOWN. ~8px reads clearly on the 172px panel. */
-  int32_t peak = (dir > 0) ? -8 : 8;
+   * dir < 0 = past the top → nudge DOWN. ~8px reads clearly on the 172px panel
+   * (竖屏 502px 高按比例放大到 16px，BOUNCE_PEAK). */
+  int32_t peak = (dir > 0) ? -BOUNCE_PEAK : BOUNCE_PEAK;
   lv_anim_del(s_st.rows_box, rows_box_translate_cb); /* restart cleanly on a fast double-press */
   lv_anim_t a;
   lv_anim_init(&a);

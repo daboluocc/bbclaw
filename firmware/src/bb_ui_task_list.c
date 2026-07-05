@@ -14,6 +14,7 @@
 
 #include "bb_agent_client.h"
 #include "bb_ui_agent_chat.h"
+#include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
 #include "bb_wifi.h"
 #include "esp_log.h"
@@ -25,9 +26,31 @@ static const char* TAG = "bb_task_list";
 
 /* ── Layout / colour constants ── */
 #define BB_TASK_LIST_MAX      20
+#if BB_UI_PORTRAIT
+/* 竖屏手表 410×502，物理圆角 R=BBCLAW_DISPLAY_CORNER_RADIUS(114)，
+ * BB_UI_CORNER_INSET=34 / BB_UI_SAFE_LR=22（bb_ui_layout.h 推导）：
+ *  - TITLE_H=64：标题带同 bb_ui_settings.c HEADER_H；标题文字水平+垂直
+ *    居中，居中构图天然避开两个顶角（y=22 处顶角遮挡仅 x<47 / x>363）。
+ *  - ROW_H=64：纯触屏设备，行=触摸目标 ≥56px（对齐 bb_ui_settings.c）。
+ *  - 行左右内缩 SAFE_LR=22：行带在竖向中段，圆角只吃四角；首行顶左点
+ *    (22,64) 距顶角圆心(114,114) √(92²+50²)≈105 ≤ 114 ✓。
+ *  - 可见行数不写死：tl_visible_rows() 运行时由可用高度推导（见下）。 */
+#define BB_TASK_LIST_TITLE_H  64
+#define BB_TASK_LIST_ROW_H    64
+#define BB_TL_PAD_LR          BB_UI_SAFE_LR /* 22 */
+#define BB_TL_CONTENT_W       (BB_DISP_W - 2 * BB_TL_PAD_LR) /* 366 */
+#define BB_TL_ROW_PAD_LR      14
+#define BB_TL_ROW_RADIUS      8
+#define BB_TL_SEL_BAR_W       6
+#else
 #define BB_TASK_LIST_VISIBLE  6
 #define BB_TASK_LIST_ROW_H    22  /* ADR §4.2: row height 22px */
 #define BB_TASK_LIST_TITLE_H  22
+#define BB_TL_CONTENT_W       316 /* 320 − 2×pad(2)，方屏原值 */
+#define BB_TL_ROW_PAD_LR      4
+#define BB_TL_ROW_RADIUS      3
+#define BB_TL_SEL_BAR_W       3
+#endif
 
 /* Colour palette — design/UI_DESIGN_LANGUAGE.md tokens. Selected row =
  * ghost face + teal left-edge bar + cool-white text (shared list idiom). */
@@ -56,6 +79,30 @@ typedef struct {
 } bb_task_list_state_t;
 
 static bb_task_list_state_t s_tl = {0};
+
+#if BB_UI_PORTRAIT
+/* 可见行数运行时推导（铁律：不写死）。
+ * 行带从 y=TITLE_H 起；行左右已内缩 SAFE_LR，所以底界只受底角圆限制：
+ * 底角圆心 y=H−R，x=SAFE_LR 处允许内容延伸到
+ *   y_max = (H−R) + √(R²−(R−SAFE_LR)²)   （圆内即可见）
+ * 代入 R=114, SAFE_LR=22：chord=√(114²−92²)=√4532≈67 →
+ *   bottom=(502−114)+67−2(余量)=453；visible=(453−64)/64=6，
+ * 行带 y∈[64,448]，末行底左点(22,448)距圆心(114,388) ≈110 ≤ 114 ✓。
+ * 半径若再标定（R4.5→R60→R114 已改过两次）此处自动跟随。 */
+static int tl_visible_rows(void) {
+  int r = BBCLAW_DISPLAY_CORNER_RADIUS;
+  int a = r - BB_UI_SAFE_LR;      /* 92 */
+  int c2 = r * r - a * a;         /* 4532 */
+  int chord = 0;                  /* isqrt(c2) → 67 */
+  while ((chord + 1) * (chord + 1) <= c2) chord++;
+  int bottom = BB_DISP_H - r + chord - 2; /* 453（2px 余量） */
+  int n = (bottom - BB_TASK_LIST_TITLE_H) / BB_TASK_LIST_ROW_H; /* 6 */
+  if (n < 1) n = 1;
+  if (n > BB_TASK_LIST_MAX) n = BB_TASK_LIST_MAX;
+  return n;
+}
+#define BB_TASK_LIST_VISIBLE (tl_visible_rows())
+#endif
 
 /* ── safe_lv_async_call mirror (same approach as bb_ui_agent_chat.c) ── */
 static inline lv_result_t tl_lv_async_call(lv_async_cb_t cb, void* user_data) {
@@ -164,7 +211,7 @@ static void task_list_apply_styles(void) {
       lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
       lv_obj_set_style_text_color(row, lv_color_hex(BB_TL_SEL_FG), 0);
       lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-      lv_obj_set_style_border_width(row, 3, 0);
+      lv_obj_set_style_border_width(row, BB_TL_SEL_BAR_W, 0);
       lv_obj_set_style_border_color(row, lv_color_hex(BB_UI_ACCENT), 0);
     } else {
       lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -214,21 +261,38 @@ static void task_list_build_ui(void) {
   }
   s_tl.screen = lv_obj_create(parent);
   lv_obj_remove_style_all(s_tl.screen);
-  lv_obj_set_size(s_tl.screen, 320, 172);
+  lv_obj_set_size(s_tl.screen, BB_DISP_W, BB_DISP_H);
   lv_obj_align(s_tl.screen, LV_ALIGN_TOP_LEFT, 0, 0);
   lv_obj_set_style_bg_color(s_tl.screen, lv_color_hex(BB_TL_BG), 0);
   lv_obj_set_style_bg_opa(s_tl.screen, LV_OPA_COVER, 0);
+#if BB_UI_PORTRAIT
+  /* 全屏不透明盖住聊天页（含底部 PTT 带）。左右内缩 SAFE_LR；上下 pad=0——
+   * 顶部由 64px 标题带、底部由 tl_visible_rows() 的底界推导保证避开圆角。 */
+  lv_obj_set_style_pad_hor(s_tl.screen, BB_TL_PAD_LR, 0);
+  lv_obj_set_style_pad_ver(s_tl.screen, 0, 0);
+#else
   lv_obj_set_style_pad_all(s_tl.screen, 2, 0);
+#endif
   lv_obj_set_flex_flow(s_tl.screen, LV_FLEX_FLOW_COLUMN);
   lv_obj_clear_flag(s_tl.screen, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_move_foreground(s_tl.screen);
 
   /* Title row */
   s_tl.lbl_title = lv_label_create(s_tl.screen);
-  lv_obj_set_size(s_tl.lbl_title, 316, BB_TASK_LIST_TITLE_H);
+  lv_obj_set_size(s_tl.lbl_title, BB_TL_CONTENT_W, BB_TASK_LIST_TITLE_H);
   lv_obj_set_style_text_color(s_tl.lbl_title, lv_color_hex(BB_TL_FG), 0);
   lv_obj_set_style_text_font(s_tl.lbl_title, font, 0);
+#if BB_UI_PORTRAIT
+  /* 标题水平+垂直居中于 64px 顶带（同 bb_ui_settings.c header）：
+   * pad_top=(64−line_height)/2=22（CJK 字面 20px），运行时取 line_height，
+   * 换字库不失中；居中文本远离两个顶角遮挡区。 */
+  lv_obj_set_style_text_align(s_tl.lbl_title, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_pad_top(
+      s_tl.lbl_title,
+      (BB_TASK_LIST_TITLE_H - (int)lv_font_get_line_height(font)) / 2, 0);
+#else
   lv_obj_set_style_pad_left(s_tl.lbl_title, 2, 0);
+#endif
   lv_label_set_long_mode(s_tl.lbl_title, LV_LABEL_LONG_MODE_DOTS);
   {
     char tbuf[32];
@@ -239,7 +303,15 @@ static void task_list_build_ui(void) {
   if (s_tl.count == 0) {
     /* Empty state */
     s_tl.lbl_empty = lv_label_create(s_tl.screen);
+#if BB_UI_PORTRAIT
+    /* 空态整页居中（居中构图天然避开四角）：脱离 flex 流后 align 居中，
+     * 不再悬在上四分之一。 */
+    lv_obj_add_flag(s_tl.lbl_empty, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_size(s_tl.lbl_empty, BB_TL_CONTENT_W, LV_SIZE_CONTENT);
+    lv_obj_center(s_tl.lbl_empty);
+#else
     lv_obj_set_size(s_tl.lbl_empty, 316, 120);
+#endif
     lv_obj_set_style_text_color(s_tl.lbl_empty, lv_color_hex(BB_TL_FG_DIM), 0);
     lv_obj_set_style_text_font(s_tl.lbl_empty, font, 0);
     lv_obj_set_style_text_align(s_tl.lbl_empty, LV_TEXT_ALIGN_CENTER, 0);
@@ -249,10 +321,16 @@ static void task_list_build_ui(void) {
     for (int i = 0; i < s_tl.count; i++) {
       lv_obj_t* row = lv_label_create(s_tl.screen);
       s_tl.rows[i] = row;
-      lv_obj_set_size(row, 316, BB_TASK_LIST_ROW_H);
-      lv_obj_set_style_pad_left(row, 4, 0);
-      lv_obj_set_style_pad_right(row, 4, 0);
-      lv_obj_set_style_radius(row, 3, 0);
+      lv_obj_set_size(row, BB_TL_CONTENT_W, BB_TASK_LIST_ROW_H);
+      lv_obj_set_style_pad_left(row, BB_TL_ROW_PAD_LR, 0);
+      lv_obj_set_style_pad_right(row, BB_TL_ROW_PAD_LR, 0);
+#if BB_UI_PORTRAIT
+      /* 行=64px 触摸目标，行内文字垂直居中：pad_top=(64−line_height)/2=22，
+       * 运行时取 line_height，换字库不失中（同 bb_ui_settings.c 行写法）。 */
+      lv_obj_set_style_pad_top(
+          row, (BB_TASK_LIST_ROW_H - (int)lv_font_get_line_height(font)) / 2, 0);
+#endif
+      lv_obj_set_style_radius(row, BB_TL_ROW_RADIUS, 0);
       lv_obj_set_style_text_font(row, font, 0);
       lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
       char row_buf[80];
