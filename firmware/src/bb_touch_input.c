@@ -14,7 +14,9 @@
 #include <stdlib.h>
 
 #include "bb_audio.h"
+#include "bb_display.h"
 #include "bb_nav_input.h"
+#include "bb_ptt.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
@@ -33,6 +35,7 @@ static int64_t s_down_us;     /* 按下时刻 */
 static int s_x0, s_y0;        /* 按下坐标 */
 static int s_xl, s_yl;        /* 最新坐标 */
 static int s_consumed;        /* 本次触摸已发过事件（长按），抬手不再判定 */
+static int s_ptt_mode;        /* 落点在屏上 PTT 圆钮内：按住=录音，抬手=发送 */
 
 #define TOUCH_POLL_MS        20
 #define SWIPE_MIN_PX         60  /* 410px 宽屏上 ~15% */
@@ -61,6 +64,17 @@ static void touch_poll_cb(void* arg) {
       s_down_us = esp_timer_get_time();
       s_x0 = s_xl = (int)x[0];
       s_y0 = s_yl = (int)y[0];
+      /* 落点在屏上 PTT 圆钮内 → 进入 PTT 模式，走物理键同一注入通路。
+       * 手指滑出钮外不中断（与实体按键一致），抬手才结束。 */
+      s_ptt_mode = bb_display_ptt_button_hit(s_x0, s_y0);
+      if (s_ptt_mode) {
+        ESP_LOGI(TAG, "ptt button down (x=%d y=%d)", s_x0, s_y0);
+        bb_ptt_inject(1);
+      }
+    } else if (s_ptt_mode) {
+      s_xl = (int)x[0];
+      s_yl = (int)y[0];
+      /* PTT 模式：不做手势/长按判定 */
     } else {
       s_xl = (int)x[0];
       s_yl = (int)y[0];
@@ -76,8 +90,14 @@ static void touch_poll_cb(void* arg) {
   }
 
   if (!s_active) return;
-  /* 抬手：判定 tap / swipe */
+  /* 抬手 */
   s_active = 0;
+  if (s_ptt_mode) {
+    s_ptt_mode = 0;
+    ESP_LOGI(TAG, "ptt button up");
+    bb_ptt_inject(0);
+    return;
+  }
   if (s_consumed) return;
   const int dx = s_xl - s_x0;
   const int dy = s_yl - s_y0;

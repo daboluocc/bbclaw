@@ -7,6 +7,12 @@
 esp_err_t bb_display_init(void);
 /** 设置当前运行模式，用于状态栏 HOME/CLOUD 图标显示 */
 void bb_display_set_cloud_mode(int is_cloud);
+/** 屏上 PTT 圆钮命中判定（竖屏手表；聊天视图可见且落点在钮内 → 1）。
+ *  纯坐标数学，无 LVGL 锁，可从触摸轮询定时器安全调用。 */
+int bb_display_ptt_button_hit(int x, int y);
+/** 主视图内容盒几何（transcript 区）；主题/overlay 与主视图对齐用。
+ *  create_ui 之后有效；任意指针可为 NULL。 */
+void bb_display_get_content_box(int* x, int* y, int* w, int* h);
 esp_err_t bb_display_show_status(const char* status_line);
 /** ADR-038: 密语解锁失败后，把 ASR 识别到的文本叠到锁屏 hint（「听到「…」请重说」）。
  *  在 bb_display_show_status(BB_STATUS_VERIFY_ERR) 之后调用；空串/NULL 清除。 */

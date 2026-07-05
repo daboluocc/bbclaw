@@ -156,8 +156,15 @@ LV_FONT_DECLARE(lv_font_montserrat_48)
 
 /* Bottom strip height — the old dot-matrix sweep band that lived here was
  * removed (UI calm-down pass); the height is kept only so the content-area
- * math below leaves the same quiet margin at the bottom of the screen. */
+ * math below leaves the same quiet margin at the bottom of the screen.
+ * 竖屏手表：这条带成为屏上 PTT 圆钮区（按住说话，纯触屏的主交互）。 */
+#if BB_UI_PORTRAIT
+#define UI_BOTTOM_BAR_H    116
+#define UI_PTT_BTN_D       92   /* 圆钮直径 */
+#define UI_PTT_BTN_HIT_PAD 18   /* 命中区外扩（实际可点半径 = D/2 + PAD） */
+#else
 #define UI_BOTTOM_BAR_H    16
+#endif
 /* Status-bar activity-dot tick (also the legacy record-meter cadence).
  * Aligned to LV_DEF_REFR_PERIOD=16ms: 3×16. */
 #define UI_BAR_UPDATE_MS   48
@@ -1171,6 +1178,30 @@ static void disp_area_align2_cb(lv_area_t* area) {
  * callback runs directly — eliminating the per-frame CPU swap scan that was here. */
 #endif /* !BBCLAW_SIMULATOR */
 
+/* ── 屏上 PTT 圆钮：命中几何 + 激活态（纯 int，触摸定时器可无锁读取；
+ *    模拟器同编译，便于预览布局） ── */
+static int s_ptt_btn_cx = -1;
+static int s_ptt_btn_cy = -1;
+static int s_ptt_btn_r  = 0;
+static volatile int s_ptt_btn_active; /* 聊天(ACTIVE)视图可见时为 1 */
+
+/* ── 内容盒（主视图 transcript 区几何），主题层取用 ── */
+static int s_content_box_x, s_content_box_y, s_content_box_w, s_content_box_h;
+
+void bb_display_get_content_box(int* x, int* y, int* w, int* h) {
+  if (x) *x = s_content_box_x;
+  if (y) *y = s_content_box_y;
+  if (w) *w = s_content_box_w;
+  if (h) *h = s_content_box_h;
+}
+
+int bb_display_ptt_button_hit(int x, int y) {
+  if (!s_ptt_btn_active || s_ptt_btn_r <= 0) return 0;
+  const int dx = x - s_ptt_btn_cx;
+  const int dy = y - s_ptt_btn_cy;
+  return dx * dx + dy * dy <= s_ptt_btn_r * s_ptt_btn_r;
+}
+
 /* ── create_ui ── */
 
 static void create_ui(void) {
@@ -1184,9 +1215,31 @@ static void create_ui(void) {
   const int lh = (int)lv_font_get_line_height(font);
   const int body_w = DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT;
   const int status_h = (lh + 2 > UI_STATUS_ICON_SZ + 2) ? (lh + 2) : (UI_STATUS_ICON_SZ + 2);
+#if BB_UI_PORTRAIT
+  /* 顶栏占用顶部圆角带（把角带让给 chrome、内容让给中心区）：条上移到 y=10，
+   * 条内文字按 R114 在该高度带的弧线水平退让（r−√(r²−(r−y)²) ≈ 50，取 52）。 */
+  const int topbar_y = 10;
+  const int topbar_inset_x = 52;
+  const int content_y = topbar_y + status_h + 8;
+#else
+  const int topbar_y = UI_SAFE_TOP;
+  const int topbar_inset_x = UI_SAFE_LEFT;
   const int content_y = UI_SAFE_TOP + status_h + UI_GAP;
-  const int content_h = DISP_H - content_y - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H - UI_GAP;
+#endif
+#if BB_UI_PORTRAIT
+  /* PTT 底栏区同理占用底部圆角带：贴底留 8px；圆钮水平居中天然避角
+   * （x∈[159,251] ⊂ [114,296] 底边直线段）。 */
+  const int bottom_bar_y = DISP_H - 8 - UI_BOTTOM_BAR_H;
+#else
   const int bottom_bar_y = DISP_H - UI_SAFE_BOTTOM - UI_BOTTOM_BAR_H;
+#endif
+  const int content_h = bottom_bar_y - content_y - UI_GAP;
+
+  /* 内容盒登记（主题/overlay 与主视图对齐用，避免各处重复推导） */
+  s_content_box_x = UI_SAFE_LEFT;
+  s_content_box_y = content_y;
+  s_content_box_w = body_w;
+  s_content_box_h = content_h;
 
   /* ── LOCKED view — delegated to bb_page_locked ── */
   bb_page_locked_create(scr);
@@ -1208,7 +1261,7 @@ static void create_ui(void) {
   lv_label_set_text(s_img_mode, "BBClaw");
   lv_obj_set_style_text_font(s_img_mode, font, 0);
   lv_obj_set_style_text_color(s_img_mode, lv_color_hex(BB_UI_ACCENT), 0);
-  lv_obj_set_pos(s_img_mode, UI_SAFE_LEFT, UI_SAFE_TOP + (status_h - lh) / 2);
+  lv_obj_set_pos(s_img_mode, topbar_inset_x, topbar_y + (status_h - lh) / 2);
   lv_obj_update_layout(s_img_mode);
   const int brand_w = lv_obj_get_width(s_img_mode);
 
@@ -1216,8 +1269,8 @@ static void create_ui(void) {
   s_img_status = lv_image_create(s_view_active);
   lv_image_set_src(s_img_status, &bb_img_ready);
   lv_obj_set_size(s_img_status, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
-  const int status_icon_x = UI_SAFE_LEFT + brand_w + 6;
-  const int status_icon_y = UI_SAFE_TOP + (status_h - UI_STATUS_ICON_SZ) / 2;
+  const int status_icon_x = topbar_inset_x + brand_w + 6;
+  const int status_icon_y = topbar_y + (status_h - UI_STATUS_ICON_SZ) / 2;
   lv_obj_set_pos(s_img_status, status_icon_x, status_icon_y);
 
   /* "Live activity" dot — occupies the status-icon slot while a conversation
@@ -1247,14 +1300,14 @@ static void create_ui(void) {
     const int clock_w = 40;
     const int status_text_x = status_icon_x + UI_STATUS_ICON_SZ + 4;
 
-    const int right = UI_SAFE_LEFT + body_w;
+    const int right = DISP_W - topbar_inset_x;
     const int clock_x = right - clock_w;
     const int batt_x = clock_x - 6 - battery_w;
     const int batpct_x = batt_x - batpct_gap - batpct_w; /* == batt_x when battery disabled */
     const int wifi_x = batpct_x - wifi_gap - wifi_w;
     int status_label_w = wifi_x - status_text_x - 8;
     if (status_label_w < 24) status_label_w = 24; /* 字标较宽时给状态文字保底,靠 SCROLL 滚动显示 */
-    const int row_y = UI_SAFE_TOP + (status_h - lh - 2) / 2;
+    const int row_y = topbar_y + (status_h - lh - 2) / 2;
 
     s_lbl_status = lv_label_create(s_view_active);
     lv_obj_set_width(s_lbl_status, status_label_w);
@@ -1278,7 +1331,7 @@ static void create_ui(void) {
 
     if (battery_enabled) {
       s_obj_status_battery = create_battery_widget(
-          s_view_active, batt_x, UI_SAFE_TOP + (status_h - UI_BATTERY_H) / 2);
+          s_view_active, batt_x, topbar_y + (status_h - UI_BATTERY_H) / 2);
 
       /* Numeric "NN%" just left of the icon */
       s_lbl_status_battery_pct = lv_label_create(s_view_active);
@@ -1293,10 +1346,39 @@ static void create_ui(void) {
 
     /* WiFi in status bar — bars only */
     s_obj_status_wifi = create_wifi_widget(s_view_active, wifi_x,
-        UI_SAFE_TOP + (status_h - 16) / 2,
+        topbar_y + (status_h - 16) / 2,
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
 
+#if BB_UI_PORTRAIT
+  /* 屏上 PTT 圆钮（纯触屏主交互）：底部居中大圆，按住=录音、松开=发送。
+   * 命中判定在 bb_touch_input 里做纯坐标数学（无 LVGL 锁），这里只负责视觉
+   * 并登记圆心/半径；按下反馈由录音视图本身承担（出现即反馈）。 */
+  {
+    lv_obj_t* btn = lv_obj_create(s_view_active);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, UI_PTT_BTN_D, UI_PTT_BTN_D);
+    const int btn_x = (DISP_W - UI_PTT_BTN_D) / 2;
+    const int btn_y = bottom_bar_y + (UI_BOTTOM_BAR_H - UI_PTT_BTN_D) / 2;
+    lv_obj_set_pos(btn, btn_x, btn_y);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(btn, 2, 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(UI_TEXT_DIM), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(BB_UI_DOT_GHOST), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 中心 mic 徽记：复用 tx 位图 */
+    lv_obj_t* icon = lv_image_create(btn);
+    lv_image_set_src(icon, &bb_img_tx);
+    lv_obj_center(icon);
+
+    /* 圆心/半径登记（屏幕坐标），供触摸命中判定 */
+    s_ptt_btn_cx = btn_x + UI_PTT_BTN_D / 2;
+    s_ptt_btn_cy = btn_y + UI_PTT_BTN_D / 2;
+    s_ptt_btn_r  = UI_PTT_BTN_D / 2 + UI_PTT_BTN_HIT_PAD;
+  }
+#else
   /* Bottom bar removed (UI calm-down pass): the heavy full-width dot-matrix
    * sweep strip that used to sit here repainted a 48-column canvas every 48ms
    * and cluttered the screen. Conversation state is now shown by the top-bar
@@ -1313,6 +1395,7 @@ static void create_ui(void) {
     lv_obj_set_style_bg_opa(rule, LV_OPA_40, 0);
     lv_obj_clear_flag(rule, LV_OBJ_FLAG_SCROLLABLE);
   }
+#endif
 
   /* Speaking area — shown only while TX is active */
   s_view_speaking = lv_obj_create(s_view_active);
@@ -1449,6 +1532,34 @@ static void create_ui(void) {
   /* ── Standby view — delegated to bb_page_standby ── */
   bb_page_standby_create(scr);
 
+#if BBCLAW_UI_CORNER_CAL
+  /* 圆角标定 overlay（一次性工具，默认关）：左上/右下画编号同心弧，肉眼读出
+   * 「刚好完整可见」的编号 = 物理圆角半径 px → 写回 BBCLAW_DISPLAY_CORNER_RADIUS。 */
+  {
+    static const int kCalRadii[] = {40, 50, 60, 70, 80, 90};
+    for (size_t i = 0; i < sizeof(kCalRadii) / sizeof(kCalRadii[0]); ++i) {
+      const int r = kCalRadii[i];
+      const uint32_t col = (r == BBCLAW_DISPLAY_CORNER_RADIUS) ? BB_UI_ACCENT : BB_UI_DOT_LIT;
+      const int corner_xy[2][2] = {{-r, -r}, {DISP_W - r, DISP_H - r}};
+      for (int c2 = 0; c2 < 2; ++c2) {
+        lv_obj_t* c = lv_obj_create(scr);
+        lv_obj_remove_style_all(c);
+        lv_obj_set_size(c, 2 * r, 2 * r);
+        lv_obj_set_pos(c, corner_xy[c2][0], corner_xy[c2][1]);
+        lv_obj_set_style_radius(c, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(c, 2, 0);
+        lv_obj_set_style_border_color(c, lv_color_hex(col), 0);
+        lv_obj_set_style_bg_opa(c, LV_OPA_0, 0);
+        lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+      }
+      lv_obj_t* l = lv_label_create(scr);
+      lv_obj_set_style_text_color(l, lv_color_hex(col), 0);
+      lv_label_set_text_fmt(l, "%d", r);
+      lv_obj_set_pos(l, r - 18, 2);
+    }
+  }
+#endif
+
   /* Initial visibility — STANDBY shown by default */
   bb_page_standby_set_visible(1);
   bb_page_locked_set_visible(0);
@@ -1509,6 +1620,7 @@ static void refresh_ui(void) {
   bb_page_standby_set_visible(mode == UI_VIEW_STANDBY);
   bb_page_locked_set_visible(mode == UI_VIEW_LOCKED);
   set_view_visible(s_view_active, mode == UI_VIEW_ACTIVE);
+  s_ptt_btn_active = (mode == UI_VIEW_ACTIVE);
 
   if (mode == UI_VIEW_STANDBY) {
     /* Locked-but-idle and unlocked idle both show just the clock — no lock

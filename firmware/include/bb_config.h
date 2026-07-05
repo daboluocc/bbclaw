@@ -34,6 +34,11 @@
 #define BBCLAW_ES7210_ENABLE 0
 #endif
 
+/* ── 圆角标定 overlay（一次性工具）：开=四角画编号弧，肉眼定 CORNER_RADIUS ── */
+#ifndef BBCLAW_UI_CORNER_CAL
+#define BBCLAW_UI_CORNER_CAL 0
+#endif
+
 /* ── FT5x06 兼容触控（手表 FT3168）→ 手势注入导航事件，see bb_touch_input.c ── */
 #ifndef BBCLAW_TOUCH_FT5X06_ENABLE
 #define BBCLAW_TOUCH_FT5X06_ENABLE 0

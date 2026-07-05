@@ -4,6 +4,7 @@
 #include "bb_agent_theme.h"
 #include "bb_chat_recording.h"
 #include "bb_chat_transcript.h"
+#include "bb_display.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_power.h"
@@ -149,12 +150,20 @@ static void theme_on_enter(lv_obj_t* parent) {
   s_st.topbar_bat_frame = NULL;
   s_st.topbar_bat_lbl = NULL;
 
-  /* ── Transcript — aligned with underlying ACTIVE view's content area ── */
-  /* Underlying content_y ≈ 32, content_h ≈ 112 (172 - 32 - 10 - 16 - 2).
-   * Leave a small safety margin to avoid clipping the bottom bar border. */
-  const int transcript_y = 32;
-  const int transcript_h = 112;
-  s_st.transcript = bb_chat_transcript_create(s_st.root, 320, transcript_h, transcript_y);
+  /* ── Transcript — aligned with underlying ACTIVE view's content area ──
+   * 几何从主视图内容盒取（bb_display_get_content_box），不再手抄经验值
+   * （旧 320x112@y32 在手表 410x502 上只盖左上角，是 P0 破相项）。
+   * 容器水平居中（TOP_MID），主要展示区落在屏幕中心带。 */
+  int cb_x = 0, cb_y = 32, cb_w = 320, cb_h = 112;
+  bb_display_get_content_box(&cb_x, &cb_y, &cb_w, &cb_h);
+  if (cb_w <= 0 || cb_h <= 0) { /* 兜底：内容盒未初始化时退回旧经验值 */
+    cb_y = 32; cb_w = 320; cb_h = 112;
+  }
+  s_st.transcript = bb_chat_transcript_create(s_st.root, cb_w, cb_h, cb_y);
+  {
+    lv_obj_t* cont = bb_chat_transcript_get_container();
+    if (cont != NULL) lv_obj_align(cont, LV_ALIGN_TOP_MID, 0, cb_y);
+  }
 
   /* Recording state is shown by the ACTIVE view's bottom bar (BAR_LISTEN /
    * motif_vu, driven by is_recording_status) — the old full-width 320×112
