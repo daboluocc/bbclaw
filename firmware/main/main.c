@@ -40,8 +40,11 @@ void app_main(void) {
   bb_device_monitor_init();
 
   // ADR-046: Power management (IMU + display brightness + sleep manager)
-  // Enables wake-on-motion and screen sleep to optimize battery life
-  bb_power_mgmt_init();
+  // ⚠️ 暂禁(2026-07-05 深夜实锤):息屏管理的 100ms FreeRTOS 定时器回调在
+  // Tmr Svc 小栈里跑状态机+QSPI 亮度写,打坏定时器任务(panic_pc=uxListRemove
+  // StoreProhibited task='Tmr Svc',全晚随机崩根因)。该分支从未真机验证,
+  // 需专项调试(回调瘦身/挪自有任务/栈账)后再启用。
+  // bb_power_mgmt_init();
 
   ESP_ERROR_CHECK(bb_radio_app_start());
 }

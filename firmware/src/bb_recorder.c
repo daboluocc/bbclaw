@@ -62,6 +62,8 @@ typedef struct {
   int64_t seg_t0_epoch;    /* 当前段起点墙钟（秒,未同步时为小值） */
   int64_t seg_boot0_ms;    /* 当前段起点 boot 时钟 */
   int64_t seg_bytes;       /* 当前段已写字节 */
+  int64_t session_bytes;   /* 会话累计已写字节(推导 SD 剩余用) */
+  uint64_t sd_free_kb0;    /* 会话起点 SD 剩余(仅此一查,避免与写入并发碰 FATFS) */
   FILE* seg_fp;
   bb_ogg_opus_encoder_t* enc;
   SemaphoreHandle_t done_sem; /* 任务收尾完成信号 */
@@ -127,6 +129,7 @@ static void segment_write(const uint8_t* data, size_t len) {
     s_rec.write_error = 1;
   } else {
     s_rec.seg_bytes += (int64_t)len;
+    s_rec.session_bytes += (int64_t)len;
   }
 }
 
@@ -173,6 +176,10 @@ static void recorder_task(void* arg) {
   ESP_LOGW(TAG, "session start dir=%s (last_reset_reason=%d last_crumb=%d)", s_rec.dir,
            (int)esp_reset_reason(), s_rec_crumb);
   CRUMB(8);
+  /* SD 剩余只在会话起点查一次:f_getfree 是 FAT32 全表扫描(秒级)且
+   * esp_vfs_fat_info 绕过 VFS 锁——录音中从 UI 任务并发调用会与写入
+   * 竞争 FATFS(真机 7s 崩溃实锤)。之后 UI 显示用「初值-已写」推导。 */
+  (void)bb_sdcard_space(NULL, &s_rec.sd_free_kb0);
   if (segment_open() != 0) {
     s_rec.run = 0;
   }
@@ -323,6 +330,7 @@ void bb_recorder_get_status(bb_recorder_status_t* out) {
   out->segment_count = s_rec.seg_done;
   out->bookmark_count = s_rec.bookmark_count;
   out->write_error = s_rec.write_error;
-  out->sd_free_kb = 0;
-  (void)bb_sdcard_space(NULL, &out->sd_free_kb);
+  /* 推导值:起点一查+已写字节(禁止在此碰 FATFS——与录音写入并发会崩) */
+  const uint64_t used_kb = (uint64_t)(s_rec.session_bytes / 1024);
+  out->sd_free_kb = (s_rec.sd_free_kb0 > used_kb) ? (s_rec.sd_free_kb0 - used_kb) : 0;
 }

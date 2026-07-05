@@ -30,6 +30,8 @@ CONFIG_FATFS_LFN_STACK=y
 # TinyUSB CDC0 vprintf tee(bb_device_monitor),关 UART0 控制台无损失。
 CONFIG_ESP_CONSOLE_NONE=y
 
-# 栈底硬件观察点:libopus USE_ALLOCA 深栈(单次编码 ~24KB)这类溢出,写入式
-# HWM 系统性漏报;观察点让溢出在肇事指令处立即 panic(P1a 60s 崩案教训)
-CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+# 栈底硬件观察点(暂关,2026-07-05 深夜):开启后设备在录音中/空闲态随机
+# panic(crumb=8/空闲重启)——疑似暴露了某个长期贴栈边运行的老任务(watchpoint
+# 一蹭就炸,此前静默无害)。P1a 录音栈账已修完;找到贴边任务前先回到关闭
+# 现状(与之前几个月一致)。排障时可临时打开。
+# CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y

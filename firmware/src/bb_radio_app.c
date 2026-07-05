@@ -3621,8 +3621,11 @@ static void stream_task(void* arg) {
       static int s_boot_reported;
       if (!s_boot_reported && bb_now_ms() > 8000) {
         s_boot_reported = 1;
-        ESP_LOGW(TAG, "boot report: reset_reason=%d rec_crumb=%d", (int)esp_reset_reason(),
-                 bb_recorder_debug_crumb());
+        extern uint32_t g_bb_panic_pc, g_bb_panic_cause;
+        extern char g_bb_panic_task[16];
+        ESP_LOGW(TAG, "boot report: reset_reason=%d rec_crumb=%d panic_pc=0x%08x cause=%u task=%.15s",
+                 (int)esp_reset_reason(), bb_recorder_debug_crumb(), (unsigned)g_bb_panic_pc,
+                 (unsigned)g_bb_panic_cause, g_bb_panic_task);
       }
     }
 
@@ -4341,9 +4344,9 @@ esp_err_t bb_radio_app_start(void) {
    * 所需的 8192B 以下 → Error create websocket task / PTT 录到音发不出（见
    * firmware/docs/debug/internal-ram-ws-task.md，对齐 c3d9c1d/7899e19）。 */
 #ifdef CONFIG_FREERTOS_UNICORE
-  BaseType_t ok = xTaskCreateWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  BaseType_t ok = xTaskCreateWithCaps(capture_task, "bb_capture_task", 8192, NULL, 7, NULL, BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #else
-  BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(capture_task, "bb_capture_task", 4096, NULL, 7, NULL, 0,
+  BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(capture_task, "bb_capture_task", 8192, NULL, 7, NULL, 0,
                                                   BBCLAW_MALLOC_CAP_PREFER_PSRAM);
 #endif
   if (ok != pdPASS) {

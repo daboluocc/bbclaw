@@ -39,6 +39,7 @@ set(_bb_srcs
     "bb_uart_cmd.c"
     "bb_radio_app.c"
     "bb_page_recorder.c"
+    "bb_panic_crumb.c"
     "bb_recorder.c"
     "bb_sdcard.c"
     "bb_session_store.c"
@@ -139,3 +140,6 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE=1)
 # 静态归档扫描顺序下 libsrc.a 的该 obj 没有被任何已解析符号牵出 → 链接失败。
 # 用 -u 强制把这个 obj 拉进链接（一个符号即可整 obj 拉入）。
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_malloc_core")
+
+# panic 现场 RTC 快照(bb_panic_crumb.c):wrap 真 panic handler
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
