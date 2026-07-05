@@ -194,11 +194,15 @@ static void recorder_task(void* arg) {
 
     uint8_t* out = NULL;
     size_t out_len = 0;
+    CRUMB(30); /* 30=append(opus_encode)中 31=写SD中 8=其它 */
     esp_err_t err = bb_ogg_opus_encoder_append_pcm16(s_rec.enc, (const int16_t*)item,
                                                      item_size / sizeof(int16_t), &out, &out_len);
+    CRUMB(8);
     vRingbufferReturnItem(s_rec.rb, item);
     if (err == ESP_OK && out != NULL) {
+      CRUMB(31);
       segment_write(out, out_len);
+      CRUMB(8);
       bb_ogg_opus_free(out);
     } else if (err != ESP_OK) {
       /* 编码失败不可静默(P1a 教训:静默吞错让"整段只录 60ms"隐身了一整天) */

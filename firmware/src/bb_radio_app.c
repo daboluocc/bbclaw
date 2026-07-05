@@ -729,6 +729,9 @@ static void settings_exit_to_chat(void) {
 
 /* ── ADR-044 RECORDER 态：进入/退出 ──────────────────────────────────── */
 static int64_t s_rec_exit_armed_ms; /* BACK 第一按时刻（3s 内再按退出） */
+static volatile int s_recorder_toggle_req; /* devmon PWR 模拟(与物理键同通路) */
+
+void bb_radio_app_request_recorder_toggle(void) { s_recorder_toggle_req = 1; }
 static int s_rec_ptt_prev;          /* RECORDER 态 PTT 边沿检测 */
 
 static int recorder_enter(void) {
@@ -780,9 +783,18 @@ static int recorder_enter(void) {
     return -1;
   }
   s_capture_active = 1;
-  if (lvgl_port_lock(500)) {
-    bb_page_recorder_show();
-    lvgl_port_unlock();
+  /* 建页重试:settings 退出瞬间 LVGL 忙,单次 500ms 锁超时会静默跳过建页
+   * ——录音在跑但屏幕是待机页(真机踩过,用户以为没在录)。 */
+  {
+    int shown = 0;
+    for (int i = 0; i < 4 && !shown; i++) {
+      if (lvgl_port_lock(700)) {
+        bb_page_recorder_show();
+        lvgl_port_unlock();
+        shown = 1;
+      }
+    }
+    if (!shown) ESP_LOGE(TAG, "recorder page show failed (lvgl lock)");
   }
   s_rec_exit_armed_ms = 0;
   s_rec_ptt_prev = 0;
@@ -3581,7 +3593,9 @@ static void stream_task(void* arg) {
       const int lvl = gpio_get_level(BBCLAW_PWR_KEY_GPIO);
       const int pressed = (lvl == BBCLAW_PWR_KEY_ACTIVE_LEVEL);
       int64_t pwr_now = bb_now_ms();
-      if (pressed && !s_pwr_prev && pwr_now - s_pwr_last_ms > 1000) {
+      const int sim_req = s_recorder_toggle_req;
+      if (sim_req) s_recorder_toggle_req = 0;
+      if ((pressed && !s_pwr_prev && pwr_now - s_pwr_last_ms > 1000) || sim_req) {
         s_pwr_last_ms = pwr_now;
         if (s_app_state == BBCLAW_STATE_RECORDER) {
           ESP_LOGI(TAG, "PWR key: stop recording");

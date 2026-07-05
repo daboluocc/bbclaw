@@ -13,7 +13,10 @@
 
 #include <stdio.h>
 
+#include <time.h>
+
 #include "bb_config.h"
+#include "bb_power.h"
 #include "bb_recorder.h"
 #include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
@@ -25,6 +28,7 @@
 #define REC_RED 0xE05A5A
 
 static lv_obj_t* s_root;
+static lv_obj_t* s_lbl_header; /* 表头:时间 + 电量(用户要求保留) */
 static lv_obj_t* s_dot;
 static lv_obj_t* s_lbl_elapsed;
 static lv_obj_t* s_lbl_stats;
@@ -41,17 +45,35 @@ static void refresh_cb(lv_timer_t* t) {
   bb_recorder_status_t st = {0};
   bb_recorder_get_status(&st);
 
+  /* 表头:墙钟时间 + 电量(充电时带 + 号) */
+  if (s_lbl_header != NULL) {
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    bb_power_state_t pwr = {0};
+    bb_power_get_state(&pwr);
+    char hdr[48];
+    if (pwr.supported && pwr.available && pwr.percent >= 0) {
+      snprintf(hdr, sizeof(hdr), "%02d:%02d    %s%d%%", tm_now.tm_hour, tm_now.tm_min,
+               pwr.charging ? "+" : "", pwr.percent);
+    } else {
+      snprintf(hdr, sizeof(hdr), "%02d:%02d", tm_now.tm_hour, tm_now.tm_min);
+    }
+    lv_label_set_text(s_lbl_header, hdr);
+  }
+
   const int64_t s = st.elapsed_ms / 1000;
   char buf[32];
   snprintf(buf, sizeof(buf), "%02d:%02d:%02d", (int)(s / 3600), (int)((s / 60) % 60), (int)(s % 60));
   lv_label_set_text(s_lbl_elapsed, buf);
 
+  /* 分隔符用 ASCII(「·」不在默认字库,真机显示方框) */
   char stats[96];
   if (st.sd_free_kb > 0) {
-    snprintf(stats, sizeof(stats), "%d seg · %d mark · SD %.1fGB free", st.segment_count,
+    snprintf(stats, sizeof(stats), "%d seg | %d mark | SD %.1fGB free", st.segment_count,
              st.bookmark_count, (double)st.sd_free_kb / (1024.0 * 1024.0));
   } else {
-    snprintf(stats, sizeof(stats), "%d seg · %d mark", st.segment_count, st.bookmark_count);
+    snprintf(stats, sizeof(stats), "%d seg | %d mark", st.segment_count, st.bookmark_count);
   }
   lv_label_set_text(s_lbl_stats, stats);
 
@@ -76,6 +98,12 @@ void bb_page_recorder_show(void) {
   lv_obj_set_style_bg_color(s_root, lv_color_hex(BB_UI_BG), 0);
   lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
+
+  /* 表头:时间+电量(居中,圆角带内安全;数据 1s 随 refresh_cb 刷新) */
+  s_lbl_header = lv_label_create(s_root);
+  lv_label_set_text(s_lbl_header, "");
+  lv_obj_set_style_text_color(s_lbl_header, lv_color_hex(BB_UI_TEXT_DIM), 0);
+  lv_obj_align(s_lbl_header, LV_ALIGN_TOP_MID, 0, 14);
 
   /* 呼吸红点 + REC */
   s_dot = lv_obj_create(s_root);
@@ -123,7 +151,7 @@ void bb_page_recorder_show(void) {
   lv_obj_add_flag(s_lbl_warn, LV_OBJ_FLAG_HIDDEN);
 
   s_lbl_exit_hint = lv_label_create(s_root);
-  lv_label_set_text(s_lbl_exit_hint, "PTT = mark · Swipe right x2 = stop");
+  lv_label_set_text(s_lbl_exit_hint, "PTT = mark | PWR / swipe x2 = stop");
   lv_obj_set_style_text_color(s_lbl_exit_hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
   lv_obj_align(s_lbl_exit_hint, LV_ALIGN_BOTTOM_MID, 0, -BB_UI_SAFE_BOTTOM - 8);
 
@@ -140,6 +168,7 @@ void bb_page_recorder_hide(void) {
   lv_anim_delete(s_dot, dot_pulse_cb);
   lv_obj_delete(s_root);
   s_root = NULL;
+  s_lbl_header = NULL;
   s_dot = NULL;
   s_lbl_elapsed = NULL;
   s_lbl_stats = NULL;
@@ -150,7 +179,7 @@ void bb_page_recorder_hide(void) {
 void bb_page_recorder_exit_hint(int arm) {
   if (s_lbl_exit_hint == NULL) return;
   lv_label_set_text(s_lbl_exit_hint,
-                    arm ? "Swipe right again to STOP" : "PTT = mark · Swipe right x2 = stop");
+                    arm ? "Swipe right again to STOP" : "PTT = mark | PWR / swipe x2 = stop");
   lv_obj_set_style_text_color(s_lbl_exit_hint,
                               lv_color_hex(arm ? REC_RED : BB_UI_TEXT_DIM), 0);
 }

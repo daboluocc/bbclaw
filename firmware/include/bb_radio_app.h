@@ -25,6 +25,10 @@ typedef enum {
 
 esp_err_t bb_radio_app_start(void);
 
+/** ADR-044: 请求录音一键启停(与物理 PWR 键同一通路)。devmon 测试注入用;
+ *  线程安全,下一轮输入循环消费。 */
+void bb_radio_app_request_recorder_toggle(void);
+
 /* Present the OTA confirm page for a manually-triggered update (Settings →
  * Firmware row → click). Stashes the checked update info and shows the same
  * confirm page the boot auto-check uses, routing an accept into the preheated

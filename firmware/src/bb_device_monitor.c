@@ -41,6 +41,7 @@
 #include "bb_config.h"
 #include "bb_device_monitor.h"
 
+#include "bb_radio_app.h"
 #include "bb_recorder.h"
 #include "bb_nav_input.h"
 
@@ -283,7 +284,10 @@ static void handle_req_screenshot(uint16_t seq) {
   ESP_LOGI(TAG, "lvgl lock acquired, stack_hwm=%u free_spiram=%u",
            (unsigned)uxTaskGetStackHighWaterMark(NULL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-  lv_obj_t* scr = lv_screen_active();
+  /* 截图源:lv_snapshot 只拍单棵对象树,layer_top 上的全屏页(录音页)在
+   * 主屏快照里不可见——曾造成「录音在跑但截图是待机页」的误诊。录音激活时
+   * 拍 layer_top(录音页不透明全屏,单拍即完整画面)。 */
+  lv_obj_t* scr = bb_recorder_active() ? lv_layer_top() : lv_screen_active();
   lv_draw_buf_t* snap = lv_snapshot_create_draw_buf(scr, LV_COLOR_FORMAT_RGB565);
   ESP_LOGI(TAG, "snapshot draw_buf=%p", snap);
   if (snap != NULL) {
@@ -415,6 +419,14 @@ static void devmon_worker_task(void* arg) {
           break;
         }
         const uint8_t event_id = msg.payload[0];
+        if (event_id == 200) {
+          /* PWR 键模拟(ADR-044):录音一键启停,走与物理键同一 toggle 通路 */
+          ESP_LOGI(TAG, "REQ_INPUT seq=%u event=PWR", msg.seq);
+          bb_radio_app_request_recorder_toggle();
+          const uint8_t ack0 = 0;
+          devmon_send_frame(KIND_RES_INPUT_ACK, msg.seq, &ack0, 1);
+          break;
+        }
         if (event_id >= BB_NAV_EVENT_COUNT) {
           ESP_LOGW(TAG, "REQ_INPUT seq=%u: invalid event=%u",
                    msg.seq, event_id);

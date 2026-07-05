@@ -119,12 +119,13 @@ esp_err_t bb_sdcard_selftest(void) {
 
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
   if (s_card == NULL) return ESP_ERR_INVALID_STATE;
-  FATFS* fs = NULL;
-  DWORD free_clust = 0;
-  if (f_getfree("0:", &free_clust, &fs) != FR_OK || fs == NULL) return ESP_FAIL;
-  const uint64_t clust_kb = ((uint64_t)fs->csize * 512ULL) / 1024ULL;
-  if (total_kb != NULL) *total_kb = (uint64_t)(fs->n_fatent - 2) * clust_kb;
-  if (free_kb != NULL) *free_kb = (uint64_t)free_clust * clust_kb;
+  /* 按挂载路径查询:板上有两个 FAT 卷(内部字体分区+SD),裸卷标 "0:" 会查到
+   * 内部分区(录音页 SD 空间不显示的根因)。 */
+  uint64_t total = 0, freeb = 0;
+  esp_err_t err = esp_vfs_fat_info(MOUNT_POINT, &total, &freeb);
+  if (err != ESP_OK) return err;
+  if (total_kb != NULL) *total_kb = total / 1024ULL;
+  if (free_kb != NULL) *free_kb = freeb / 1024ULL;
   return ESP_OK;
 }
 
