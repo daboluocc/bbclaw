@@ -91,6 +91,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   注意:TTS 现在恒定合成(即便物理开关静音),若云端 TTS 按量计费,静音时仍会产生合成开销。
 
 ### Fixed
+- **固件+adapter_v2:语音回复等待上限 90s→5 分钟——修「AI 想久了设备先判超时,回复真正生成好也收不到」**:
+  cloud_saas 语音turn 的等待上限此前两侧都硬编码 90s(固件 `BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS`
+  本地 `xEventGroupWaitBits` 超时 + adapter_v2 `cloudrelay.ReplyWait`),而云端自身的
+  `CLOUD_REPLY_WAIT_SECONDS` 早已是 600s。AI 多步思考/工具调用经常超过 90s:期间 adapter 的 15s
+  心跳一直在保云端的 idle 计时器活着,但 90s 一到 adapter 自己的等待循环先放弃,把
+  `voice.reply{text:"",replyWaitTimedOut:true}` 发给云端并 `cb.ev.end()` 关掉事件观察者——固件也在
+  90s 处独立判超时挂断。此后 CLI 才吐出的真实回复因观察者已 `end()` 被静默丢弃,设备再也收不到。
+  两处都改为 5 分钟(仍低于云端 600s 上限),不再是这条链路里最短的那一环。
 - **adapter(claude-code 驱动):tool 调用按 tool_use.id 去重——修「问候却重播上一轮工具调用」**:
   设备只说了句问候,屏幕却把上一轮(设音量 / 门禁控制)的灰色工具行又画了一遍。根因在 agent 流:
   claude `--resume` 续接某些情况下会把上一轮的 `tool_use` 块重新吐进 stream-json,驱动逐条转成
