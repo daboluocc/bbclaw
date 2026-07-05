@@ -13,6 +13,9 @@ int bb_display_ptt_button_hit(int x, int y);
 /** 主视图内容盒几何（transcript 区）；主题/overlay 与主视图对齐用。
  *  create_ui 之后有效；任意指针可为 NULL。 */
 void bb_display_get_content_box(int* x, int* y, int* w, int* h);
+/** LVGL display 句柄（触摸 indev 注册用；display init 之后有效） */
+struct _lv_display_t;
+struct _lv_display_t* bb_display_get_lv_display(void);
 esp_err_t bb_display_show_status(const char* status_line);
 /** ADR-038: 密语解锁失败后，把 ASR 识别到的文本叠到锁屏 hint（「听到「…」请重说」）。
  *  在 bb_display_show_status(BB_STATUS_VERIFY_ERR) 之后调用；空串/NULL 清除。 */

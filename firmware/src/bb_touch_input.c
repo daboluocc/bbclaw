@@ -1,9 +1,12 @@
 /**
- * bb_touch_input.c — FT5x06 兼容触控（手表 FT3168）→ 导航事件注入。
+ * bb_touch_input.c — FT5x06 兼容触控（手表 FT3168）→ LVGL 原生指针 indev。
  *
- * 设计（ADR-040 §5 第二阶段）：不做 LVGL 指针 indev——BBClaw UI 是按键导航
- * 语义（固定页/行选中，ADR-012），把手势翻成 nav 事件比引入指针点击模型
- * 改动小得多，且所有页面立即可用。
+ * 阶段演进（ADR-040 §UI.5）：
+ *   v1 手势层：tap/swipe/长按 → bb_nav_input_inject（按键语义模拟）。
+ *   v2（现行）：注册 esp_lvgl_port 指针 indev——跟手滚动 / 行点按 / 拖动
+ *   全部 LVGL 原生；屏上 PTT 钮走 LVGL PRESSED/RELEASED 事件（bb_lvgl_display）；
+ *   右滑 BACK 保留为屏幕级 LVGL 手势。列表行的点按由各 UI 模块挂
+ *   LV_EVENT_CLICKED。物理 BOOT 键与 devmon 注入通路不受影响。
  */
 #include "bb_touch_input.h"
 
@@ -11,106 +14,28 @@
 
 #if BBCLAW_TOUCH_FT5X06_ENABLE
 
-#include <stdlib.h>
-
 #include "bb_audio.h"
 #include "bb_display.h"
 #include "bb_nav_input.h"
-#include "bb_ptt.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
-#include "esp_timer.h"
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 
 static const char* TAG = "bb_touch";
 
 static esp_lcd_touch_handle_t s_tp;
-static esp_timer_handle_t s_timer;
 
-/* 手势状态机 */
-static int s_active;          /* 手指在屏上 */
-static int64_t s_down_us;     /* 按下时刻 */
-static int s_x0, s_y0;        /* 按下坐标 */
-static int s_xl, s_yl;        /* 最新坐标 */
-static int s_consumed;        /* 本次触摸已发过事件（长按），抬手不再判定 */
-static int s_ptt_mode;        /* 落点在屏上 PTT 圆钮内：按住=录音，抬手=发送 */
-
-#define TOUCH_POLL_MS        20
-#define SWIPE_MIN_PX         60  /* 410px 宽屏上 ~15% */
-#define TAP_MAX_MOVE_PX      20
-#define TAP_MAX_MS           400
-#define LONG_PRESS_MS        600
-
-static void emit(bb_nav_event_t ev, const char* name) {
-  ESP_LOGI(TAG, "gesture=%s dx=%d dy=%d dur_ms=%lld", name, s_xl - s_x0, s_yl - s_y0,
-           (long long)((esp_timer_get_time() - s_down_us) / 1000));
-  bb_nav_input_inject(ev);
-}
-
-static void touch_poll_cb(void* arg) {
-  (void)arg;
-  if (esp_lcd_touch_read_data(s_tp) != ESP_OK) return;
-
-  uint16_t x[1], y[1];
-  uint8_t cnt = 0;
-  bool pressed = esp_lcd_touch_get_coordinates(s_tp, x, y, NULL, &cnt, 1);
-
-  if (pressed && cnt > 0) {
-    if (!s_active) {
-      s_active = 1;
-      s_consumed = 0;
-      s_down_us = esp_timer_get_time();
-      s_x0 = s_xl = (int)x[0];
-      s_y0 = s_yl = (int)y[0];
-      /* 落点在屏上 PTT 圆钮内 → 进入 PTT 模式，走物理键同一注入通路。
-       * 手指滑出钮外不中断（与实体按键一致），抬手才结束。 */
-      s_ptt_mode = bb_display_ptt_button_hit(s_x0, s_y0);
-      if (s_ptt_mode) {
-        ESP_LOGI(TAG, "ptt button down (x=%d y=%d)", s_x0, s_y0);
-        bb_ptt_inject(1);
-      }
-    } else if (s_ptt_mode) {
-      s_xl = (int)x[0];
-      s_yl = (int)y[0];
-      /* PTT 模式：不做手势/长按判定 */
-    } else {
-      s_xl = (int)x[0];
-      s_yl = (int)y[0];
-      /* 长按（未位移）→ BACK；每次触摸只发一次 */
-      const int moved = abs(s_xl - s_x0) > TAP_MAX_MOVE_PX || abs(s_yl - s_y0) > TAP_MAX_MOVE_PX;
-      if (!s_consumed && !moved &&
-          (esp_timer_get_time() - s_down_us) / 1000 >= LONG_PRESS_MS) {
-        s_consumed = 1;
-        emit(BB_NAV_EVENT_BACK, "long-press");
-      }
-    }
-    return;
-  }
-
-  if (!s_active) return;
-  /* 抬手 */
-  s_active = 0;
-  if (s_ptt_mode) {
-    s_ptt_mode = 0;
-    ESP_LOGI(TAG, "ptt button up");
-    bb_ptt_inject(0);
-    return;
-  }
-  if (s_consumed) return;
-  const int dx = s_xl - s_x0;
-  const int dy = s_yl - s_y0;
-  const long long dur_ms = (esp_timer_get_time() - s_down_us) / 1000;
-  if (abs(dy) >= SWIPE_MIN_PX && abs(dy) >= abs(dx)) {
-    /* 内容跟手：上滑（dy<0）= 看下面 = 选中下移 */
-    emit(dy < 0 ? BB_NAV_EVENT_DOWN : BB_NAV_EVENT_UP, dy < 0 ? "swipe-up" : "swipe-down");
-  } else if (dx >= SWIPE_MIN_PX) {
-    emit(BB_NAV_EVENT_BACK, "swipe-right");
-  } else if (dx <= -SWIPE_MIN_PX) {
-    /* 左滑暂不映射（留给未来快捷入口） */
-  } else if (abs(dx) <= TAP_MAX_MOVE_PX && abs(dy) <= TAP_MAX_MOVE_PX && dur_ms <= TAP_MAX_MS) {
-    emit(BB_NAV_EVENT_OK, "tap");
+/* 屏幕级手势：右滑 = BACK（返回/退出，与旧手势层语义一致） */
+static void screen_gesture_cb(lv_event_t* e) {
+  (void)e;
+  const lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+  if (dir == LV_DIR_RIGHT) {
+    ESP_LOGI(TAG, "gesture=swipe-right -> BACK");
+    bb_nav_input_inject(BB_NAV_EVENT_BACK);
   }
 }
 
@@ -118,6 +43,11 @@ esp_err_t bb_touch_input_init(void) {
   i2c_master_bus_handle_t bus = bb_audio_shared_i2c_bus();
   if (bus == NULL) {
     ESP_LOGW(TAG, "shared i2c bus not ready; touch disabled");
+    return ESP_ERR_INVALID_STATE;
+  }
+  lv_display_t* disp = (lv_display_t*)bb_display_get_lv_display();
+  if (disp == NULL) {
+    ESP_LOGW(TAG, "lv display not ready; touch disabled");
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -143,15 +73,22 @@ esp_err_t bb_touch_input_init(void) {
   };
   ESP_RETURN_ON_ERROR(esp_lcd_touch_new_i2c_ft5x06(io, &tp_cfg, &s_tp), TAG, "ft5x06 new");
 
-  const esp_timer_create_args_t targs = {
-      .callback = touch_poll_cb,
-      .name = "bb_touch_poll",
+  const lvgl_port_touch_cfg_t touch_cfg = {
+      .disp = disp,
+      .handle = s_tp,
   };
-  ESP_RETURN_ON_ERROR(esp_timer_create(&targs, &s_timer), TAG, "timer create");
-  ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_timer, TOUCH_POLL_MS * 1000), TAG, "timer start");
+  lv_indev_t* indev = lvgl_port_add_touch(&touch_cfg);
+  if (indev == NULL) {
+    ESP_LOGE(TAG, "lvgl_port_add_touch failed");
+    return ESP_FAIL;
+  }
 
-  ESP_LOGI(TAG, "touch ready (ft5x06-compat, poll=%dms, tap=OK swipe=UP/DOWN long/right=BACK)",
-           TOUCH_POLL_MS);
+  if (lvgl_port_lock(1000)) {
+    lv_obj_add_event_cb(lv_screen_active(), screen_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lvgl_port_unlock();
+  }
+
+  ESP_LOGI(TAG, "touch ready (native lvgl indev; swipe-right=BACK)");
   return ESP_OK;
 }
 

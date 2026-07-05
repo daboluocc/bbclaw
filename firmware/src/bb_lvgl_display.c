@@ -13,6 +13,9 @@
 #include "bb_status.h"
 #include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
+#if !defined(BBCLAW_SIMULATOR)
+#include "bb_ptt.h"
+#endif
 
 #if defined(BBCLAW_SIMULATOR)
 #include <math.h>
@@ -1186,6 +1189,10 @@ static int s_ptt_btn_cy = -1;
 static int s_ptt_btn_r  = 0;
 static volatile int s_ptt_btn_active; /* 聊天(ACTIVE)视图可见时为 1 */
 
+static lv_display_t* s_lv_disp;
+
+lv_display_t* bb_display_get_lv_display(void) { return s_lv_disp; }
+
 /* ── 内容盒（主视图 transcript 区几何），主题层取用 ── */
 static int s_content_box_x, s_content_box_y, s_content_box_w, s_content_box_h;
 
@@ -1195,6 +1202,18 @@ void bb_display_get_content_box(int* x, int* y, int* w, int* h) {
   if (w) *w = s_content_box_w;
   if (h) *h = s_content_box_h;
 }
+
+#if !defined(BBCLAW_SIMULATOR)
+/* 悬浮 PTT 钮的原生指针事件：按下=录音、抬手/滑丢=结束（与物理键同通路） */
+static void ptt_btn_event_cb(lv_event_t* e) {
+  const lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_PRESSED) {
+    bb_ptt_inject(1);
+  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    bb_ptt_inject(0);
+  }
+}
+#endif
 
 int bb_display_ptt_button_hit(int x, int y) {
   if (!s_ptt_btn_active || s_ptt_btn_r <= 0) return 0;
@@ -1370,9 +1389,22 @@ static void create_ui(void) {
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(btn, 2, 0);
     lv_obj_set_style_border_color(btn, lv_color_hex(UI_TEXT_DIM), 0);
+    /* 悬浮观感：不透明底 + 外发光阴影（半透明底会与滚过的气泡混色发脏） */
     lv_obj_set_style_bg_color(btn, lv_color_hex(BB_UI_DOT_GHOST), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_60, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(btn, 18, 0);
+    lv_obj_set_style_shadow_color(btn, lv_color_hex(UI_ME_ACCENT), 0);
+    lv_obj_set_style_shadow_opa(btn, LV_OPA_30, 0);
+    /* 按下态：accent 描边高亮（原生指针 indev 驱动） */
+    lv_obj_set_style_border_color(btn, lv_color_hex(UI_ME_ACCENT), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_opa(btn, LV_OPA_70, LV_STATE_PRESSED);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+#if !defined(BBCLAW_SIMULATOR)
+    lv_obj_add_event_cb(btn, ptt_btn_event_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(btn, ptt_btn_event_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(btn, ptt_btn_event_cb, LV_EVENT_PRESS_LOST, NULL);
+#endif
 
     /* 中心 mic 徽记：复用 tx 位图 */
     lv_obj_t* icon = lv_image_create(btn);
@@ -2008,6 +2040,7 @@ esp_err_t bb_display_init(void) {
   };
 
   lv_display_t* disp = lvgl_port_add_disp(&disp_cfg);
+  s_lv_disp = disp;
   if (disp == NULL) {
     ESP_LOGE(TAG, "lvgl_port_add_disp failed");
     return ESP_FAIL;
