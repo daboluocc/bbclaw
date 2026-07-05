@@ -60,13 +60,15 @@
 #define BBCLAW_TOUCH_RST_GPIO 9
 #define BBCLAW_TOUCH_INT_GPIO 38
 
-/* ── Motor / 电量 / 状态灯：本板无此硬件 ──
- * 电量在 AXP2101 里（I2C），ADC 分压路径不存在；PMU 驱动属第二阶段。 */
+/* ── Motor / 状态灯：本板无此硬件 ── */
 #define BBCLAW_MOTOR_ENABLE  0
 #define BBCLAW_MOTOR_GPIO    -1
-#define BBCLAW_POWER_ENABLE  0
-#define BBCLAW_POWER_ADC_GPIO -1
 #define BBCLAW_STATUS_LED_ENABLE 0
+
+/* ── 电量：AXP2101 硬件电量计（0xA4 SoC + 0x01 充电方向），无 ADC 分压 ── */
+#define BBCLAW_POWER_ENABLE  1
+#define BBCLAW_POWER_ADC_GPIO -1
+#define BBCLAW_POWER_SOURCE_AXP2101 1
 
 /* ── Display: QSPI AMOLED CO5300 410x502（SH8601 兼容驱动） ── */
 #define BBCLAW_DISPLAY_BUS_SPI   0

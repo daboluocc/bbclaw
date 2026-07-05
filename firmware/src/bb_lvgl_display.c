@@ -1330,7 +1330,7 @@ static void create_ui(void) {
     /* Right side, right→left: clock · battery icon · "NN%" · WiFi bars.
      * SSID text dropped → WiFi is bars-only, leaving room for the % readout. */
     const int wifi_w = UI_WIFI_BAR_COUNT * UI_WIFI_BAR_W + (UI_WIFI_BAR_COUNT - 1) * UI_WIFI_BAR_GAP + 2;
-    const int battery_enabled = (BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)) ? 1 : 0;
+    const int battery_enabled = BBCLAW_POWER_SUPPORTED ? 1 : 0;
     const int battery_w = battery_enabled ? UI_BATTERY_W : 0;
     const int batpct_w = battery_enabled ? 28 : 0; /* room for "100%" */
     const int batpct_gap = battery_enabled ? 3 : 0;

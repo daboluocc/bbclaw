@@ -383,10 +383,30 @@ void bb_page_standby_update_battery(int supported, int available, int percent, i
 
   uint32_t color = charging ? 0x4cd964 : (low ? 0xe66f6f : UI_ACCENT);
   int track_w = FB_FRAME_W - 2 * FB_INSET;
-  int fill_w = charging ? track_w : (percent * track_w) / 100;
+  int fill_w = (percent * track_w) / 100;
   if (fill_w < 1 && percent > 0) fill_w = 1;
 
-  lv_obj_set_width(s_bat_fill, fill_w);
+  /* 充电动效：填充条从「当前电量」到满格循环生长（绿色呼吸式注入），
+   * 直观表达「正在充、往哪充」。停充即删动画、回静态电量宽度。
+   * update 周期性重入(电量轮询)：仅在充电状态翻转时启停,避免动画反复重建。 */
+  static int s_chg_anim_on = 0;
+  if (charging && !s_chg_anim_on) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_bat_fill);
+    lv_anim_set_values(&a, fill_w, track_w);
+    lv_anim_set_duration(&a, 1600);
+    lv_anim_set_repeat_delay(&a, 400); /* 满格停一拍再从电量位重来 */
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_width);
+    lv_anim_start(&a);
+    s_chg_anim_on = 1;
+  } else if (!charging && s_chg_anim_on) {
+    lv_anim_delete(s_bat_fill, (lv_anim_exec_xcb_t)lv_obj_set_width);
+    s_chg_anim_on = 0;
+  }
+  if (!charging) lv_obj_set_width(s_bat_fill, fill_w);
   lv_obj_set_style_bg_color(s_bat_fill, lv_color_hex(color), 0);
   lv_obj_set_style_border_color(s_bat_frame, lv_color_hex(color), 0);
   lv_obj_set_style_bg_color(s_bat_cap, lv_color_hex(color), 0);

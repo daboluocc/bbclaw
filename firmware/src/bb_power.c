@@ -12,9 +12,14 @@
 #include "esp_adc/adc_oneshot.h"
 #endif
 
+#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
+#include "bb_audio.h"
+#include "driver/i2c_master.h"
+#endif
+
 static const char* TAG = "bb_power";
 static bb_power_state_t s_state = {
-    .supported = (BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)) ? 1 : 0,
+    .supported = BBCLAW_POWER_SUPPORTED ? 1 : 0,
     .available = 0,
     .millivolts = 0,
     .percent = -1,
@@ -149,8 +154,55 @@ esp_err_t bb_power_init(void) {
 #endif
 }
 
+#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
+/* ── AXP2101 硬件电量计后端（手表）──
+ * 数据全部来自 PMU 寄存器：0xA4 电量百分比（内置库仑计+OCV 融合）、
+ * 0x01 bit[6:5] 电池电流方向（01=充电）、0x00 bit3 电池在位。
+ * I2C 设备懒加载：共享总线由 bb_audio_init 创建（先于首次 poll）。 */
+#define AXP2101_ADDR 0x34
+
+static i2c_master_dev_handle_t s_axp_dev;
+
+static esp_err_t axp_read_reg(uint8_t reg, uint8_t* out) {
+  return i2c_master_transmit_receive(s_axp_dev, &reg, 1, out, 1, 100);
+}
+
+static esp_err_t power_refresh_axp2101(void) {
+  if (s_axp_dev == NULL) {
+    i2c_master_bus_handle_t bus = bb_audio_shared_i2c_bus();
+    if (bus == NULL) return ESP_ERR_INVALID_STATE; /* audio init 未到,下轮再试 */
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = AXP2101_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &cfg, &s_axp_dev), TAG, "axp dev add");
+    ESP_LOGI(TAG, "power source: axp2101 fuel gauge");
+  }
+  uint8_t status1 = 0, status2 = 0, pct = 0;
+  ESP_RETURN_ON_ERROR(axp_read_reg(0x00, &status1), TAG, "axp status1");
+  ESP_RETURN_ON_ERROR(axp_read_reg(0x01, &status2), TAG, "axp status2");
+  ESP_RETURN_ON_ERROR(axp_read_reg(0xA4, &pct), TAG, "axp soc");
+
+  const int present = (status1 >> 3) & 1;
+  const int chg_dir = (status2 >> 5) & 0x3; /* 01=charging, 10=discharging */
+
+  s_state.supported = 1;
+  s_state.available = present;
+  s_state.millivolts = 0; /* 电量计直接给百分比,电压展示暂不需要 */
+  s_state.percent = present ? clamp_percent((int)pct) : -1;
+  s_state.low = (present && s_state.percent <= BBCLAW_POWER_LOW_PERCENT) ? 1 : 0;
+  s_state.charging = (chg_dir == 1) ? 1 : 0;
+  ESP_LOGD(TAG, "axp2101 present=%d pct=%d charging=%d status=0x%02X/0x%02X", present, s_state.percent,
+           s_state.charging, status1, status2);
+  return ESP_OK;
+}
+#endif /* BBCLAW_POWER_SOURCE_AXP2101 */
+
 esp_err_t bb_power_refresh(void) {
-#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)
+#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
+  return power_refresh_axp2101();
+#elif !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)
   if (s_adc_handle == NULL) {
     return ESP_ERR_INVALID_STATE;
   }
