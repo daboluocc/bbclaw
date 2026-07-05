@@ -113,6 +113,39 @@ static void qmi8658_sample_task(void* arg) {
   vTaskDelete(NULL);
 }
 
+/* ── 寄存器初始化 ── */
+
+static esp_err_t qmi8658_init_registers(void) {
+  /* 软复位 */
+  esp_err_t ret = qmi8658_write_reg(0x60, 0xB0);  /* CTRL9 = soft reset */
+  if (ret != ESP_OK) return ret;
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  /* 配置采样率和量程 */
+  /* CTRL1: ODR (bits 6-4) */
+  uint8_t ctrl1 = QMI8658_ODR_128HZ;  /* 128Hz 采样率 */
+  ret = qmi8658_write_reg(QMI8658_REG_CTRL1, ctrl1);
+  if (ret != ESP_OK) return ret;
+
+  /* CTRL2: 加速度计范围和启用 */
+  uint8_t ctrl2 = (QMI8658_ACCEL_RANGE_8G << 5) | 0x01;  /* ±8g, enable */
+  ret = qmi8658_write_reg(QMI8658_REG_CTRL2, ctrl2);
+  if (ret != ESP_OK) return ret;
+
+  /* CTRL3: 陀螺仪范围和启用 */
+  uint8_t ctrl3 = (QMI8658_GYRO_RANGE_256DPS << 5) | 0x01;  /* ±256°/s, enable */
+  ret = qmi8658_write_reg(QMI8658_REG_CTRL3, ctrl3);
+  if (ret != ESP_OK) return ret;
+
+  /* CTRL7: 启用加速度计和陀螺仪数据就绪中断 */
+  uint8_t ctrl7 = 0x00;  /* INT1 = data ready */
+  ret = qmi8658_write_reg(QMI8658_REG_CTRL7, ctrl7);
+  if (ret != ESP_OK) return ret;
+
+  ESP_LOGI(TAG, "QMI8658 registers configured: ODR=128Hz, Accel=±8g, Gyro=±256°/s");
+  return ESP_OK;
+}
+
 /* ── 公共接口实现 ── */
 
 esp_err_t bb_imu_init(void) {
@@ -125,9 +158,13 @@ esp_err_t bb_imu_init(void) {
     return ESP_OK;
   }
 
-  /* 初始化 I2C 设备句柄 */
-  i2c_master_bus_handle_t bus_handle = NULL;
-  // TODO: 从 board_config.h 获取 I2C 总线句柄
+  /* 获取 I2C 总线句柄（由调用者确保已初始化） */
+  extern i2c_master_bus_handle_t bb_i2c_bus_get(void);
+  i2c_master_bus_handle_t bus_handle = bb_i2c_bus_get();
+  if (!bus_handle) {
+    ESP_LOGE(TAG, "I2C bus not initialized");
+    return ESP_ERR_INVALID_STATE;
+  }
 
   i2c_device_config_t dev_config = {
     .dev_addr_length = I2C_ADDR_BIT_7,
@@ -165,7 +202,13 @@ esp_err_t bb_imu_init(void) {
   g_state.accel_scale = QMI8658_ACCEL_CONV_8G;
   g_state.gyro_scale = QMI8658_GYRO_CONV_256DPS;
 
-  /* TODO: 配置寄存器（采样率、量程等） */
+  /* 配置寄存器（采样率、量程等） */
+  ret = qmi8658_init_registers();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize registers: %s", esp_err_to_name(ret));
+    g_state.initialized = 0;
+    return ret;
+  }
 
   /* 创建采样队列和采样任务 */
   g_sample_queue = xQueueCreate(1, sizeof(bb_imu_sample_t));
@@ -260,12 +303,23 @@ esp_err_t bb_imu_on_event_cancel(uint32_t event_id) {
 }
 
 esp_err_t bb_imu_set_sample_rate(uint16_t hz) {
-  if (hz < 8 || hz > 512) {
-    return ESP_ERR_INVALID_ARG;
+  /* 将 Hz 映射到 CTRL1 ODR 字段 */
+  uint8_t odr;
+  if (hz <= 8) odr = QMI8658_ODR_8HZ;
+  else if (hz <= 16) odr = QMI8658_ODR_16HZ;
+  else if (hz <= 32) odr = QMI8658_ODR_32HZ;
+  else if (hz <= 64) odr = QMI8658_ODR_64HZ;
+  else if (hz <= 128) odr = QMI8658_ODR_128HZ;
+  else if (hz <= 256) odr = QMI8658_ODR_256HZ;
+  else if (hz <= 512) odr = QMI8658_ODR_512HZ;
+  else return ESP_ERR_INVALID_ARG;
+
+  uint8_t ctrl1 = odr;
+  esp_err_t ret = qmi8658_write_reg(QMI8658_REG_CTRL1, ctrl1);
+  if (ret == ESP_OK) {
+    g_state.sample_rate_hz = hz;
   }
-  g_state.sample_rate_hz = hz;
-  // TODO: 更新寄存器配置
-  return ESP_OK;
+  return ret;
 }
 
 uint16_t bb_imu_get_sample_rate(void) {
@@ -273,8 +327,23 @@ uint16_t bb_imu_get_sample_rate(void) {
 }
 
 esp_err_t bb_imu_set_accel_range(uint8_t g) {
-  // TODO: 校验和配置
-  return ESP_OK;
+  uint8_t range_code;
+  if (g == 2) range_code = QMI8658_ACCEL_RANGE_2G;
+  else if (g == 4) range_code = QMI8658_ACCEL_RANGE_4G;
+  else if (g == 8) range_code = QMI8658_ACCEL_RANGE_8G;
+  else if (g == 16) range_code = QMI8658_ACCEL_RANGE_16G;
+  else return ESP_ERR_INVALID_ARG;
+
+  uint8_t ctrl2 = (range_code << 5) | 0x01;
+  esp_err_t ret = qmi8658_write_reg(QMI8658_REG_CTRL2, ctrl2);
+  if (ret == ESP_OK) {
+    g_state.accel_range_g = g;
+    g_state.accel_scale = (g == 2) ? QMI8658_ACCEL_CONV_2G :
+                          (g == 4) ? QMI8658_ACCEL_CONV_4G :
+                          (g == 8) ? QMI8658_ACCEL_CONV_8G :
+                          QMI8658_ACCEL_CONV_16G;
+  }
+  return ret;
 }
 
 uint8_t bb_imu_get_accel_range(void) {
@@ -282,8 +351,23 @@ uint8_t bb_imu_get_accel_range(void) {
 }
 
 esp_err_t bb_imu_set_gyro_range(uint16_t dps) {
-  // TODO: 校验和配置
-  return ESP_OK;
+  uint8_t range_code;
+  if (dps == 64) range_code = QMI8658_GYRO_RANGE_64DPS;
+  else if (dps == 128) range_code = QMI8658_GYRO_RANGE_128DPS;
+  else if (dps == 256) range_code = QMI8658_GYRO_RANGE_256DPS;
+  else if (dps == 512) range_code = QMI8658_GYRO_RANGE_512DPS;
+  else return ESP_ERR_INVALID_ARG;
+
+  uint8_t ctrl3 = (range_code << 5) | 0x01;
+  esp_err_t ret = qmi8658_write_reg(QMI8658_REG_CTRL3, ctrl3);
+  if (ret == ESP_OK) {
+    g_state.gyro_range_dps = dps;
+    g_state.gyro_scale = (dps == 64) ? QMI8658_GYRO_CONV_64DPS :
+                         (dps == 128) ? QMI8658_GYRO_CONV_128DPS :
+                         (dps == 256) ? QMI8658_GYRO_CONV_256DPS :
+                         QMI8658_GYRO_CONV_512DPS;
+  }
+  return ret;
 }
 
 uint16_t bb_imu_get_gyro_range(void) {
@@ -291,13 +375,13 @@ uint16_t bb_imu_get_gyro_range(void) {
 }
 
 esp_err_t bb_imu_enable_low_power(void) {
-  // TODO: 降采样率、关闭传感器等
-  return ESP_OK;
+  /* 降采样率到 16Hz，减少功耗 */
+  return bb_imu_set_sample_rate(16);
 }
 
 esp_err_t bb_imu_disable_low_power(void) {
-  // TODO: 恢复正常采样
-  return ESP_OK;
+  /* 恢复配置的采样率 */
+  return bb_imu_set_sample_rate(BBCLAW_IMU_SAMPLE_RATE_HZ);
 }
 
 uint32_t bb_imu_get_chip_id(void) {
