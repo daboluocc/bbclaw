@@ -46,6 +46,7 @@
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
 #include "bb_ota.h"
+#include "bb_power_mgmt.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -1059,6 +1060,9 @@ static void log_pin_summary(void) {
 }
 
 static void on_ptt_changed(int pressed) {
+  /* ADR-046: notify power management of user activity (resets idle timer) */
+  bb_power_mgmt_on_user_activity();
+
   /* Phase 4.5: when the agent-chat overlay is up, PTT routes audio capture
    * into the agent voice bridge (ASR transcript → bb_ui_agent_chat_send).
    * Phase 4.7: settings is its own overlay (mutually exclusive with chat) —
@@ -1145,6 +1149,9 @@ static void on_nav_event(bb_nav_event_t event) {
    * driver（LEFT/RIGHT）或翻页（OK/BACK）看回复时计时器仍按上次 PTT 起算，
    * 长回复读不完就被踢回待机。PTT 边沿与主循环 busy/speaker 续命逻辑不变。 */
   s_last_activity_ms = bb_now_ms();
+
+  /* ADR-046: notify power management of user activity */
+  bb_power_mgmt_on_user_activity();
 
   /* ADR-017 v2 — fast-path for chat-overlay UP/DOWN. The stream task's
    * version-counter polling is starved during TTS playback (i2s_write

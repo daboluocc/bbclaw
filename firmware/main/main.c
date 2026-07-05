@@ -8,6 +8,7 @@
 #include "bb_ota.h"
 #include "bb_radio_app.h"
 #include "bb_session_store.h"
+#include "bb_power_mgmt.h"
 
 static const char* TAG = "bbclaw_main";
 
@@ -37,6 +38,10 @@ void app_main(void) {
   // ADR-015: device monitor (USB screenshot + key injection for dev tools).
   // No-op stub when CONFIG_BBCLAW_DEVICE_MONITOR=n.
   bb_device_monitor_init();
+
+  // ADR-046: Power management (IMU + display brightness + sleep manager)
+  // Enables wake-on-motion and screen sleep to optimize battery life
+  bb_power_mgmt_init();
 
   ESP_ERROR_CHECK(bb_radio_app_start());
 }
