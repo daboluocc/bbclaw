@@ -37,11 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增 `scripts/watch_screenshot.sh` 手表拉屏脚本(410×502 一帧 1.5s,AI 迭代 UI 用)。
   - **手表触屏**(ADR-040 §UI.5):FT3168 手势→导航事件注入(tap=OK/上下滑/长按右滑=BACK),
     UI 层零改动全页面可触摸。
-  - **手表竖屏 UI 适配启动**(ADR-040 §UI,设计文档先行):
-    - 圆角安全区机制 `bb_ui_layout.h`(板级 CORNER_RADIUS→0.293r 内缩两档安全区,
-      方屏板行为不变);ACTIVE 顶栏/底线自动离角。
-    - 待机表盘竖屏形态:点阵时钟 hero 1.8x 居中偏上 + 底部居中簇。
+  - **手表竖屏 UI 适配**(ADR-040 §UI,设计文档先行):
+    - 圆角安全区机制 `bb_ui_layout.h`:板级 CORNER_RADIUS(实测 R9.2mm=114px,
+      产品尺寸图正面窗口=显示 AA 一比一)→0.293r 内缩两档安全区;顶栏/PTT 区
+      占用圆角带、内容区居中(方屏板行为不变)。
+    - 全部页面竖屏重构:待机时钟 hero 1.8x/配网/锁屏/OTA/开机/选择页居中构图,
+      设置页/任务列表/选择器 64px 触摸行高,聊天 transcript 接内容盒上下铺满。
     - 模拟器支持手表分辨率(`make sim-build-watch`,零烧录 PNG 出图迭代)。
+  - **手表触摸交互体系**(原生 LVGL 指针 indev,替换初版手势模拟层):
+    - 跟手滚动/行点按执行/音量条拖动(1% 粒度)/右滑返回/左滑进设置
+      (回复中可进,TTS 不断)/待机点击唤醒。
+    - 悬浮 PTT 圆钮:聊天页专属(主题托管生命周期,overlay 天然盖住),
+      按住说话,平时幽灵态按下点亮;物理 BOOT 键保留兜底。
 
 ### Changed
 - **固件:设置显示优化——开关状态文案 + 会话显示标题而非 ID**:
