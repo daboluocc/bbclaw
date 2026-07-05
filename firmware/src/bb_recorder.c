@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -166,6 +167,16 @@ static void recorder_task(void* arg) {
       bb_ogg_opus_free(out);
     }
     s_rec.seg_pcm_ms += (int64_t)item_size / PCM_BYTES_PER_MS;
+
+    /* 周期 fsync(每 ~5s):FATFS 无日志,录音中拔电/重启会留脏 FAT(真机踩过:
+     * 中途烧录重启后整卡写路径 EIO)。fsync 提交 FAT,最多丢几秒尾巴。 */
+    static int64_t s_last_sync_ms;
+    if (s_rec.seg_fp != NULL && s_rec.seg_pcm_ms - s_last_sync_ms >= 5000) {
+      s_last_sync_ms = s_rec.seg_pcm_ms;
+      (void)fflush(s_rec.seg_fp);
+      (void)fsync(fileno(s_rec.seg_fp));
+    }
+    if (s_rec.seg_pcm_ms < s_last_sync_ms) s_last_sync_ms = 0; /* 段轮转后复位 */
 
     /* 段轮转 */
     if (s_rec.seg_pcm_ms >= REC_SEGMENT_MS) {

@@ -40,6 +40,8 @@
 
 #include "bb_config.h"
 #include "bb_device_monitor.h"
+
+#include "bb_recorder.h"
 #include "bb_nav_input.h"
 
 #include <stdarg.h>
@@ -390,7 +392,10 @@ static void devmon_worker_task(void* arg) {
          * v3：先 tud_disconnect() 拉掉 D+ 让 host 干净丢弃会话，再清 USB PHY
          * 选择寄存器（RTC 域，软复位不清），最后 FORCE_DOWNLOAD_BOOT + ROM 复位
          * ——ROM 以出厂语义全新枚举 USJ 下载口。全程寄存器/ROM 调用，无阻塞点。 */
-        tud_disconnect();
+        /* ADR-044:录音会话进行中先收尾(停编码+fsync+关文件),否则复位留脏 FAT
+   * ——整卡写路径 EIO(真机踩过)。非录音态为 no-op。 */
+  bb_recorder_stop();
+  tud_disconnect();
         vTaskDelay(pdMS_TO_TICKS(300));
         REG_WRITE(RTC_CNTL_USB_CONF_REG, 0);
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
