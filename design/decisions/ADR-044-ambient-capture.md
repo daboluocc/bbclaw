@@ -110,7 +110,15 @@ ffmpeg 解码（`audio.Manager`、`server.go:2059-2071`、`codec.go:36-68`）。
 几十个像素）；任意键先亮屏。**指示不可关闭**——这是「非窃听器材」的定性依据，
 不是 UI 偏好。
 
-### 3.7 内部 DRAM 护栏
+### 3.7 libopus 栈账（P1a 实战教训，2026-07-05）
+本仓库 libopus（78__esp-opus）以 `USE_ALLOCA` 编译：**一次完整 SILK 编码在
+调用任务栈上 alloca ~24KB**（silk_encode_frame_FIX 一层 9.5KB+NSQ 动态）。
+任何调用 opus_encode 的任务栈必须 ≥40KB（stream_task/recorder_task 均如此）。
+PSRAM 栈溢出不触发 fault（写烂邻居堆数据、堆元数据无损），死点飘忽极难排查
+——已加 FREERTOS_WATCHPOINT_END_OF_STACK 硬件观察点。结构性根治（libopus 改
+NONTHREADSAFE_PSEUDOSTACK+PSRAM 伪栈，可为每个任务省 ~20KB）列 P3。
+
+### 3.8 内部 DRAM 护栏
 internal largest 实测仅 ~11KB，WS 断线重建（8KB 内部栈）碎片失败有前科
 （`docs/debug/internal-ram-ws-task.md`）。进录音模式前检查
 `internal_largest < 12KB 则拒绝进入`；录音会话开始时确保 WS 已连（预热）。
@@ -177,7 +185,7 @@ pending → Silero VAD 精切(丢静音) → 火山「录音文件识别」异�
 | **P1a 本地录音**(先行,无云端依赖) | SD 卡 bring-up(SDMMC 1-bit) + RECORDER 态(入口/常显指示/互斥/PTT=书签) + 60s 分段落 SD + 段索引 | 真机 4h+ 连续录音不丢段;拔电重启索引完好 |
 | **P1b 回网补传** | 固件同步引擎(ambient.* WS kinds) + 云端落盘/ack + 30 天生命周期 + portal 列表/删除;**随包完成 wss 核实**(环境音不明文) | 断网数小时回网后自动补齐;云端可见可删 |
 | **P2 解读** | ambient worker: VAD→批 ASR(火山录音文件异步)→transcript→daily digest;bookmark 锚点入摘要;**转写文本下发 adapter**(/admin 新增「录音记录」页,原始音频留云端短保留,文本轻量长价值——2026-07-05 用户补充) | 每天自动出 digest,成本 ≤¥7/设备/天;adapter 页可浏览转写 |
-| **P3 增强** | per-device token、功耗定标(降频/批传/熄屏)、双麦立体声/波束、digest 接入对话上下文;Track B 专用硬件立项(4G) | 续航实测达标 |
+| **P3 增强** | per-device token、功耗定标(降频/批传/熄屏)、双麦立体声/波束、digest 接入对话上下文;Track B 专用硬件立项(4G);libopus 伪栈化(省每任务 ~20KB 栈);采集丢帧 gap 标记入索引(时间轴诚实) | 续航实测达标 |
 
 ## 7. 决策记录（2026-07-05）
 
