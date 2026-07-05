@@ -86,7 +86,12 @@ func LoadConfig() (Config, error) {
 		CloudAuthToken: strings.TrimSpace(os.Getenv("CLOUD_AUTH_TOKEN")),
 		HomeSiteID:     siteID,
 		ReconnectDelay: 3 * time.Second,
-		ReplyWait:      90 * time.Second,
+		// 5 minutes: a long agent turn (deep thinking / multi-step tool use) can
+		// easily run past 90s. The cloud's own per-request cap (CLOUD_REPLY_WAIT_SECONDS,
+		// default 600s) is comfortably above this, and the heartbeat below keeps the
+		// cloud's sliding idle timer alive throughout, so this is the true ceiling on
+		// how long a device waits for a reply before seeing a timeout.
+		ReplyWait: 5 * time.Minute,
 	}
 	return cfg, nil
 }

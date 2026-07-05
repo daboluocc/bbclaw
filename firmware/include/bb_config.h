@@ -834,8 +834,12 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_HTTP_TIMEOUT_MS 5000
 #endif
 
+/* 5 分钟：AI 思考/多步工具调用经常超过 90s，之前的 90000ms 会让设备在
+ * adapter/cloud 仍在等回复(靠 heartbeat 保活)时先本地判超时挂断——回复真正
+ * 生成好之后设备已经不听了，内容就丢了。改成 5 分钟，匹配 adapter_v2 侧
+ * cloudrelay.ReplyWait 的新默认值，做真正的等待上限。*/
 #ifndef BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
-#define BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS 90000
+#define BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS 300000
 #endif
 
 #ifndef BBCLAW_ADAPTER_HEARTBEAT_INTERVAL_MS
