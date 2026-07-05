@@ -1750,6 +1750,32 @@ static void picker_apply_styles(void) {
   }
 }
 
+/* Row tap (LV_EVENT_CLICKED, pointer indev) — select the tapped row, then run
+ * the SAME confirm path the OK key used ("滑到该行再按 OK" in one tap):
+ * bb_ui_agent_chat_picker_send_selected(). Unlike settings/task-list rows we
+ * call it directly instead of injecting BB_NAV_EVENT_OK — radio_app's CHAT OK
+ * branch opens Settings nowadays, there is no nav route left to the picker.
+ * send_selected → bb_ui_agent_chat_send is already safe in this context: it
+ * is documented callable from either the LVGL task or the key task (LVGL work
+ * goes through safe_lv_async_call, the network turn runs on a spawned agent
+ * task), and it never takes lvgl_port_lock. If a turn is already in flight it
+ * returns ESP_ERR_INVALID_STATE and the picker simply stays up (same behavior
+ * as the legacy OK path). On the square (no-touch) panel there is no pointer
+ * indev, so this never fires — zero behavior change there. */
+static void picker_row_clicked_cb(lv_event_t* e) {
+  if (!s_chat.active || s_chat.picker_root == NULL || s_chat.picker_count == 0) return;
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  if (idx < 0 || idx >= s_chat.picker_count) return;
+  if (s_chat.picker_sel != idx) {
+    s_chat.picker_sel = idx;
+    picker_apply_styles();
+  }
+  esp_err_t err = bb_ui_agent_chat_picker_send_selected();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "picker tap: send_selected refused (%s)", esp_err_to_name(err));
+  }
+}
+
 void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
   if (!s_chat.active || s_chat.parent == NULL) {
     ESP_LOGW(TAG, "picker_show: chat not active");
@@ -1844,6 +1870,11 @@ void bb_ui_agent_chat_picker_show(const char* const* phrases, int count) {
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
     const char* p = phrases[i];
     lv_label_set_text(row, p != NULL ? p : "");
+    /* Touch: row = tap target (labels drop LV_OBJ_FLAG_CLICKABLE in their
+     * constructor, so re-add it; harmless without a pointer indev). */
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, picker_row_clicked_cb, LV_EVENT_CLICKED,
+                        (void*)(intptr_t)i);
     s_chat.picker_items[i] = row;
   }
   picker_apply_styles();

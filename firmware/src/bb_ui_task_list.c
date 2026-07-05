@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "bb_agent_client.h"
+#include "bb_nav_input.h"
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
@@ -233,6 +234,28 @@ static void task_list_apply_styles(void) {
   }
 }
 
+/* Row tap (LV_EVENT_CLICKED, pointer indev) — select the tapped row, then run
+ * the SAME confirm path as the physical OK key ("滑到该行再按 OK" in one tap;
+ * same idiom as bb_ui_settings.c row_clicked_cb). This callback runs on the
+ * LVGL task with the port lock already held, so it must not re-lock or block:
+ * it only moves the local cursor, then injects BB_NAV_EVENT_OK via
+ * bb_nav_input_inject — a non-blocking version-counter bump consumed by
+ * radio_app's stream_task, whose task_list branch dispatches
+ * bb_ui_task_list_activate() under its own lvgl_port_lock (which also owns
+ * the hide-then-send teardown, safely off this event dispatch). No business
+ * logic is duplicated here. On the square (no-touch) panel there is no
+ * pointer indev, so this never fires — zero behavior change there. */
+static void tl_row_clicked_cb(lv_event_t* e) {
+  if (s_tl.visible != 2 || s_tl.count == 0) return;
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  if (idx < 0 || idx >= s_tl.count) return;
+  if (s_tl.sel != idx) {
+    s_tl.sel = idx;
+    task_list_apply_styles();
+  }
+  bb_nav_input_inject(BB_NAV_EVENT_OK);
+}
+
 /* ── Build the LVGL overlay ── */
 static void task_list_build_ui(void) {
   /* Tear down existing overlay if any. */
@@ -333,6 +356,11 @@ static void task_list_build_ui(void) {
       lv_obj_set_style_radius(row, BB_TL_ROW_RADIUS, 0);
       lv_obj_set_style_text_font(row, font, 0);
       lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_DOTS);
+      /* Touch: row = tap target. Labels drop LV_OBJ_FLAG_CLICKABLE in their
+       * constructor, so re-add it; harmless without a pointer indev. */
+      lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(row, tl_row_clicked_cb, LV_EVENT_CLICKED,
+                          (void*)(intptr_t)i);
       char row_buf[80];
       tl_format_row(&s_tl.entries[i], row_buf, sizeof(row_buf));
       lv_label_set_text(row, row_buf);

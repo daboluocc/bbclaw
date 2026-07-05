@@ -33,6 +33,7 @@
 
 #include "bb_ui_settings.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -41,6 +42,7 @@
 #include "bb_audio.h"
 #include "bb_config.h"
 #include "bb_device_config.h"
+#include "bb_nav_input.h" /* touch row-tap → inject OK (same path as the physical key) */
 #include "bb_notification.h" /* ADR-021 §9: 已提醒 list + unread badge source */
 #include "bb_ota.h"
 #include "bb_radio_app.h"
@@ -284,6 +286,10 @@ static void destroy_rows(void) {
   }
 }
 
+/* Touch (ADR-040 §UI.5 v2): row tap = select + confirm. Defined after
+ * highlight_selected (it re-highlights before confirming). */
+static void row_clicked_cb(lv_event_t* e);
+
 static void build_rows_box(int row_count) {
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
@@ -346,6 +352,13 @@ static void build_rows_box(int row_count) {
      * (lv_pct(100) above), so LVGL only animates when the text overflows;
      * short static menu rows (Driver/Volume/...) stay put. */
     lv_label_set_long_mode(row, LV_LABEL_LONG_MODE_SCROLL);
+    /* Touch: every row is a tap target. Labels drop LV_OBJ_FLAG_CLICKABLE in
+     * their constructor, so re-add it; on the square (no-touch) panel there is
+     * no pointer indev, so this never fires — zero behavior change there.
+     * LVGL suppresses CLICKED when the press turned into a rows_box scroll, so
+     * flick-scrolling the list doesn't accidentally activate a row. */
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
     s_st.rows[i] = row;
   }
   s_st.rows_used = row_count;
@@ -380,6 +393,26 @@ static void highlight_selected(void) {
     lv_obj_update_layout(s_st.rows_box);
     lv_obj_scroll_to_view(s_st.rows[s_st.sel], LV_ANIM_OFF);
   }
+}
+
+/* Row tap (LV_EVENT_CLICKED, pointer indev) — select the tapped row, then run
+ * the SAME confirm path as the physical OK key ("滑到该行再按 OK" in one tap).
+ * This callback runs on the LVGL task with the port lock already held, so it
+ * must not re-lock or block: it only moves the local cursor, then injects
+ * BB_NAV_EVENT_OK via bb_nav_input_inject — a non-blocking version-counter
+ * bump consumed by radio_app's stream_task, which dispatches
+ * settings_click_locked → bb_ui_settings_handle_click under its own lock and
+ * also owns the exit-to-chat teardown when handle_click returns 1 (Sessions
+ * pick / "+ New"). No business logic is duplicated here. */
+static void row_clicked_cb(lv_event_t* e) {
+  if (!s_st.active) return;
+  int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  if (idx < 0 || idx >= s_st.rows_used) return;
+  if (s_st.sel != idx) {
+    s_st.sel = idx;
+    highlight_selected();
+  }
+  bb_nav_input_inject(BB_NAV_EVENT_OK);
 }
 
 /* ── Render: main page ── */
@@ -612,7 +645,14 @@ static void render_main(void) {
    * destroy_rows on the next render / level change. */
   s_st.hint_lbl = lv_label_create(s_st.root);
   lv_obj_set_style_text_color(s_st.hint_lbl, lv_color_hex(BB_UI_TEXT_DIM), 0);
+#if BB_UI_PORTRAIT
+  /* 触屏语义（手表）：点按行=选中并确认，右滑=BACK（屏幕级手势）。"·" 不在
+   * montserrat(仅 ASCII) 里，绑 CJK 字库（其 --symbols 集含 "·"）。 */
+  lv_obj_set_style_text_font(s_st.hint_lbl, ui_font(), 0);
+  lv_label_set_text(s_st.hint_lbl, "Tap to select · Swipe right to exit");
+#else
   lv_label_set_text(s_st.hint_lbl, "Hold to exit");
+#endif
   /* 竖屏：提示在 64px footer 带内垂直居中（-22 → y∈[460,480]），水平居中
    * 天然避开底部两角（底角遮挡区 y>442 且 x<60 / x>350）。方屏保持 -4。 */
   lv_obj_align(s_st.hint_lbl, LV_ALIGN_BOTTOM_MID, 0, -FOOTER_HINT_INSET);
@@ -792,6 +832,10 @@ static void render_model_picker(void) {
 #define VOL_HINT_DY    20
 #endif
 
+/* Touch: press/drag on the volume bar maps x → percent. Defined after
+ * spawn_persist_int (release persists through it, same as the old OK path). */
+static void vol_bar_touch_cb(lv_event_t* e);
+
 static void render_volume_adjust(void) {
   if (s_st.root == NULL) return;
   lv_label_set_text(s_st.header_lbl, "Volume");
@@ -828,6 +872,19 @@ static void render_volume_adjust(void) {
   lv_obj_set_pos(container, VOL_BAR_X, VOL_BAR_Y - HEADER_H);
   lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+  /* Touch (ADR-040 §UI.5 v2): press/drag anywhere on the bar sets the volume
+   * (x → percent, live visual + audio; release persists). The container is the
+   * single hit target; a generous ext click area makes the strip easy to grab
+   * on the watch. GESTURE_BUBBLE is cleared so a horizontal drag that LVGL
+   * classifies as a gesture stays on the bar instead of bubbling to the
+   * screen-level swipe-right=BACK handler mid-adjust. No pointer indev on the
+   * square panel → callbacks never fire there. */
+  lv_obj_clear_flag(container, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_set_ext_click_area(container, 16);
+  lv_obj_add_event_cb(container, vol_bar_touch_cb, LV_EVENT_PRESSED, NULL);
+  lv_obj_add_event_cb(container, vol_bar_touch_cb, LV_EVENT_PRESSING, NULL);
+  lv_obj_add_event_cb(container, vol_bar_touch_cb, LV_EVENT_RELEASED, NULL);
+  lv_obj_add_event_cb(container, vol_bar_touch_cb, LV_EVENT_PRESS_LOST, NULL);
 
   /* Fill rect (accent color) */
   lv_obj_t* fill = lv_obj_create(container);
@@ -837,6 +894,8 @@ static void render_volume_adjust(void) {
   lv_obj_set_style_radius(fill, VOL_FILL_R, 0);
   lv_obj_set_style_bg_color(fill, lv_color_hex(BB_UI_ACCENT), 0);
   lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+  /* Not a hit target — presses must land on the container underneath. */
+  lv_obj_clear_flag(fill, LV_OBJ_FLAG_CLICKABLE);
   s_st.vol_fill = fill;
 
   /* Border frame on top */
@@ -850,6 +909,8 @@ static void render_volume_adjust(void) {
   lv_obj_set_style_border_opa(frame, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_opa(frame, LV_OPA_0, 0);
   lv_obj_clear_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
+  /* Not a hit target — presses must land on the container underneath. */
+  lv_obj_clear_flag(frame, LV_OBJ_FLAG_CLICKABLE);
 
   /* Percentage label */
   lv_obj_t* pct_lbl = lv_label_create(s_st.rows_box);
@@ -870,10 +931,13 @@ static void render_volume_adjust(void) {
   lv_obj_t* hint = lv_label_create(s_st.rows_box);
   lv_obj_set_style_text_color(hint, lv_color_hex(BB_UI_TEXT_DIM), 0);
   lv_obj_set_style_text_font(hint, ui_font(), 0);
-  lv_label_set_text(hint, "Up/Down adjust  OK to save");
 #if BB_UI_PORTRAIT
+  /* 触屏语义（手表）：拖动条=调节（松手即存），右滑=BACK（返回也会存）。 */
+  lv_label_set_text(hint, "Drag to adjust · Swipe right to go back");
   lv_obj_set_width(hint, bar_w);
   lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+#else
+  lv_label_set_text(hint, "Up/Down adjust  OK to save");
 #endif
   lv_obj_set_pos(hint, VOL_BAR_X, VOL_PCT_LABEL_Y - HEADER_H + VOL_HINT_DY);
 }
@@ -1600,6 +1664,44 @@ static void spawn_persist_driver(const char* driver_name) {
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "spawn_persist_driver: xTaskCreate failed");
     free(p);
+  }
+}
+
+/* ── Volume bar touch (press/drag → percent) ──
+ * Runs on the LVGL task (pointer indev event, port lock held) — no re-lock, no
+ * blocking work. PRESSED/PRESSING map the touch x onto the bar's inner width
+ * and mirror the encoder path exactly: bb_audio_set_volume_pct() applies the
+ * value live (cheap: sets an int) and update_volume_bar() partial-updates the
+ * fill + "NN%" label in real time, no rebuild. RELEASED/PRESS_LOST persist via
+ * spawn_persist_int(COMMIT_KIND_VOLUME) — the same NVS-off-LVGL-task save the
+ * old OK path (handle_click LEVEL_VOLUME_ADJUST) performs, so 松手保存 == 旧
+ * OK 的保存语义 (the page stays up for further drags; BACK still saves too). */
+static void vol_bar_touch_cb(lv_event_t* e) {
+  if (!s_st.active || s_st.level != LEVEL_VOLUME_ADJUST) return;
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_PRESSED || code == LV_EVENT_PRESSING) {
+    lv_indev_t* indev = lv_event_get_indev(e);
+    if (indev == NULL) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    lv_obj_t* bar = (lv_obj_t*)lv_event_get_current_target(e);
+    lv_area_t coords;
+    lv_obj_get_coords(bar, &coords);
+    int inner_w = (int)lv_area_get_width(&coords) - VOL_BAR_BORDER * 2;
+    if (inner_w <= 0) return;
+    int v = (((int)p.x - (int)coords.x1 - VOL_BAR_BORDER) * 100) / inner_w;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    if (v == s_st.volume_pct) return;
+    s_st.volume_pct = v;
+    s_st.volume_dirty = 1;
+    bb_audio_set_volume_pct(v); /* live apply — same as handle_rotate */
+    update_volume_bar(v);       /* real-time fill + "NN%" while dragging */
+  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    if (s_st.volume_dirty) {
+      spawn_persist_int(COMMIT_KIND_VOLUME, s_st.volume_pct);
+      s_st.volume_dirty = 0;
+    }
   }
 }
 
