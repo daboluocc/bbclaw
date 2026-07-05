@@ -3571,6 +3571,36 @@ static void stream_task(void* arg) {
       }
     }
 
+#if BBCLAW_PWR_KEY_GPIO >= 0
+    /* PWR 键一键录音(ADR-044 用户需求):短按启动,再按结束。
+     * 上升沿触发+50ms 去抖+1s 重触发间隔;LOCKED 下忽略(隐私:锁着不能开录)。
+     * 长按 4s 的硬关机在 AXP2101 侧,与此互不影响。 */
+    {
+      static int s_pwr_prev;
+      static int64_t s_pwr_last_ms;
+      const int lvl = gpio_get_level(BBCLAW_PWR_KEY_GPIO);
+      const int pressed = (lvl == BBCLAW_PWR_KEY_ACTIVE_LEVEL);
+      int64_t pwr_now = bb_now_ms();
+      if (pressed && !s_pwr_prev && pwr_now - s_pwr_last_ms > 1000) {
+        s_pwr_last_ms = pwr_now;
+        if (s_app_state == BBCLAW_STATE_RECORDER) {
+          ESP_LOGI(TAG, "PWR key: stop recording");
+          recorder_exit();
+        } else if (!radio_app_is_locked() && !streaming && !arming && !session_busy) {
+          ESP_LOGI(TAG, "PWR key: start recording");
+          if (s_app_state == BBCLAW_STATE_SETTINGS) {
+            settings_overlay_exit();
+          }
+          if (recorder_enter() != 0) {
+            set_radio_app_state(BBCLAW_STATE_CHAT);
+            show_idle_ready_or_locked();
+          }
+        }
+      }
+      s_pwr_prev = pressed;
+    }
+#endif
+
     /* 开机报告(一次,~8s 后=避开 CDC0 boot 丢失窗):复位原因+录音面包屑。
      * 本板 panic 输出不可达,这是崩溃排障的第一手证据(RTC noinit 复位存活)。 */
     {
@@ -4264,6 +4294,20 @@ esp_err_t bb_radio_app_start(void) {
   log_heap_snapshot("before ringbuf");
   /* SD 卡挂载（ADR-044）：无卡是常态,失败只降级(录音入口不可用) */
   (void)bb_sdcard_mount();
+
+#if BBCLAW_PWR_KEY_GPIO >= 0
+  /* PWR 键(录音一键启停):输入+下拉(高有效)。AXP2101 PKEY 短按输出脉冲。 */
+  {
+    const gpio_config_t pwr_cfg = {
+        .pin_bit_mask = 1ULL << BBCLAW_PWR_KEY_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = BBCLAW_PWR_KEY_ACTIVE_LEVEL ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE,
+        .pull_down_en = BBCLAW_PWR_KEY_ACTIVE_LEVEL ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    (void)gpio_config(&pwr_cfg);
+  }
+#endif
 
   s_capture_rb = xRingbufferCreateWithCaps(CAPTURE_RINGBUF_SIZE, RINGBUF_TYPE_BYTEBUF,
                                            MALLOC_CAP_8BIT);

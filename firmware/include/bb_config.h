@@ -29,6 +29,28 @@
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
 #endif
 
+/* ── IMU（QMI8658）+ 息屏管理默认值:无此硬件的板自动降级(模块内自门控) ── */
+#ifndef BBCLAW_IMU_ENABLE
+#define BBCLAW_IMU_ENABLE 0
+#endif
+#ifndef BBCLAW_IMU_QMI8658_I2C_ADDR
+#define BBCLAW_IMU_QMI8658_I2C_ADDR 0x6B
+#endif
+#ifndef BBCLAW_IMU_SAMPLE_RATE_HZ
+#define BBCLAW_IMU_SAMPLE_RATE_HZ 100
+#endif
+#ifndef BBCLAW_DISPLAY_BRIGHTNESS_CONTROL
+#define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 0
+#endif
+
+/* ── PWR 键（AXP2101 PKEY 路由到 GPIO,短按脉冲）：录音一键启停,see bb_radio_app ── */
+#ifndef BBCLAW_PWR_KEY_GPIO
+#define BBCLAW_PWR_KEY_GPIO (-1)
+#endif
+#ifndef BBCLAW_PWR_KEY_ACTIVE_LEVEL
+#define BBCLAW_PWR_KEY_ACTIVE_LEVEL 1
+#endif
+
 /* ── Micro SD（SDMMC 1-bit）：录音本地优先存储，see bb_sdcard.c / ADR-044 ── */
 #ifndef BBCLAW_SDMMC_ENABLE
 #define BBCLAW_SDMMC_ENABLE 0

@@ -133,6 +133,8 @@ esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
 esp_err_t bb_sdcard_mount(void) { return ESP_ERR_NOT_SUPPORTED; }
 void bb_sdcard_unmount(void) {}
 int bb_sdcard_mounted(void) { return 0; }
+esp_err_t bb_sdcard_selftest(void) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t bb_sdcard_format(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
   (void)total_kb;
   (void)free_kb;

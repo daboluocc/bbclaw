@@ -65,6 +65,11 @@
 #define BBCLAW_MOTOR_GPIO    -1
 #define BBCLAW_STATUS_LED_ENABLE 0
 
+/* ── PWR 键 = GPIO10(高有效,AXP2101 PKEY 短按脉冲;长按 4s 硬关机由 PMU 处理)
+ * 录音一键启停(ADR-044,用户需求:一键启动/再按结束) ── */
+#define BBCLAW_PWR_KEY_GPIO 10
+#define BBCLAW_PWR_KEY_ACTIVE_LEVEL 1
+
 /* ── Micro SD（SDMMC 1-bit）：录音本地优先存储（ADR-044） ── */
 #define BBCLAW_SDMMC_ENABLE   1
 #define BBCLAW_SDMMC_CLK_GPIO 2
