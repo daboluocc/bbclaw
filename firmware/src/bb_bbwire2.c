@@ -20,6 +20,7 @@
 
 #include "bb_config.h"
 #include "bb_prompt.h"
+#include "bb_time.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -56,6 +57,9 @@ typedef struct {
   bb_finish_stream_event_cb_t fin_cb;
   void* fin_user;
   int fin_waiting;
+  /* 本回合最后一次流式活动（文本帧/二进制 TTS 帧,guard 通过后打点）。
+   * 等待循环据此做空闲超时;s_bw.lock 保护。 */
+  int64_t fin_last_activity_ms;
 
   /* inbound frame reassembly (one in flight; the WS task is single-threaded) */
   uint8_t* rx_buf;
@@ -211,6 +215,9 @@ static void bw_handle_text(const char* msg) {
    * queues audio for playback and never re-enters this module, so no deadlock. */
   xSemaphoreTake(s_bw.lock, portMAX_DELAY);
 
+  /* 咽喉点：所有回合内帧从这里过——打「最后活动」时间戳,喂空闲超时。 */
+  s_bw.fin_last_activity_ms = bb_now_ms();
+
   if (strcmp(t, "turn") == 0) {
     char state[16] = {0};
     bw_json_str(msg, "state", state, sizeof(state));
@@ -282,6 +289,7 @@ static void bw_handle_binary(const uint8_t* frame, size_t len) {
    * the current turn, or that arrives after finish stopped waiting. */
   xSemaphoreTake(s_bw.lock, portMAX_DELAY);
   if (s_bw.fin_waiting && h.turn_seq == s_bw.turn_u && h.codec == BB_BBWIRE2_CODEC_PCM16) {
+    s_bw.fin_last_activity_ms = bb_now_ms(); /* TTS 帧也是回合活动 */
     bw_deliver_pcm16_tts(payload, (size_t)plen);
   }
   /* codec == OPUS: a later optimisation (accumulate + bb_ogg_opus decode). Phase
@@ -570,6 +578,7 @@ esp_err_t bb_bbwire2_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_
   s_bw.fin_cb = on_event;
   s_bw.fin_user = user_ctx;
   s_bw.fin_waiting = 1;
+  s_bw.fin_last_activity_ms = bb_now_ms(); /* 回合起点即活动 */
   xEventGroupClearBits(s_bw.events, BW_DONE | BW_ERROR | BW_DISCONNECTED);
   xSemaphoreGive(s_bw.lock);
 
@@ -586,8 +595,23 @@ esp_err_t bb_bbwire2_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_
     return err;
   }
 
-  EventBits_t bits = xEventGroupWaitBits(s_bw.events, BW_DONE | BW_ERROR | BW_DISCONNECTED, pdFALSE, pdFALSE,
-                                         pdMS_TO_TICKS(BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS));
+  /* 空闲超时等待（1s 切片,与 bb_adapter_client 同构）：事件到达续期,
+   * 固定 deadline 不再拦腰砍断多步长回合。 */
+  const int64_t wait_start_ms = bb_now_ms();
+  EventBits_t bits = 0;
+  for (;;) {
+    bits = xEventGroupWaitBits(s_bw.events, BW_DONE | BW_ERROR | BW_DISCONNECTED, pdFALSE, pdFALSE,
+                               pdMS_TO_TICKS(1000));
+    if ((bits & (BW_DONE | BW_ERROR | BW_DISCONNECTED)) != 0U) break;
+    const int64_t now_ms = bb_now_ms();
+    xSemaphoreTake(s_bw.lock, portMAX_DELAY);
+    const int64_t last_ms = s_bw.fin_last_activity_ms;
+    xSemaphoreGive(s_bw.lock);
+    if (now_ms - last_ms >= (int64_t)BBCLAW_STREAM_FINISH_IDLE_TIMEOUT_MS) break;
+#if BBCLAW_STREAM_FINISH_MAX_TOTAL_MS > 0
+    if (now_ms - wait_start_ms >= (int64_t)BBCLAW_STREAM_FINISH_MAX_TOTAL_MS) break;
+#endif
+  }
   xSemaphoreTake(s_bw.lock, portMAX_DELAY);
   s_bw.fin_waiting = 0;
   s_bw.fin_result = NULL;

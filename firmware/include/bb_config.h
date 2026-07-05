@@ -29,6 +29,15 @@
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
 #endif
 
+/* ── 电量数据源：AXP2101 硬件电量计（替代 ADC 分压），see bb_power.c ── */
+#ifndef BBCLAW_POWER_SOURCE_AXP2101
+#define BBCLAW_POWER_SOURCE_AXP2101 0
+#endif
+
+/* 「本板支持电池显示」统一判定（UI 与数据层共用） */
+#define BBCLAW_POWER_SUPPORTED \
+  (BBCLAW_POWER_ENABLE && ((BBCLAW_POWER_ADC_GPIO >= 0) || BBCLAW_POWER_SOURCE_AXP2101))
+
 /* ── ES7210 四通道 ADC（mic 不走 ES8311 的板子，如手表），see bb_audio.c ── */
 #ifndef BBCLAW_ES7210_ENABLE
 #define BBCLAW_ES7210_ENABLE 0
@@ -840,6 +849,21 @@ const char *bbclaw_session_key(void);
  * cloudrelay.ReplyWait 的新默认值，做真正的等待上限。*/
 #ifndef BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS
 #define BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS 300000
+#endif
+
+/* WS 等待路径（cloud_saas / bbwire2）的「空闲超时」：自本回合最后一个流式事件
+ * （status/delta/thinking/tool_call/tts/prompt 帧）起，静默超过此值才判
+ * VOICE_SESSION_TIMEOUT；每个事件到达即续期，多步长回合不再死于总时长。
+ * 取 5min 与 adapter_v2 ReplyWait 空闲语义对齐——注意长工具调用（如 4 分钟的
+ * Bash）期间 adapter 层零事件下发（tool_call 只在工具启动时发一次，adapter→cloud
+ * 心跳不进设备），不能激进调小。WS 传输层 ping 不算活动。 */
+#ifndef BBCLAW_STREAM_FINISH_IDLE_TIMEOUT_MS
+#define BBCLAW_STREAM_FINISH_IDLE_TIMEOUT_MS 300000
+#endif
+
+/* 绝对时长兜底（0=不限）：防御「事件永续但回合永不收尾」的病态上游。 */
+#ifndef BBCLAW_STREAM_FINISH_MAX_TOTAL_MS
+#define BBCLAW_STREAM_FINISH_MAX_TOTAL_MS 1800000
 #endif
 
 #ifndef BBCLAW_ADAPTER_HEARTBEAT_INTERVAL_MS

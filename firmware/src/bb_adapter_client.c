@@ -140,6 +140,9 @@ typedef struct {
   bb_finish_stream_event_cb_t finish_on_event;
   void* finish_user_ctx;
   int finish_waiting;
+  /* 本回合最后一次流式活动（guard 通过的任何回合事件帧,含二进制 TTS）。
+   * 等待循环据此做空闲超时;s_ws.lock 保护(S3 上 int64 读写非原子)。 */
+  int64_t finish_last_activity_ms;
   int finish_saw_done;
   int finish_saw_error;
   char finish_stream_id[64];
@@ -667,6 +670,7 @@ static void build_cloud_ws_url(char* out, size_t out_len) {
 
 static void ws_finish_reset_locked(void) {
   s_ws.finish_result = NULL;
+  s_ws.finish_last_activity_ms = 0;
   s_ws.finish_on_event = NULL;
   s_ws.finish_user_ctx = NULL;
   s_ws.finish_waiting = 0;
@@ -1467,6 +1471,10 @@ static void ws_handle_text_message(const char* msg) {
     return;
   }
 
+  /* 唯一咽喉点：所有回合内事件（status/delta/thinking/tool_call/prompt/tts/done）
+   * 都从这里过——打「最后活动」时间戳,喂空闲超时。 */
+  s_ws.finish_last_activity_ms = bb_now_ms();
+
   if (strcmp(kind, "voice.session") == 0) {
     /* Issue #146: cloud voice (butler) path now forwards the resolved session
      * id + driver so the device can persist it (NVS + chat cache bind) and
@@ -1599,6 +1607,7 @@ static void ws_handle_binary_message(const uint8_t* data, size_t len) {
     xSemaphoreGive(s_ws.lock);
     return;
   }
+  s_ws.finish_last_activity_ms = bb_now_ms(); /* TTS OGG 帧也是回合活动 */
   size_t need = s_ws.tts_audio_len + len;
   if (need > s_ws.tts_audio_cap) {
     size_t new_cap = s_ws.tts_audio_cap == 0U ? 4096U : s_ws.tts_audio_cap;
@@ -2474,6 +2483,7 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
     xEventGroupClearBits(s_ws.events,
                          BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT);
     s_ws.finish_waiting = 1;
+    s_ws.finish_last_activity_ms = bb_now_ms(); /* 回合起点即活动 */
     snprintf(s_ws.finish_stream_id, sizeof(s_ws.finish_stream_id), "%s", ctx->stream_id);
     xSemaphoreGive(s_ws.lock);
 
@@ -2494,9 +2504,33 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
       return send_err;
     }
 
-    EventBits_t bits = xEventGroupWaitBits(
-        s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT, pdFALSE,
-        pdFALSE, pdMS_TO_TICKS(BBCLAW_HTTP_STREAM_FINISH_TIMEOUT_MS));
+    /* 空闲超时等待（1s 切片轮询）：固定 deadline 会把「AI 深思考/多步工具调用、
+     * 事件持续流向设备」的健康长回合拦腰砍断。切片间检查本回合最后活动时间,
+     * 事件到达即续期;DONE/ERROR/ABORT 位仍即时唤醒(不受切片影响)。不用
+     * 「事件组 ACTIVITY 位续期」方案——循环内清位与 DONE/ABORT 置位存在竞态
+     * (正是 arm 点注释里修过的那类窗口)。 */
+    const int64_t wait_start_ms = bb_now_ms();
+    EventBits_t bits = 0;
+    for (;;) {
+      bits = xEventGroupWaitBits(
+          s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT, pdFALSE,
+          pdFALSE, pdMS_TO_TICKS(1000));
+      if ((bits & (BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT)) != 0U) {
+        break; /* 真事件,走原归因逻辑 */
+      }
+      const int64_t now_ms = bb_now_ms();
+      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+      const int64_t last_ms = s_ws.finish_last_activity_ms;
+      xSemaphoreGive(s_ws.lock);
+      if (now_ms - last_ms >= (int64_t)BBCLAW_STREAM_FINISH_IDLE_TIMEOUT_MS) {
+        break; /* 真静默超限 → bits==0,下方归因 VOICE_SESSION_TIMEOUT */
+      }
+#if BBCLAW_STREAM_FINISH_MAX_TOTAL_MS > 0
+      if (now_ms - wait_start_ms >= (int64_t)BBCLAW_STREAM_FINISH_MAX_TOTAL_MS) {
+        break;
+      }
+#endif
+    }
     xSemaphoreTake(s_ws.lock, portMAX_DELAY);
     s_ws.finish_waiting = 0;
     if ((bits & BB_WS_EVENT_DONE) == 0U) {

@@ -129,6 +129,17 @@ waitLoop:
 				replyTimer.Reset(r.cfg.ReplyWait) // parked on the human; keep waiting
 				continue
 			}
+			// ReplyWait is an IDLE ceiling, not a wall clock: if the turn showed
+			// streaming activity (delta/tool step/prompt) while the timer was
+			// armed, top the timer back up to the remaining idle allowance. A
+			// deep multi-step turn thus runs indefinitely as long as no single
+			// silent gap exceeds ReplyWait; a genuinely wedged turn still times
+			// out ReplyWait after its last sign of life. Timer is re-armed only
+			// here (fired-and-drained), same zero-race pattern as promptPending.
+			if idle := time.Since(cb.ev.lastActivity()); idle < r.cfg.ReplyWait {
+				replyTimer.Reset(r.cfg.ReplyWait - idle)
+				continue
+			}
 			timedOut = true
 			break waitLoop
 		case <-ctx.Done():
@@ -415,6 +426,20 @@ type cloudEvents struct {
 	// is the ultimate backstop (auto-DENY), so a never-answered menu can't park
 	// forever.
 	promptPending bool
+	// lastAct is the last time this turn showed any streaming sign of life
+	// (delta/tool step/prompt open|close — including non-monotonic snapshots
+	// that forwardDelta drops: a TUI redraw still proves the turn is alive).
+	// handleTranscript reads it to make ReplyWait an IDLE ceiling instead of a
+	// wall-clock one: a multi-step turn survives any total duration as long as
+	// no single silent gap exceeds ReplyWait. Guarded by e.mu.
+	lastAct time.Time
+}
+
+// lastActivity returns the turn's most recent streaming-activity time.
+func (e *cloudEvents) lastActivity() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lastAct
 }
 
 // begin arms the observer for a new turn and returns its completion channel.
@@ -427,6 +452,7 @@ func (e *cloudEvents) begin(write func(Envelope) error, env Envelope, homeSite s
 	e.homeSite = homeSite
 	e.replyText = ""
 	e.sent = ""
+	e.lastAct = time.Now()
 	e.done = make(chan struct{})
 	return e.done
 }
@@ -456,6 +482,12 @@ func (e *cloudEvents) reply() string {
 // claude's TUI redrawing the reply block — are dropped.
 func (e *cloudEvents) forwardDelta(text string) {
 	e.mu.Lock()
+	if e.active {
+		// Any snapshot — even a non-monotonic one we drop below — proves the
+		// turn is alive; stamp before the prefix gate so TUI redraws keep the
+		// idle timer fed during long tool runs.
+		e.lastAct = time.Now()
+	}
 	if !e.active || e.write == nil || len(text) <= len(e.sent) || !strings.HasPrefix(text, e.sent) {
 		e.mu.Unlock()
 		return
@@ -479,6 +511,9 @@ func (e *cloudEvents) ReplyDelta(text string) { e.forwardDelta(text) }
 // after end().
 func (e *cloudEvents) ToolStep(name, hint string) {
 	e.mu.Lock()
+	if e.active {
+		e.lastAct = time.Now()
+	}
 	if !e.active || e.write == nil {
 		e.mu.Unlock()
 		return
@@ -526,6 +561,7 @@ func (e *cloudEvents) TurnIdle() {
 func (e *cloudEvents) PromptOpen(p deviceapi.PromptSpec) {
 	e.mu.Lock()
 	e.promptPending = true
+	e.lastAct = time.Now()
 	if !e.active || e.write == nil {
 		e.mu.Unlock()
 		return
@@ -553,6 +589,7 @@ func (e *cloudEvents) PromptOpen(p deviceapi.PromptSpec) {
 func (e *cloudEvents) PromptClosed(promptID, reason string) {
 	e.mu.Lock()
 	e.promptPending = false
+	e.lastAct = time.Now()
 	if !e.active || e.write == nil {
 		e.mu.Unlock()
 		return
