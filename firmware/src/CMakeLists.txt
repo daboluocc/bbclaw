@@ -51,6 +51,11 @@ set(_bb_srcs
     "bb_transport.c"
     "bb_wifi.c"
     "bb_xl9555.c"
+    "bb_display_control.c"
+    "bb_display_control_co5300.c"
+    "bb_sleep_manager.c"
+    "bb_power_mgmt.c"
+    "../drivers/qmi8658/qmi8658.c"
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")
@@ -70,7 +75,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bb_lvgl_img_elements.c")
   list(APPEND _bb_srcs "bb_lvgl_img_elements.c")
 endif()
 
-set(_bb_include_dirs "../include" "../boards")
+set(_bb_include_dirs "../include" "../boards" "../drivers")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated")
   list(APPEND _bb_include_dirs "../generated")
 endif()

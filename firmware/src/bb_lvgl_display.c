@@ -2555,3 +2555,13 @@ void bb_display_set_mem_stats(int inbox, int profile) {
   portEXIT_CRITICAL(&s_state_lock);
   if (s_ready) refresh_ui();
 }
+
+/* ── ADR-046: Display control panel interface exports ── */
+
+esp_lcd_panel_handle_t bb_display_get_panel_handle(void) {
+  return s_panel;
+}
+
+esp_lcd_panel_io_handle_t bb_display_get_panel_io_handle(void) {
+  return s_panel_io;
+}
