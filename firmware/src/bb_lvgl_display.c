@@ -1215,6 +1215,54 @@ static void ptt_btn_event_cb(lv_event_t* e) {
 }
 #endif
 
+/* ── 轻量弹窗提醒（toast）：居中小窗,自动消失;不占顶部状态栏 ──
+ * 挂 lv_layer_top,任何页面之上;重复调用复用同一实例(文字/计时重置)。 */
+static lv_obj_t* s_toast;
+static lv_timer_t* s_toast_timer;
+
+static void toast_expire_cb(lv_timer_t* tm) {
+  (void)tm;
+  if (s_toast != NULL) {
+    lv_obj_delete(s_toast);
+    s_toast = NULL;
+  }
+  if (s_toast_timer != NULL) {
+    lv_timer_delete(s_toast_timer);
+    s_toast_timer = NULL;
+  }
+}
+
+void bb_display_toast(const char* text, int duration_ms) {
+  if (text == NULL) return;
+  if (!lvgl_port_lock(200)) return;
+  if (s_toast == NULL) {
+    s_toast = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_toast);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(BB_UI_DOT_GHOST), 0);
+    lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_toast, 12, 0);
+    lv_obj_set_style_border_width(s_toast, 1, 0);
+    lv_obj_set_style_border_color(s_toast, lv_color_hex(BB_UI_ACCENT), 0);
+    lv_obj_set_style_pad_hor(s_toast, 18, 0);
+    lv_obj_set_style_pad_ver(s_toast, 12, 0);
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_t* lbl = lv_label_create(s_toast);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(BB_UI_DOT_LIT), 0);
+    lv_obj_center(lbl);
+  }
+  lv_obj_t* lbl = lv_obj_get_child(s_toast, 0);
+  if (lbl != NULL) lv_label_set_text(lbl, text);
+  lv_obj_align(s_toast, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_move_foreground(s_toast);
+  if (s_toast_timer != NULL) {
+    lv_timer_set_period(s_toast_timer, (uint32_t)(duration_ms > 0 ? duration_ms : 2500));
+    lv_timer_reset(s_toast_timer);
+  } else {
+    s_toast_timer = lv_timer_create(toast_expire_cb, (uint32_t)(duration_ms > 0 ? duration_ms : 2500), NULL);
+  }
+  lvgl_port_unlock();
+}
+
 /* 聊天主题托管悬浮 PTT 钮：进聊天时收编为主题子节点（任何盖在聊天上的
  * overlay——设置/任务列表等——天然盖住它），退出时归还全局顶层并隐藏。 */
 void bb_display_ptt_button_adopt(lv_obj_t* new_parent) {

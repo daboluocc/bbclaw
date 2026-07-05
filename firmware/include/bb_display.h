@@ -22,6 +22,9 @@ struct _lv_obj_t;
 void bb_display_ptt_button_adopt(struct _lv_obj_t* new_parent);
 void bb_display_ptt_button_release(void);
 esp_err_t bb_display_show_status(const char* status_line);
+/** 轻量弹窗提醒(toast):居中小窗自动消失,不占状态栏;任何页面之上。
+ *  duration_ms<=0 用默认 2500ms。内部自取 LVGL 锁,任意任务可调。 */
+void bb_display_toast(const char* text, int duration_ms);
 /** ADR-038: 密语解锁失败后，把 ASR 识别到的文本叠到锁屏 hint（「听到「…」请重说」）。
  *  在 bb_display_show_status(BB_STATUS_VERIFY_ERR) 之后调用；空串/NULL 清除。 */
 esp_err_t bb_display_show_heard(const char* heard);

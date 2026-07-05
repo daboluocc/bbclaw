@@ -3557,7 +3557,7 @@ static void stream_task(void* arg) {
         s_sd_poll_ms = now_ms;
         if (bb_sdcard_mount() == ESP_OK) {
           ESP_LOGI(TAG, "SD card hot-inserted and mounted");
-          (void)bb_display_show_status("SD CARD READY");
+          bb_display_toast("SD card ready", 2500); /* 弹窗提醒,不占状态栏(用户要求) */
           if (lvgl_port_lock(200)) {
             bb_ui_settings_refresh_if_visible();
             lvgl_port_unlock();
