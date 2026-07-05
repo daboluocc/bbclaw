@@ -2264,3 +2264,10 @@ int bb_ui_settings_handle_back(void) {
   }
   return 0;
 }
+
+/* 外部状态变化(如 SD 热插卡)时刷新当前页;overlay 未显示则 no-op。
+ * 需在 LVGL 锁内调用。 */
+void bb_ui_settings_refresh_if_visible(void) {
+  if (s_st.root == NULL) return;
+  rerender();
+}

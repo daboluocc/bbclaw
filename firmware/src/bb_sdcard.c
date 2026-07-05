@@ -48,7 +48,12 @@ esp_err_t bb_sdcard_mount(void) {
 
   esp_err_t err = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot, &mount_cfg, &s_card);
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "mount failed: %s (no card?)", esp_err_to_name(err));
+    /* 热插拔轮询会周期性走到这里:失败日志只报一次,静默直到状态变化 */
+    static int s_fail_logged;
+    if (!s_fail_logged) {
+      ESP_LOGW(TAG, "mount failed: %s (no card? polling continues quietly)", esp_err_to_name(err));
+      s_fail_logged = 1;
+    }
     s_card = NULL;
     return err;
   }

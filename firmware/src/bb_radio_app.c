@@ -3546,6 +3546,27 @@ static void stream_task(void* arg) {
       }
     }
 
+#if BBCLAW_SDMMC_ENABLE
+    /* SD 热插拔轮询(ADR-044):CD 引脚未接,未挂载时每 10s 静默试挂
+     * (空槽探测 ~200ms,只在非流态跑不卡按键);挂上即屏显提醒+日志。
+     * 已挂载零开销。 */
+    if (!streaming && !s_ptt_pressed && !bb_sdcard_mounted()) {
+      static int64_t s_sd_poll_ms;
+      int64_t now_ms = bb_now_ms();
+      if (now_ms - s_sd_poll_ms >= 10000) {
+        s_sd_poll_ms = now_ms;
+        if (bb_sdcard_mount() == ESP_OK) {
+          ESP_LOGI(TAG, "SD card hot-inserted and mounted");
+          (void)bb_display_show_status("SD CARD READY");
+          if (lvgl_port_lock(200)) {
+            bb_ui_settings_refresh_if_visible();
+            lvgl_port_unlock();
+          }
+        }
+      }
+    }
+#endif
+
 #if BBCLAW_ENABLE_DISPLAY_PULL
     if (!streaming && !s_ptt_pressed) {
       int64_t now_ms = bb_now_ms();

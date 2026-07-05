@@ -33,6 +33,8 @@
  */
 
 void bb_ui_settings_show(lv_obj_t* parent);
+/** 外部状态变化(如 SD 热插卡)刷新当前页;未显示 no-op。LVGL 锁内调用。 */
+void bb_ui_settings_refresh_if_visible(void);
 void bb_ui_settings_hide(void);
 int  bb_ui_settings_is_active(void);
 
