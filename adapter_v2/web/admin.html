@@ -390,6 +390,17 @@
       setTimeout(() => pollHealth(() => location.reload()), 800);
     }
 
+    // ── URL state: save/restore selected section in query param ───────────────
+    function getCurrentSection() {
+      const params = new URLSearchParams(location.search);
+      return params.get("sec") || null;
+    }
+    function setCurrentSection(sectionId) {
+      const params = new URLSearchParams(location.search);
+      params.set("sec", sectionId);
+      window.history.replaceState({}, "", "?" + params.toString());
+    }
+
     // ── scrollspy: highlight the nav item of the section in view ───────────────
     let spy = null;
     function setupScrollSpy() {
@@ -400,6 +411,8 @@
           if (!en.isIntersecting) return;
           document.querySelectorAll(".navitem").forEach((n) =>
             n.classList.toggle("on", n.getAttribute("data-target") === en.target.id));
+          const sectionId = en.target.id;
+          setCurrentSection(sectionId);
         });
       }, {rootMargin: `-${56 + 20}px 0px -55% 0px`, threshold: 0});
       secs.forEach((s) => spy.observe(s));
@@ -407,8 +420,12 @@
     $("nav").addEventListener("click", (ev) => {
       const a = ev.target.closest(".navitem"); if (!a) return;
       ev.preventDefault();
-      const t = document.getElementById(a.getAttribute("data-target"));
-      if (t) t.scrollIntoView({behavior: "smooth", block: "start"});
+      const targetId = a.getAttribute("data-target");
+      const t = document.getElementById(targetId);
+      if (t) {
+        setCurrentSection(targetId);
+        t.scrollIntoView({behavior: "smooth", block: "start"});
+      }
     });
 
     // mark the system-config form dirty on any [data-path] edit (project inputs
@@ -576,6 +593,14 @@
         if (!r.ok || !j.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
         current = j.data;
         render(j.data);
+        // Restore the section from URL if present
+        const savedSection = getCurrentSection();
+        if (savedSection) {
+          setTimeout(() => {
+            const el = document.getElementById(savedSection);
+            if (el) el.scrollIntoView({behavior: "auto", block: "start"});
+          }, 100);
+        }
       } catch (e) {
         $("content").innerHTML = `<div class="error">加载配置失败：${esc(e.message)}</div>`;
       }
