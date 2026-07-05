@@ -125,3 +125,22 @@
 #define BBCLAW_LVGL_BUFF_LINES   40
 #define BBCLAW_LVGL_BUFF_SPIRAM  0
 #define BBCLAW_LVGL_BUFF_DOUBLE  0
+
+/* ── IMU: QMI8658（六轴加速度计 + 陀螺仪，I2C 0x6B）──
+ * 用于息屏管理的运动检测（抬手唤醒）。采样率可配置 8-512Hz。 */
+#define BBCLAW_IMU_ENABLE                1
+#define BBCLAW_IMU_QMI8658_I2C_ADDR     0x6B
+#define BBCLAW_IMU_SAMPLE_RATE_HZ       100    /* 100Hz 采样 = 10ms 周期 */
+
+/* ── 屏幕亮度控制：CO5300 AMOLED（通过 0x51 指令设置亮度）──
+ * 平滑亮度渐进（20Hz 更新）+ 息屏管理状态转换。 */
+#define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1
+
+/* ── 息屏管理器：ACTIVE → DIMMING → SLEEPING → WAKING 状态机
+ * 自动管理屏幕亮度降低功耗。IMU 运动检测触发唤醒。 */
+#define BBCLAW_SLEEP_MANAGER_ENABLE           1
+#define BBCLAW_SLEEP_MANAGER_DIMMING_MS      (2 * 60 * 1000)   /* 2 分钟空闲变暗 */
+#define BBCLAW_SLEEP_MANAGER_SLEEP_MS        (3 * 60 * 1000)   /* 3 分钟空闲关屏 */
+#define BBCLAW_SLEEP_MANAGER_WAKE_COOLDOWN_MS 2000              /* 2 秒去抖延迟 */
+#define BBCLAW_SLEEP_MANAGER_IMU_WAKE_ENABLED 1                /* 启用 IMU 唤醒 */
+#define BBCLAW_SLEEP_MANAGER_MESSAGE_WAKE_ENABLED 1            /* 启用消息唤醒 */
