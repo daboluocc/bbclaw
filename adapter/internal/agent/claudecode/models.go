@@ -21,9 +21,10 @@ import (
 // First entry is treated as the implicit "factory default" if no operator
 // override exists.
 var claudeCodeModels = []agent.ModelInfo{
-	{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6"},
-	{ID: "claude-opus-4-7", Label: "Opus 4.7"},
-	{ID: "claude-haiku-4-5", Label: "Haiku 4.5"},
+	{ID: "claude-sonnet-5", Label: "Sonnet 5"},
+	{ID: "claude-opus-4-8", Label: "Opus 4.8"},
+	{ID: "claude-haiku-4-5-20251001", Label: "Haiku 4.5"},
+	{ID: "claude-fable-5", Label: "Fable 5"},
 }
 
 // defaultModelID is the implicit factory default: the first catalog entry.

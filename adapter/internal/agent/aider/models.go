@@ -11,8 +11,9 @@ import (
 )
 
 var aiderModels = []agent.ModelInfo{
-	{ID: "anthropic/claude-sonnet-4-6", Label: "Sonnet 4.6"},
-	{ID: "anthropic/claude-opus-4-7", Label: "Opus 4.7"},
+	{ID: "anthropic/claude-sonnet-5", Label: "Sonnet 5"},
+	{ID: "anthropic/claude-opus-4-8", Label: "Opus 4.8"},
+	{ID: "anthropic/claude-fable-5", Label: "Fable 5"},
 	{ID: "openai/gpt-5", Label: "GPT-5"},
 	{ID: "openai/gpt-5-mini", Label: "GPT-5 mini"},
 	{ID: "deepseek/deepseek-coder", Label: "DeepSeek Coder"},
