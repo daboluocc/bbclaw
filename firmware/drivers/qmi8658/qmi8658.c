@@ -158,9 +158,9 @@ esp_err_t bb_imu_init(void) {
     return ESP_OK;
   }
 
-  /* 获取 I2C 总线句柄（由调用者确保已初始化） */
-  extern i2c_master_bus_handle_t bb_i2c_bus_get(void);
-  i2c_master_bus_handle_t bus_handle = bb_i2c_bus_get();
+  /* 获取 I2C 总线句柄（由 bb_audio 初始化和导出） */
+  extern i2c_master_bus_handle_t bb_audio_shared_i2c_bus(void);
+  i2c_master_bus_handle_t bus_handle = bb_audio_shared_i2c_bus();
   if (!bus_handle) {
     ESP_LOGE(TAG, "I2C bus not initialized");
     return ESP_ERR_INVALID_STATE;
