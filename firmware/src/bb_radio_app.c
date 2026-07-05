@@ -653,6 +653,14 @@ static lv_obj_t* s_settings_root;
  * 页 is a row inside it, ADR-021 §9.2). */
 static int settings_overlay_enter(void) {
   if (s_settings_active) return 0;
+#if BBCLAW_SDMMC_ENABLE
+  /* SD 热插拔:板上 CD 引脚未接,无法中断检测。进设置是最自然的重试时机——
+   * 插卡后左滑进设置,Recording 行文案即时正确(挂载失败 <1s,可接受;
+   * 在取 lvgl 锁之前做,不冻结 UI)。双击确认路径还有 recorder_enter 兜底重试。 */
+  if (!bb_sdcard_mounted()) {
+    (void)bb_sdcard_mount();
+  }
+#endif
   if (!lvgl_port_lock(500)) {
     ESP_LOGW(TAG, "settings_enter: lvgl_port_lock timeout");
     return -1;

@@ -17,3 +17,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # CONFIG_ESPTOOLPY_FLASHMODE_DIO is not set
+
+# SD 卡录音(ADR-044):FATFS 长文件名(默认 8.3 短名,10 位 epoch 目录名与
+# .opus 扩展名都超限,mkdir/fopen 静默失败)。堆分配 LFN 缓冲,每打开文件 ~(255+1)*2B
+CONFIG_FATFS_LFN_HEAP=y

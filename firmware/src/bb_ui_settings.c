@@ -218,6 +218,7 @@ typedef struct {
   /* Firmware row OTA check (Settings → Firmware → click). */
   ota_row_status_t ota_status;
   int64_t recorder_arm_ms; /* ADR-044 录音行双击确认窗口起点(0=未武装) */
+  int64_t miyu_arm_ms;     /* 密语开关双击确认窗口起点(0=未武装,用户要求状态修改需确认) */
   volatile int ota_check_pending;
   volatile uint32_t ota_check_generation;
 
@@ -609,7 +610,12 @@ static void render_main(void) {
         break;
       }
       case MAIN_ROW_MIYU:
-        snprintf(buf, sizeof(buf), "Miyu: %s", toggle_state_label(s_st.miyu_enabled));
+        if (s_st.miyu_arm_ms != 0) {
+          snprintf(buf, sizeof(buf), "Miyu: %s · tap again to %s", toggle_state_label(s_st.miyu_enabled),
+                   s_st.miyu_enabled ? "DISABLE" : "ENABLE");
+        } else {
+          snprintf(buf, sizeof(buf), "Miyu: %s", toggle_state_label(s_st.miyu_enabled));
+        }
         break;
       case MAIN_ROW_RECORDER:
         if (s_st.recorder_arm_ms != 0) {
@@ -2048,7 +2054,15 @@ int bb_ui_settings_handle_click(void) {
         case MAIN_ROW_MIYU: {
           /* 密语(锁屏语音解锁) in-place toggle (ADR-037). Persist off the PSRAM
            * stack via the commit task (NVS write). Takes effect on NEXT boot —
-           * miyu gates lock-on-boot, so we don't lock the user out of Settings now. */
+           * miyu gates lock-on-boot, so we don't lock the user out of Settings now.
+           * 双击确认(用户要求:状态修改类操作需确认,与 Recording 行同一习惯)。 */
+          int64_t miyu_now = bb_now_ms();
+          if (s_st.miyu_arm_ms == 0 || miyu_now - s_st.miyu_arm_ms >= 5000) {
+            s_st.miyu_arm_ms = miyu_now;
+            rerender();
+            break;
+          }
+          s_st.miyu_arm_ms = 0;
           s_st.miyu_enabled = !s_st.miyu_enabled;
           spawn_persist_int(COMMIT_KIND_MIYU, s_st.miyu_enabled);
           rerender();
