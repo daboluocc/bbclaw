@@ -271,9 +271,15 @@
         boolField("自动跳过 claude 首启提示","cli.claudeAutoEnter",c.claudeAutoEnter,"CLAUDE_AUTO_ENTER")+
         boolField("设备端确认权限弹窗","cli.confirmOnDevice",c.confirmOnDevice,"CONFIRM_ON_DEVICE · 关 bypass，弹窗转发设备（ADR-033）")+
         areaField("ADAPTER_V2_VOICE_SYSTEM_PROMPT","设备人设（覆盖）","cli.voiceSystemPrompt",c.voiceSystemPrompt,"留空用默认人设；填了会整体覆盖"));}},
-      {id:"sec-ai", nav:"Claude 端点", build:(s)=>{const ai=s.ai||{};return card("sec-ai","Claude 端点（三方 / 代理）","走第三方 / 兼容端点时才填；留空用 claude 官方登录态",
+      {id:"sec-ai", nav:"Claude 端点", build:(s)=>{const ai=s.ai||{};const models=[
+        {id:"claude-sonnet-5", label:"Sonnet 5"},
+        {id:"claude-opus-4-8", label:"Opus 4.8"},
+        {id:"claude-haiku-4-5-20251001", label:"Haiku 4.5"},
+        {id:"claude-fable-5", label:"Fable 5"}
+      ];const modelOpts=models.map(m=>`<option value="${escA(m.id)}" ${ai.model===m.id?"selected":""}>${esc(m.label)}</option>`).join("");return card("sec-ai","Claude 端点（三方 / 代理）","走第三方 / 兼容端点时才填；留空用 claude 官方登录态",
         inputField("ANTHROPIC_BASE_URL","Base URL","ai.anthropicBaseUrl",ai.anthropicBaseUrl,{placeholder:"https://your-proxy.example.com"})+
-        inputField("ANTHROPIC_AUTH_TOKEN","Auth Token","ai.anthropicAuthToken",ai.anthropicAuthToken,{password:true,placeholder:"sk-..."}));}},
+        inputField("ANTHROPIC_AUTH_TOKEN","Auth Token","ai.anthropicAuthToken",ai.anthropicAuthToken,{password:true,placeholder:"sk-..."})+
+        `<div class="setting"><div class="slabel">默认模型<span class="env">ANTHROPIC_MODEL</span></div><div class="sdesc">Claude CLI 的默认模型；留空用官方默认</div><select data-path="ai.model" style="width:100%;font:inherit;background:#05090c;color:var(--lit);border:1px solid var(--ghost);border-radius:7px;padding:8px 10px;font-size:12px"><option value="">（不指定）</option>${modelOpts}</select></div>`);}},
       {id:"sec-cloud", nav:"云", build:(s)=>{const cl=s.cloud||{};return card("sec-cloud","云（Cloud Relay）","连云后远程设备可经云端中继接到本机",
         inputField("CLOUD_WS_URL","WS URL","cloud.wsUrl",cl.wsUrl,{desc:"留空则不连云，仅 LAN"})+
         inputField("CLOUD_AUTH_TOKEN","Auth Token","cloud.authToken",cl.authToken,{password:true})+

@@ -54,6 +54,7 @@ type Settings struct {
 type AISettings struct {
 	AnthropicBaseURL   string `json:"anthropicBaseUrl"`   // ANTHROPIC_BASE_URL
 	AnthropicAuthToken string `json:"anthropicAuthToken"` // ANTHROPIC_AUTH_TOKEN
+	Model              string `json:"model"`              // ANTHROPIC_MODEL (default model preference)
 }
 
 // VoiceSettings groups the ASR and TTS provider configuration. The env-var names
@@ -201,6 +202,7 @@ func FromEnv() Settings {
 		AI: AISettings{
 			AnthropicBaseURL:   strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
 			AnthropicAuthToken: strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")),
+			Model:              strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")),
 		},
 		Cloud: CloudSettings{
 			WsURL:      strings.TrimSpace(os.Getenv("CLOUD_WS_URL")),
@@ -423,6 +425,7 @@ func (s *Store) ExportEnv() {
 	// operator exported in the shell, and `claude` falls back to its own login.
 	setStr("ANTHROPIC_BASE_URL", ai.AnthropicBaseURL)
 	setStr("ANTHROPIC_AUTH_TOKEN", ai.AnthropicAuthToken)
+	setStr("ANTHROPIC_MODEL", ai.Model)
 
 	cl := snap.Cloud
 	setStr("CLOUD_WS_URL", cl.WsURL)
