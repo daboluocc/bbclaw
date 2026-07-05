@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from "vue";
 import DriversPanel from "./DriversPanel.vue";
 import ProjectsPanel from "./ProjectsPanel.vue";
-import { getSettings, putSettings } from "../api";
+import { getSettings, putSettings, listModels, setActiveModel, type ModelInfo } from "../api";
 
 // 「智能体」分层：
 //   1. 驱动（Driver 层）——选用哪个 CLI（热切换，即时生效）；
@@ -21,6 +21,9 @@ const note = ref("");
 const noteErr = ref(false);
 const claudeAdvanced = ref(false);
 const activeDriver = ref("");
+const claudeModels = ref<ModelInfo[]>([]);
+const activeClaudeModel = ref("");
+const loadingModels = ref(false);
 
 const ai = reactive({ anthropic_base_url: "", anthropic_auth_token: "", opencode_serve: false });
 
@@ -32,6 +35,20 @@ async function load() {
     Object.assign(ai, settings.ai);
     // 已经配过三方端点就默认展开，免得用户以为配置丢了。
     if (ai.anthropic_base_url || ai.anthropic_auth_token) claudeAdvanced.value = true;
+
+    // 加载 Claude Code 的模型列表
+    try {
+      loadingModels.value = true;
+      const menu = await listModels("claude-code");
+      claudeModels.value = menu.models;
+      activeClaudeModel.value = menu.active;
+    } catch (e) {
+      // 加载模型列表失败不应该中断整体流程
+      console.warn("加载 Claude 模型列表失败:", e);
+    } finally {
+      loadingModels.value = false;
+    }
+
     loaded.value = true;
   } catch (e: any) { setNote("加载失败：" + e.message, true); }
 }
@@ -45,6 +62,20 @@ async function save() {
     emit("saved");
   } catch (e: any) { setNote("保存失败：" + e.message, true); }
   finally { busy.value = false; }
+}
+
+async function selectClaudeModel(modelId: string) {
+  if (activeClaudeModel.value === modelId) return;
+  try {
+    loadingModels.value = true;
+    await setActiveModel("claude-code", modelId);
+    activeClaudeModel.value = modelId;
+    setNote(`已选择 ${claudeModels.value.find(m => m.id === modelId)?.label || modelId}`, false);
+  } catch (e: any) {
+    setNote("选择模型失败：" + e.message, true);
+  } finally {
+    loadingModels.value = false;
+  }
 }
 
 onMounted(load);
@@ -65,6 +96,26 @@ onMounted(load);
         当前激活的是 <b>{{ activeDriver }}</b>，但 claude-code 仍可能作为设备管家回落驱动运行，故此处始终可配置。
       </span>
     </p>
+
+    <!-- 模型选择 -->
+    <div v-if="claudeModels.length > 0" class="subsec models-section">
+      <label class="label-text">模型选择</label>
+      <div class="model-grid">
+        <button
+          v-for="m in claudeModels" :key="m.id"
+          class="model-btn"
+          :class="{ selected: activeClaudeModel === m.id, loading: loadingModels }"
+          :disabled="loadingModels"
+          @click="selectClaudeModel(m.id)"
+        >
+          {{ m.label }}
+        </button>
+      </div>
+      <p v-if="activeClaudeModel" class="hint" style="margin-top: 8px;">
+        当前选择：<b>{{ claudeModels.find(m => m.id === activeClaudeModel)?.label }}</b>
+      </p>
+    </div>
+
     <button class="disclose" @click="claudeAdvanced = !claudeAdvanced">
       {{ claudeAdvanced ? "▾" : "▸" }} Claude 代理 / 兼容端点
     </button>
@@ -102,3 +153,61 @@ onMounted(load);
     </div>
   </div>
 </template>
+
+<style scoped>
+.label-text {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--lit);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-btn {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--ghost);
+  border-radius: 6px;
+  background: rgba(7, 11, 14, 0.5);
+  color: var(--dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+  font-family: inherit;
+}
+
+.model-btn:hover:not(:disabled) {
+  border-color: var(--dim);
+  color: var(--lit);
+  background: rgba(13, 18, 22, 0.7);
+}
+
+.model-btn.selected {
+  border-color: var(--accent);
+  background: rgba(46, 196, 160, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(46, 196, 160, 0.3);
+}
+
+.model-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.models-section {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(110, 138, 147, 0.2);
+  margin-bottom: 12px;
+}
+</style>

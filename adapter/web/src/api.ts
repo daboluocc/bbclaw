@@ -69,6 +69,23 @@ export async function setActiveDriver(name: string): Promise<void> {
   });
 }
 
+/* ── models (ADR-019 menu protocol) ── */
+export interface ModelInfo { id: string; label: string }
+export interface ModelsMenu {
+  driver: string;
+  models: ModelInfo[];
+  active: string;
+}
+export async function listModels(driver: string): Promise<ModelsMenu> {
+  return envelope<ModelsMenu>(`/v1/agent/menu/models?driver=${encodeURIComponent(driver)}`);
+}
+export async function setActiveModel(driver: string, model: string): Promise<void> {
+  await envelope("/v1/agent/menu/action", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId: "", action: { type: "set_model", driver, model } }),
+  });
+}
+
 /* ── settings (ADR-025) ── */
 export interface AsrSettings {
   provider: string; base_url: string; ws_url: string; app_id: string; api_key: string;
