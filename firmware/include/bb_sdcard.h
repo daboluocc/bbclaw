@@ -25,6 +25,11 @@ void bb_sdcard_unmount(void);
 /** 1 = 已挂载可用。 */
 int bb_sdcard_mounted(void);
 
+/** 拔卡探测(CMD13,毫秒级)。已挂载且卡仍在返回 1;检测到已拔卡则就地卸载
+ *  并返回 -1(调用方提醒用户);未挂载返回 0。录音/回放中勿调——写错误路径
+ *  已兜底,且卸载会打断在读文件。 */
+int bb_sdcard_check_present(void);
+
 /** 写自检：根目录建/写/删测试文件,每步带 errno 日志（诊断读好写坏的卡） */
 esp_err_t bb_sdcard_selftest(void);
 

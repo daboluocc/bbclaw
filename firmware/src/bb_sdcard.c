@@ -83,8 +83,28 @@ void bb_sdcard_unmount(void) {
 
 int bb_sdcard_mounted(void) { return s_card != NULL; }
 
+int bb_sdcard_check_present(void) {
+  if (s_card == NULL) return 0;
+  if (sdmmc_get_status(s_card) == ESP_OK) return 1;
+  /* CMD13 无应答=卡已拔。立刻卸载,让 mounted() 状态与现实一致,
+   * 下次插回走热插拔路径重新挂载。 */
+  ESP_LOGW(TAG, "card removed (status probe failed) — unmounting");
+  esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+  s_card = NULL;
+  return -1;
+}
+
 esp_err_t bb_sdcard_format(void) {
   if (s_card == NULL) return ESP_ERR_INVALID_STATE;
+  /* 拔卡防御(2026-07-07 真机 panic 实锤):卡被拔后 mounted 状态陈旧,
+   * 对已拔卡跑 esp_vfs_fat_sdcard_format = LoadProhibited(vfs_fat_sdmmc.c:519,
+   * task=bb_stream_task)。先 CMD13 验在位,不在就卸载返错,别格式化空气。 */
+  if (sdmmc_get_status(s_card) != ESP_OK) {
+    ESP_LOGW(TAG, "format refused: card no longer present — unmounting");
+    esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+    s_card = NULL;
+    return ESP_ERR_NOT_FOUND;
+  }
   ESP_LOGW(TAG, "formatting card (FAT), all data on card will be erased");
   esp_err_t err = esp_vfs_fat_sdcard_format(MOUNT_POINT, s_card);
   ESP_LOGI(TAG, "format: %s", esp_err_to_name(err));
@@ -145,6 +165,7 @@ esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
 
 esp_err_t bb_sdcard_mount(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t bb_sdcard_mount_format(void) { return ESP_ERR_NOT_SUPPORTED; }
+int bb_sdcard_check_present(void) { return 0; }
 void bb_sdcard_unmount(void) {}
 int bb_sdcard_mounted(void) { return 0; }
 esp_err_t bb_sdcard_selftest(void) { return ESP_ERR_NOT_SUPPORTED; }

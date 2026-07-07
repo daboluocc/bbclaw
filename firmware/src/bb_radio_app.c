@@ -41,6 +41,7 @@
 #include "bb_page_recorder.h"
 #include "bb_ambient_sync.h"
 #include "bb_recorder.h"
+#include "bb_recplay.h"
 #include "bb_sdcard.h"
 #include "esp_system.h"
 #include "bb_session_store.h"
@@ -768,6 +769,14 @@ static int recorder_enter(void) {
    * (录音中断电实锤)。失败先走一次设备端格式化自愈(用户已知情拍板:SD 是
    * 缓存,云端才是归档),仍失败才判卡废。 */
   if (bb_sdcard_selftest() != ESP_OK) {
+    /* 先区分「卡被拔了」和「卡坏了」:拔卡后 mounted 状态陈旧,自检 fopen 必败,
+     * 走格式化就是对空气格盘(bb_sdcard_format 已加防御,这里连提示都不该弹)。 */
+    if (bb_sdcard_check_present() <= 0) {
+      ESP_LOGW(TAG, "recorder: card was removed (stale mount)");
+      (void)bb_display_show_chat_turn("Recording", "No SD card");
+      signal_error_haptic();
+      return -1;
+    }
     ESP_LOGW(TAG, "recorder: selftest failed -> auto-format recovery");
     bb_display_toast("SD repair: formatting...", 4000);
     if (bb_sdcard_format() != ESP_OK || bb_sdcard_selftest() != ESP_OK) {
@@ -3650,20 +3659,45 @@ static void stream_task(void* arg) {
     }
 
 #if BBCLAW_SDMMC_ENABLE
-    /* SD 热插拔轮询(ADR-044):CD 引脚未接,未挂载时每 10s 静默试挂
-     * (空槽探测 ~200ms,只在非流态跑不卡按键);挂上即屏显提醒+日志。
-     * 已挂载零开销。 */
-    if (!streaming && !s_ptt_pressed && !bb_sdcard_mounted()) {
+    /* SD 热插拔轮询(ADR-044):CD 引脚未接,每 10s 轮询(非流态,不卡按键)。
+     * 三种提醒(用户反馈 2026-07-07:插拔无感知不行):
+     *   插入且挂载成功 → "SD card ready"
+     *   插入但 FS 不识别(exFAT/空白,mount 返回 ESP_FAIL) → 提示去录音页格式化
+     *     (只提示一次,拔卡复位;无卡是 TIMEOUT 不触发)
+     *   已挂载被拔出(CMD13 探测失败) → "SD card removed"
+     * 拔卡探测避开录音/回放(写错误路径已兜底;卸载会打断在读文件)。 */
+    if (!streaming && !s_ptt_pressed) {
       static int64_t s_sd_poll_ms;
+      static int s_sd_nofs_notified;
       int64_t now_ms = bb_now_ms();
       if (now_ms - s_sd_poll_ms >= 10000) {
         s_sd_poll_ms = now_ms;
-        if (bb_sdcard_mount() == ESP_OK) {
-          ESP_LOGI(TAG, "SD card hot-inserted and mounted");
-          bb_display_toast("SD card ready", 2500); /* 弹窗提醒,不占状态栏(用户要求) */
-          if (lvgl_port_lock(200)) {
-            bb_ui_settings_refresh_if_visible();
-            lvgl_port_unlock();
+        if (!bb_sdcard_mounted()) {
+          esp_err_t merr = bb_sdcard_mount();
+          if (merr == ESP_OK) {
+            ESP_LOGI(TAG, "SD card hot-inserted and mounted");
+            bb_display_toast("SD card ready", 2500); /* 弹窗提醒,不占状态栏(用户要求) */
+            s_sd_nofs_notified = 0;
+            if (lvgl_port_lock(200)) {
+              bb_ui_settings_refresh_if_visible();
+              lvgl_port_unlock();
+            }
+          } else if (merr == ESP_FAIL && !s_sd_nofs_notified) {
+            s_sd_nofs_notified = 1;
+            ESP_LOGW(TAG, "SD card present but FS unrecognized — prompting format via Recording");
+            bb_display_toast("SD card unformatted - open Recording to format", 4000);
+          } else if (merr == ESP_ERR_TIMEOUT) {
+            s_sd_nofs_notified = 0; /* 无卡:复位一次性提示,下次插坏卡还会提醒 */
+          }
+        } else if (!bb_recorder_active() && !bb_recplay_active()) {
+          if (bb_sdcard_check_present() < 0) {
+            ESP_LOGW(TAG, "SD card removed");
+            bb_display_toast("SD card removed", 2500);
+            s_sd_nofs_notified = 0;
+            if (lvgl_port_lock(200)) {
+              bb_ui_settings_refresh_if_visible();
+              lvgl_port_unlock();
+            }
           }
         }
       }
