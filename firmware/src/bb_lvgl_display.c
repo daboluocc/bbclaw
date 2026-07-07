@@ -92,6 +92,15 @@ extern const lv_font_t lv_font_bbclaw_cjk;
 static const char* TAG = "bb_lvgl_disp";
 #endif
 
+#if LV_USE_LOG
+/* LVGL 日志→ESP_LOG 转发:console=NONE 板上 printf 不可见(见 lvgl_port_init 处注释)。 */
+static void bb_lv_log_cb(lv_log_level_t level, const char* buf) {
+  (void)level;
+  ESP_LOGW("lvgl", "%s", buf);
+}
+#endif
+
+
 #if defined(CONFIG_LV_FONT_MONTSERRAT_40) || defined(LV_FONT_MONTSERRAT_40)
 LV_FONT_DECLARE(lv_font_montserrat_40)
 #endif
@@ -2005,6 +2014,99 @@ static void refr_ready_cb(lv_event_t* e) {
 
 /* ── Public API ── */
 
+#if BBCLAW_LVGL_CANVAS_PSRAM
+/* ── PSRAM 全帧渲染 + 内部 DMA 条带搬运(流畅度改造,2026-07-08)──
+ *
+ * 旧路径(esp_lvgl_port + 40 行内部 DMA 小缓冲)把一次全屏刷新切成 13 个条带,
+ * LVGL 对每个条带重新遍历对象树:跨条带的 CJK 长标签排版重算 3-5 遍,聊天页
+ * 进入单帧 render 实测 265ms。
+ *
+ * 新路径:LVGL 渲染进 PSRAM 全帧缓冲(整个脏区一次画完,无重复排版),flush 里
+ * 分条带把像素搬进既有尺寸的内部 DMA 跳板再 QSPI DMA 推屏。搬运循环内联
+ * RGB565 字节交换(esp_lvgl_port flags.swap_bytes=1 的等价物)。
+ * 内部 RAM 占用与旧路径持平(同一块 40 行跳板);PSRAM 多 412KB(富余)。
+ * esp_lcd 反弹缓冲冻结坑不适用:跳板本身就是内部 DMA 内存。 */
+static uint8_t* s_canvas_fb;          /* PSRAM 全帧 RGB565 */
+static uint16_t* s_canvas_strip;      /* 内部 DMA 跳板(DISP_W*BUFF_LINES) */
+static SemaphoreHandle_t s_canvas_flush_sem;
+
+static bool canvas_color_done_cb(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t* edata, void* user_ctx) {
+  (void)io;
+  (void)edata;
+  BaseType_t hp = pdFALSE;
+  xSemaphoreGiveFromISR(s_canvas_flush_sem, &hp);
+  return hp == pdTRUE;
+}
+
+/* CO5300 刷新区域 2px 对齐(起点取偶终点取奇)——手动显示路径的 rounder。 */
+static void canvas_align2_event_cb(lv_event_t* e) {
+  lv_area_t* a = (lv_area_t*)lv_event_get_param(e);
+  a->x1 &= ~1;
+  a->y1 &= ~1;
+  a->x2 |= 1;
+  a->y2 |= 1;
+}
+
+static void canvas_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
+  const int w = lv_area_get_width(area);
+  const int h = lv_area_get_height(area);
+  const uint16_t* src = (const uint16_t*)px_map; /* PARTIAL 模式:紧凑 w×h 块 */
+  int y = 0;
+  while (y < h) {
+    int rows = h - y;
+    if (rows > BBCLAW_LVGL_BUFF_LINES) rows = BBCLAW_LVGL_BUFF_LINES;
+    const int px = w * rows;
+    const uint16_t* in = src + (size_t)y * (size_t)w;
+    /* 搬运+字节交换一次过(都是访存受限,合并省一趟全帧读写) */
+    for (int i = 0; i < px; i++) {
+      const uint16_t v = in[i];
+      s_canvas_strip[i] = (uint16_t)((v >> 8) | (v << 8));
+    }
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1 + y, area->x2 + 1, area->y1 + y + rows,
+                                              s_canvas_strip);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "canvas draw_bitmap failed: %s", esp_err_to_name(err));
+      break;
+    }
+    /* 单跳板:等本条带 DMA 完成再复用(色彩完成回调给信号量) */
+    if (xSemaphoreTake(s_canvas_flush_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+      ESP_LOGE(TAG, "canvas flush wait timeout");
+      break;
+    }
+    y += rows;
+  }
+  lv_display_flush_ready(disp);
+}
+
+static lv_display_t* canvas_display_create(void) {
+  const size_t fb_bytes = (size_t)DISP_W * (size_t)DISP_H * 2U;
+  s_canvas_fb = (uint8_t*)heap_caps_malloc(fb_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_canvas_strip = (uint16_t*)heap_caps_malloc((size_t)DISP_W * BBCLAW_LVGL_BUFF_LINES * 2U,
+                                               MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  s_canvas_flush_sem = xSemaphoreCreateBinary();
+  if (s_canvas_fb == NULL || s_canvas_strip == NULL || s_canvas_flush_sem == NULL) {
+    ESP_LOGE(TAG, "canvas alloc failed fb=%p strip=%p", s_canvas_fb, s_canvas_strip);
+    return NULL;
+  }
+  const esp_lcd_panel_io_callbacks_t cbs = {.on_color_trans_done = canvas_color_done_cb};
+  if (esp_lcd_panel_io_register_event_callbacks(s_panel_io, &cbs, NULL) != ESP_OK) {
+    ESP_LOGE(TAG, "canvas io callback register failed");
+    return NULL;
+  }
+  lv_display_t* disp = lv_display_create(DISP_W, DISP_H);
+  if (disp == NULL) return NULL;
+  lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
+  lv_display_set_buffers(disp, s_canvas_fb, NULL, fb_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_flush_cb(disp, canvas_flush_cb);
+#if BBCLAW_DISPLAY_PIXEL_ALIGN == 2
+  lv_display_add_event_cb(disp, canvas_align2_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+#endif
+  ESP_LOGI(TAG, "canvas display: PSRAM fb %uKB + internal strip %u lines", (unsigned)(fb_bytes / 1024),
+           (unsigned)BBCLAW_LVGL_BUFF_LINES);
+  return disp;
+}
+#endif /* BBCLAW_LVGL_CANVAS_PSRAM */
+
 esp_err_t bb_display_init(void) {
 #if defined(BBCLAW_SIMULATOR)
   strncpy(s_status, BB_STATUS_BOOT, sizeof(s_status) - 1);
@@ -2077,7 +2179,21 @@ esp_err_t bb_display_init(void) {
    * LVGL 每帧渲染后 sleep（LV_DEF_REFR_PERIOD=16），不是常驻 hog，不会饿死 ws。见 #149。 */
   lvgl_cfg.task_priority = 6;
   ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "lvgl_port_init failed");
+#if LV_USE_LOG
+  /* 本板 console=NONE(UART0 让给 SD),ESP_LOG 走 TinyUSB vprintf 钩子,而 LVGL
+   * 的 LV_LOG_PRINTF 直写 stdout=黑洞。转发进 ESP_LOG 才可见(sysmon FPS 日志/
+   * LVGL 告警都靠它)。 */
+  lv_log_register_print_cb(bb_lv_log_cb);
+#endif
 
+#if BBCLAW_LVGL_CANVAS_PSRAM
+  lv_display_t* disp = canvas_display_create();
+  s_lv_disp = disp;
+  if (disp == NULL) {
+    ESP_LOGE(TAG, "canvas display create failed");
+    return ESP_FAIL;
+  }
+#else
   const lvgl_port_display_cfg_t disp_cfg = {
       .io_handle = s_panel_io,
       .panel_handle = s_panel,
@@ -2115,6 +2231,7 @@ esp_err_t bb_display_init(void) {
     ESP_LOGE(TAG, "lvgl_port_add_disp failed");
     return ESP_FAIL;
   }
+#endif /* BBCLAW_LVGL_CANVAS_PSRAM */
 #if BBCLAW_LVGL_REFR_PROFILE
   lv_display_add_event_cb(disp, refr_start_cb, LV_EVENT_REFR_START, NULL);
   lv_display_add_event_cb(disp, refr_ready_cb, LV_EVENT_REFR_READY, NULL);

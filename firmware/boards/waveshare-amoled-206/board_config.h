@@ -111,6 +111,11 @@
 #define BBCLAW_ST7789_RGB_ORDER_BGR 0
 #define BBCLAW_ST7789_SWAP_BYTES    0
 
+/* QSPI 像素时钟:项目默认 20MHz 是 ST7789 SPI 的保守值;SH8601/CO5300 厂商
+ * 组件默认 40MHz(esp_lcd_sh8601.h)。20MHz 时全屏 412KB 要 41ms,滚动/切页
+ * 肉眼可见从上到下扫(残影感)。40MHz 减半。 */
+#define BBCLAW_ST7789_PCLK_HZ (40 * 1000 * 1000)
+
 /* CO5300 要求刷新区域 2px 对齐（起点取偶、终点取奇），见硬件参考文档 §怪癖2 */
 #define BBCLAW_DISPLAY_PIXEL_ALIGN  2
 
@@ -128,6 +133,8 @@
  * → lvgl_port 永远等不到 flush_ready → LVGL 持锁整机冻结（真机踩过）。
  * esp_lvgl_port 的 trans_size 分块方案仅 lvgl8 后端实现，LVGL9 不可用。 */
 #define BBCLAW_LVGL_BUFF_LINES   40
+/* 全帧 PSRAM 渲染(条带仅作 DMA 跳板):聊天页 render 265ms→一次成型(2026-07-08) */
+#define BBCLAW_LVGL_CANVAS_PSRAM 1
 #define BBCLAW_LVGL_BUFF_SPIRAM  0
 #define BBCLAW_LVGL_BUFF_DOUBLE  0
 

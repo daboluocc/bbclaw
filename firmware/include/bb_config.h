@@ -1250,6 +1250,12 @@ const char *bbclaw_session_key(void);
 #define BBCLAW_ST7789_Y_GAP 34
 #endif
 
+/* PSRAM 全帧渲染 + 内部 DMA 条带搬运(见 bb_lvgl_display.c canvas 路径)。
+ * 消掉小条带导致的 CJK 重复排版;板级按内存/面板情况开启。 */
+#ifndef BBCLAW_LVGL_CANVAS_PSRAM
+#define BBCLAW_LVGL_CANVAS_PSRAM 0
+#endif
+
 #ifndef BBCLAW_ST7789_PCLK_HZ
 #define BBCLAW_ST7789_PCLK_HZ (20 * 1000 * 1000)
 #endif
