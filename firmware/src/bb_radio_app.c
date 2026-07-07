@@ -748,7 +748,16 @@ int bb_radio_app_voice_busy(void) {
 static int recorder_enter(void) {
   if (!bb_sdcard_mounted()) {
     /* 二次机会：卡可能是开机后才插的 */
-    if (bb_sdcard_mount() != ESP_OK) {
+    esp_err_t merr = bb_sdcard_mount();
+    if (merr == ESP_FAIL) {
+      /* 卡在位但 FS 不识别(exFAT 出厂格式/空白卡 → FR_NO_FILESYSTEM)。
+       * 缓存卡策略(用户已知情拍板):格式化挂载自愈。无卡是 ESP_ERR_TIMEOUT,
+       * 不会走到这里。 */
+      ESP_LOGW(TAG, "recorder: card present but FS unrecognized -> format-mount recovery");
+      bb_display_toast("SD repair: formatting...", 4000);
+      merr = bb_sdcard_mount_format();
+    }
+    if (merr != ESP_OK) {
       ESP_LOGW(TAG, "recorder: no SD card");
       (void)bb_display_show_chat_turn("Recording", "No SD card");
       signal_error_haptic();

@@ -25,7 +25,7 @@ static const char* TAG = "bb_sdcard";
 
 static sdmmc_card_t* s_card;
 
-esp_err_t bb_sdcard_mount(void) {
+static esp_err_t sdcard_mount_impl(int format_if_mount_failed) {
   if (s_card != NULL) return ESP_OK;
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -41,7 +41,11 @@ esp_err_t bb_sdcard_mount(void) {
   slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP; /* 板上若无外置上拉则靠内部 */
 
   const esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-      .format_if_mount_failed = false, /* 不主动格式化——卡上可能有用户数据 */
+      /* 默认不主动格式化——卡上可能有用户数据。恢复路径(录音入口,用户已
+       * 知情拍板 SD 是缓存)走 bb_sdcard_mount_format() 显式格式化挂载:
+       * exFAT/空白卡 FATFS 报 FR_NO_FILESYSTEM,普通 format API 又要求已
+       * 挂载,只有 mount 时格式化这一条路。 */
+      .format_if_mount_failed = format_if_mount_failed ? true : false,
       .max_files = 4,
       .allocation_unit_size = 16 * 1024,
   };
@@ -57,9 +61,17 @@ esp_err_t bb_sdcard_mount(void) {
     s_card = NULL;
     return err;
   }
-  ESP_LOGI(TAG, "mounted %s: %s %.1fGB", MOUNT_POINT, s_card->cid.name,
-           ((float)s_card->csd.capacity * s_card->csd.sector_size) / (1024.0f * 1024.0f * 1024.0f));
+  ESP_LOGI(TAG, "mounted %s: %s %.1fGB%s", MOUNT_POINT, s_card->cid.name,
+           ((float)s_card->csd.capacity * s_card->csd.sector_size) / (1024.0f * 1024.0f * 1024.0f),
+           format_if_mount_failed ? " (format-on-fail armed)" : "");
   return ESP_OK;
+}
+
+esp_err_t bb_sdcard_mount(void) { return sdcard_mount_impl(0); }
+
+esp_err_t bb_sdcard_mount_format(void) {
+  ESP_LOGW(TAG, "mount with format-on-fail: unmountable card will be ERASED (FAT)");
+  return sdcard_mount_impl(1);
 }
 
 void bb_sdcard_unmount(void) {
@@ -132,6 +144,7 @@ esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {
 #else /* !BBCLAW_SDMMC_ENABLE */
 
 esp_err_t bb_sdcard_mount(void) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t bb_sdcard_mount_format(void) { return ESP_ERR_NOT_SUPPORTED; }
 void bb_sdcard_unmount(void) {}
 int bb_sdcard_mounted(void) { return 0; }
 esp_err_t bb_sdcard_selftest(void) { return ESP_ERR_NOT_SUPPORTED; }
