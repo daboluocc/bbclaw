@@ -234,7 +234,12 @@ static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size
   if (out == nullptr || out_len == nullptr) {
     return ESP_ERR_INVALID_ARG;
   }
-  *out_len = 0U;
+  /* ⚠️ 不要在这里清零 *out_len——本函数按 *out_len 追加页,清零由调用方在
+   * 循环外做一次。曾经的 `*out_len = 0U;` 让 append_pcm16 的分片循环每装满
+   * 一帧就把前面的页全部覆盖:ring 块含 4 帧时只有最后 1 帧落盘(录音时长
+   * 精确 ÷4、页序号 5,9,13.. 步进 4),段首 OpusHead/OpusTags 也一起被覆盖
+   * (文件从 page 5 起,非法 Ogg,ffprobe 报 EOF)。PTT 路径每次喂 ≤1 帧,
+   * 一直无症状——2026-07-07 用户耳测「听不到多少人声」才暴露。 */
   if (!state->headers_sent) {
     uint8_t head[19];
     const size_t head_len = build_opus_head_packet(head, state->sample_rate, state->channels);
@@ -287,7 +292,11 @@ static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size
               (state->pending_samples - frame_samples_total) * sizeof(int16_t));
     }
     state->pending_samples -= frame_samples_total;
-    state->granule_pos += static_cast<uint64_t>(state->frame_samples_per_channel);
+    /* Opus 的 Ogg granule 单位固定为 48kHz 采样数(RFC 7845 §4),与输入采样率
+     * 无关:16k 采集一帧 960 样本 = 2880 granule。曾按输入采样数累加,按
+     * granule 算时长的工具(ffprobe/部分转写服务)会把 60s 段当 20s 截断。 */
+    state->granule_pos +=
+        static_cast<uint64_t>(state->frame_samples_per_channel) * 48000U / static_cast<uint64_t>(state->sample_rate);
     ESP_RETURN_ON_ERROR(append_ogg_page_to_buffer(out, out_cap, out_len, packet_buf.packet, (size_t)packet_len, 0x00,
                                                   state->granule_pos, state->serial, state->page_seq++),
                         TAG, "append opus page failed");
