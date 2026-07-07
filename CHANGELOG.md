@@ -29,7 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     网关零改动(https/wss 本就就绪);`sdkconfig.bbclaw.latest`(正式板)暂未切,
     待该板真机验证内存/连接后再切。已知代价:display_pull 1.5s 轮询现在每次
     全新 TLS 握手(~1 次/秒),后续优化方向=display 任务改走常驻 WS(ADR-042)。
-  - 真机验收待 SD 卡插回:录音数段→在网自动补传→云端可见→拔网重录→回网补齐。
+  - **端到端验收 PASS(2026-07-07 真机)**:PWR 开录→3 整段+尾段→停录 20s 内全部
+    补传 ack→云端落盘字节逐一吻合+journal 齐全+session.stop 收尾。
+  - 验收路上修掉两个真机坑:①SD 无文件系统卡(新卡出厂 exFAT→FATFS err 13
+    无出路)——录音入口格式化挂载自愈 bb_sdcard_mount_format();②**https 切换后
+    TLS 握手栈溢出重启循环**——hist_fetch 等 4-8KB 明文时代任务栈扛不住 TLS
+    (~8-10KB),进聊天页即 panic;全部 HTTPS 瞬态任务升 16KB PSRAM,顺带修
+    agent_task WithCaps/vTaskDelete 不配对的每回合 PSRAM 泄漏。
+    教训:**切 https 必须重审所有在调用方任务栈跑 TLS 的栈账**。
+  - 遗留(P2 前核实):录音段 .opus 云端 ffprobe 报 EOF(疑首页非 BOS/尾页缺
+    EOS,设备端回放正常)——批 ASR 前需确认分段文件 Ogg 完整性。
 - **固件:Waveshare ESP32-S3-Touch-AMOLED-2.06 拓展板支持(ADR-040 第一阶段)**:
   - 新板 `waveshare-amoled-206`:2.06" QSPI AMOLED 410×502(CO5300,SH8601 兼容驱动)+
     ES8311 codec(既有代码路径首次真机启用)+ BOOT 键 PTT。触摸/AXP2101 电量/IMU/RTC/SD

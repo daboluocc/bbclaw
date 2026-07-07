@@ -134,9 +134,10 @@ static inline lv_result_t safe_lv_async_call(lv_async_cb_t cb, void* user_data) 
 /* 6 KB on internal heap. 8 KB was too generous: PTT/voice loop already
  * fragments internal heap so the largest free block is ~7.9 KB on a fresh
  * boot — xTaskCreate(8192) reliably fails. The agent task only spawns
- * http_post + cJSON parsing + lv_async_call dispatch; 6 KB has plenty of
- * margin per esp32_dump after ~10 turns of testing. */
-#define BB_CHAT_AGENT_TASK_STACK 6144
+ * http_post + cJSON parsing + lv_async_call dispatch; 6 KB had margin in the
+ * plaintext-HTTP era. 2026-07-07 https 切换后 TLS 握手跑在本任务栈上
+ * (~8-10KB),16KB 起步(PSRAM 栈,不占内部)。 */
+#define BB_CHAT_AGENT_TASK_STACK 16384
 #define BB_CHAT_AGENT_TASK_PRIO  5
 #define BB_CHAT_HEART_THRESHOLD_MS 5000
 /* Issue #169 — how long (ms) to keep the last subtitle segment visible after
@@ -897,7 +898,9 @@ static void agent_task(void* arg) {
   s_chat.agent_cancel_requested = 0;
   s_chat.sending = 0;
   s_chat.agent_task = NULL;
-  vTaskDelete(NULL);
+  /* 本任务由 xTaskCreateWithCaps(PSRAM 栈)创建——普通 vTaskDelete 不会释放
+   * caps 栈/TCB,每回合泄 PSRAM(2026-07-07 排查 https 栈溢出时顺带发现)。 */
+  vTaskDeleteWithCaps(NULL);
 }
 
 /* ── public API ── */
@@ -1920,7 +1923,7 @@ typedef struct {
   bb_agent_driver_info_t entries[BB_CHAT_DRIVER_CACHE_MAX];
 } driver_fetch_result_t;
 
-#define BB_CHAT_DRIVER_FETCH_TASK_STACK 4096
+#define BB_CHAT_DRIVER_FETCH_TASK_STACK 16384 /* HTTPS:TLS 握手在本任务栈,PSRAM */
 #define BB_CHAT_DRIVER_FETCH_TASK_PRIO  4
 
 static void apply_driver_cache_idx(void) {
@@ -1982,7 +1985,7 @@ static void driver_fetch_task(void* arg) {
   driver_fetch_result_t* res = (driver_fetch_result_t*)calloc(1, sizeof(*res));
   if (res == NULL) {
     s_chat.driver_fetch_pending = 0;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL); /* PSRAM 栈(xTaskCreateWithCaps) */
     return;
   }
   res->gen = my_gen;
@@ -2004,7 +2007,7 @@ static void driver_fetch_task(void* arg) {
     if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(3000));
   }
   safe_lv_async_call(on_driver_fetch_done, res);
-  vTaskDelete(NULL);
+  vTaskDeleteWithCaps(NULL); /* PSRAM 栈(xTaskCreateWithCaps) */
 }
 
 static void spawn_driver_fetch_task(void) {
@@ -2013,12 +2016,15 @@ static void spawn_driver_fetch_task(void) {
   s_chat.driver_fetch_pending = 1;
   uint32_t gen = ++s_chat.driver_fetch_generation;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(driver_fetch_task, "drv_fetch",
-                              BB_CHAT_DRIVER_FETCH_TASK_STACK,
-                              (void*)(uintptr_t)gen,
-                              BB_CHAT_DRIVER_FETCH_TASK_PRIO, &t);
+  /* PSRAM 栈:纯网络 IO(HTTPS,无 NVS)。https 切换后 TLS 握手在本任务栈上跑
+   * (~8-10KB),4KB 明文时代的内部栈必溢出(hist_fetch 曾栈溢出重启循环)。 */
+  BaseType_t ok = xTaskCreateWithCaps(driver_fetch_task, "drv_fetch",
+                                      BB_CHAT_DRIVER_FETCH_TASK_STACK,
+                                      (void*)(uintptr_t)gen,
+                                      BB_CHAT_DRIVER_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_driver_fetch_task: xTaskCreateWithCaps failed");
     s_chat.driver_fetch_pending = 0;
   }
 }
@@ -2039,7 +2045,7 @@ static void spawn_driver_fetch_task(void) {
  * stale result on arrival. Same pattern as session_fetch_*.
  */
 
-#define BB_HISTORY_FETCH_TASK_STACK 4096
+#define BB_HISTORY_FETCH_TASK_STACK 16384 /* HTTPS:TLS 握手在本任务栈,PSRAM */
 #define BB_HISTORY_FETCH_TASK_PRIO  4
 
 typedef struct {
@@ -2073,7 +2079,7 @@ static void history_fetch_task(void* arg) {
   if (res == NULL) {
     free(args);
     s_chat.history_fetch_pending = 0;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL); /* PSRAM 栈(xTaskCreateWithCaps) */
     return;
   }
   res->gen = args->gen;
@@ -2116,7 +2122,7 @@ static void history_fetch_task(void* arg) {
     free(res);
     s_chat.history_fetch_pending = 0; /* 防永久 wedge：否则下次 fetch/滚动重试被门控死锁 */
   }
-  vTaskDelete(NULL);
+  vTaskDeleteWithCaps(NULL); /* PSRAM 栈(xTaskCreateWithCaps) */
 }
 
 static void spawn_history_fetch_task(int before, int is_initial) {
@@ -2139,11 +2145,15 @@ static void spawn_history_fetch_task(int before, int is_initial) {
 
   s_chat.history_fetch_pending = 1;
   TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreate(history_fetch_task, "hist_fetch",
-                              BB_HISTORY_FETCH_TASK_STACK,
-                              args, BB_HISTORY_FETCH_TASK_PRIO, &t);
+  /* PSRAM 栈:纯网络 IO(HTTPS,无 NVS)。https 切换后 TLS 握手在本任务栈上跑
+   * (~8-10KB),4KB 明文时代的内部栈实测栈溢出 → 进聊天页即 panic 重启循环
+   * (2026-07-07 boot report: task=hist_fetch panic_pc=panic.c 栈检查)。 */
+  BaseType_t ok = xTaskCreateWithCaps(history_fetch_task, "hist_fetch",
+                                      BB_HISTORY_FETCH_TASK_STACK,
+                                      args, BB_HISTORY_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
   if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_history_fetch_task: xTaskCreate failed");
+    ESP_LOGE(TAG, "spawn_history_fetch_task: xTaskCreateWithCaps failed");
     s_chat.history_fetch_pending = 0;
     free(args);
   }

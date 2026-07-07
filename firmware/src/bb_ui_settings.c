@@ -94,7 +94,7 @@ static const lv_font_t* ui_font(void) { return &lv_font_bbclaw_cjk; }
  * They do network I/O only (no NVS / flash writes), so a PSRAM stack is safe
  * w.r.t. the flash-cache-disable constraint. The commit/persist task keeps an
  * INTERNAL stack on purpose — it writes NVS (cache frozen). */
-#define BB_SETTINGS_FETCH_TASK_STACK 8192
+#define BB_SETTINGS_FETCH_TASK_STACK 16384 /* HTTPS:TLS 握手在本任务栈,PSRAM */
 #define BB_SETTINGS_FETCH_TASK_PRIO  4
 /* Volume/TTS persist only does an NVS set+commit (no TLS) — a 4KB stack is
  * plenty and, unlike 8KB, reliably fits the fragmented internal heap that
