@@ -9,6 +9,7 @@
  *   LV_EVENT_CLICKED。物理 BOOT 键与 devmon 注入通路不受影响。
  */
 #include "bb_touch_input.h"
+#include "bb_power_mgmt.h"
 
 #include "bb_config.h"
 
@@ -28,6 +29,12 @@
 static const char* TAG = "bb_touch";
 
 static esp_lcd_touch_handle_t s_tp;
+
+/* ADR-046: 触摸活动上报(息屏管理) */
+static void touch_activity_cb(lv_event_t* e) {
+  (void)e;
+  bb_power_mgmt_on_user_activity();
+}
 
 /* 屏幕级手势：右滑 = BACK（返回/退出，与旧手势层语义一致） */
 static void screen_gesture_cb(lv_event_t* e) {
@@ -87,6 +94,9 @@ esp_err_t bb_touch_input_init(void) {
     ESP_LOGE(TAG, "lvgl_port_add_touch failed");
     return ESP_FAIL;
   }
+  /* ADR-046: 触摸按下=用户活动(息屏计时复位/亮屏)。LVGL 任务上下文,
+   * 只置旗标(转换由 stream_task tick 执行),安全。 */
+  lv_indev_add_event_cb(indev, touch_activity_cb, LV_EVENT_PRESSED, NULL);
 
   if (lvgl_port_lock(1000)) {
     lv_obj_add_event_cb(lv_screen_active(), screen_gesture_cb, LV_EVENT_GESTURE, NULL);

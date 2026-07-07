@@ -27,8 +27,15 @@ typedef struct {
   uint32_t wake_cooldown_ms;     /* SLEEPING → WAKING 去抖延迟 */
   int imu_wake_enabled;
   int message_wake_enabled;
-  TimerHandle_t timeout_timer;
   uint32_t wake_detected_ms;
+  /* 跨任务事件旗标(IMU 任务/LVGL 触摸/WS 任务只置位,所有状态转换统一在
+   * bb_sleep_manager_tick——stream_task 上执行。曾经的 100ms FreeRTOS 定时器
+   * 在 Tmr Svc 小栈跑亮度渐变+任务击杀,uxListRemove StoreProhibited 随机崩
+   * (2026-07-06 终案),该架构禁止回归)。 */
+  volatile int motion_pending;
+  volatile int message_pending;
+  volatile int activity_pending;
+  uint32_t last_tick_ms;
 } sleep_manager_state_t;
 
 static sleep_manager_state_t g_state = {0};
@@ -75,41 +82,75 @@ static void transition_to_state(bb_sleep_state_t new_state) {
   g_state.state = new_state;
 }
 
-/* ── 定时器回调 ── */
+/* ── 周期 tick(stream_task 输入循环调用,节流 100ms)── */
 
-static void timeout_timer_cb(TimerHandle_t timer) {
-  if (!g_state.enabled) {
+void bb_sleep_manager_tick(void) {
+  if (!g_state.initialized || !g_state.enabled) {
     return;
   }
-
   uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-  uint32_t idle_time = now - g_state.last_activity_ms;
+  if (now - g_state.last_tick_ms < 100U) {
+    return;
+  }
+  g_state.last_tick_ms = now;
 
+  /* 消费跨任务事件旗标(转换只在本上下文做) */
+  if (g_state.activity_pending) {
+    g_state.activity_pending = 0;
+    if (g_state.state != BB_SLEEP_STATE_ACTIVE) {
+      transition_to_state(BB_SLEEP_STATE_ACTIVE);
+      if (g_state.imu_wake_enabled) {
+        bb_imu_disable_low_power();
+      }
+    }
+  }
+  if (g_state.motion_pending) {
+    g_state.motion_pending = 0;
+    if (g_state.state == BB_SLEEP_STATE_SLEEPING) {
+      ESP_LOGI(TAG, "IMU motion wake");
+      transition_to_state(BB_SLEEP_STATE_WAKING);
+    }
+  }
+  if (g_state.message_pending) {
+    g_state.message_pending = 0;
+    if (g_state.message_wake_enabled && g_state.state == BB_SLEEP_STATE_SLEEPING) {
+      transition_to_state(BB_SLEEP_STATE_WAKING);
+    }
+  }
+
+  /* 带符号差:last_activity_ms/wake_detected_ms 可能被其他上下文(触摸/本 tick
+   * 内的转换)更新得比本轮 now 更新,无符号减法下溢成 42 亿 → 秒睡/秒回睡
+   * (真机实锤:motion 唤醒 1ms 后被打回 SLEEPING)。 */
+  int32_t idle_time = (int32_t)(now - g_state.last_activity_ms);
   switch (g_state.state) {
     case BB_SLEEP_STATE_ACTIVE:
-      if (idle_time >= g_state.dimming_timeout_ms) {
+      if (idle_time >= (int32_t)g_state.dimming_timeout_ms) {
         transition_to_state(BB_SLEEP_STATE_DIMMING);
       }
       break;
 
     case BB_SLEEP_STATE_DIMMING:
-      if (idle_time >= g_state.sleep_timeout_ms) {
+      if (idle_time >= (int32_t)g_state.sleep_timeout_ms) {
         transition_to_state(BB_SLEEP_STATE_SLEEPING);
       }
       break;
 
     case BB_SLEEP_STATE_WAKING:
-      /* 检查唤醒后是否有用户交互 */
-      if (idle_time > (g_state.wake_detected_ms + g_state.wake_cooldown_ms)) {
-        /* 去抖延迟后仍无交互，回到睡眠 */
+      /* 唤醒去抖窗口内无真实交互 → 回到睡眠(原实现拿 idle 时长与时间戳
+       * 相加值比较,恒假,WAKING 永不回睡) */
+      if ((int32_t)(now - g_state.wake_detected_ms) >= (int32_t)g_state.wake_cooldown_ms) {
         transition_to_state(BB_SLEEP_STATE_SLEEPING);
       }
       break;
 
     case BB_SLEEP_STATE_SLEEPING:
-      /* 空闲中，仅等待 IMU 唤醒或用户交互 */
       break;
   }
+}
+
+/* devmon 测试注入:模拟一次 IMU 运动(与真实回调同一旗标通路) */
+void bb_sleep_manager_debug_motion(void) {
+  g_state.motion_pending = 1;
 }
 
 /* ── IMU 回调 ── */
@@ -128,12 +169,10 @@ static void imu_sample_cb(const bb_imu_sample_t* sample, void* arg) {
                         sample->accel.y * sample->accel.y +
                         sample->accel.z * sample->accel.z);
 
-  /* 简单阈值检测 */
+  /* 简单阈值检测——只置旗标,转换由 tick 在 stream_task 做(IMU 采样任务
+   * 栈小,不许在这里碰亮度/QSPI) */
   if (a_total > DEFAULT_IMU_ACCEL_THRESHOLD) {
-    ESP_LOGI(TAG, "IMU motion detected (a_total=%.0f mg)", a_total);
-    if (g_state.state == BB_SLEEP_STATE_SLEEPING) {
-      transition_to_state(BB_SLEEP_STATE_WAKING);
-    }
+    g_state.motion_pending = 1;
   }
 }
 
@@ -165,17 +204,6 @@ esp_err_t bb_sleep_manager_init(void) {
   g_state.imu_wake_enabled = bb_imu_is_ready();
   g_state.message_wake_enabled = 1;
 
-  /* 创建定时器（100ms 周期） */
-  g_state.timeout_timer = xTimerCreate("sleep_timer", pdMS_TO_TICKS(100),
-                                       pdTRUE, NULL, timeout_timer_cb);
-  if (!g_state.timeout_timer) {
-    ESP_LOGE(TAG, "Failed to create timeout timer");
-    g_state.initialized = 0;
-    return ESP_ERR_NO_MEM;
-  }
-
-  xTimerStart(g_state.timeout_timer, portMAX_DELAY);
-
   /* 注册 IMU 回调 */
   if (g_state.imu_wake_enabled) {
     bb_imu_on_sample(imu_sample_cb, NULL);
@@ -190,11 +218,6 @@ esp_err_t bb_sleep_manager_init(void) {
 esp_err_t bb_sleep_manager_deinit(void) {
   if (!g_state.initialized) {
     return ESP_OK;
-  }
-
-  if (g_state.timeout_timer) {
-    xTimerDelete(g_state.timeout_timer, portMAX_DELAY);
-    g_state.timeout_timer = NULL;
   }
 
   bb_imu_on_sample_cancel();
@@ -225,16 +248,12 @@ esp_err_t bb_sleep_manager_on_user_active(void) {
   if (!g_state.enabled) {
     return ESP_OK;
   }
-
+  /* 可能从 LVGL(触摸)/stream_task 多上下文进来:只记时间戳+置旗标,
+   * 转换由 tick 统一执行(最大延迟一个 tick 节流周期 100ms)。 */
   g_state.last_activity_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
   if (g_state.state != BB_SLEEP_STATE_ACTIVE) {
-    transition_to_state(BB_SLEEP_STATE_ACTIVE);
-    if (g_state.imu_wake_enabled) {
-      bb_imu_disable_low_power();
-    }
+    g_state.activity_pending = 1;
   }
-
   return ESP_OK;
 }
 
@@ -244,7 +263,7 @@ esp_err_t bb_sleep_manager_on_message_arrived(void) {
   }
 
   if (g_state.state == BB_SLEEP_STATE_SLEEPING) {
-    transition_to_state(BB_SLEEP_STATE_WAKING);
+    g_state.message_pending = 1;
   }
 
   return ESP_OK;

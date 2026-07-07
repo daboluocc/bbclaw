@@ -180,6 +180,13 @@ int bb_sleep_manager_is_enabled(void);
  */
 esp_err_t bb_sleep_manager_dump_status(void);
 
+/** 周期 tick——所有状态转换的唯一执行点(stream_task 输入循环调用,内部节流
+ *  100ms)。跨任务事件(IMU/触摸/消息)只置旗标,由本函数消费。 */
+void bb_sleep_manager_tick(void);
+
+/** devmon 测试注入:模拟一次 IMU 运动(与真实回调同一旗标通路)。 */
+void bb_sleep_manager_debug_motion(void);
+
 #ifdef __cplusplus
 }
 #endif

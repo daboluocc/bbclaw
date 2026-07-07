@@ -94,6 +94,18 @@ esp_err_t bb_power_mgmt_deinit(void) {
  * 通知用户正在交互（PTT、触摸等）。
  * 重置空闲计时器，唤醒屏幕（如睡眠中）。
  */
+void bb_power_mgmt_tick(void) {
+  if (bb_sleep_manager_is_ready()) {
+    bb_sleep_manager_tick();
+  }
+}
+
+void bb_power_mgmt_debug_motion(void) {
+  if (bb_sleep_manager_is_ready()) {
+    bb_sleep_manager_debug_motion();
+  }
+}
+
 void bb_power_mgmt_on_user_activity(void) {
   if (bb_sleep_manager_is_ready()) {
     bb_sleep_manager_on_user_active();

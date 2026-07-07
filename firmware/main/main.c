@@ -39,12 +39,11 @@ void app_main(void) {
   // No-op stub when CONFIG_BBCLAW_DEVICE_MONITOR=n.
   bb_device_monitor_init();
 
-  // ADR-046: Power management (IMU + display brightness + sleep manager)
-  // ⚠️ 暂禁(2026-07-05 深夜实锤):息屏管理的 100ms FreeRTOS 定时器回调在
-  // Tmr Svc 小栈里跑状态机+QSPI 亮度写,打坏定时器任务(panic_pc=uxListRemove
-  // StoreProhibited task='Tmr Svc',全晚随机崩根因)。该分支从未真机验证,
-  // 需专项调试(回调瘦身/挪自有任务/栈账)后再启用。
-  // bb_power_mgmt_init();
+  /* ADR-046: Power management (IMU + 亮度 + 息屏)。2026-07-08 专项修复后
+   * 重新启用:①定时器回调(Tmr Svc 小栈)废除,状态机改 stream_task 内 tick;
+   * ②IMU/触摸/消息事件旗标化,转换单一上下文;③亮度 QSPI 写与 LVGL 刷屏
+   * 互斥(lvgl_port_lock);④渐变任务代数化优雅退出,禁外部 vTaskDelete。 */
+  bb_power_mgmt_init();
 
   ESP_ERROR_CHECK(bb_radio_app_start());
 }

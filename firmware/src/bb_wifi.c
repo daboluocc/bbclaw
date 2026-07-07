@@ -1380,6 +1380,11 @@ int bb_wifi_is_provisioning_mode(void) {
   return s_mode == BB_WIFI_MODE_AP_PROVISIONING;
 }
 
+esp_err_t bb_wifi_debug_enter_provisioning(void) {
+  ESP_LOGW(TAG, "debug: force entering provisioning mode");
+  return start_ap_provisioning_mode();
+}
+
 bb_wifi_mode_t bb_wifi_get_mode(void) {
   return s_mode;
 }

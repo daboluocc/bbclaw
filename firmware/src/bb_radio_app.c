@@ -3658,6 +3658,13 @@ static void stream_task(void* arg) {
       }
     }
 
+    /* ADR-046 息屏管理 tick:所有睡眠状态转换的唯一执行点(内部节流 100ms)。
+     * 录音/语音回合期间持续喂活动,豁免息屏(ADR-044 §3.1 录音态不锁屏)。 */
+    if (bb_recorder_active() || bb_radio_app_voice_busy()) {
+      bb_power_mgmt_on_user_activity();
+    }
+    bb_power_mgmt_tick();
+
 #if BBCLAW_SDMMC_ENABLE
     /* SD 热插拔轮询(ADR-044):CD 引脚未接,每 10s 轮询(非流态,不卡按键)。
      * 三种提醒(用户反馈 2026-07-07:插拔无感知不行):

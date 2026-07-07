@@ -24,6 +24,9 @@ typedef struct {
   uint32_t fade_start_ms;          /* 渐进开始时间 */
   uint32_t fade_duration_ms;       /* 渐进总时长 */
   TaskHandle_t fade_task_handle;   /* 渐进任务句柄 */
+  volatile uint32_t fade_gen;      /* 代数:变化=旧渐变任务自行退出(禁止外部
+                                      vTaskDelete 击杀——曾在 QSPI 写一半时被杀,
+                                      驱动状态烂掉→uxListRemove 随机崩) */
 } display_control_state_t;
 
 static display_control_state_t g_state = {0};
@@ -89,9 +92,8 @@ esp_err_t bb_display_brightness_deinit(void) {
     return ESP_OK;
   }
 
-  if (g_state.fading && g_state.fade_task_handle) {
-    vTaskDelete(g_state.fade_task_handle);
-    g_state.fade_task_handle = NULL;
+  if (g_state.fading) {
+    (void)bb_display_stop_fade();
   }
 
   g_state.initialized = 0;
@@ -166,15 +168,17 @@ uint8_t bb_display_get_brightness_raw(void) {
 /* ── 渐进淡出任务 ── */
 
 static void fade_task(void* arg) {
-  while (g_state.fading) {
+  const uint32_t my_gen = (uint32_t)(uintptr_t)arg;
+  while (g_state.fading && g_state.fade_gen == my_gen) {
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
     uint32_t elapsed = now - g_state.fade_start_ms;
 
     if (elapsed >= g_state.fade_duration_ms) {
       /* 渐进完成，设置目标亮度 */
-      bb_display_set_brightness_level(g_state.target_level);
+      uint8_t final_level = g_state.target_level;
       g_state.fading = 0;
       g_state.fade_task_handle = NULL;
+      bb_display_set_brightness_level(final_level);
       vTaskDelete(NULL);
     }
 
@@ -194,6 +198,8 @@ static void fade_task(void* arg) {
 
     vTaskDelay(pdMS_TO_TICKS(50));  /* 20Hz 更新频率 */
   }
+  /* 代数变化/被 stop:自行退出 */
+  vTaskDelete(NULL);
 }
 
 esp_err_t bb_display_fade_brightness(uint8_t target_level, uint16_t duration_ms) {
@@ -224,8 +230,10 @@ esp_err_t bb_display_fade_brightness(uint8_t target_level, uint16_t duration_ms)
   g_state.fade_duration_ms = duration_ms;
   g_state.fade_start_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
   g_state.fading = 1;
+  g_state.fade_gen++;
 
-  BaseType_t ret = xTaskCreate(fade_task, "brightness_fade", 2048, NULL, 4, &g_state.fade_task_handle);
+  BaseType_t ret = xTaskCreate(fade_task, "brightness_fade", 2048, (void*)(uintptr_t)g_state.fade_gen, 4,
+                               &g_state.fade_task_handle);
   if (ret != pdPASS) {
     g_state.fading = 0;
     return ESP_ERR_NO_MEM;
@@ -238,15 +246,15 @@ esp_err_t bb_display_fade_brightness(uint8_t target_level, uint16_t duration_ms)
 }
 
 esp_err_t bb_display_stop_fade(void) {
-  if (!g_state.fading || !g_state.fade_task_handle) {
+  if (!g_state.fading) {
     return ESP_OK;
   }
-
-  vTaskDelete(g_state.fade_task_handle);
-  g_state.fade_task_handle = NULL;
+  /* 优雅停:置代数+清 fading,任务在下一个 50ms 周期自行退出。
+   * 绝不 vTaskDelete 一个可能正在做 QSPI 写的任务。 */
+  g_state.fade_gen++;
   g_state.fading = 0;
-
-  ESP_LOGD(TAG, "Brightness fade stopped");
+  g_state.fade_task_handle = NULL;
+  ESP_LOGD(TAG, "Brightness fade stop requested");
   return ESP_OK;
 }
 

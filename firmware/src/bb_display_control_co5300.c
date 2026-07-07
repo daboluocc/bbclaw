@@ -12,6 +12,7 @@
 
 #include <esp_log.h>
 #include <esp_check.h>
+#include "esp_lvgl_port.h"
 
 static const char* TAG = "display_co5300";
 
@@ -39,8 +40,15 @@ esp_err_t bb_display_set_brightness_raw_impl(uint8_t value) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  /* 通过 QSPI 发送亮度指令 */
+  /* 通过 QSPI 发送亮度指令。必须与 LVGL 刷屏互斥:同一 QSPI IO 上
+   * tx_param 撞上在飞的 tx_color DMA 会打烂驱动状态(息屏管理随机崩的
+   * 根因之一)。flush 全程在 LVGL 锁内完成(canvas 路径逐条带同步等 DMA),
+   * 拿到锁即保证总线空闲。拿不到就跳过本步,渐变下一步补上。 */
+  if (!lvgl_port_lock(100)) {
+    return ESP_OK;
+  }
   esp_err_t ret = esp_lcd_panel_io_tx_param(panel_io, CO5300_BRIGHTNESS_CMD, &value, 1);
+  lvgl_port_unlock();
 
   if (ret == ESP_OK) {
     ESP_LOGD(TAG, "CO5300 brightness set to 0x%02x", value);

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:息屏/功耗管理启用(ADR-046,手表)**:静置 2min 变暗→3min 息屏(AMOLED
+  亮度 0=近零功耗);按键/触摸唤醒;IMU 抬手唤醒(WAKING 2s 去抖,无操作回睡,
+  有操作转常亮);录音/语音回合豁免。曾因随机崩被禁,本次根治四个结构性问题:
+  ①100ms FreeRTOS 定时器回调在 Tmr Svc 小栈跑亮度渐变+任务击杀 → 废除定时器,
+  状态机改 stream_task 内 tick(100ms 节流),IMU/触摸/消息事件旗标化单上下文消费;
+  ②亮度渐变任务被外部 vTaskDelete 击杀(可能正在 QSPI 写) → 代数化优雅退出;
+  ③CO5300 亮度命令与 LVGL 刷屏抢 QSPI 总线 → lvgl_port_lock 互斥;
+  ④时间戳无符号下溢(motion 唤醒 1ms 被打回) → 带符号比较。
+  真机验收:变暗/息屏时序精确×2 轮、三种唤醒路径全过、零 panic。
+  devmon 新增注入:201=IMU 运动模拟、202=强制进配网(复现网络恢复收页,已验证
+  现固件收页链路完好)。
 - **固件+云端:ambient 回网补传(ADR-044 P1b)**:
   - 固件新模块 `bb_ambient_sync`:后台任务(16KB PSRAM 栈,优先级 4)在
     cloud_saas+WiFi+录音不活跃+语音链路空闲时,扫 `/sdcard/ambient/*/index.jsonl`

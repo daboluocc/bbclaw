@@ -41,6 +41,8 @@
 #include "bb_config.h"
 #include "bb_device_monitor.h"
 
+#include "bb_power_mgmt.h"
+#include "bb_wifi.h"
 #include "bb_radio_app.h"
 #include "bb_recorder.h"
 #include "bb_nav_input.h"
@@ -425,6 +427,22 @@ static void devmon_worker_task(void* arg) {
           bb_radio_app_request_recorder_toggle();
           const uint8_t ack0 = 0;
           devmon_send_frame(KIND_RES_INPUT_ACK, msg.seq, &ack0, 1);
+          break;
+        }
+        if (event_id == 202) {
+          /* WiFi 配网复现注入:运行期强制进配网,验证后台重连收页(#用户反馈) */
+          ESP_LOGI(TAG, "REQ_INPUT seq=%u event=WIFI_PROVISION", msg.seq);
+          (void)bb_wifi_debug_enter_provisioning();
+          const uint8_t ack2 = 0;
+          devmon_send_frame(KIND_RES_INPUT_ACK, msg.seq, &ack2, 1);
+          break;
+        }
+        if (event_id == 201) {
+          /* IMU 运动模拟(ADR-046):与真实 QMI8658 回调同一旗标通路,测抬手唤醒 */
+          ESP_LOGI(TAG, "REQ_INPUT seq=%u event=IMU_MOTION", msg.seq);
+          bb_power_mgmt_debug_motion();
+          const uint8_t ack1 = 0;
+          devmon_send_frame(KIND_RES_INPUT_ACK, msg.seq, &ack1, 1);
           break;
         }
         if (event_id >= BB_NAV_EVENT_COUNT) {

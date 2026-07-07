@@ -22,6 +22,12 @@ extern "C" {
  */
 esp_err_t bb_power_mgmt_init(void);
 
+/** 周期 tick(stream_task 输入循环调用)——见 bb_sleep_manager_tick。 */
+void bb_power_mgmt_tick(void);
+
+/** devmon 测试注入:模拟 IMU 运动唤醒。 */
+void bb_power_mgmt_debug_motion(void);
+
 /**
  * 清理电源管理资源
  *
