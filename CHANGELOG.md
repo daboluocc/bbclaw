@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件+云端:ambient 回网补传(ADR-044 P1b)**:
+  - 固件新模块 `bb_ambient_sync`:后台任务(16KB PSRAM 栈,优先级 4)在
+    cloud_saas+WiFi+录音不活跃+语音链路空闲时,扫 `/sdcard/ambient/*/index.jsonl`
+    把未上传段按序补传云端(`ambient.segment.start` → 文件字节二进制帧 →
+    `segment.finish` → 等云端持久化 ack)。进度记每会话 `sync.state`
+    (不改写 recorder 的 append-only 索引,单写者纪律);掉电/掉线最多重传一段
+    (云端 O_TRUNC 幂等)。书签(`ambient.bookmark`)与会话收尾(`session.stop`)一并同步。
+  - SD 低水位回收:剩余 <256MB 时从最旧「已全部上传且已收尾」会话开始整目录回收。
+  - `bb_adapter_client` 新原语:`send_bin` 导出、ambient ack 等待槽
+    (arm→finish→wait,照 sites.* 模式);`bb_radio_app_voice_busy()` 让路查询。
+  - 云端(bbclaw-reference d723118):`handleDeviceWS` ambient.* 全套接收,段字节
+    边收边落盘 `data/ambient/<deviceId>/<date>/`(不进内存/不走 turn 管线),
+    fsync 后回 `ambient.segment.ack`;与 voice.stream 双向互斥;30 天生命周期
+    (按录制日期过期);portal `GET /v1/ambient/segments` + `DELETE /v1/ambient/data`
+    (归属校验,PIPL 自助删除)。**部署顺序:云端先于固件**(旧云端会把 ambient.*
+    kind 转发给 home adapter 报错,补传会一直重试不丢数据,但别长期跨版本跑)。
+  - **手表切 wss/https**(ADR-044 §5.3 环境音不明文):`sdkconfig.cloud` base URL
+    切 `https://`,WS 升 wss + esp_crt_bundle,真机验证长连接稳定。
+    网关零改动(https/wss 本就就绪);`sdkconfig.bbclaw.latest`(正式板)暂未切,
+    待该板真机验证内存/连接后再切。已知代价:display_pull 1.5s 轮询现在每次
+    全新 TLS 握手(~1 次/秒),后续优化方向=display 任务改走常驻 WS(ADR-042)。
+  - 真机验收待 SD 卡插回:录音数段→在网自动补传→云端可见→拔网重录→回网补齐。
 - **固件:Waveshare ESP32-S3-Touch-AMOLED-2.06 拓展板支持(ADR-040 第一阶段)**:
   - 新板 `waveshare-amoled-206`:2.06" QSPI AMOLED 410×502(CO5300,SH8601 兼容驱动)+
     ES8311 codec(既有代码路径首次真机启用)+ BOOT 键 PTT。触摸/AXP2101 电量/IMU/RTC/SD

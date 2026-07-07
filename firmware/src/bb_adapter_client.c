@@ -152,6 +152,14 @@ typedef struct {
   bb_sites_req_t* sites_req;
   int sites_waiting;
   char sites_message_id[64];
+  /* ADR-044 P1b ambient 回网补传:单飞行段的 ack 等待槽(bb_ambient_sync 任务
+   * 独占使用;arm 后发 segment.finish,云端 ambient.segment.ack/ambient.error
+   * 落到这里)。 */
+  char ambient_session[48];
+  int ambient_seq;
+  volatile int ambient_waiting;
+  int ambient_ok;
+  char ambient_err[32];
   uint8_t* text_buf;
   size_t text_len;
   size_t text_cap;
@@ -171,6 +179,7 @@ static bb_ws_state_t s_ws;
 #define BB_WS_EVENT_VERIFY_DONE BIT4
 #define BB_WS_EVENT_SITES_DONE BIT5
 #define BB_WS_EVENT_ABORT BIT6 /* ADR-028: PTT barge-in 本地中断 finish 等待 */
+#define BB_WS_EVENT_AMBIENT_DONE BIT7 /* ADR-044 P1b: ambient 段 ack/错误已到 */
 
 static int body_contains_ok_true(const char* body);
 static int json_extract_string(const char* body, const char* key, char* out, size_t out_len);
@@ -864,6 +873,54 @@ esp_err_t bb_adapter_client_send_text(const char* payload) {
   return ws_send_text_message(payload);
 }
 
+/* ── ADR-044 P1b: ambient 回网补传原语（bb_ambient_sync 任务专用） ────── */
+
+esp_err_t bb_adapter_client_send_bin(const uint8_t* data, size_t len) {
+  return ws_send_binary_message(data, len);
+}
+
+void bb_adapter_client_ambient_arm_ack(const char* session_id, int seg_seq) {
+  if (s_ws.lock == NULL || s_ws.events == NULL || session_id == NULL) {
+    return;
+  }
+  xEventGroupClearBits(s_ws.events, BB_WS_EVENT_AMBIENT_DONE);
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  snprintf(s_ws.ambient_session, sizeof(s_ws.ambient_session), "%s", session_id);
+  s_ws.ambient_seq = seg_seq;
+  s_ws.ambient_ok = 0;
+  s_ws.ambient_err[0] = '\0';
+  s_ws.ambient_waiting = 1;
+  xSemaphoreGive(s_ws.lock);
+}
+
+int bb_adapter_client_ambient_wait_ack(int timeout_ms, char* err_out, size_t err_len) {
+  if (err_out != NULL && err_len > 0U) {
+    err_out[0] = '\0';
+  }
+  if (s_ws.lock == NULL || s_ws.events == NULL) {
+    return 0;
+  }
+  EventBits_t bits =
+      xEventGroupWaitBits(s_ws.events, BB_WS_EVENT_AMBIENT_DONE, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
+  xEventGroupClearBits(s_ws.events, BB_WS_EVENT_AMBIENT_DONE);
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  int ok = 0;
+  if ((bits & BB_WS_EVENT_AMBIENT_DONE) == 0U) {
+    /* 超时(含掉线):解除等待,让迟到的 ack 不再动槽位 */
+    s_ws.ambient_waiting = 0;
+    if (err_out != NULL && err_len > 0U) {
+      snprintf(err_out, err_len, "TIMEOUT");
+    }
+  } else {
+    ok = s_ws.ambient_ok;
+    if (!ok && err_out != NULL && err_len > 0U) {
+      snprintf(err_out, err_len, "%s", s_ws.ambient_err);
+    }
+  }
+  xSemaphoreGive(s_ws.lock);
+  return ok;
+}
+
 void bb_adapter_abort_finish_wait(void) {
   /* 只在确有 finish 等待在飞时才设位,避免给下一轮 finish 留下 stale ABORT。
    * events 为 NULL(WS 未初始化)时静默返回。 */
@@ -1331,6 +1388,24 @@ static void ws_handle_text_message(const char* msg) {
       }
       xSemaphoreGive(s_ws.lock);
     }
+    /* ADR-044 P1b: ambient 补传错误只交给 ambient 等待槽,绝不落到下面的
+     * finish/verify 通用错误路径(补传是后台任务,不许惊动语音回合状态)。 */
+    if (strncmp(ekind, "ambient.", 8) == 0) {
+      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+      if (s_ws.ambient_waiting) {
+        s_ws.ambient_ok = 0;
+        if (!json_extract_string(msg, "error", s_ws.ambient_err, sizeof(s_ws.ambient_err)) ||
+            s_ws.ambient_err[0] == '\0') {
+          snprintf(s_ws.ambient_err, sizeof(s_ws.ambient_err), "AMBIENT_ERROR");
+        }
+        s_ws.ambient_waiting = 0;
+        xSemaphoreGive(s_ws.lock);
+        xEventGroupSetBits(s_ws.events, BB_WS_EVENT_AMBIENT_DONE);
+        return;
+      }
+      xSemaphoreGive(s_ws.lock);
+      return;
+    }
     xSemaphoreTake(s_ws.lock, portMAX_DELAY);
     if (s_ws.finish_result != NULL) {
       (void)json_extract_string(msg, "error", s_ws.finish_result->error_code, sizeof(s_ws.finish_result->error_code));
@@ -1354,6 +1429,24 @@ static void ws_handle_text_message(const char* msg) {
   if (strcmp(type, "reply") == 0) {
     char rkind[48] = {0};
     (void)json_extract_string(msg, "kind", rkind, sizeof(rkind));
+    /* ADR-044 P1b: 段持久化确认。匹配飞行中的 (session, seq);容忍 sessionId
+     * 未回显(seq 已足够界定单飞行段)。 */
+    if (strcmp(rkind, "ambient.segment.ack") == 0) {
+      int ack_seq = json_extract_int(msg, "segSeq", -1);
+      char ack_sess[48] = {0};
+      (void)json_extract_string(msg, "sessionId", ack_sess, sizeof(ack_sess));
+      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+      if (s_ws.ambient_waiting && ack_seq == s_ws.ambient_seq &&
+          (ack_sess[0] == '\0' || strcmp(ack_sess, s_ws.ambient_session) == 0)) {
+        s_ws.ambient_ok = 1;
+        s_ws.ambient_waiting = 0;
+        xSemaphoreGive(s_ws.lock);
+        xEventGroupSetBits(s_ws.events, BB_WS_EVENT_AMBIENT_DONE);
+        return;
+      }
+      xSemaphoreGive(s_ws.lock);
+      return;
+    }
     if (strncmp(rkind, "sites.", 6) != 0) {
       return;
     }

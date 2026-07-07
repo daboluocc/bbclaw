@@ -29,6 +29,10 @@ esp_err_t bb_radio_app_start(void);
  *  线程安全,下一轮输入循环消费。 */
 void bb_radio_app_request_recorder_toggle(void);
 
+/** ADR-044 P1b: 1 = 语音链路(PTT 采集或 agent 回合)活跃。ambient 补传任务
+ *  据此让路,不与语音回合抢 WS 二进制通道。 */
+int bb_radio_app_voice_busy(void);
+
 /* Present the OTA confirm page for a manually-triggered update (Settings →
  * Firmware row → click). Stashes the checked update info and shows the same
  * confirm page the boot auto-check uses, routing an accept into the preheated

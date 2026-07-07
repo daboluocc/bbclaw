@@ -39,6 +39,7 @@
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_task_list.h"
 #include "bb_page_recorder.h"
+#include "bb_ambient_sync.h"
 #include "bb_recorder.h"
 #include "bb_sdcard.h"
 #include "esp_system.h"
@@ -733,6 +734,16 @@ static volatile int s_recorder_toggle_req; /* devmon PWR 模拟(与物理键同�
 
 void bb_radio_app_request_recorder_toggle(void) { s_recorder_toggle_req = 1; }
 static int s_rec_ptt_prev;          /* RECORDER 态 PTT 边沿检测 */
+
+/* ADR-044 P1b: ambient 补传的让路查询——语音链路(PTT 采集或 agent 回合)
+ * 活跃时补传不占 WS 二进制通道。RECORDER 态的采集不算语音忙(补传对录音态
+ * 的把门走 bb_recorder_active(),两者在 bb_ambient_sync 里分别查)。 */
+int bb_radio_app_voice_busy(void) {
+  if (s_app_state == BBCLAW_STATE_RECORDER) {
+    return 0;
+  }
+  return s_capture_active || bb_ui_agent_chat_is_busy();
+}
 
 static int recorder_enter(void) {
   if (!bb_sdcard_mounted()) {
@@ -4374,6 +4385,13 @@ esp_err_t bb_radio_app_start(void) {
     s_probe_task_handle = NULL;
   }
   log_heap_snapshot("after probe task");
+
+  /* ADR-044 P1b: ambient 回网补传后台任务（PSRAM 栈,失败不致命——本地录音
+   * 照常,只是不补传）。任务自身把门 cloud_saas/SD/在网/语音空闲。 */
+  if (bb_ambient_sync_start() != ESP_OK) {
+    ESP_LOGE(TAG, "ambient sync task create failed — local recording unaffected");
+  }
+  log_heap_snapshot("after ambient sync task");
 
   /* Stream task uses PSRAM stack. NVS operations (which disable cache) are
    * isolated in separate tasks with internal RAM stacks to avoid PSRAM access

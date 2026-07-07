@@ -161,6 +161,21 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
 
+/* ── ADR-044 P1b ambient 回网补传（bb_ambient_sync 任务专用） ──────────
+ * 用法:发 ambient.segment.start(send_text) → 段文件字节(send_bin,可分块)
+ * → arm_ack → 发 ambient.segment.finish(send_text) → wait_ack。
+ * ack=云端已 fsync 持久化,才可标记本地段 uploaded/回收 SD 空间。 */
+
+/* Send a raw binary frame over the adapter client WebSocket (cloud_saas mode). */
+esp_err_t bb_adapter_client_send_bin(const uint8_t* data, size_t len);
+
+/* 在发送 ambient.segment.finish 之前布防 ack 等待槽（先布防再发,防响应竞态）。 */
+void bb_adapter_client_ambient_arm_ack(const char* session_id, int seg_seq);
+
+/* 等待云端 ambient.segment.ack。返回 1=已持久化;0=错误/超时（err_out 填
+ * 错误码,可 NULL）。单飞行段:同一时刻只允许一个等待者。 */
+int bb_adapter_client_ambient_wait_ack(int timeout_ms, char* err_out, size_t err_len);
+
 /* ADR-033: send the device's answer to a forwarded blocking menu over the cloud
  * WS (a prompt.select request the cloud relays to the home adapter). */
 esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* option_key);

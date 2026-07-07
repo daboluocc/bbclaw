@@ -38,6 +38,7 @@ set(_bb_srcs
     "bb_ptt.c"
     "bb_uart_cmd.c"
     "bb_radio_app.c"
+    "bb_ambient_sync.c"
     "bb_page_recorder.c"
     "bb_panic_crumb.c"
     "bb_recorder.c"
