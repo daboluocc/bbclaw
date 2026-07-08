@@ -155,12 +155,6 @@ Cloud（云端 SaaS：账户、计费、ASR/TTS 路由）和 Web（用户面板�
 - [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) — 优秀的开源 ESP32 语音助手方案，BBClaw 的多板子适配体系受其架构启发，ATK-DNESP32S3-BOX 的引脚映射和硬件初始化参考了该项目的 board 实现
 - [LimeZu — Animated mini characters](https://limezu.itch.io/animated-mini-characters) — 待机界面像素小精灵素材（免费包 Red / Blue / Green Idle 切帧）。作者允许在免费与商业项目中使用并可修改；**请勿再分发或转卖原始素材包**。仓库内说明见 [firmware/assets/third_party/limezu/README.md](firmware/assets/third_party/limezu/README.md)。
 
-## Star History
-
-感谢每一颗 star —— 我们刚过 30 ⭐ 🎉
-
-[![Star History Chart](https://api.star-history.com/svg?repos=daboluocc/bbclaw&type=Date)](https://star-history.com/#daboluocc/bbclaw&Date)
-
 ## License
 
 Apache License 2.0
