@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:ambient 录音音质优化——双麦合成 + 向上式 AGC(手表)**:诊断用户拉回的
+  三段真机录音发现两个结构性问题:①手表 ES7210 四通道 ADC 双麦(MIC1+MIC2,各 30dB)
+  硬件在,但采集降混沿用 INMP441 单麦的「逐帧挑响一路、丢另一路」逻辑 → 双麦白费;
+  ②录音电平严重偏低且忽大忽小(段间 RMS −41~−59dBFS,只用 11-12/16 bit),因增益
+  为「30cm 近距离 PTT」标定,而 ambient 录几米外环境音天然低 20-30dB,且无 AGC。
+  - **双麦均值**(`bb_audio_set_recorder_mix`,仅录音态):MIC1/MIC2 同场同源两路平均
+    → 不相干噪声 −3dB(SNR +3dB),并消除逐帧挑麦跳变的瑕疵;对话/PTT 态不启用
+    (近场常一只麦更近,保留挑响)。真机确认两路都活且平衡(energy_l≈energy_r)。
+  - **向上式 AGC**(`bb_recorder` 内,双麦均值后 / Opus 编码前):只抬安静段、不动
+    已够响的瞬态(零新增削顶),噪声门防静音泵噪,软限幅兜底,整会话持有状态跨段连续。
+    参数在用户真实录音离线原型 + ffprobe/astats 上调定验证(000229 RMS −50→−29dB、
+    峰值 −23→−5dB;000230 峰值 −0.4dB 原样保留、零硬削顶;229 零限幅命中)。
+  - **真机验收(2026-07-09,手表)**:烧录启动干净;PWR 一键启录→双麦 mix ON→3 段
+    连续(2×60s + 1×28s,均 EOS 收尾)→PWR 停录→mix OFF 恢复 PTT 语义;`session end:
+    3 segments last_err=0`,recorder 栈 hwm 全程稳(48KB 余 ~25KB,AGC 浮点零压力),
+    零 panic。**输出绝对电平待用户拔卡 ffprobe 复核**(算法已离线证明)。
 - **固件:息屏/功耗管理启用(ADR-046,手表)**:静置 2min 变暗→3min 息屏(AMOLED
   亮度 0=近零功耗);按键/触摸唤醒;IMU 抬手唤醒(WAKING 2s 去抖,无操作回睡,
   有操作转常亮);录音/语音回合豁免。曾因随机崩被禁,本次根治四个结构性问题:

@@ -39,6 +39,7 @@ static int s_rx_use_32bit;
 static int s_tx_use_stereo32;
 static int s_rx_enabled;
 static int s_rx_pick_right_locked = -1;
+static int s_capture_recorder_mix = 0; /* 录音态:立体声降混改为双麦均值(见 bb_audio_set_recorder_mix) */
 static uint32_t s_rx_timeout_count;
 static uint32_t s_rx_frame_count;
 static size_t s_rx_total_bytes;
@@ -1208,8 +1209,17 @@ esp_err_t bb_audio_read_pcm_frame(uint8_t* out_buf, size_t out_buf_len, size_t* 
     pick_right = s_rx_pick_right_locked;
   }
   int16_t* mono_out = (int16_t*)out_buf;
-  for (size_t i = 0; i < pair_count; ++i) {
-    mono_out[i] = in_samples[i * 2 + (pick_right ? 1 : 0)];
+  if (s_capture_recorder_mix) {
+    /* 双麦均值(录音态):ES7210 MIC1/MIC2 同场同源,两路平均 → 不相干噪声 -3dB
+     * (SNR +3dB),并消除原「逐帧挑响一路」在两麦间跳变引入的瑕疵。若某麦未接线/坏
+     * (该路 ≈0),均值把电平砍半,但后级录音 AGC 会补足增益,不致丢音。 */
+    for (size_t i = 0; i < pair_count; ++i) {
+      mono_out[i] = (int16_t)(((int32_t)in_samples[i * 2] + (int32_t)in_samples[i * 2 + 1]) / 2);
+    }
+  } else {
+    for (size_t i = 0; i < pair_count; ++i) {
+      mono_out[i] = in_samples[i * 2 + (pick_right ? 1 : 0)];
+    }
   }
   if (s_rx_warmup_remaining > 0U) {
     size_t n = pair_count;
@@ -1537,6 +1547,11 @@ void bb_audio_set_volume_pct(int pct) {
   if (pct > 100) { pct = 100; }
   s_volume_pct = pct;
   ESP_LOGI(TAG, "volume set to %d%%", pct);
+}
+
+void bb_audio_set_recorder_mix(int enable) {
+  s_capture_recorder_mix = enable ? 1 : 0;
+  ESP_LOGI(TAG, "recorder dual-mic mix %s", s_capture_recorder_mix ? "ON (avg MIC1+MIC2)" : "OFF (pick louder)");
 }
 
 void bb_audio_set_speaker_enabled(int enabled) {

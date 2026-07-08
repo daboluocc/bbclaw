@@ -22,6 +22,10 @@ void bb_audio_clear_playback_interrupt(void);
 int bb_audio_is_playback_interrupt_requested(void);
 int bb_audio_is_playback_active(void);
 esp_err_t bb_audio_read_pcm_frame(uint8_t* out_buf, size_t out_buf_len, size_t* out_read);
+/* 录音态双麦合成:enable=1 时立体声降混对 MIC1/MIC2 求均值(同源两路 → 不相干
+ * 噪声 -3dB / SNR +3dB,并消除逐帧挑麦跳变);enable=0 恢复挑响一路(对话/PTT 近场
+ * 常有一只麦更近,保留原语义)。录音会话 start 时置 1,stop 时置 0。 */
+void bb_audio_set_recorder_mix(int enable);
 esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len);
 esp_err_t bb_audio_play_test_tone(uint32_t freq_hz, uint32_t duration_ms, int16_t amplitude);
 void bb_audio_set_volume_pct(int pct);

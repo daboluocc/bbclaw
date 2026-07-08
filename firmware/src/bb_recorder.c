@@ -16,11 +16,13 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
 
+#include "bb_audio.h"
 #include "bb_config.h"
 #include "bb_ogg_opus.h"
 #include "bb_sdcard.h"
@@ -70,6 +72,62 @@ typedef struct {
 } rec_state_t;
 
 static rec_state_t s_rec;
+
+/* ── 录音 AGC(向上式 + 噪声门 + 软限幅)────────────────────────────────
+ * ambient 声源远近漂,固定增益无法兼顾(真机段间 RMS -41~-59dBFS)。向上式 AGC:
+ * 只把安静段抬起来、不动已经足够响的瞬态(不引入新削顶);噪声门防静音段泵噪;
+ * 软限幅 + clamp 兜底。参数在你拉回的真实录音离线原型上调定并验证
+ * (000229 RMS -50→-29dB;000230 峰值 -0.4dB 原样保留、零硬削顶)。状态整会话持有,
+ * 段轮转不重置——跨段增益连续,避免每段开头重新爬坡。作用在双麦均值之后。 */
+#define REC_AGC_TARGET      (0.28f * 32768.0f)   /* 目标包络 ≈ -11 dBFS */
+#define REC_AGC_NOISE_FLOOR (0.0018f * 32768.0f) /* 门限 ≈ -55 dBFS:以下视为噪声不抬 */
+#define REC_AGC_MAX_GAIN    22.0f                 /* 增益上限 ≈ +27 dB */
+#define REC_AGC_LIMIT       (0.95f * 32768.0f)    /* 软限幅 ≈ -0.4 dBFS */
+
+static struct {
+  float env;   /* 信号包络,跟随 |x| */
+  float gain;  /* 平滑后的实际增益 */
+  float env_atk, env_rel; /* 包络 attack/release 一阶系数 */
+  float gain_up, gain_dn; /* 增益上爬(慢,抗泵)/ 下降(快,抗削)系数 */
+} s_agc;
+
+/* coef = expf(-1/(tau*fs));fs=16k。attack 3ms / release 250ms / 上爬 1.5s / 下降 10ms */
+static void rec_agc_reset(void) {
+  const float fs = (float)BBCLAW_AUDIO_SAMPLE_RATE;
+  s_agc.env = 0.0f;
+  s_agc.gain = 1.0f;
+  s_agc.env_atk = expf(-1.0f / (0.003f * fs));
+  s_agc.env_rel = expf(-1.0f / (0.250f * fs));
+  s_agc.gain_up = expf(-1.0f / (1.500f * fs));
+  s_agc.gain_dn = expf(-1.0f / (0.010f * fs));
+}
+
+static void rec_agc_process(int16_t* buf, size_t n) {
+  float env = s_agc.env, gain = s_agc.gain;
+  for (size_t i = 0; i < n; ++i) {
+    float x = (float)buf[i];
+    float a = fabsf(x);
+    if (a > env) env = s_agc.env_atk * env + (1.0f - s_agc.env_atk) * a; /* fast attack */
+    else         env = s_agc.env_rel * env + (1.0f - s_agc.env_rel) * a; /* slow release */
+    float desired = 1.0f;
+    if (env > REC_AGC_NOISE_FLOOR) {
+      desired = REC_AGC_TARGET / env;
+      if (desired < 1.0f) desired = 1.0f;              /* 只抬不压:已够响的不动 */
+      if (desired > REC_AGC_MAX_GAIN) desired = REC_AGC_MAX_GAIN;
+    }
+    if (desired < gain) gain = s_agc.gain_dn * gain + (1.0f - s_agc.gain_dn) * desired; /* 降快 */
+    else                gain = s_agc.gain_up * gain + (1.0f - s_agc.gain_up) * desired; /* 升慢 */
+    float y = x * gain;
+    if (y > REC_AGC_LIMIT) y = REC_AGC_LIMIT;
+    else if (y < -REC_AGC_LIMIT) y = -REC_AGC_LIMIT;
+    int32_t iy = (int32_t)lrintf(y);
+    if (iy > 32767) iy = 32767;
+    else if (iy < -32768) iy = -32768;
+    buf[i] = (int16_t)iy;
+  }
+  s_agc.env = env;
+  s_agc.gain = gain;
+}
 
 /* 崩溃面包屑(RTC noinit,软复位存活):段轮转路径每步打点,重启后
  * session start 日志读出死亡位置——本板 panic 输出不可达的替代品。 */
@@ -199,6 +257,10 @@ static void recorder_task(void* arg) {
     uint8_t* item = (uint8_t*)xRingbufferReceive(s_rec.rb, &item_size, pdMS_TO_TICKS(100));
     if (item == NULL) continue;
 
+    /* 录音 AGC:就地处理 ring 内 PCM(recorder 是本 ring 唯一消费者,返还前独占)。
+     * 作用在双麦均值之后、Opus 编码之前。 */
+    rec_agc_process((int16_t*)item, item_size / sizeof(int16_t));
+
     uint8_t* out = NULL;
     size_t out_len = 0;
     CRUMB(30); /* 30=append(opus_encode)中 31=写SD中 8=其它 */
@@ -297,6 +359,8 @@ esp_err_t bb_recorder_start(RingbufHandle_t rb) {
   }
 
   if (s_rec.done_sem == NULL) s_rec.done_sem = xSemaphoreCreateBinary();
+  rec_agc_reset();                 /* AGC 状态整会话持有,起点归零 */
+  bb_audio_set_recorder_mix(1);    /* 采集侧切双麦均值(对话态退出后由 stop 复位) */
   s_rec.run = 1;
   s_rec.active = 1;
   BaseType_t ok = xTaskCreateWithCaps(recorder_task, "bb_recorder", REC_TASK_STACK, NULL, 6, NULL,
@@ -304,6 +368,7 @@ esp_err_t bb_recorder_start(RingbufHandle_t rb) {
   if (ok != pdPASS) {
     s_rec.run = 0;
     s_rec.active = 0;
+    bb_audio_set_recorder_mix(0);  /* 任务没起来,回滚采集模式 */
     ESP_LOGE(TAG, "task create failed");
     return ESP_ERR_NO_MEM;
   }
@@ -315,6 +380,7 @@ void bb_recorder_stop(void) {
   s_rec.run = 0;
   /* 等任务收尾落盘（正常毫秒级;给 5s 兜底防卡死等待） */
   (void)xSemaphoreTake(s_rec.done_sem, pdMS_TO_TICKS(5000));
+  bb_audio_set_recorder_mix(0);    /* 恢复对话/PTT 的挑响一路语义 */
 }
 
 int bb_recorder_active(void) { return s_rec.active; }
