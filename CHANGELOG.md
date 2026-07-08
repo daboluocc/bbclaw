@@ -48,8 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (~8-10KB),进聊天页即 panic;全部 HTTPS 瞬态任务升 16KB PSRAM,顺带修
     agent_task WithCaps/vTaskDelete 不配对的每回合 PSRAM 泄漏。
     教训:**切 https 必须重审所有在调用方任务栈跑 TLS 的栈账**。
-  - 遗留(P2 前核实):录音段 .opus 云端 ffprobe 报 EOF(疑首页非 BOS/尾页缺
-    EOS,设备端回放正常)——批 ASR 前需确认分段文件 Ogg 完整性。
+  - **录音段 .opus Ogg 完整性(批 ASR 前置,已核实+加固)**:此前 ffprobe 报 EOF
+    的根因是 `*out_len=0` 覆写 bug 让段首 OpusHead/OpusTags 丢失、文件从数据页起头
+    (非 BOS),已在「录音丢 3/4 音频终案」修掉——现固件每段重建编码器、段首正确写
+    头,ffprobe/ffmpeg 干净读取解码。补齐剩余的规范缺陷:**段尾页现置 EOS 标志
+    (0x04,RFC 3533/RFC 7845)**——`bb_ogg_opus_encoder_flush` 无论收尾于整帧边界
+    (60s 段最常见,`pending==0`)还是帧中,都补齐一帧并在末页打 EOS,标记流终止 +
+    末包 granule 截断;缺 EOS 的流 ffmpeg 能读但严格校验的批 ASR 服务会判为截断。
+    host 端用同一 Ogg 封装逻辑 + 真实 libopus + ffprobe 验证三种收尾形态(帧中/
+    整帧边界/空段)全部规范合规(首页 BOS、尾页 EOS、无杂散中途 EOS、ffprobe 零错)。
+    设备侧解码/回放不受影响(decoder 忽略 header_type)。真机 ffprobe 待下次接板复核。
 - **固件:Waveshare ESP32-S3-Touch-AMOLED-2.06 拓展板支持(ADR-040 第一阶段)**:
   - 新板 `waveshare-amoled-206`:2.06" QSPI AMOLED 410×502(CO5300,SH8601 兼容驱动)+
     ES8311 codec(既有代码路径首次真机启用)+ BOOT 键 PTT。触摸/AXP2101 电量/IMU/RTC/SD

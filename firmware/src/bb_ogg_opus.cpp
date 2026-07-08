@@ -227,7 +227,8 @@ static esp_err_t malloc_copy(const uint8_t* data, size_t data_len, uint8_t** out
   return ESP_OK;
 }
 
-static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size_t out_cap, size_t* out_len) {
+static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size_t out_cap, size_t* out_len,
+                                         bool finalize) {
   if (state == nullptr || state->enc == nullptr) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -297,8 +298,13 @@ static esp_err_t encode_available_frames(EncoderState* state, uint8_t* out, size
      * granule 算时长的工具(ffprobe/部分转写服务)会把 60s 段当 20s 截断。 */
     state->granule_pos +=
         static_cast<uint64_t>(state->frame_samples_per_channel) * 48000U / static_cast<uint64_t>(state->sample_rate);
-    ESP_RETURN_ON_ERROR(append_ogg_page_to_buffer(out, out_cap, out_len, packet_buf.packet, (size_t)packet_len, 0x00,
-                                                  state->granule_pos, state->serial, state->page_seq++),
+    /* Ogg 尾页必须置 EOS(0x04,RFC 3533/RFC 7845):标记流终止,并让 granule 携带
+     * 末包时长供解码端做尾部截断。缺 EOS 的流 ffmpeg/ffprobe 仍能读,但严格校验的
+     * 批 ASR 服务会判为截断文件。finalize 时 flush 已把 pending 补齐到整帧,本帧
+     * 编码后 pending<一帧 即为本段末页。 */
+    const uint8_t header_type = (finalize && state->pending_samples < frame_samples_total) ? 0x04 : 0x00;
+    ESP_RETURN_ON_ERROR(append_ogg_page_to_buffer(out, out_cap, out_len, packet_buf.packet, (size_t)packet_len,
+                                                  header_type, state->granule_pos, state->serial, state->page_seq++),
                         TAG, "append opus page failed");
   }
   return ESP_OK;
@@ -693,7 +699,8 @@ esp_err_t bb_ogg_opus_encoder_append_pcm16(bb_ogg_opus_encoder_t* encoder, const
       encoder->state.pending_samples += chunk;
       consumed += chunk;
     }
-    esp_err_t err = encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len);
+    esp_err_t err =
+        encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len, false);
     if (err != ESP_OK) {
       return err;
     }
@@ -710,7 +717,10 @@ esp_err_t bb_ogg_opus_encoder_flush(bb_ogg_opus_encoder_t* encoder, uint8_t** ou
   *out_len = 0;
   const size_t frame_samples_total =
       static_cast<size_t>(encoder->state.frame_samples_per_channel * encoder->state.channels);
-  if (encoder->state.pending_samples > 0U && encoder->state.pending_samples < frame_samples_total) {
+  /* 段尾必须发出至少一页以承载 EOS 标志。pending 不足一帧时补零到整帧——
+   * pending==0(整帧边界收尾,60s 段最常见)也补一整帧静音,否则本段一页都不发,
+   * 整个流没有 EOS 页。补一帧 60ms 静音,时长影响 <0.1%,换取合规的流终止。 */
+  if (encoder->state.pending_samples < frame_samples_total) {
     memset(encoder->state.pending_pcm + encoder->state.pending_samples, 0,
            (frame_samples_total - encoder->state.pending_samples) * sizeof(int16_t));
     encoder->state.pending_samples = frame_samples_total;
@@ -720,7 +730,8 @@ esp_err_t bb_ogg_opus_encoder_flush(bb_ogg_opus_encoder_t* encoder, uint8_t** ou
   if (!codec_lock.ok()) {
     return ESP_ERR_INVALID_STATE;
   }
-  esp_err_t err = encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len);
+  esp_err_t err =
+      encode_available_frames(&encoder->state, encoder->state.encoded_buf, kEncodedBufSize, &encoded_len, true);
   if (err != ESP_OK) {
     return err;
   }
