@@ -1143,6 +1143,25 @@ static void recfiles_scan(void) {
       }
       fclose(f);
     }
+  } else {
+    /* 会话总时长 = 该会话 index.jsonl 全部段 dur_ms 之和(录音已连续,展示整段长度) */
+    for (int i = 0; i < s_st.recfiles_count; ++i) {
+      char ipath[80];
+      snprintf(ipath, sizeof(ipath), "/sdcard/ambient/%s/index.jsonl", s_st.recfiles_names[i]);
+      FILE* f = fopen(ipath, "r");
+      if (f == NULL) continue;
+      char line[224];
+      long long total_ms = 0;
+      int any = 0;
+      while (fgets(line, sizeof(line), f) != NULL) {
+        const char* pd = strstr(line, "\"dur_ms\":");
+        if (pd == NULL) continue;
+        total_ms += atoll(pd + 9);
+        any = 1;
+      }
+      fclose(f);
+      if (any) s_st.recfiles_dur_s[i] = (int)(total_ms / 1000);
+    }
   }
 }
 
@@ -1159,16 +1178,29 @@ static void render_recfiles(void) {
   for (int i = 0; i < s_st.recfiles_count; ++i) {
     char buf[64];
     if (s_st.recfiles_mode == 0) {
-      /* 目录名=epoch 秒 → "07-05 23:14";b 前缀(无墙钟)原样显示 */
+      /* 会话行:[▶] 日期时间 + 总时长。目录名=epoch 秒 → "07-05 23:14";
+       * b 前缀(无墙钟)原样显示。正在连播的会话标 "> "。 */
+      char sdir[96];
+      snprintf(sdir, sizeof(sdir), "/sdcard/ambient/%s", s_st.recfiles_names[i]);
+      const char* mark = (strcmp(bb_recplay_current(), sdir) == 0) ? "> " : "  ";
+      char when[24];
       long long ep = atoll(s_st.recfiles_names[i]);
       if (ep > 1600000000LL) {
         time_t tt = (time_t)ep;
         struct tm tmv;
         localtime_r(&tt, &tmv);
-        snprintf(buf, sizeof(buf), "%02d-%02d %02d:%02d", tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour,
+        snprintf(when, sizeof(when), "%02d-%02d %02d:%02d", tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour,
                  tmv.tm_min);
       } else {
-        snprintf(buf, sizeof(buf), "%s", s_st.recfiles_names[i]);
+        snprintf(when, sizeof(when), "%s", s_st.recfiles_names[i]);
+      }
+      int ds = s_st.recfiles_dur_s[i];
+      if (ds >= 3600) {
+        snprintf(buf, sizeof(buf), "%s%s  %d:%02d:%02d", mark, when, ds / 3600, (ds % 3600) / 60, ds % 60);
+      } else if (ds >= 0) {
+        snprintf(buf, sizeof(buf), "%s%s  %d:%02d", mark, when, ds / 60, ds % 60);
+      } else {
+        snprintf(buf, sizeof(buf), "%s%s", mark, when);
       }
     } else {
       char full[96];
@@ -2368,20 +2400,11 @@ int bb_ui_settings_handle_click(void) {
         return 0;
       }
       if (s_st.sel < 0 || s_st.sel >= s_st.recfiles_count) return 0;
-      if (s_st.recfiles_mode == 0) {
-        /* 会话 → 段列表 */
-        snprintf(s_st.recfiles_dir, sizeof(s_st.recfiles_dir), "%s", s_st.recfiles_names[s_st.sel]);
-        s_st.recfiles_mode = 1;
-        s_st.sel = 0;
-        recfiles_scan();
-        rerender();
-        return 0;
-      }
-      /* 段 → 播放/停止(录音中或 TTS 占用时拒绝并提示) */
-      char full[96];
-      snprintf(full, sizeof(full), "/sdcard/ambient/%s/%s", s_st.recfiles_dir,
-               s_st.recfiles_names[s_st.sel]);
-      esp_err_t perr = bb_recplay_toggle(full);
+      /* 点会话 → 连续播放整个录音会话 / 再点停止。段级下钻已废除——用户不想看
+       * 「1 分钟一个」的碎片,一次录音就是一条,点一下听完整段(ADR-044 P1a 回放）。 */
+      char sdir[96];
+      snprintf(sdir, sizeof(sdir), "/sdcard/ambient/%s", s_st.recfiles_names[s_st.sel]);
+      esp_err_t perr = bb_recplay_toggle_session(sdir);
       if (perr == ESP_ERR_INVALID_STATE) {
         lv_label_set_text(s_st.header_lbl, "Busy (recording/TTS)");
       }

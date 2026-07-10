@@ -12,6 +12,12 @@
  *  返回 ESP_ERR_INVALID_STATE = 录音中/TTS 播放中,不可回放。 */
 esp_err_t bb_recplay_toggle(const char* path);
 
+/** 连续播放整个录音会话：遍历会话目录下 000001.opus,000002.opus… 按序接续播放
+ *  （每段独立完整 Ogg,逐段解码,段间极短解码间隙）。再点同一会话 = 停止。
+ *  dir = 会话目录绝对路径(如 /sdcard/ambient/1783644997)。
+ *  返回 ESP_ERR_INVALID_STATE = 录音中/TTS 播放中。 */
+esp_err_t bb_recplay_toggle_session(const char* dir);
+
 /** 停止回放（幂等；阻塞至播放任务收尾,毫秒级）。 */
 void bb_recplay_stop(void);
 
