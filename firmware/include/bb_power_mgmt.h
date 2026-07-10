@@ -84,6 +84,21 @@ void bb_power_mgmt_manual_sleep(void);
  */
 void bb_power_mgmt_set_enabled(int enable);
 
+/* ── 息屏时间预设(设置页可调,存 NVS)── */
+
+/** 预设总数。 */
+int bb_power_mgmt_sleep_preset_count(void);
+/** 当前预设 idx。 */
+int bb_power_mgmt_get_sleep_preset(void);
+/** 预设 idx 的显示标签(Never/30s/1 min/3 min/5 min)。 */
+const char* bb_power_mgmt_sleep_preset_label(int idx);
+/** 切到下一个预设并立即应用;返回新 idx。NVS 落盘请另用 save(内部栈)。 */
+int bb_power_mgmt_cycle_sleep_preset(void);
+/** 把预设 idx 写入 NVS。⚠️ 必须在内部栈任务上调用(NVS 写冻结 flash cache)。 */
+void bb_power_mgmt_save_sleep_preset(int idx);
+/** 开机从 NVS 读预设并应用(单线程期调用)。 */
+void bb_power_mgmt_load_sleep_preset(void);
+
 /* ── 诊断 ── */
 
 /**

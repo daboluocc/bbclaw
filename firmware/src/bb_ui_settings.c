@@ -52,6 +52,7 @@
 #include "bb_device_config.h"
 #include "bb_nav_input.h" /* touch row-tap → inject OK (same path as the physical key) */
 #include "bb_notification.h" /* ADR-021 §9: 已提醒 list + unread badge source */
+#include "bb_power_mgmt.h" /* 息屏时间预设设置行 */
 #include "bb_ota.h"
 #include "bb_radio_app.h"
 #include "bb_session_store.h"
@@ -179,6 +180,7 @@ typedef enum {
   MAIN_ROW_ADAPTER,
   MAIN_ROW_SESSIONS,
   MAIN_ROW_VOLUME,
+  MAIN_ROW_SLEEP,        /* 息屏时间预设(Never/30s/1min/3min/5min),点击循环 */
   MAIN_ROW_MIYU,
   MAIN_ROW_RECORDER,     /* ADR-044 长录音入口(有 SD 卡槽的板);双击确认防误进 */
   MAIN_ROW_RECFILES,     /* ADR-044:SD 录音浏览+设备端回放 */
@@ -469,6 +471,7 @@ static int main_visible_rows(main_row_t* out) {
     out[n++] = MAIN_ROW_SESSIONS;
   }
   out[n++] = MAIN_ROW_VOLUME;
+  out[n++] = MAIN_ROW_SLEEP;
 #if BBCLAW_SDMMC_ENABLE
   /* 长录音(ADR-044):有卡槽的板常显;无卡时行文案提示 no SD card */
   out[n++] = MAIN_ROW_RECORDER;
@@ -624,6 +627,9 @@ static void render_main(void) {
         snprintf(buf, sizeof(buf), "Volume: %s %d%%", mini, pct);
         break;
       }
+      case MAIN_ROW_SLEEP:
+        snprintf(buf, sizeof(buf), "Sleep: %s", bb_power_mgmt_sleep_preset_label(bb_power_mgmt_get_sleep_preset()));
+        break;
       case MAIN_ROW_MIYU:
         if (s_st.miyu_arm_ms != 0) {
           snprintf(buf, sizeof(buf), "Miyu: %s · tap again to %s", toggle_state_label(s_st.miyu_enabled),
@@ -1641,6 +1647,7 @@ typedef enum {
   COMMIT_KIND_MODEL,
   COMMIT_KIND_VOLUME,  /* int_val = volume pct 0-100 */
   COMMIT_KIND_MIYU,    /* int_val = 0/1 → bb_device_config_set_miyu (ADR-037) */
+  COMMIT_KIND_SLEEP,   /* int_val = 息屏预设 idx → NVS(bb_power_mgmt),内部栈写 */
   COMMIT_KIND_ADAPTER, /* site_id = target homeSiteId (WS sites.activate) */
   COMMIT_KIND_PERSIST_DRIVER, /* driver_name → NVS only (split off DRIVER's
                                * HTTPS PUT so the PUT can run on a PSRAM stack
@@ -1720,6 +1727,10 @@ static void commit_task(void* arg) {
   } else if (p->kind == COMMIT_KIND_MIYU) {
     err = bb_device_config_set_miyu(p->int_val);
     ESP_LOGI(TAG, "commit miyu=%d -> %s", p->int_val, esp_err_to_name(err));
+  } else if (p->kind == COMMIT_KIND_SLEEP) {
+    /* 本任务是内部栈(spawn_persist_int mem_caps=0),NVS 写安全 */
+    bb_power_mgmt_save_sleep_preset(p->int_val);
+    ESP_LOGI(TAG, "commit sleep preset=%d", p->int_val);
   } else if (p->kind == COMMIT_KIND_ADAPTER) {
     /* ADR-027: WS sites.activate (cloud-terminated). On success the active
      * binding has flipped; refresh agent state from the new adapter. On
@@ -2218,6 +2229,14 @@ int bb_ui_settings_handle_click(void) {
           s_st.vol_pct_lbl = NULL;
           rerender();
           break;
+        case MAIN_ROW_SLEEP: {
+          /* 息屏时间:点击循环到下一个预设,立即生效(只设字段,安全),
+           * NVS 落盘走 commit 任务(内部栈,NVS 写冻结 flash cache)。 */
+          int idx = bb_power_mgmt_cycle_sleep_preset();
+          spawn_persist_int(COMMIT_KIND_SLEEP, idx);
+          rerender();
+          break;
+        }
         case MAIN_ROW_MIYU: {
           /* 密语(锁屏语音解锁) in-place toggle (ADR-037). Persist off the PSRAM
            * stack via the commit task (NVS write). Takes effect on NEXT boot —

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **固件:息屏时间可在设置页调节(手表)**:此前 2min 变暗 / 3min 息屏是硬编码
+  (板配置的 `BBCLAW_SLEEP_MANAGER_*` 宏其实未被使用,真实值来自 sleep_manager
+  默认常量)。设置页新增「Sleep」行,点击循环 **Never / 30s / 1 min / 3 min / 5 min**,
+  即时生效(变暗时间自动取息屏时间 2/3;Never=禁息屏状态机屏常亮),预设存 NVS
+  (`bb_power_mgmt`,写走内部栈 commit 任务避 flash-cache-freeze),开机加载应用。
+  真机验证:循环切换标签正确、每档 `sleep preset -> …` 应用 + `commit sleep preset`
+  落盘、零 panic。
+- **固件:录音回放改为「会话连续播放」(手表)**:录音磁盘仍按 60s 分段(断网重传
+  粒度小),但浏览列表改为**按会话列出 + 显示总时长**,点会话**跨段无缝连续播放**
+  (`bb_recplay_toggle_session` 遍历 000001.opus… 逐段解码接续);段级碎片下钻废除。
+  真机验证:1:51 会话 seg1(60s)放完自动接 seg2(51s)连续播放,列表总时长正确。
+
 ### Changed
 - **固件:SD 插卡检测提速——热插拔轮询挪到独立任务(手表)**:用户反馈插卡反应
   迟钝。根因:板上无 CD 引脚,热插拔靠软件轮询,而轮询内联在 stream_task 主循环、
