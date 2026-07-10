@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **固件:SD 插卡检测提速——热插拔轮询挪到独立任务(手表)**:用户反馈插卡反应
+  迟钝。根因:板上无 CD 引脚,热插拔靠软件轮询,而轮询内联在 stream_task 主循环、
+  10s 一轮(怕阻塞按键才设这么慢),插卡最坏等 10s + 挂载(SDMMC 卡初始化)几百 ms。
+  拔卡感觉即时是因为正在用 SD 的任务(录音/回放)会即时 I/O 失败,插卡却只有这一条
+  慢通道。改为**独立低优先级任务 `sd_hotplug_task`(2s 一轮)**:挂载尝试即使阻塞也
+  不卡主循环 UI/按键,插卡手感跟手(真机验证 `SD card hot-inserted and mounted` 秒级触发)。
+  - 配套:`bb_sdcard` 挂载/卸载/CMD13 探测/格式化/selftest 全部**加锁串行化**
+    (`s_card` 生命周期互斥)——轮询移出主循环后会与 UI 上下文的 mount/format 并发,
+    不加锁会双挂载或 use-after-unmount;`mounted()` 仍无锁快读(advisory)。
+
 ### Added
 - **固件:ambient 录音音质优化——双麦合成 + 向上式 AGC(手表)**:诊断用户拉回的
   三段真机录音发现两个结构性问题:①手表 ES7210 四通道 ADC 双麦(MIC1+MIC2,各 30dB)

@@ -18,6 +18,8 @@
 #include "driver/sdmmc_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "sdmmc_cmd.h"
 
 static const char* TAG = "bb_sdcard";
@@ -25,8 +27,32 @@ static const char* TAG = "bb_sdcard";
 
 static sdmmc_card_t* s_card;
 
+/* s_card 生命周期锁:自 2026-07 起 SD 热插拔轮询在独立任务(sd_hotplug_task),
+ * 会与 UI 上下文的 mount/format/selftest 并发。挂载/卸载/CMD13 探测/格式化都要串行,
+ * 否则双挂载(两路都见 s_card==NULL)或 use-after-unmount。首次调用发生在 boot 初始
+ * mount(单线程,轮询任务尚未创建),懒创建无竞态。mounted() 只读指针,advisory 不锁。 */
+static SemaphoreHandle_t s_sd_lock;
+static void ensure_sd_lock(void) {
+  if (s_sd_lock == NULL) {
+    s_sd_lock = xSemaphoreCreateMutex();
+  }
+}
+#define SD_LOCK()                                              \
+  do {                                                         \
+    ensure_sd_lock();                                          \
+    if (s_sd_lock != NULL) xSemaphoreTake(s_sd_lock, portMAX_DELAY); \
+  } while (0)
+#define SD_UNLOCK()                                            \
+  do {                                                         \
+    if (s_sd_lock != NULL) xSemaphoreGive(s_sd_lock);          \
+  } while (0)
+
 static esp_err_t sdcard_mount_impl(int format_if_mount_failed) {
-  if (s_card != NULL) return ESP_OK;
+  SD_LOCK();
+  if (s_card != NULL) {
+    SD_UNLOCK();
+    return ESP_OK;
+  }
 
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
   host.max_freq_khz = SDMMC_FREQ_DEFAULT; /* 20MHz;1-bit 带宽仍远超录音需求。
@@ -59,11 +85,13 @@ static esp_err_t sdcard_mount_impl(int format_if_mount_failed) {
       s_fail_logged = 1;
     }
     s_card = NULL;
+    SD_UNLOCK();
     return err;
   }
   ESP_LOGI(TAG, "mounted %s: %s %.1fGB%s", MOUNT_POINT, s_card->cid.name,
            ((float)s_card->csd.capacity * s_card->csd.sector_size) / (1024.0f * 1024.0f * 1024.0f),
            format_if_mount_failed ? " (format-on-fail armed)" : "");
+  SD_UNLOCK();
   return ESP_OK;
 }
 
@@ -75,27 +103,44 @@ esp_err_t bb_sdcard_mount_format(void) {
 }
 
 void bb_sdcard_unmount(void) {
-  if (s_card == NULL) return;
+  SD_LOCK();
+  if (s_card == NULL) {
+    SD_UNLOCK();
+    return;
+  }
   esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
   s_card = NULL;
   ESP_LOGI(TAG, "unmounted");
+  SD_UNLOCK();
 }
 
 int bb_sdcard_mounted(void) { return s_card != NULL; }
 
 int bb_sdcard_check_present(void) {
-  if (s_card == NULL) return 0;
-  if (sdmmc_get_status(s_card) == ESP_OK) return 1;
+  SD_LOCK();
+  if (s_card == NULL) {
+    SD_UNLOCK();
+    return 0;
+  }
+  if (sdmmc_get_status(s_card) == ESP_OK) {
+    SD_UNLOCK();
+    return 1;
+  }
   /* CMD13 无应答=卡已拔。立刻卸载,让 mounted() 状态与现实一致,
    * 下次插回走热插拔路径重新挂载。 */
   ESP_LOGW(TAG, "card removed (status probe failed) — unmounting");
   esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
   s_card = NULL;
+  SD_UNLOCK();
   return -1;
 }
 
 esp_err_t bb_sdcard_format(void) {
-  if (s_card == NULL) return ESP_ERR_INVALID_STATE;
+  SD_LOCK();
+  if (s_card == NULL) {
+    SD_UNLOCK();
+    return ESP_ERR_INVALID_STATE;
+  }
   /* 拔卡防御(2026-07-07 真机 panic 实锤):卡被拔后 mounted 状态陈旧,
    * 对已拔卡跑 esp_vfs_fat_sdcard_format = LoadProhibited(vfs_fat_sdmmc.c:519,
    * task=bb_stream_task)。先 CMD13 验在位,不在就卸载返错,别格式化空气。 */
@@ -103,23 +148,33 @@ esp_err_t bb_sdcard_format(void) {
     ESP_LOGW(TAG, "format refused: card no longer present — unmounting");
     esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
     s_card = NULL;
+    SD_UNLOCK();
     return ESP_ERR_NOT_FOUND;
   }
   ESP_LOGW(TAG, "formatting card (FAT), all data on card will be erased");
   esp_err_t err = esp_vfs_fat_sdcard_format(MOUNT_POINT, s_card);
   ESP_LOGI(TAG, "format: %s", esp_err_to_name(err));
+  SD_UNLOCK();
   return err;
 }
 
 esp_err_t bb_sdcard_selftest(void) {
-  if (s_card == NULL) return ESP_ERR_INVALID_STATE;
+  /* 全程持锁:避免 sd_hotplug_task 的 check_present 在 selftest 持 FILE* 期间因
+   * 真机拔卡而 esp_vfs_fat_sdcard_unmount(注销 VFS)→ use-after-free。 */
+  SD_LOCK();
+  esp_err_t ret = ESP_OK;
+  if (s_card == NULL) {
+    ret = ESP_ERR_INVALID_STATE;
+    goto done;
+  }
   ESP_LOGI(TAG, "selftest: card=%s cap=%.1fGB", s_card->cid.name,
            ((float)s_card->csd.capacity * s_card->csd.sector_size) / (1024.0f * 1024.0f * 1024.0f));
   errno = 0;
   FILE* f = fopen(MOUNT_POINT "/bbtest.txt", "w");
   if (f == NULL) {
     ESP_LOGE(TAG, "selftest fopen(w) failed errno=%d(%s)", errno, strerror(errno));
-    return ESP_FAIL;
+    ret = ESP_FAIL;
+    goto done;
   }
   errno = 0;
   int n = fputs("bbclaw sd selftest\n", f);
@@ -127,7 +182,10 @@ esp_err_t bb_sdcard_selftest(void) {
   errno = 0;
   int cl = fclose(f);
   ESP_LOGI(TAG, "selftest write: fputs=%d(errno=%d) fclose=%d(errno=%d)", n, fe, cl, errno);
-  if (n < 0 || cl != 0) return ESP_FAIL;
+  if (n < 0 || cl != 0) {
+    ret = ESP_FAIL;
+    goto done;
+  }
   /* 读回校验:假卡/坏卡会对写命令应答成功但数据不持久——unlink ENOENT
    * 已经暗示目录项没落盘,这里终审。 */
   errno = 0;
@@ -135,7 +193,8 @@ esp_err_t bb_sdcard_selftest(void) {
   if (f == NULL) {
     ESP_LOGE(TAG, "selftest READ-BACK FAILED errno=%d(%s) — 卡对写入撒谎(假卡/坏卡),换卡",
              errno, strerror(errno));
-    return ESP_FAIL;
+    ret = ESP_FAIL;
+    goto done;
   }
   char rb[32] = {0};
   char* got = fgets(rb, sizeof(rb), f);
@@ -146,7 +205,9 @@ esp_err_t bb_sdcard_selftest(void) {
     ESP_LOGW(TAG, "selftest unlink errno=%d(%s)", errno, strerror(errno));
   }
   ESP_LOGI(TAG, "selftest done");
-  return ESP_OK;
+done:
+  SD_UNLOCK();
+  return ret;
 }
 
 esp_err_t bb_sdcard_space(uint64_t* total_kb, uint64_t* free_kb) {

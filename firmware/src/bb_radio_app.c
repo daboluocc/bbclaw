@@ -2274,6 +2274,51 @@ static void capture_task(void* arg) {
   }
 }
 
+#if BBCLAW_SDMMC_ENABLE
+/* SD 热插拔轮询任务(ADR-044,独立低优先级)。板上 CD 引脚未接,插拔只能软件轮询。
+ * 曾内联在 stream_task 主循环、10s 一轮:插卡最坏等 10s + 挂载(SDMMC 卡初始化)
+ * 几百 ms → 用户反馈「插卡反应迟钝」。挪到独立任务后,挂载尝试阻塞不影响主循环
+ * UI/按键,间隔缩到 2s,插卡手感跟手。拔卡仍主要由正在用 SD 的任务(录音/回放)
+ * 即时 I/O 失败捕获,本轮询是兜底。三种提醒(用户反馈 2026-07-07)与原逻辑一致。 */
+static void sd_hotplug_task(void* arg) {
+  (void)arg;
+  static int nofs_notified;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    /* 录音/回放正用 SD 时不碰总线(拔卡由写错误路径兜底;卸载会打断在读文件)。 */
+    if (bb_recorder_active() || bb_recplay_active()) {
+      continue;
+    }
+    if (!bb_sdcard_mounted()) {
+      esp_err_t merr = bb_sdcard_mount();
+      if (merr == ESP_OK) {
+        ESP_LOGI(TAG, "SD card hot-inserted and mounted");
+        bb_display_toast("SD card ready", 2500);
+        nofs_notified = 0;
+        if (lvgl_port_lock(200)) {
+          bb_ui_settings_refresh_if_visible();
+          lvgl_port_unlock();
+        }
+      } else if (merr == ESP_FAIL && !nofs_notified) {
+        nofs_notified = 1;
+        ESP_LOGW(TAG, "SD card present but FS unrecognized — prompting format via Recording");
+        bb_display_toast("SD card unformatted - open Recording to format", 4000);
+      } else if (merr == ESP_ERR_TIMEOUT) {
+        nofs_notified = 0; /* 无卡:复位一次性提示,下次插坏卡还会提醒 */
+      }
+    } else if (bb_sdcard_check_present() < 0) {
+      ESP_LOGW(TAG, "SD card removed");
+      bb_display_toast("SD card removed", 2500);
+      nofs_notified = 0;
+      if (lvgl_port_lock(200)) {
+        bb_ui_settings_refresh_if_visible();
+        lvgl_port_unlock();
+      }
+    }
+  }
+}
+#endif
+
 /* Runs the blocking cloud/adapter health fetch off the input loop. Waits for a
  * notification from stream_task (one probe per notify), publishes the result +
  * err under s_probe_mutex, and bumps s_probe_version so stream_task can consume
@@ -3665,51 +3710,9 @@ static void stream_task(void* arg) {
     }
     bb_power_mgmt_tick();
 
-#if BBCLAW_SDMMC_ENABLE
-    /* SD 热插拔轮询(ADR-044):CD 引脚未接,每 10s 轮询(非流态,不卡按键)。
-     * 三种提醒(用户反馈 2026-07-07:插拔无感知不行):
-     *   插入且挂载成功 → "SD card ready"
-     *   插入但 FS 不识别(exFAT/空白,mount 返回 ESP_FAIL) → 提示去录音页格式化
-     *     (只提示一次,拔卡复位;无卡是 TIMEOUT 不触发)
-     *   已挂载被拔出(CMD13 探测失败) → "SD card removed"
-     * 拔卡探测避开录音/回放(写错误路径已兜底;卸载会打断在读文件)。 */
-    if (!streaming && !s_ptt_pressed) {
-      static int64_t s_sd_poll_ms;
-      static int s_sd_nofs_notified;
-      int64_t now_ms = bb_now_ms();
-      if (now_ms - s_sd_poll_ms >= 10000) {
-        s_sd_poll_ms = now_ms;
-        if (!bb_sdcard_mounted()) {
-          esp_err_t merr = bb_sdcard_mount();
-          if (merr == ESP_OK) {
-            ESP_LOGI(TAG, "SD card hot-inserted and mounted");
-            bb_display_toast("SD card ready", 2500); /* 弹窗提醒,不占状态栏(用户要求) */
-            s_sd_nofs_notified = 0;
-            if (lvgl_port_lock(200)) {
-              bb_ui_settings_refresh_if_visible();
-              lvgl_port_unlock();
-            }
-          } else if (merr == ESP_FAIL && !s_sd_nofs_notified) {
-            s_sd_nofs_notified = 1;
-            ESP_LOGW(TAG, "SD card present but FS unrecognized — prompting format via Recording");
-            bb_display_toast("SD card unformatted - open Recording to format", 4000);
-          } else if (merr == ESP_ERR_TIMEOUT) {
-            s_sd_nofs_notified = 0; /* 无卡:复位一次性提示,下次插坏卡还会提醒 */
-          }
-        } else if (!bb_recorder_active() && !bb_recplay_active()) {
-          if (bb_sdcard_check_present() < 0) {
-            ESP_LOGW(TAG, "SD card removed");
-            bb_display_toast("SD card removed", 2500);
-            s_sd_nofs_notified = 0;
-            if (lvgl_port_lock(200)) {
-              bb_ui_settings_refresh_if_visible();
-              lvgl_port_unlock();
-            }
-          }
-        }
-      }
-    }
-#endif
+    /* SD 热插拔轮询已挪到独立 sd_hotplug_task(见文件下方 + 创建于 app 初始化):
+     * 原内联在此主循环、10s 一轮,插卡最坏等 10s + 挂载耗时 → 用户反馈「插卡反应
+     * 迟钝」。独立任务里挂载尝试即使阻塞几百 ms 也不卡按键/UI,间隔缩到 2s。 */
 
 #if BBCLAW_ENABLE_DISPLAY_PULL
     if (!streaming && !s_ptt_pressed) {
@@ -4435,6 +4438,15 @@ esp_err_t bb_radio_app_start(void) {
     s_probe_task_handle = NULL;
   }
   log_heap_snapshot("after probe task");
+
+#if BBCLAW_SDMMC_ENABLE
+  /* SD 热插拔轮询任务:PSRAM 栈(挂载/FATFS/toast 路径不碰 flash,不偷内部 RAM);
+   * 优先级 3(低于 probe=4/capture=7/stream)。失败只降级(无热插拔提醒,不影响录音)。 */
+  if (xTaskCreateWithCaps(sd_hotplug_task, "bb_sd_hotplug", 8192, NULL, 3, NULL,
+                          BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGW(TAG, "sd hotplug task create failed — hot-plug detection disabled (recording still works)");
+  }
+#endif
 
   /* ADR-044 P1b: ambient 回网补传后台任务（PSRAM 栈,失败不致命——本地录音
    * 照常,只是不补传）。任务自身把门 cloud_saas/SD/在网/语音空闲。 */
