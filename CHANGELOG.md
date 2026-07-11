@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **固件:息屏/变暗/抬手唤醒真正物理生效(手表,ADR-046 根因终案)**:用户反馈「一直
+  没有息屏」。诊断发现 ADR-046 的息屏此前**从未物理生效**——只有软件状态机在变,面板
+  一直全亮显示。根因两层:
+  - **QSPI 命令编帧缺失(总根因)**:SH8601/CO5300 走 QSPI 时命令必须编成
+    `(0x02<<24)|(cmd<<8)`。init 命令经驱动内部 `tx_param` 自动编帧所以能点亮;但运行期
+    亮度/息屏直接调 `esp_lcd_panel_io_tx_param` 传的是**裸命令**(0x51/0x28…),面板一律
+    忽略(事务仍返回 ESP_OK,骗过日志)。→ 亮度调节、变暗、息屏命令全部无效。已给所有
+    运行期面板命令补上 `CO5300_QSPI_CMD()` 编帧。
+  - **息屏需 DISPOFF+SLPIN,非仅亮度 0**:0x51 写亮度 0 熄不灭 AMOLED(仍扫描发光)。
+    进 SLEEPING 发 `DISPOFF(0x28)+SLPIN(0x10)` 真正下电熄屏,唤醒发 `SLPOUT(0x11)+~120ms
+    稳定+DISPON(0x29)`(序列参考 Arduino_GFX CO5300 driver)。
+  - **IMU 抬手唤醒阈值单位错**:阈值 1500 当 mg 用,但 QMI8658 样本是 m/s²(静止≈9.81,
+    ±8g 满量程仅 78.5),`a_total>1500`(≈153g)物理永不触发 → 抬手唤醒长期失效。改为
+    偏离重力基线 `|a_total-9.81|>2.5` m/s²。
+  - 真机验收(手表):变暗可见、息屏真黑屏、抬手/触摸/按键唤醒全过。
+- **固件:adapter 每次打断/朗读泄漏 ~16KB PSRAM(手表)**:`turn_cancel_task` /
+  `notif_tts_task` 用 `xTaskCreateWithCaps` 创建却用普通 `vTaskDelete(NULL)` 自删,caps 的
+  PSRAM 栈+TCB 不回收。改 `vTaskDeleteWithCaps(NULL)`(与 session 任务一致)。
+- **固件:消息/提醒到达唤醒息屏(手表,ADR-046 §5)**:`on_message_arrived` 通路此前无
+  调用点(死代码),息屏时来通知不亮屏。在 WS `session.notification` handler 挂 wake。
+
 ### Added
 - **固件:息屏时间可在设置页调节(手表)**:此前 2min 变暗 / 3min 息屏是硬编码
   (板配置的 `BBCLAW_SLEEP_MANAGER_*` 宏其实未被使用,真实值来自 sleep_manager

@@ -55,6 +55,14 @@ static const uint8_t g_level_to_raw[11] = {
  * @return ESP_OK 成功
  */
 extern esp_err_t bb_display_set_brightness_raw_impl(uint8_t value);
+extern esp_err_t bb_display_set_panel_on_impl(int on);
+
+esp_err_t bb_display_set_panel_on(int on) {
+  if (!g_state.initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  return bb_display_set_panel_on_impl(on);
+}
 
 /* ── 公共接口实现 ── */
 

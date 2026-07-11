@@ -44,7 +44,12 @@ static sleep_manager_state_t g_state = {0};
 #define DEFAULT_DIMMING_TIMEOUT_MS   (2 * 60 * 1000)   /* 2 min */
 #define DEFAULT_SLEEP_TIMEOUT_MS     (3 * 60 * 1000)   /* 3 min */
 #define DEFAULT_WAKE_COOLDOWN_MS     2000
-#define DEFAULT_IMU_ACCEL_THRESHOLD  1500               /* mg */
+/* QMI8658 样本单位是 m/s²(qmi8658.h 转换 *9.81/32768,原注释 mg 是错的),
+ * 静止时 a_total≈重力 9.81。抬手唤醒 = 总加速度偏离重力基线超过阈值(抬腕瞬间
+ * 叠加线加速度,幅值偏离 9.81)。原阈值 1500(当 mg 用)≈153g,±8g 传感器物理
+ * 永不可达 → 抬手唤醒长期失效。改为偏离量判定,灵敏度真机可调。 */
+#define GRAVITY_MS2                  9.81f
+#define DEFAULT_IMU_MOTION_DELTA_MS2 2.5f
 
 /* ── 状态转换 ── */
 
@@ -53,7 +58,13 @@ static void transition_to_state(bb_sleep_state_t new_state) {
     return;
   }
 
+  const bb_sleep_state_t old_state = g_state.state;
   ESP_LOGI(TAG, "State transition: %d → %d", g_state.state, new_state);
+
+  /* 离开 SLEEPING:先 DISPON 把面板开回来,否则随后 fade 亮度也显示不出来。 */
+  if (old_state == BB_SLEEP_STATE_SLEEPING && new_state != BB_SLEEP_STATE_SLEEPING) {
+    bb_display_set_panel_on(1);
+  }
 
   switch (new_state) {
     case BB_SLEEP_STATE_ACTIVE:
@@ -66,6 +77,9 @@ static void transition_to_state(bb_sleep_state_t new_state) {
 
     case BB_SLEEP_STATE_SLEEPING:
       bb_display_fade_brightness(BB_BRIGHTNESS_OFF, 1000);
+      /* 0x51 写 0 熄不灭 CO5300 AMOLED(仍扫描发光)——DISPOFF 才真正黑屏。
+       * fade 已把亮度降到 0(唤醒时从黑淡入),DISPOFF 停止面板输出近零功耗。 */
+      bb_display_set_panel_on(0);
       /* 启用 IMU 低功耗模式 */
       if (g_state.imu_wake_enabled) {
         bb_imu_enable_low_power();
@@ -169,9 +183,11 @@ static void imu_sample_cb(const bb_imu_sample_t* sample, void* arg) {
                         sample->accel.y * sample->accel.y +
                         sample->accel.z * sample->accel.z);
 
-  /* 简单阈值检测——只置旗标,转换由 tick 在 stream_task 做(IMU 采样任务
-   * 栈小,不许在这里碰亮度/QSPI) */
-  if (a_total > DEFAULT_IMU_ACCEL_THRESHOLD) {
+  /* 偏离重力基线检测——只置旗标,转换由 tick 在 stream_task 做(IMU 采样任务
+   * 栈小,不许在这里碰亮度/QSPI)。用 |a_total - g| 而非 a_total>阈值:后者在
+   * m/s² 量纲下静止就恒 9.81,取任何 >9.81 的绝对阈值都会被静止态的抖动误触发或
+   * 完全不触发,偏离量才是「有没有在动」的正确度量。 */
+  if (fabsf(a_total - GRAVITY_MS2) > DEFAULT_IMU_MOTION_DELTA_MS2) {
     g_state.motion_pending = 1;
   }
 }

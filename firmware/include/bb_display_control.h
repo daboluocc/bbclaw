@@ -102,6 +102,12 @@ esp_err_t bb_display_stop_fade(void);
  */
 int bb_display_is_fading(void);
 
+/**
+ * 面板显示开关(息屏用):on=0 发 DISPOFF(0x28)真正熄屏,on=1 发 DISPON(0x29)。
+ * 亮度写 0 熄不灭 AMOLED(仍扫描发光),息屏需配合此命令。
+ */
+esp_err_t bb_display_set_panel_on(int on);
+
 /* ── 便利宏 ── */
 
 #define bb_display_turn_on()       bb_display_set_brightness_level(BB_BRIGHTNESS_MAX)
