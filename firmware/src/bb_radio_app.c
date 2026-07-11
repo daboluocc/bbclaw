@@ -464,6 +464,28 @@ static void capture_seed_clear(void) {
   s_capture_seed_len = 0;
 }
 
+/* ── 语音链路耗时埋点 ─────────────────────────────────────────────────────
+ * 从 PTT 松手(说完)到答案回来,拆各阶段耗时打日志(单飞行回合,全局戳即可):
+ *   t0=PTT release → transcript(上传+云端 ASR) → first_delta(LLM 首字)
+ *   → tts_first_pcm(TTS 合成首句 = 用户感知的「多久出声」)。
+ * total=距松手, gap=距上一里程碑。grep "VOICE-LAT" 看链路耗时。 */
+static int64_t s_vlat_t0, s_vlat_prev;
+static int s_vlat_got_transcript, s_vlat_got_delta, s_vlat_got_tts;
+static void vlat_start(void) {
+  s_vlat_t0 = s_vlat_prev = bb_now_ms();
+  s_vlat_got_transcript = 0;
+  s_vlat_got_delta = 0;
+  s_vlat_got_tts = 0;
+  ESP_LOGW(TAG, "VOICE-LAT %-14s total=0ms gap=0ms (PTT 松手,开始计时)", "ptt_release");
+}
+static void vlat_mark(const char* stage) {
+  if (s_vlat_t0 == 0) return;
+  int64_t now = bb_now_ms();
+  ESP_LOGW(TAG, "VOICE-LAT %-14s total=%lldms gap=%lldms", stage, (long long)(now - s_vlat_t0),
+           (long long)(now - s_vlat_prev));
+  s_vlat_prev = now;
+}
+
 /** 公网 Cloud SaaS 模式下启用「密语」锁屏（ASR 比对），与声纹/生物特征无关。
  *  云端可通过 config.update 下发 miyu_enabled=false 关闭。 */
 static int passphrase_unlock_enabled(void) {
@@ -1196,6 +1218,7 @@ static void on_ptt_changed(int pressed) {
     }
   } else {
     bb_adapter_report_ptt_event(0, "release");
+    vlat_start(); /* 语音链路耗时:PTT 松手开始计时 */
   }
   s_ptt_change_version++;
 }
@@ -1487,6 +1510,10 @@ static void tts_stream_task(void* arg) {
       last_sentence[sizeof(last_sentence) - 1] = '\0';
       bb_display_set_tts_sentence(last_sentence);
       voice_last_sentence_set(last_sentence); /* ADR-028: barge-in playedText */
+    }
+    if (!s_vlat_got_tts) {
+      s_vlat_got_tts = 1;
+      vlat_mark("tts_first_pcm"); /* 首个 TTS 音频开播 = 用户感知「多久出声」(total 最关键) */
     }
     if (bb_audio_play_pcm_blocking(chunk->pcm_data, chunk->pcm_len) != ESP_OK) {
       if (tts_interrupt_requested()) {
@@ -1786,6 +1813,14 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
   if (event->type == BB_FINISH_STREAM_EVENT_ASR_FINAL) {
     const char* text = (event->text != NULL && event->text[0] != '\0') ? event->text : NULL;
     if (text != NULL) {
+      /* cloud_saas 下这是「ASR 完成、云端即将喂 LLM」的真实里程碑:云在 cloud_wait
+       * 期间先回 ASR_FINAL,再流回复 delta。埋点挂这里,transcript total=上传+云端
+       * ASR,first_delta 的 gap 才是纯 LLM 首字耗时。(3269 行那处只在 local_home
+       * 自转交路径命中,cloud_saas 永不进,故合并计时——见 ADR 语音链路。) */
+      if (!s_vlat_got_transcript) {
+        s_vlat_got_transcript = 1;
+        vlat_mark("transcript");
+      }
       strncpy(ui->transcript, text, sizeof(ui->transcript) - 1);
       ui->transcript[sizeof(ui->transcript) - 1] = '\0';
       bb_ui_agent_chat_post_user_text(text);
@@ -1813,6 +1848,10 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
     size_t remain = sizeof(ui->reply_text) - cur - 1;
     if (remain > 0) {
       strncat(ui->reply_text + cur, event->text, remain);
+    }
+    if (!s_vlat_got_delta) {
+      s_vlat_got_delta = 1;
+      vlat_mark("first_delta"); /* LLM 首字回来(gap=从 transcript 到首字的 LLM 耗时) */
     }
     bb_ui_agent_chat_post_reply_delta(event->text);
     return;
@@ -3236,6 +3275,7 @@ static void stream_task(void* arg) {
               agent_chat_voice_post_error(NULL);
             } else {
               ESP_LOGI(TAG, "agent_chat: routing transcript len=%u", (unsigned)strlen(t));
+              vlat_mark("transcript"); /* ASR 结果回来(total=上传+云端 ASR;转交 agent 前) */
               agent_chat_voice_post_error(NULL);  /* clear listening hint only */
               esp_err_t send_err = agent_chat_voice_send_locked(t);
               if (send_err != ESP_OK) {
