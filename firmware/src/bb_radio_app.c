@@ -52,8 +52,10 @@
 #include "bb_power_mgmt.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"     /* IRAM_ATTR — PWR 键 ISR */
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"    /* esp_timer_get_time — ISR 去抖 */
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/ringbuf.h"
@@ -566,6 +568,25 @@ static volatile int s_agent_chat_active;
 static lv_obj_t* s_agent_chat_root;
 static int64_t s_last_activity_ms;
 
+#if BBCLAW_PWR_KEY_GPIO >= 0
+/* PWR 键(AXP2101 PKEY 脉冲)硬件中断:脉冲窄且录音时 opus 编码吃满 CPU,把 stream_task
+ * 轮询饿慢会漏脉冲(用户实测丢按键)。改为 GPIO 边沿中断在硬件层捕获,锁存成标志,
+ * 循环再忙也不丢;循环消费标志做录音一键启停。
+ * 去抖 1.5s:AXP PKEY 在「按下」与「松开」各发一个脉冲(实测间隔 0.6~1.1s),
+ * 200ms 太短会把松开脉冲也当一次按键 → 一点按=start+立刻stop(用户实测"一按就跳出来")。
+ * 加大到 1.5s 把按下+松开这一对合并成一次 toggle(等价老轮询的 1s 重触发护栏)。 */
+#define PWR_ISR_DEBOUNCE_US 1500000
+static volatile int64_t s_pwr_isr_last_us;
+static volatile int s_pwr_isr_flag;
+static void IRAM_ATTR pwr_key_isr(void* arg) {
+  (void)arg;
+  int64_t now = esp_timer_get_time();
+  if (now - s_pwr_isr_last_us < PWR_ISR_DEBOUNCE_US) return;
+  s_pwr_isr_last_us = now;
+  s_pwr_isr_flag = 1;
+}
+#endif
+
 /* Phase 4.9: Picker phrases removed — input is via PTT voice only. */
 
 static int agent_chat_is_active(void) {
@@ -855,6 +876,10 @@ static int recorder_enter(void) {
 }
 
 static void recorder_exit(void) {
+  /* 停录音是一次用户交互:先喂活动,让 bb_recorder_stop() 阻塞落盘期间息屏状态机
+   * 不把屏判暗/判睡(消除"录音→暗一下时钟→回页面"的闪烁),并重置空闲计时,
+   * 免得随后落到聊天页又立刻变暗。 */
+  bb_power_mgmt_on_user_activity();
   s_capture_active = 0;
   (void)bb_audio_stop_tx(); /* 关麦(与 enter 的 start_tx 配对) */
   bb_recorder_stop(); /* 阻塞至当前段落盘收尾 */
@@ -863,7 +888,14 @@ static void recorder_exit(void) {
     lvgl_port_unlock();
   }
   set_radio_app_state(BBCLAW_STATE_CHAT);
-  show_idle_ready_or_locked();
+  /* 落点改为聊天会话页(而非待机时钟):锁屏态保持锁屏;已在聊天则维持;
+   * 否则进聊天,失败才兜底待机。 */
+  if (radio_app_is_locked()) {
+    show_idle_ready_or_locked();
+  } else if (!agent_chat_is_active() && agent_chat_enter() != 0) {
+    show_idle_ready_or_locked();
+  }
+  bb_power_mgmt_on_user_activity(); /* 再喂一次,聊天页从满空闲窗口起算,不立刻暗 */
   s_last_activity_ms = bb_now_ms();
   ESP_LOGI(TAG, "RECORDER: session stopped");
 }
@@ -1101,6 +1133,23 @@ static void refresh_power_display(void) {
   bb_power_state_t power = {0};
   bb_power_get_state(&power);
   bb_display_set_battery(power.supported, power.available, power.percent, power.low, power.charging);
+
+  /* 息屏充电提示(用户需求):充电器插/拔的瞬间,若正息屏,借息屏管理的
+   * message-wake 通路亮屏一下——顶栏本就渲染电量+⚡,用户即可看到在不在充,
+   * 随后按正常 idle 超时自动回睡,不常亮费电。首次读(-1)只记录不触发,
+   * 避免开机既插着充电时误亮。此轮询在 stream_task 主循环里息屏时也在跑。 */
+  if (power.supported) {
+    static int s_last_charging = -1;
+    int chg = power.charging ? 1 : 0;
+    if (s_last_charging >= 0 && chg != s_last_charging) {
+      /* 不再外挂 is_sleeping() 判定(太苛且只一次):on_message_arrived 内部本就
+       * 只在 SLEEPING 态置旗标唤醒,非睡态是 no-op。插拔即调,睡着就亮一下。 */
+      ESP_LOGW(TAG, "CHARGE-EVT %s (sleeping=%d) → wake nudge",
+               chg ? "connected" : "removed", bb_power_mgmt_is_sleeping());
+      bb_power_mgmt_on_message_arrived();
+    }
+    s_last_charging = chg;
+  }
 }
 
 static void log_pin_summary(void) {
@@ -3698,19 +3747,15 @@ static void stream_task(void* arg) {
     }
 
 #if BBCLAW_PWR_KEY_GPIO >= 0
-    /* PWR 键一键录音(ADR-044 用户需求):短按启动,再按结束。
-     * 上升沿触发+50ms 去抖+1s 重触发间隔;LOCKED 下忽略(隐私:锁着不能开录)。
-     * 长按 4s 的硬关机在 AXP2101 侧,与此互不影响。 */
+    /* PWR 键一键录音(ADR-044):短按启动,再按结束。按键由 pwr_key_isr 硬件捕获并
+     * 锁存成 s_pwr_isr_flag——录音时 opus 吃满 CPU 也不丢脉冲(旧的轮询会丢=用户
+     * 实测丢按键)。device_monitor 的 s_recorder_toggle_req 走同一 toggle。
+     * LOCKED 下忽略(隐私:锁着不能开录);长按 4s 硬关机在 AXP2101 侧,互不影响。 */
     {
-      static int s_pwr_prev;
-      static int64_t s_pwr_last_ms;
-      const int lvl = gpio_get_level(BBCLAW_PWR_KEY_GPIO);
-      const int pressed = (lvl == BBCLAW_PWR_KEY_ACTIVE_LEVEL);
-      int64_t pwr_now = bb_now_ms();
-      const int sim_req = s_recorder_toggle_req;
-      if (sim_req) s_recorder_toggle_req = 0;
-      if ((pressed && !s_pwr_prev && pwr_now - s_pwr_last_ms > 1000) || sim_req) {
-        s_pwr_last_ms = pwr_now;
+      int do_toggle = 0;
+      if (s_recorder_toggle_req) { s_recorder_toggle_req = 0; do_toggle = 1; }
+      if (s_pwr_isr_flag) { s_pwr_isr_flag = 0; do_toggle = 1; }
+      if (do_toggle) {
         if (s_app_state == BBCLAW_STATE_RECORDER) {
           ESP_LOGI(TAG, "PWR key: stop recording");
           recorder_exit();
@@ -3725,7 +3770,6 @@ static void stream_task(void* arg) {
           }
         }
       }
-      s_pwr_prev = pressed;
     }
 #endif
 
@@ -4424,9 +4468,12 @@ esp_err_t bb_radio_app_start(void) {
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = BBCLAW_PWR_KEY_ACTIVE_LEVEL ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE,
         .pull_down_en = BBCLAW_PWR_KEY_ACTIVE_LEVEL ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
+        /* 边沿中断:高有效脉冲取上升沿。ISR 锁存标志=不丢按键(见 pwr_key_isr)。 */
+        .intr_type = BBCLAW_PWR_KEY_ACTIVE_LEVEL ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE,
     };
     (void)gpio_config(&pwr_cfg);
+    (void)gpio_install_isr_service(0);  /* 幂等:已装则返回 INVALID_STATE,忽略 */
+    (void)gpio_isr_handler_add(BBCLAW_PWR_KEY_GPIO, pwr_key_isr, NULL);
   }
 #endif
 
