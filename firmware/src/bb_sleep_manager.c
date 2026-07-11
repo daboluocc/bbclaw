@@ -49,7 +49,9 @@ static sleep_manager_state_t g_state = {0};
  * 叠加线加速度,幅值偏离 9.81)。原阈值 1500(当 mg 用)≈153g,±8g 传感器物理
  * 永不可达 → 抬手唤醒长期失效。改为偏离量判定,灵敏度真机可调。 */
 #define GRAVITY_MS2                  9.81f
-#define DEFAULT_IMU_MOTION_DELTA_MS2 2.5f
+/* 偏离重力基线阈值(m/s²):越小越灵敏。2.5 对「温柔拿起」太钝(慢倾斜幅值几乎不变),
+ * 降到 1.5 让正常拿起的那点线性加速度即可唤醒;太低会被桌面震动/手抖误唤醒,真机调。 */
+#define DEFAULT_IMU_MOTION_DELTA_MS2 1.5f
 
 /* ── 状态转换 ── */
 
