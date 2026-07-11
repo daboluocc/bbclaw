@@ -27,3 +27,9 @@ esp_err_t bb_led_init(void);
 
 /** 触发一次瞬时提示 overlay；期间覆盖状态合成出的基态。任意线程安全。 */
 esp_err_t bb_led_pulse(bb_led_pulse_t kind);
+
+/**
+ * 息屏休眠时挂起状态灯（灭灯省电）。suspend!=0 → LED 强制熄灭并停止状态/pulse
+ * 合成；=0 → 恢复正常。由息屏管理联动(SLEEPING 灭,唤醒亮)。幂等,任意线程安全。
+ */
+esp_err_t bb_led_set_suspended(int suspend);

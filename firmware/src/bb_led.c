@@ -76,6 +76,7 @@ static pulse_state_t s_pulse;
 static bool    s_ready;
 static bool    s_boot_anim_active;
 static int64_t s_boot_anim_start_ms;
+static volatile bool s_suspended; /* 息屏休眠时挂起=强制灭灯,见 bb_led_set_suspended */
 
 #if BBCLAW_STATUS_LED_WS2812
 static rmt_channel_handle_t s_rmt_chan;
@@ -410,10 +411,29 @@ static void state_listener(const bb_state_t* prev, const bb_state_t* next,
 
 /* ================ Task ================ */
 
+esp_err_t bb_led_set_suspended(int suspend) {
+  if (!BBCLAW_STATUS_LED_ENABLE) return ESP_OK;
+  s_suspended = suspend ? true : false;
+  return ESP_OK;
+}
+
 static void led_task(void* arg) {
   (void)arg;
+  bool suspend_off_latched = false; /* 已在挂起态灭过灯,避免每轮重发 RMT 拽醒 CPU */
   while (1) {
     int64_t now_ms = bb_now_ms();
+
+    /* 息屏休眠：强制灭灯,压过 boot/pulse/状态合成。灭一次后拉长轮询(WS2812 自锁,
+     * 无需持续重发),既省电又不拖住 CPU light-sleep;唤醒(~150ms 内)恢复正常。 */
+    if (s_suspended) {
+      if (!suspend_off_latched) {
+        output_off();
+        suspend_off_latched = true;
+      }
+      vTaskDelay(pdMS_TO_TICKS(150));
+      continue;
+    }
+    suspend_off_latched = false;
 
     if (s_boot_anim_active) {
       uint32_t boot_elapsed = (uint32_t)(now_ms - s_boot_anim_start_ms);

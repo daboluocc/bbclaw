@@ -10,6 +10,7 @@
 #include "bb_display_control.h"
 #include "bb_sleep_manager.h"
 #include "bb_pm.h"
+#include "bb_led.h"
 #include "bb_config.h"
 
 #include <esp_log.h>
@@ -171,9 +172,12 @@ esp_err_t bb_power_mgmt_deinit(void) {
 void bb_power_mgmt_tick(void) {
   if (bb_sleep_manager_is_ready()) {
     bb_sleep_manager_tick();
-    /* 息屏状态 → 系统级低功耗联动:SLEEPING 释放交互锁允许 SoC light-sleep,
-     * 其余态持锁禁深睡保 UI/音频跟手(bb_pm 幂等,未启用板为 no-op)。 */
-    bb_pm_set_sleeping(bb_sleep_manager_is_sleeping());
+    /* 息屏状态 → 低功耗联动(幂等,未启用板为 no-op):
+     *  ① SLEEPING 释放交互锁允许 SoC light-sleep,其余态持锁保 UI/音频跟手;
+     *  ② SLEEPING 灭状态灯——屏都黑了灯还亮着既费电又突兀(用户反馈),唤醒恢复。 */
+    const int sleeping = bb_sleep_manager_is_sleeping();
+    bb_pm_set_sleeping(sleeping);
+    bb_led_set_suspended(sleeping);
   }
 }
 
