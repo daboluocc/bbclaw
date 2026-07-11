@@ -20,6 +20,10 @@ esp_err_t bb_audio_stop_playback(void);
 void bb_audio_request_playback_interrupt(void);
 void bb_audio_clear_playback_interrupt(void);
 int bb_audio_is_playback_interrupt_requested(void);
+/* 回放暂停：置位后 bb_audio_play_pcm_blocking 在 chunk 边界原地喂静音、位置冻结,
+ * 清位从同一样本继续。录音回放页 transport 用;TTS 不置位。 */
+void bb_audio_set_playback_paused(int paused);
+int bb_audio_is_playback_paused(void);
 int bb_audio_is_playback_active(void);
 esp_err_t bb_audio_read_pcm_frame(uint8_t* out_buf, size_t out_buf_len, size_t* out_read);
 /* 录音态双麦合成:enable=1 时立体声降混对 MIC1/MIC2 求均值(同源两路 → 不相干

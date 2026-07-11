@@ -2705,8 +2705,13 @@ static void stream_task(void* arg) {
               case BB_NAV_EVENT_DOWN:  settings_rotate_locked(+1); break;
               case BB_NAV_EVENT_OK:    settings_click_locked();    break;
               case BB_NAV_EVENT_BACK:  settings_back_locked();     break;
+              /* LEFT/RIGHT:回放页=上一首/下一首(录音),其它层内部 no-op。 */
               case BB_NAV_EVENT_LEFT:
+                if (lvgl_port_lock(200)) { bb_ui_settings_handle_lr(-1); lvgl_port_unlock(); }
+                break;
               case BB_NAV_EVENT_RIGHT:
+                if (lvgl_port_lock(200)) { bb_ui_settings_handle_lr(+1); lvgl_port_unlock(); }
+                break;
               case BB_NAV_EVENT_COUNT:
               default: break;
             }

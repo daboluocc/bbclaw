@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:录音回放页——设备端媒体播放器(手表,ADR-044 P1a)**:Recordings 列表点一条
+  录音不再是「后台连播/再点停」,而是打开一个专属回放页(新 `bb_page_recplay`)。触屏
+  手表原生 LVGL 指针 indev,transport 全触控:上一首 / 播放·暂停 / 下一首 / 停止(圆钮)
+  + 可拖动音量条;顶部标题(日期时间)、大号已播时长、`段号 N/M | 总时长`、会话进度条。
+  「上一首/下一首」= 在**录音之间**切换(一次录音=一首,不是 60s 段级——用户反馈段级跳
+  「没用」),右滑返回列表。bench/按键板降级:OK=播放/暂停、rotate=音量、LEFT/RIGHT=上/下
+  一首。引擎侧 `bb_recplay` 补齐暂停/恢复(`bb_audio` 播放循环 chunk 边界 pause gate 喂
+  静音、位置冻结)与状态查询;音量改动经既有 off-thread 路径持久化。手表真机全项验证
+  (渲染/播放/暂停冻结/多段连播 1/2→2/2/切换录音/音量/返回)。
 - **固件:CPU/系统级低功耗——自动 light-sleep + DFS(ADR-047)**:ADR-046 只关屏,
   SoC 仍 240MHz 满血跑、WiFi 常连,续航落空。新增 `bb_pm` 模块:`esp_pm` DFS
   240↔80MHz + 自动 light-sleep,息屏进 SLEEPING 时释放交互锁允许 SoC 深睡;WiFi

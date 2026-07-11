@@ -26,3 +26,27 @@ int bb_recplay_active(void);
 
 /** 当前播放文件路径（未播放返回 ""）。UI 标记用。 */
 const char* bb_recplay_current(void);
+
+/* ── 回放页 transport（暂停 / 上一段 / 下一段 / 状态）── */
+
+/** 暂停 / 恢复当前回放。位置原地冻结,恢复从同一样本继续（bb_audio pause gate）。
+ *  未在回放时 no-op。 */
+void bb_recplay_set_paused(int paused);
+
+/** 1 = 正在回放且已暂停。 */
+int bb_recplay_is_paused(void);
+
+/** 会话连播跳段：delta=+1 下一段 / -1 上一段（首段再上一=重放首段;越过末段=结束）。
+ *  仅会话模式有效;打断当前段后由播放任务据此调整段号。 */
+void bb_recplay_skip(int delta);
+
+/** 回放状态快照（回放页轮询用）。 */
+typedef struct {
+  int active;    /* 1 = 回放中 */
+  int paused;    /* 1 = 已暂停 */
+  int session;   /* 1 = 会话连播模式 */
+  int seg_cur;   /* 当前段(1-based);0=未知 */
+  int seg_total; /* 会话总段数;0=未知/单文件 */
+} bb_recplay_state_t;
+
+void bb_recplay_get_state(bb_recplay_state_t* out);

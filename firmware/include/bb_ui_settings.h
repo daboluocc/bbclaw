@@ -44,8 +44,19 @@ int  bb_ui_settings_is_active(void);
  * value on entry) or while the user is mid-edit. Caller must hold lvgl_port_lock. */
 void bb_ui_settings_notify_volume_pct(int pct);
 
+/* 录音列表提供者(供 bb_page_recplay 的「上一首/下一首」在录音间切换)。
+ * count 返回当前录音数;session 按 idx(newest-first)取目录/标题/总时长,返回 1=有效。
+ * 仅回放页打开(LEVEL_RECPLAY)时有数据。 */
+int bb_ui_settings_recfiles_count(void);
+int bb_ui_settings_recfiles_session(int idx, char* dir, int dir_sz, char* title, int title_sz,
+                                    int* total_s);
+
 /* UP/DOWN rotation moves the cursor at the current level (main or picker). */
 void bb_ui_settings_handle_rotate(int delta);
+
+/* LEFT/RIGHT: 仅回放页(LEVEL_RECPLAY)有意义——delta<0=上一首,>0=下一首(录音)。
+ * 其它层 no-op。触屏 swipe-left 与 bench LEFT/RIGHT 共用此入口。 */
+void bb_ui_settings_handle_lr(int delta);
 
 /* OK on the current cursor row.
  *  - main page: Driver/Model row pushes a picker; Back row exits the overlay

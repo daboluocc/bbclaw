@@ -40,6 +40,7 @@ set(_bb_srcs
     "bb_radio_app.c"
     "bb_ambient_sync.c"
     "bb_page_recorder.c"
+    "bb_page_recplay.c"
     "bb_panic_crumb.c"
     "bb_recorder.c"
     "bb_recplay.c"

@@ -53,6 +53,10 @@ static int s_tx_use_mono16;
 static int s_tx_effective_sample_rate = BBCLAW_AUDIO_SAMPLE_RATE;
 static int s_i2s_full_duplex;
 static volatile int s_playback_interrupt_requested;
+/* 回放暂停(录音回放页 transport)。play_pcm 在每个 chunk 边界查该旗标,置位时
+ * 停止喂真实 PCM、改喂静音(保持 I2S 不下溢嗡鸣),位置原地冻结;清位后从同一
+ * 样本继续。仅回放路径用——TTS 不置位。 */
+static volatile int s_playback_paused;
 
 typedef enum {
   BB_I2S_PREP_NONE = 0,
@@ -752,6 +756,25 @@ static int16_t clamp_i16(int32_t v) {
   return (int16_t)v;
 }
 
+/* Pause gate: 回放 chunk 边界调用。暂停期间持续向 I2S 写静音(而非停写——停写会让
+ * DMA 环形缓冲反复重播最后几 ms 造成嗡鸣),把位置钉住;暂停被清或收到打断请求即
+ * 返回。返回 1 = 收到打断请求(调用方应 abort 本次播放)。 */
+static int playback_pause_gate(void) {
+  if (!s_playback_paused) {
+    return 0;
+  }
+  static const uint8_t silence[256] = {0}; /* 格式无关:任何 PCM 里 0 都是静音 */
+  while (s_playback_paused && !s_playback_interrupt_requested) {
+    if (s_tx_chan != NULL) {
+      size_t w = 0;
+      (void)i2s_channel_write(s_tx_chan, silence, sizeof(silence), &w, BBCLAW_AUDIO_IO_TIMEOUT_MS);
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+  }
+  return s_playback_interrupt_requested ? 1 : 0;
+}
+
 static void update_pcm_diag(const int16_t* samples, size_t count) {
   if (samples == NULL || count == 0U) {
     return;
@@ -1025,6 +1048,7 @@ esp_err_t bb_audio_start_playback(void) {
     s_tx_active = 1;
     s_rx_enabled = 0;
     s_playback_interrupt_requested = 0;
+    s_playback_paused = 0;
     ESP_LOGI(TAG, "playback start tx_cfg=%s tx_stereo32=%d tx_stereo16=%d tx_mono16=%d volume=%d%%", tx_config_name(),
              s_tx_use_stereo32, s_tx_use_stereo16, s_tx_use_mono16, s_volume_pct);
   } else if (s_rx_enabled) {
@@ -1039,6 +1063,7 @@ esp_err_t bb_audio_stop_playback(void) {
     return ESP_ERR_INVALID_STATE;
   }
   s_playback_interrupt_requested = 0;
+  s_playback_paused = 0;
   return bb_audio_stop_tx();
 }
 
@@ -1052,6 +1077,14 @@ void bb_audio_clear_playback_interrupt(void) {
 
 int bb_audio_is_playback_interrupt_requested(void) {
   return s_playback_interrupt_requested ? 1 : 0;
+}
+
+void bb_audio_set_playback_paused(int paused) {
+  s_playback_paused = paused ? 1 : 0;
+}
+
+int bb_audio_is_playback_paused(void) {
+  return s_playback_paused ? 1 : 0;
 }
 
 int bb_audio_is_playback_active(void) {
@@ -1285,6 +1318,7 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      (void)playback_pause_gate(); /* 暂停时原地喂静音;打断由下方 check 处理 */
       if (s_playback_interrupt_requested) {
         ESP_LOGI(TAG, "play_pcm interrupted stereo32 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
         return ESP_ERR_INVALID_STATE;
@@ -1343,6 +1377,7 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      (void)playback_pause_gate();
       if (s_playback_interrupt_requested) {
         ESP_LOGI(TAG, "play_pcm interrupted stereo16 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
         return ESP_ERR_INVALID_STATE;
@@ -1399,6 +1434,7 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t i2s_bytes_total = 0;
     int timeout_count = 0;
     while (sample_idx < sample_count) {
+      (void)playback_pause_gate();
       if (s_playback_interrupt_requested) {
         ESP_LOGI(TAG, "play_pcm interrupted mono16 sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
         return ESP_ERR_INVALID_STATE;
@@ -1450,6 +1486,7 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
     size_t sample_idx = 0;
     int16_t frame_buf[256];
     while (sample_idx < sample_count) {
+      (void)playback_pause_gate();
       if (s_playback_interrupt_requested) {
         ESP_LOGI(TAG, "play_pcm interrupted scaled sample_idx=%u/%u", (unsigned)sample_idx, (unsigned)sample_count);
         return ESP_ERR_INVALID_STATE;
@@ -1487,6 +1524,7 @@ esp_err_t bb_audio_play_pcm_blocking(const uint8_t* pcm, size_t pcm_len) {
   }
   size_t written_total = 0;
   while (written_total < pcm_len) {
+    (void)playback_pause_gate();
     if (s_playback_interrupt_requested) {
       ESP_LOGI(TAG, "play_pcm interrupted raw write=%u/%u", (unsigned)written_total, (unsigned)pcm_len);
       return ESP_ERR_INVALID_STATE;

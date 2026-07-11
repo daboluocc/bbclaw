@@ -36,6 +36,7 @@
 #include <dirent.h>
 #include <time.h>
 
+#include "bb_page_recplay.h"
 #include "bb_recorder.h"
 #include "bb_recplay.h"
 #include "bb_sdcard.h"
@@ -166,7 +167,8 @@ typedef enum {
    * Reached as a row in the Settings list (there is ONE menu = Settings; no
    * separate standby main-menu). */
   LEVEL_REMINDERS,
-  LEVEL_RECFILES,   /* ADR-044:SD 录音浏览(会话→段→点按播放) */
+  LEVEL_RECFILES,   /* ADR-044:SD 录音浏览(会话列表→点按打开回放页) */
+  LEVEL_RECPLAY,    /* ADR-044:录音回放页(bb_page_recplay,touch transport) */
 } settings_level_t;
 
 /* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
@@ -1079,6 +1081,7 @@ static void rerender(void) {
     case LEVEL_SYSINFO:        render_sysinfo(); break;
     case LEVEL_REMINDERS:      render_reminders(); break;
     case LEVEL_RECFILES:       render_recfiles(); break;
+    case LEVEL_RECPLAY:        break; /* bb_page_recplay 自持 UI + timer,不经 rerender */
   }
 }
 
@@ -1247,6 +1250,42 @@ static void enter_recfiles(void) {
   s_st.sel = 0;
   recfiles_scan();
   rerender();
+}
+
+/* 录音列表(会话)提供者——供回放页「上一首/下一首」在录音之间切换。列表由
+ * recfiles_scan() 填(newest-first),回放页只按 idx 取信息,数据仍归 settings。 */
+int bb_ui_settings_recfiles_count(void) {
+  return (s_st.active && s_st.level == LEVEL_RECPLAY) ? s_st.recfiles_count : 0;
+}
+
+int bb_ui_settings_recfiles_session(int idx, char* dir, int dir_sz, char* title, int title_sz,
+                                    int* total_s) {
+  if (idx < 0 || idx >= s_st.recfiles_count) return 0;
+  if (dir != NULL && dir_sz > 0) {
+    snprintf(dir, (size_t)dir_sz, "/sdcard/ambient/%s", s_st.recfiles_names[idx]);
+  }
+  if (title != NULL && title_sz > 0) {
+    /* 目录名=epoch 秒 → "MM-DD HH:MM"(b 前缀无墙钟则原样) */
+    long long ep = atoll(s_st.recfiles_names[idx]);
+    if (ep > 1600000000LL) {
+      time_t tt = (time_t)ep;
+      struct tm tmv;
+      localtime_r(&tt, &tmv);
+      snprintf(title, (size_t)title_sz, "%02d-%02d %02d:%02d", tmv.tm_mon + 1, tmv.tm_mday,
+               tmv.tm_hour, tmv.tm_min);
+    } else {
+      snprintf(title, (size_t)title_sz, "%s", s_st.recfiles_names[idx]);
+    }
+  }
+  if (total_s != NULL) *total_s = s_st.recfiles_dur_s[idx];
+  return 1;
+}
+
+/* 点录音行 → 打开回放页(bb_page_recplay),连播整段会话。idx=recfiles_names 下标。 */
+static void enter_recplay(int idx) {
+  if (idx < 0 || idx >= s_st.recfiles_count) return;
+  s_st.level = LEVEL_RECPLAY;
+  bb_page_recplay_open(s_st.root, idx);
 }
 
 /* ── Driver+model fetch (async) ── */
@@ -2073,6 +2112,13 @@ void bb_ui_settings_show(lv_obj_t* parent) {
 void bb_ui_settings_hide(void) {
   if (!s_st.active) return;
   s_st.active = 0;
+  /* 回放页可能仍开着(整个设置被外部关掉):停播 + 持久化音量 + 拆页,免留孤儿。 */
+  if (bb_page_recplay_is_open()) {
+    if (bb_page_recplay_volume_dirty()) {
+      spawn_persist_int(COMMIT_KIND_VOLUME, bb_page_recplay_volume_pct());
+    }
+    bb_page_recplay_close();
+  }
   s_st.driver_fetch_generation++;
   s_st.site_fetch_generation++;
   s_st.session_fetch_generation++;
@@ -2141,8 +2187,25 @@ static void overscroll_bounce(int dir) {
 
 /* ── Input handlers ── */
 
+/* LEFT/RIGHT:仅回放页用——上一首/下一首(录音)。其它层无 LR 语义,no-op。
+ * 触屏手表 swipe-left→LEFT→上一首;bench/按键板 LEFT/RIGHT 同理。 */
+void bb_ui_settings_handle_lr(int delta) {
+  if (!s_st.active || s_st.level != LEVEL_RECPLAY || delta == 0) return;
+  if (delta < 0) {
+    bb_page_recplay_key_prev();
+  } else {
+    bb_page_recplay_key_next();
+  }
+}
+
 void bb_ui_settings_handle_rotate(int delta) {
   if (!s_st.active || delta == 0) return;
+
+  /* 回放页(按键降级):rotate = 音量 ±(触屏板走拖动条)。 */
+  if (s_st.level == LEVEL_RECPLAY) {
+    bb_page_recplay_key_volume(delta);
+    return;
+  }
 
   /* Volume adjust mode: change value directly, update bar in-place. */
   if (s_st.level == LEVEL_VOLUME_ADJUST) {
@@ -2435,17 +2498,16 @@ int bb_ui_settings_handle_click(void) {
         return 0;
       }
       if (s_st.sel < 0 || s_st.sel >= s_st.recfiles_count) return 0;
-      /* 点会话 → 连续播放整个录音会话 / 再点停止。段级下钻已废除——用户不想看
-       * 「1 分钟一个」的碎片,一次录音就是一条,点一下听完整段(ADR-044 P1a 回放）。 */
-      char sdir[96];
-      snprintf(sdir, sizeof(sdir), "/sdcard/ambient/%s", s_st.recfiles_names[s_st.sel]);
-      esp_err_t perr = bb_recplay_toggle_session(sdir);
-      if (perr == ESP_ERR_INVALID_STATE) {
-        lv_label_set_text(s_st.header_lbl, "Busy (recording/TTS)");
-      }
-      rerender();
+      /* 点会话 → 打开回放页(bb_page_recplay):连播整段 + 触控 transport(暂停/上一/
+       * 下一/停止/音量)。段级下钻已废除——一次录音就是一条(ADR-044 P1a 回放页）。 */
+      enter_recplay(s_st.sel);
       return 0;
     }
+
+    case LEVEL_RECPLAY:
+      /* 触屏钮直接驱动 transport;按键降级:OK = 播放/暂停 */
+      bb_page_recplay_key_toggle();
+      return 0;
   }
   return 0;
 }
@@ -2458,15 +2520,22 @@ int bb_ui_settings_handle_back(void) {
     case LEVEL_REMINDERS:
       return_to_main(MAIN_ROW_REMINDERS);
       return 0;
-    case LEVEL_RECFILES:
-      bb_recplay_stop(); /* 离开浏览层即停播 */
-      if (s_st.recfiles_mode == 1) {
-        s_st.recfiles_mode = 0;
-        s_st.sel = 0;
-        recfiles_scan();
-        rerender();
-        return 0;
+    case LEVEL_RECPLAY:
+      /* 回放页返回 → 停播 + 拆页 + 回录音列表。音量若改过,交既有 off-thread
+       * 持久化(避免在此 stream_task PSRAM 栈上直接写 NVS 的 cache-freeze)。 */
+      if (bb_page_recplay_volume_dirty()) {
+        int vp = bb_page_recplay_volume_pct();
+        s_st.volume_pct = vp;
+        spawn_persist_int(COMMIT_KIND_VOLUME, vp);
       }
+      bb_page_recplay_close();
+      s_st.level = LEVEL_RECFILES;
+      s_st.recfiles_mode = 0;
+      recfiles_scan();
+      rerender();
+      return 0;
+    case LEVEL_RECFILES:
+      bb_recplay_stop(); /* 防御:正常回放已由回放页停,浏览层不再起播 */
       return_to_main(MAIN_ROW_RECFILES);
       return 0;
     case LEVEL_DRIVER_PICKER:
