@@ -9,6 +9,7 @@
 #include "bb_imu.h"
 #include "bb_display_control.h"
 #include "bb_sleep_manager.h"
+#include "bb_pm.h"
 #include "bb_config.h"
 
 #include <esp_log.h>
@@ -101,6 +102,10 @@ esp_err_t bb_power_mgmt_init(void) {
   /* 从 NVS 读用户设定的息屏时间预设并应用(启动单线程期,NVS 读安全) */
   bb_power_mgmt_load_sleep_preset();
 
+  /* 步骤 4: CPU/系统级低功耗(ADR-047,自动 light sleep + DFS)。门控化,未启用的板
+   * 为 no-op。开机默认持交互锁(全响应),息屏转 SLEEPING 时由 tick 释放允许深睡。 */
+  bb_pm_init();
+
   return ESP_OK;
 }
 
@@ -166,6 +171,9 @@ esp_err_t bb_power_mgmt_deinit(void) {
 void bb_power_mgmt_tick(void) {
   if (bb_sleep_manager_is_ready()) {
     bb_sleep_manager_tick();
+    /* 息屏状态 → 系统级低功耗联动:SLEEPING 释放交互锁允许 SoC light-sleep,
+     * 其余态持锁禁深睡保 UI/音频跟手(bb_pm 幂等,未启用板为 no-op)。 */
+    bb_pm_set_sleeping(bb_sleep_manager_is_sleeping());
   }
 }
 

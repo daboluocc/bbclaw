@@ -76,12 +76,17 @@ esp_err_t qmi8658_read_gyro_raw(int16_t* x, int16_t* y, int16_t* z) {
 
 static void qmi8658_sample_task(void* arg) {
   bb_imu_sample_t sample;
-  TickType_t delay = pdMS_TO_TICKS(1000 / g_state.sample_rate_hz);
 
-  ESP_LOGI(TAG, "Sample task started (rate=%dHz, delay=%d ticks)",
-           g_state.sample_rate_hz, delay);
+  ESP_LOGI(TAG, "Sample task started (rate=%dHz)", g_state.sample_rate_hz);
 
   while (g_state.initialized) {
+    /* 每轮按当前采样率重算周期:bb_imu_enable_low_power() 运行时把 rate 降到 16Hz
+     * (息屏后)必须真正拉长唤醒周期(10ms→62ms),否则 CPU 恒 10ms 醒一次,ADR-047 的
+     * 自动 light sleep 无睡眠窗口→省电落空。原实现 delay 在循环外只算一次,低功耗
+     * 切换对已在跑的任务无效(死 bug)。至少 1 tick,防 rate 异常时 0 延迟空转。 */
+    uint16_t rate = g_state.sample_rate_hz ? g_state.sample_rate_hz : 1;
+    TickType_t delay = pdMS_TO_TICKS(1000 / rate);
+    if (delay == 0) delay = 1;
     vTaskDelay(delay);
 
     int16_t accel_raw[3], gyro_raw[3];

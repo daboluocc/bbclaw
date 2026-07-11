@@ -43,6 +43,18 @@
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 0
 #endif
 
+/* ── CPU/系统级低功耗（ADR-047）:自动 light sleep + DFS。默认关,仅带电池且验证过
+ * 的板打开(需同时在 sdkconfig 开 CONFIG_PM_ENABLE)。bb_pm 模块内自门控为 no-op。 ── */
+#ifndef BBCLAW_PM_LIGHT_SLEEP_ENABLE
+#define BBCLAW_PM_LIGHT_SLEEP_ENABLE 0
+#endif
+#ifndef BBCLAW_PM_MAX_FREQ_MHZ
+#define BBCLAW_PM_MAX_FREQ_MHZ 240
+#endif
+#ifndef BBCLAW_PM_MIN_FREQ_MHZ
+#define BBCLAW_PM_MIN_FREQ_MHZ 80
+#endif
+
 /* ── PWR 键（AXP2101 PKEY 路由到 GPIO,短按脉冲）：录音一键启停,see bb_radio_app ── */
 #ifndef BBCLAW_PWR_KEY_GPIO
 #define BBCLAW_PWR_KEY_GPIO (-1)

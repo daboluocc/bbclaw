@@ -156,3 +156,10 @@
 #define BBCLAW_SLEEP_MANAGER_WAKE_COOLDOWN_MS 2000              /* 2 秒去抖延迟 */
 #define BBCLAW_SLEEP_MANAGER_IMU_WAKE_ENABLED 1                /* 启用 IMU 唤醒 */
 #define BBCLAW_SLEEP_MANAGER_MESSAGE_WAKE_ENABLED 1            /* 启用消息唤醒 */
+
+/* ── CPU/系统级低功耗（ADR-047）:自动 light sleep + DFS。息屏进 SLEEPING 后 SoC
+ * 在 WiFi beacon 间隙 light-sleep,WiFi modem-sleep 维持关联→消息唤醒不变;不做 deep
+ * sleep。需配合 sdkconfig.board 的 CONFIG_PM_ENABLE + TICKLESS_IDLE。 */
+#define BBCLAW_PM_LIGHT_SLEEP_ENABLE 1
+#define BBCLAW_PM_MAX_FREQ_MHZ       240   /* 交互/音频全速 */
+#define BBCLAW_PM_MIN_FREQ_MHZ       80    /* 空闲降频(与 APB/WiFi 兼容,保守起步) */

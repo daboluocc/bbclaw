@@ -58,6 +58,7 @@ set(_bb_srcs
     "bb_display_control_co5300.c"
     "bb_sleep_manager.c"
     "bb_power_mgmt.c"
+    "bb_pm.c"
     "../drivers/qmi8658/qmi8658.c"
 )
 
@@ -104,6 +105,7 @@ idf_component_register(
         esp_lcd
         esp_netif
         esp_ringbuf
+        esp_pm
         app_update
         esp_partition
         esp_timer

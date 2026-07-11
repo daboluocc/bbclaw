@@ -35,3 +35,16 @@ CONFIG_ESP_CONSOLE_NONE=y
 # 一蹭就炸,此前静默无害)。P1a 录音栈账已修完;找到贴边任务前先回到关闭
 # 现状(与之前几个月一致)。排障时可临时打开。
 # CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+
+# ── CPU/系统级低功耗(ADR-047):自动 light sleep + DFS ──────────────────────
+# 息屏进 SLEEPING 后 SoC 在 WiFi beacon 间隙 light-sleep;WiFi modem-sleep 维持关联
+# → 云端 push 照常唤醒(消息唤醒不变)。deep sleep 不做(会断连丢 push)。运行时由
+# bb_pm 显式 esp_pm_configure(240↔80MHz, light_sleep_enable) + NO_LIGHT_SLEEP 交互锁。
+# 仅本手表板打开;bbclaw 量产板不含这些行,OTA 零影响。
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_PM_DFS_INIT_AUTO=y
+# 保守:light sleep 里不断 CPU 电(与 Octal PSRAM + QSPI LCD 共存更稳),仅时钟门控。
+# CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP is not set
+# WiFi 关联态 beacon 间隙进 modem-sleep(维持连接的前提)。
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=y
