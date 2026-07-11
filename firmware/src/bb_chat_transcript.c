@@ -57,6 +57,16 @@ static lv_obj_t* s_subtitle_label;    /* NULL until first set_subtitle */
 static lv_obj_t* s_transcript_parent;
 static int       s_transcript_y;
 static int       s_transcript_h;
+static int       s_transcript_w;   /* 容器实宽(create 时登记),消息/分隔/字幕宽据此算 */
+
+/* 气泡/分隔/字幕的内容宽 = 容器实宽 − 两侧留白。历史上硬编码 320(旧横屏 172×320
+ * 的长边),但内容盒是板级自适应的(bb_display_get_content_box → cb_w):手表
+ * 410/502 竖屏够宽看不出,回到 bbclaw 横屏(内容盒 ~298)时 304 宽气泡溢出可用宽
+ * → 右对齐 user 文字被顶出屏、右侧截断。改为跟随容器实宽,未初始化时兜底 320。 */
+static int msg_content_width(void) {
+  int w = (s_transcript_w > 0) ? s_transcript_w : 320;
+  return w - 2 * MSG_HMARGIN;
+}
 
 /* Last-seen timestamp for history replay, used to detect segment gaps.
  * Tracks the most-recently appended message; reset to 0 on transcript clear. */
@@ -147,7 +157,7 @@ static lv_obj_t* make_msg_label(uint32_t bg_color, uint32_t fg_color,
    * Trade-off: long messages are truncated with "..." in the transcript;
    * full content is still in the session history backend. */
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_width(lbl, 320 - 2 * MSG_HMARGIN);
+  lv_obj_set_width(lbl, msg_content_width());
   lv_obj_set_style_text_font(lbl, font(), 0);
   lv_obj_set_style_text_color(lbl, lv_color_hex(fg_color), 0);
   lv_obj_set_style_text_align(lbl, align, 0);
@@ -198,6 +208,7 @@ lv_obj_t* bb_chat_transcript_create(lv_obj_t* parent, int width, int height_px,
   s_transcript_parent = parent;
   s_transcript_y      = y_offset;
   s_transcript_h      = height_px;
+  s_transcript_w      = width;   /* 消息/分隔/字幕宽据此算,替代旧硬编码 320 */
 
   s_transcript = lv_obj_create(parent);
   lv_obj_remove_style_all(s_transcript);
@@ -363,7 +374,7 @@ static void make_segment_separator(const char* label, int prepend) {
   if (s_transcript == NULL) return;
   lv_obj_t* sep = lv_label_create(s_transcript);
   lv_label_set_long_mode(sep, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_width(sep, 320 - 2 * MSG_HMARGIN);
+  lv_obj_set_width(sep, msg_content_width());
   lv_obj_set_style_text_font(sep, font(), 0);
   lv_obj_set_style_text_color(sep, lv_color_hex(UI_TEXT_DIM), 0);
   lv_obj_set_style_text_align(sep, LV_TEXT_ALIGN_CENTER, 0);
@@ -555,7 +566,7 @@ static void ensure_subtitle_created(void) {
 
   s_subtitle_label = lv_label_create(s_transcript_parent);
   lv_label_set_long_mode(s_subtitle_label, LV_LABEL_LONG_MODE_DOTS);
-  lv_obj_set_size(s_subtitle_label, 320 - 2 * MSG_HMARGIN, SUBTITLE_H);
+  lv_obj_set_size(s_subtitle_label, msg_content_width(), SUBTITLE_H);
   /* Anchor to bottom of transcript zone */
   int y = s_transcript_y + s_transcript_h - SUBTITLE_H - SUBTITLE_Y_ABOVE;
   lv_obj_set_pos(s_subtitle_label, MSG_HMARGIN, y);
