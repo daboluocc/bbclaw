@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **固件:CPU/系统级低功耗——自动 light-sleep + DFS(ADR-047)**:ADR-046 只关屏,
+  SoC 仍 240MHz 满血跑、WiFi 常连,续航落空。新增 `bb_pm` 模块:`esp_pm` DFS
+  240↔80MHz + 自动 light-sleep,息屏进 SLEEPING 时释放交互锁允许 SoC 深睡;WiFi
+  modem-sleep 维持关联 → 云端消息唤醒不变;不做 deep sleep(会断连丢 push)。已在
+  手表(AMOLED)与 bbclaw 生产板真机验证。⚠️ `CONFIG_PM_ENABLE` 仅本地
+  `sdkconfig.pm` overlay,**不进 OTA 生产配置**(影响面大,待 mA 实测+回归后再评估推全量)。
+- **固件:bbclaw 生产板息屏(ADR-047)**:LCD 非 AMOLED——息屏=关背光 GPIO14(TFT
+  功耗大头)+ ST7789 DISPOFF(新 `bb_display_control_st7789.c`,与 CO5300 按显示总线
+  互斥编译)。无 IMU→唤醒走导航轮键(GPIO1/6/8)+云端消息。3 分空闲息屏(可在设置页调)。
+
 ### Fixed
+- **固件:息屏休眠时熄灭状态灯——屏黑灯也黑(用户反馈)**:息屏后状态 LED 仍常亮,
+  既费电又突兀。`bb_led` 加挂起接口,SLEEPING 时强制灭灯(灭一次后拉长轮询,不拖住
+  light-sleep),唤醒恢复;由息屏管理联动,未启用状态灯的板自动 no-op。
 - **固件:息屏/变暗/抬手唤醒真正物理生效(手表,ADR-046 根因终案)**:用户反馈「一直
   没有息屏」。诊断发现 ADR-046 的息屏此前**从未物理生效**——只有软件状态机在变,面板
   一直全亮显示。根因两层:
