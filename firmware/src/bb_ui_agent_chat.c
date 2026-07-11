@@ -1414,11 +1414,15 @@ static int s_buddy_listener_registered = 0;
 static void cache_replay_cb(char role, const char* content, void* user) {
   const bb_agent_theme_t* theme = (const bb_agent_theme_t*)user;
   if (theme == NULL || theme->append_history_message == NULL) return;
+  /* ADR-030: tool_call 是「本轮一次性进度提示」(dimmed chip,不入 TTS、独立于
+   * voice.reply)。它被 append 进 cache 只为当前轮显示,不该作为历史回放——否则
+   * 每次 hydrate(会话加载 / 重启 / CHAT 再入)都会把上一轮的 tool 调用重渲染、
+   * 重打到串口/屏幕,即用户看到的「问完后又显示上一次的 tool 聊天记录」bug。回放跳过。 */
+  if (role == BB_CHAT_CACHE_ROLE_TOOL) return;
   const char* role_str = "assistant";
   switch (role) {
     case BB_CHAT_CACHE_ROLE_USER:      role_str = "user"; break;
     case BB_CHAT_CACHE_ROLE_ASSISTANT: role_str = "assistant"; break;
-    case BB_CHAT_CACHE_ROLE_TOOL:      role_str = "tool"; break;
     case BB_CHAT_CACHE_ROLE_ERROR:     role_str = "error"; break;
     default: break;
   }
