@@ -10,6 +10,7 @@
 #include "bb_prompt.h"
 #include "bb_device_config.h"
 #include "bb_notification.h"
+#include "bb_power_mgmt.h" /* ADR-046 §5: 消息到达唤醒息屏 */
 #include "bb_ui_agent_chat.h" /* ADR-040: reconcile turn.committed/superseded into chat UI */
 #include "bb_ogg_opus.h"
 #include "bb_config.h"
@@ -967,7 +968,9 @@ static void turn_cancel_task(void* arg) {
   free(escaped);
   free(played_text);
   s_turn_cancel_inflight = 0;
-  vTaskDelete(NULL);
+  /* 必须与 xTaskCreateWithCaps 配对,否则 caps 分配的 PSRAM 栈+TCB 不回收,
+   * 每次打断泄漏 ~16KB(与 session_activate/new_task 一致)。 */
+  vTaskDeleteWithCaps(NULL);
 }
 
 esp_err_t bb_adapter_request_turn_cancel(const char* played_text) {
@@ -1020,7 +1023,8 @@ static void notif_tts_task(void* arg) {
   }
   free(text);
   s_notif_tts_inflight = 0;
-  vTaskDelete(NULL);
+  /* 与 xTaskCreateWithCaps 配对,否则每条朗读通知泄漏 ~16KB PSRAM 栈+TCB。 */
+  vTaskDeleteWithCaps(NULL);
 }
 
 void bb_adapter_speak_notification(const char* tts_text) {
@@ -1513,6 +1517,9 @@ static void ws_handle_text_message(const char* msg) {
         if (sid[0] != '\0' || preview[0] != '\0') {
           bb_notification_on_ws_event(sid, drv, ntype, preview);
         }
+        /* ADR-046 §5:消息/提醒到达唤醒息屏(此前该通路无人接线=死代码,息屏时
+         * 来通知不亮屏)。只置旗标,tick 在 stream_task 消费,WS 任务上下文安全。 */
+        bb_power_mgmt_on_message_arrived();
         /* ADR-042 §3.2: a notification carrying ttsText (e.g. a reminder) is
          * spoken aloud, not just toasted. Gated on ttsText presence (the adapter
          * sets it with speak=true); fires regardless of sid so a session-less
