@@ -29,6 +29,7 @@ set(_sim_srcs
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_wifi_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_chat_cache_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/bb_notification_stub.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/bb_nav_input_stub.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_assets.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_lvgl_display.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/../src/bb_page_standby.c"

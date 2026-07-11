@@ -2674,7 +2674,9 @@ void bb_display_set_mem_stats(int inbox, int profile) {
 }
 
 /* ── ADR-046: Display control panel interface exports ── */
-
+/* 硬件面板句柄 getter：仅真机构建有 s_panel/s_panel_io(声明在上方
+ * !BBCLAW_SIMULATOR 块内),SDL 模拟器无 esp_lcd 类型也无这些句柄,故一并守卫。 */
+#if !defined(BBCLAW_SIMULATOR)
 esp_lcd_panel_handle_t bb_display_get_panel_handle(void) {
   return s_panel;
 }
@@ -2682,3 +2684,4 @@ esp_lcd_panel_handle_t bb_display_get_panel_handle(void) {
 esp_lcd_panel_io_handle_t bb_display_get_panel_io_handle(void) {
   return s_panel_io;
 }
+#endif /* !BBCLAW_SIMULATOR */
