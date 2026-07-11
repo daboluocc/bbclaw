@@ -157,6 +157,34 @@ light sleep**，任意中断（GPIO/timer/WiFi RX）在数十微秒内恢复，�
 
 ---
 
+## bbclaw 生产板落地（LCD 无 AMOLED，无 IMU）
+
+手表是本 ADR 的首落点，bbclaw 生产板同一套思路但硬件不同，差异如下：
+
+| 维度 | 手表(WS AMOLED-206) | bbclaw 生产板 |
+|------|--------------------|--------------|
+| 屏 | QSPI CO5300 AMOLED（自发光） | SPI ST7789 TFT-LCD |
+| 息屏机制 | DISPOFF(0x28)+SLPIN(0x10) 熄像素 | **关背光 GPIO14**（LCD 功耗大头）+ DISPOFF(0x28) |
+| 唤醒源 | IMU 抬手 + 触摸 + 消息 | **无 IMU/无触摸** → 导航轮键(GPIO1/6/8) + 消息 |
+| 电量 | AXP2101 电量计 | ADC 分压(GPIO3) |
+
+**实现**：
+- 新增 `bb_display_control_st7789.c`：`set_brightness_raw`(背光 GPIO on/off)+
+  `set_panel_on`(DISPOFF/DISPON + 背光)。与 `bb_display_control_co5300.c` 按显示总线
+  互斥（`#if BBCLAW_DISPLAY_BUS_QSPI` vs `#if !...`）避免重复符号。
+- bbclaw `board_config.h` 打开 `DISPLAY_BRIGHTNESS_CONTROL` + `SLEEP_MANAGER_ENABLE`
+  （`IMU_WAKE=0`，`MESSAGE_WAKE=1`）+ `PM_LIGHT_SLEEP_ENABLE`。
+- 导航键已接 `bb_power_mgmt_on_user_activity`（自动唤醒），无需改输入层。
+
+**背光暂为 on/off**（非 PWM）：DIMMING 态背光保持亮，SLEEPING 才关。真·调光需给
+BL 脚接 LEDC PWM，列为增强。
+
+**OTA 边界（重要）**：息屏（sleep manager + 背光控制）由 `board_config.h` 宏开启，会
+随 bbclaw OTA 出厂。但 **CPU light-sleep 的 `CONFIG_PM_ENABLE` 只放本地
+`sdkconfig.pm` overlay，不进 `sdkconfig.bbclaw.latest`（OTA 生产配置）** —— light-sleep
+影响面大（音频/USB/时序），真机功耗+回归验证充分前不推全量设备。`bb_pm` 在未开
+`CONFIG_PM_ENABLE` 的 OTA 构建里自动降级 no-op。
+
 ## 审批
 
 - **Author**: BBClaw 团队

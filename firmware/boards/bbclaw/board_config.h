@@ -170,3 +170,24 @@
 #define BBCLAW_SPEAKER_SW_GPIO  4
 /** Default probe GPIO1 was 13; on this PCB GPIO13 is LCD CS */
 #define BBCLAW_PA_EN_PROBE_GPIO1 (-1)
+
+/* ── 低功耗（ADR-047，参考手表；bbclaw 生产板）──────────────────────────────
+ * bbclaw 无 IMU，故无抬手唤醒；唤醒源 = 导航轮键(GPIO1/6/8，已接
+ * bb_power_mgmt_on_user_activity) + 云端消息。屏是 SPI ST7789：
+ *   息屏 = 关背光 GPIO14(LCD 功耗大头) + 面板 DISPOFF，见 bb_display_control_st7789.c
+ * 亮度控制打开息屏管理器才能起来（其 init 依赖 brightness_is_available）。 */
+#define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1
+
+#define BBCLAW_SLEEP_MANAGER_ENABLE            1
+#define BBCLAW_SLEEP_MANAGER_DIMMING_MS       (2 * 60 * 1000)  /* 2 分钟空闲变暗(LCD 无 PWM 暂等同保持亮) */
+#define BBCLAW_SLEEP_MANAGER_SLEEP_MS         (3 * 60 * 1000)  /* 3 分钟空闲息屏(关背光) */
+#define BBCLAW_SLEEP_MANAGER_WAKE_COOLDOWN_MS 2000
+#define BBCLAW_SLEEP_MANAGER_IMU_WAKE_ENABLED 0                /* 无 IMU */
+#define BBCLAW_SLEEP_MANAGER_MESSAGE_WAKE_ENABLED 1            /* 云端消息唤醒 */
+
+/* CPU 自动 light-sleep + DFS(bb_pm)。需配合 CONFIG_PM_ENABLE:本地测试放
+ * boards/bbclaw/sdkconfig.board(不进 OTA 生产 sdkconfig.bbclaw.latest,待真机验证后
+ * 再决定是否推 OTA)。未开 CONFIG_PM_ENABLE 时 bb_pm 自动降级 no-op。 */
+#define BBCLAW_PM_LIGHT_SLEEP_ENABLE 1
+#define BBCLAW_PM_MAX_FREQ_MHZ       240
+#define BBCLAW_PM_MIN_FREQ_MHZ       80

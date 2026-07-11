@@ -56,6 +56,7 @@ set(_bb_srcs
     "bb_xl9555.c"
     "bb_display_control.c"
     "bb_display_control_co5300.c"
+    "bb_display_control_st7789.c"
     "bb_sleep_manager.c"
     "bb_power_mgmt.c"
     "bb_pm.c"

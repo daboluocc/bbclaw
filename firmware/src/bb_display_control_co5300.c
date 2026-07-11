@@ -7,6 +7,11 @@
 
 #include "bb_display_control.h"
 #include "bb_config.h"
+
+/* 板级门控:仅 QSPI(CO5300 AMOLED)板提供这套 *_impl;SPI/I80 屏由
+ * bb_display_control_st7789.c 提供,两者互斥避免重复符号(ADR-047)。 */
+#if BBCLAW_DISPLAY_BUS_QSPI
+
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 
@@ -102,3 +107,5 @@ esp_err_t bb_display_set_panel_on_impl(int on) {
   }
   return ESP_OK;
 }
+
+#endif /* BBCLAW_DISPLAY_BUS_QSPI */
