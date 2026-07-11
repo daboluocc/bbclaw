@@ -1109,17 +1109,33 @@ static void recfiles_scan(void) {
   DIR* d = opendir(path);
   if (d == NULL) return;
   struct dirent* e;
-  while ((e = readdir(d)) != NULL && s_st.recfiles_count < 16) {
+  /* 全量扫描,只保留「最新的 16 个」。名字是等长时间戳(目录=10 位 epoch /
+   * 段名=6 位 seq),字典序==时间序,故 strcmp 大者更新。此前 `count<16` 边读边截
+   * 是「先取读到的前 16 个再排序」——FAT 上 readdir 常按旧序返回,会话数 >16 时
+   * 今天最新的还没读到就被截掉,列表里看不到(用户实测)。改为 cap-then-sort 后
+   * 维护 top-16-newest:满 16 时找最旧槽,新条目更新则替换它。 */
+  while ((e = readdir(d)) != NULL) {
     if (e->d_name[0] == '.') continue;
     if (s_st.recfiles_mode == 0) {
       if (e->d_type != DT_DIR) continue;
     } else {
       if (strstr(e->d_name, ".opus") == NULL) continue;
     }
-    /* d_name 最长 255,显式截断到槽宽(目录名=epoch 10 位/段名 11 位,实际不会截) */
-    strncpy(s_st.recfiles_names[s_st.recfiles_count], e->d_name, sizeof(s_st.recfiles_names[0]) - 1);
-    s_st.recfiles_names[s_st.recfiles_count][sizeof(s_st.recfiles_names[0]) - 1] = '\0';
-    s_st.recfiles_count++;
+    if (s_st.recfiles_count < 16) {
+      /* d_name 最长 255,显式截断到槽宽(实际时间戳/段名不会截) */
+      strncpy(s_st.recfiles_names[s_st.recfiles_count], e->d_name, sizeof(s_st.recfiles_names[0]) - 1);
+      s_st.recfiles_names[s_st.recfiles_count][sizeof(s_st.recfiles_names[0]) - 1] = '\0';
+      s_st.recfiles_count++;
+    } else {
+      int min_i = 0;
+      for (int i = 1; i < 16; ++i) {
+        if (strcmp(s_st.recfiles_names[i], s_st.recfiles_names[min_i]) < 0) min_i = i;
+      }
+      if (strcmp(e->d_name, s_st.recfiles_names[min_i]) > 0) {
+        strncpy(s_st.recfiles_names[min_i], e->d_name, sizeof(s_st.recfiles_names[0]) - 1);
+        s_st.recfiles_names[min_i][sizeof(s_st.recfiles_names[0]) - 1] = '\0';
+      }
+    }
   }
   closedir(d);
   qsort(s_st.recfiles_names, (size_t)s_st.recfiles_count, sizeof(s_st.recfiles_names[0]),
