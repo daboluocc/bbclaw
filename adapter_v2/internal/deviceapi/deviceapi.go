@@ -592,8 +592,20 @@ func (b *Bridge) SubmitVoiceTurn(transcript string) error {
 		}
 	} else {
 		// Clean first/sequential turn at an idle prompt: nothing to interrupt or
-		// clear, so the fast single burst submits (no 串轮 risk without a prior turn).
-		if err := b.sess.Write([]byte(transcript + enterKey)); err != nil {
+		// clear. Even here the Enter MUST be a separate keystroke after a settle —
+		// gluing "transcript\r" into one write lets claude's TUI paste-burst
+		// heuristic (a big chunk arriving at once looks like a bracketed paste)
+		// swallow the trailing \r as a literal newline in the composer instead of
+		// SUBMITTING. The transcript then sits un-sent until a later lone Enter (the
+		// next turn) flushes both at once — the user-visible "松手没发出去,下一句
+		// 连着上一句一起发" 串轮. A long CJK transcript is the common trigger (more
+		// bytes → more paste-like). Same lesson as the barge-in path above (ADR-041);
+		// the old single-burst "no 串轮 risk without a prior turn" assumption was wrong.
+		if err := b.sess.Write([]byte(transcript)); err != nil {
+			return mapErr(err)
+		}
+		time.Sleep(injectPause)
+		if err := b.sess.Write([]byte(enterKey)); err != nil {
 			return mapErr(err)
 		}
 	}
