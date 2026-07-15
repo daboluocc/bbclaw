@@ -376,6 +376,26 @@ func TestExtractFallbackStillWorksForMarkerlessCLI(t *testing.T) {
 // must capture the WHOLE reply up to the "✻ … for Ns" completion summary, not
 // truncate at the first flush-left paragraph (the on-device bug where only
 // "你好你好,我在呢!" was spoken and the follow-up paragraph was dropped).
+func TestExtractMarkerBlockU25CFBullet(t *testing.T) {
+	// claude 2.1.207 renders the assistant bullet as "●" (U+25CF), not "⏺" (U+23FA).
+	// The extractor must anchor on it too, else the reply comes back empty and the
+	// voice device stays silent (the real bug: text="" reply, reply_chars=0 to cloud).
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"❯ 你好\r\n" +
+		"● 你好!有什么可以帮你的?\r\n" +
+		"✻ Cooked for 2s\r\n" +
+		"❯ \r\n"))
+	r, _ := ext.OnOutput()
+	if !strings.Contains(r.Text, "你好!有什么可以帮你的?") {
+		t.Errorf("● (U+25CF) reply not extracted: %q", r.Text)
+	}
+	if strings.Contains(r.Text, "Cooked for") || strings.Contains(r.Text, "❯") {
+		t.Errorf("reply leaked chrome: %q", r.Text)
+	}
+}
+
 func TestExtractMarkerBlockFlushLeftParagraphs(t *testing.T) {
 	s := vtscreen.New(80, 24)
 	ext := New(s)

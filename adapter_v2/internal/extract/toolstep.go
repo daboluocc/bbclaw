@@ -36,7 +36,7 @@ func isToolStep(rawLine string) bool {
 // it). A blank hint is rejected.
 func parseToolStep(rawLine string) (ToolStep, bool) {
 	t := strings.TrimLeft(rawLine, " ")
-	if !strings.HasPrefix(t, replyMarker) {
+	if !hasReplyMarkerPrefix(t) {
 		return ToolStep{}, false
 	}
 	body := stripReplyMarker(strings.TrimRight(t, " \t"))

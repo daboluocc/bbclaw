@@ -94,9 +94,24 @@ func (e *Extractor) OnOutput() (Reply, bool) {
 	return Reply{Text: text}, true
 }
 
-// replyMarker is claude's assistant-turn bullet (U+23FA): every assistant block
-// is rendered "⏺ <text>" at column 0, continuation lines indented two spaces.
-const replyMarker = "⏺"
+// replyMarkers are claude's assistant-turn bullets across versions: older claude
+// rendered "⏺" (U+23FA), claude 2.1.x renders "●" (U+25CF). Every assistant block
+// is "<bullet> <text>" at column 0, continuation lines indented two spaces. Match
+// EITHER — a bullet mismatch here makes extraction anchor nothing, so the reply
+// comes back empty and the voice device stays silent (observed on claude 2.1.207).
+var replyMarkers = []string{"⏺", "●"}
+
+// hasReplyMarkerPrefix reports whether a line (leading spaces trimmed) opens with
+// an assistant bullet.
+func hasReplyMarkerPrefix(s string) bool {
+	s = strings.TrimLeft(s, " ")
+	for _, m := range replyMarkers {
+		if strings.HasPrefix(s, m) {
+			return true
+		}
+	}
+	return false
+}
 
 // extract computes the newest-reply text from the current screen. Preferred path:
 // anchor on claude's "⏺" reply marker and take that block (#claude). Fallback for
@@ -183,7 +198,7 @@ func extractMarkerBlock(visible string) (string, bool) {
 	raw := strings.Split(visible, "\n")
 	last := -1
 	for i, l := range raw {
-		if !strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
+		if !hasReplyMarkerPrefix(l) {
 			continue
 		}
 		// A "⏺ <chrome>" line is NOT a reply marker: claude re-renders status
@@ -209,7 +224,7 @@ func extractMarkerBlock(visible string) (string, bool) {
 		// resume status/chrome block) — the current reply ends here. Without this
 		// the block would absorb a trailing "⏺ [Opus …] │ workspace" status line,
 		// whose "⏺" prefix hides it from the isNoiseLine check below.
-		if strings.HasPrefix(strings.TrimLeft(l, " "), replyMarker) {
+		if hasReplyMarkerPrefix(l) {
 			break
 		}
 		if l == "" {
@@ -268,8 +283,11 @@ func isClaudeScreen(visible string) bool {
 // spaces) carry no marker and are returned untouched, so their indentation is
 // preserved. A line whose only lead is the marker collapses to its text.
 func stripReplyMarker(l string) string {
-	if rest, ok := strings.CutPrefix(strings.TrimLeft(l, " "), "⏺"); ok {
-		return strings.TrimLeft(rest, " ")
+	s := strings.TrimLeft(l, " ")
+	for _, m := range replyMarkers {
+		if rest, ok := strings.CutPrefix(s, m); ok {
+			return strings.TrimLeft(rest, " ")
+		}
 	}
 	return l
 }
