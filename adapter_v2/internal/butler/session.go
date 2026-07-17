@@ -13,6 +13,8 @@ import (
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 	"github.com/google/uuid"
+	claudeengine "github.com/zhoushoujianwork/agent-runner/engine/claude"
+	"github.com/zhoushoujianwork/agent-runner/runner"
 )
 
 // DeviceSession owns the lifecycle of the shared default conversation (ADR-032).
@@ -75,27 +77,50 @@ func (d *DeviceSession) Config() ptyhost.Config {
 	out := append([]string{}, d.baseArgv...)
 	// The resume flags (--continue / --resume / --session-id) are claude-specific;
 	// don't append them to another CLI (e.g. a test's `cat`, which would treat
-	// "--continue" as a filename and exit).
-	isClaude := len(out) > 0 && strings.Contains(strings.ToLower(filepath.Base(out[0])), "claude")
-	if isClaude {
+	// "--continue" as a filename and exit). For claude the argv goes through
+	// agent-runner's TermEngine so resume semantics (and their mutual-exclusion
+	// validation) stay in lockstep with headless runs of the same conversation.
+	if isClaudeArgv(out) {
+		req := runner.TermRequest{}
 		switch {
 		case d.activeID == "":
-			out = append(out, "--continue") // no known id yet → resume the latest
+			req.Continue = true // no known id yet → resume the latest
 		case d.fresh:
-			out = append(out, "--session-id", d.activeID) // brand-new conversation
+			req.NewSessionID = d.activeID // brand-new conversation
 		default:
-			out = append(out, "--resume", d.activeID) // resume a specific conversation
+			req.ResumeSessionID = d.activeID // resume a specific conversation
 		}
+		out = claudeTermArgv(out, req)
 	}
 	cfg := ptyhost.Config{Argv: out, Cwd: d.cwd}
 	// Pin the default session to a FIXED, generous grid (never resized) so the
 	// device line's screen-scrape never loses a tall reply's top to scroll-off
 	// (session.DefaultGridCols×Rows; see ADR-035, extract/CASES.md C9).
 	cfg.InitialSize = ptyhost.Size{Cols: session.DefaultGridCols, Rows: session.DefaultGridRows}
-	if isClaude {
+	if isClaudeArgv(out) {
 		cfg.StartupInput = claudeStartupKeys()
 	}
 	return cfg
+}
+
+// isClaudeArgv reports whether argv[0] looks like the claude CLI.
+func isClaudeArgv(argv []string) bool {
+	return len(argv) > 0 && strings.Contains(strings.ToLower(filepath.Base(argv[0])), "claude")
+}
+
+// claudeTermArgv builds the interactive claude argv through agent-runner's
+// TermEngine: baseArgv[0] is the binary, the remaining device-policy flags
+// (persona, permission mode — see DeviceClaudeArgs) ride along as ExtraArgs,
+// and the resume fields on req select the conversation. NewTerm cannot fail
+// here (exactly one conversation mode is ever set), but if it does the base
+// argv passes through unchanged rather than killing the session spawn.
+func claudeTermArgv(baseArgv []string, req runner.TermRequest) []string {
+	req.ExtraArgs = append([]string(nil), baseArgv[1:]...)
+	spec, err := claudeengine.New(baseArgv[0]).NewTerm(req)
+	if err != nil {
+		return baseArgv
+	}
+	return spec.Argv
 }
 
 // WorkerConfig builds a ptyhost.Config for an ISOLATED headless worker session
@@ -108,9 +133,10 @@ func (d *DeviceSession) Config() ptyhost.Config {
 // (e.g. a test's `cat`) passes through with no resume/startup flags.
 func WorkerConfig(baseArgv []string, cwd string) ptyhost.Config {
 	out := append([]string{}, baseArgv...)
-	isClaude := len(out) > 0 && strings.Contains(strings.ToLower(filepath.Base(out[0])), "claude")
+	isClaude := isClaudeArgv(out)
 	if isClaude {
-		out = append(out, "--session-id", uuid.New().String()) // always a fresh, isolated conversation
+		// always a fresh, isolated conversation
+		out = claudeTermArgv(out, runner.TermRequest{NewSessionID: uuid.New().String()})
 	}
 	cfg := ptyhost.Config{Argv: out, Cwd: cwd}
 	cfg.InitialSize = ptyhost.Size{Cols: session.DefaultGridCols, Rows: session.DefaultGridRows}

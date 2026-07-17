@@ -3,17 +3,23 @@
 // CLI-agnostic: it knows nothing about the agent's output format. This is what
 // lets v2 replace v1's per-CLI driver matrix with a single transport.
 //
-// Compare: dinotty src/pty.rs (the reference implementation we modelled on).
+// Since M2 (agent-runner integration) the actual PTY placement is delegated to
+// the agent-runner host executor (github.com/zhoushoujianwork/agent-runner):
+// same creack/pty underneath, plus the SDK's lifecycle hardening — graceful
+// SIGTERM → grace → SIGKILL teardown instead of a straight Kill, CLAUDECODE
+// env stripping, EIO→EOF mapping on the master read after child exit, and
+// optional ExtraDirs context mounting. This package keeps only the v2-specific
+// bits: the CLI-agnostic Config surface and StartupInput playback.
 package ptyhost
 
 import (
+	"context"
 	"errors"
 	"io"
-	"os"
-	"os/exec"
 	"time"
 
-	"github.com/creack/pty"
+	"github.com/zhoushoujianwork/agent-runner/executor/host"
+	"github.com/zhoushoujianwork/agent-runner/runner"
 )
 
 // ErrEmptyArgv is returned when Config.Argv has no program to run.
@@ -23,6 +29,12 @@ const (
 	defaultCols = 80
 	defaultRows = 24
 )
+
+// executor is the shared agent-runner host executor. Its default termination
+// grace (2s between SIGTERM and SIGKILL) is what Close relies on for a clean
+// child shutdown; sessions that need a longer flush window can rely on the
+// child's own signal handling within that budget.
+var executor = host.New()
 
 // Size is the terminal grid size handed to the PTY and the VT screen.
 type Size struct {
@@ -60,6 +72,10 @@ type Config struct {
 	// runs in its own goroutine, so Spawn still returns immediately. Empty ⇒ no
 	// injection. Write errors are ignored (the child may have already exited).
 	StartupInput []StartupChunk
+	// ExtraDirs are agent-runner context roots linked into Cwd for the process
+	// lifetime (project .claude/.agent skills, agents, commands). See the
+	// agent-runner ExtraDir docs for discovery/exact-mode semantics.
+	ExtraDirs []runner.ExtraDir
 }
 
 // StartupChunk is one delayed write replayed into a freshly spawned PTY. Delay
@@ -82,43 +98,34 @@ type PTY interface {
 	Wait() (int, error)
 }
 
-// ptySession is the concrete PTY backed by creack/pty.
+// ptySession adapts an agent-runner PTYProcess to the v2 PTY surface.
 type ptySession struct {
-	f   *os.File  // PTY master: read = child stdout/stderr, write = child stdin
-	cmd *exec.Cmd // the spawned child
+	proc runner.PTYProcess
 }
 
-func (p *ptySession) Read(b []byte) (int, error)  { return p.f.Read(b) }
-func (p *ptySession) Write(b []byte) (int, error) { return p.f.Write(b) }
+func (p *ptySession) Read(b []byte) (int, error)  { return p.proc.Output().Read(b) }
+func (p *ptySession) Write(b []byte) (int, error) { return p.proc.Input().Write(b) }
 
-// Close tears down the PTY and best-effort kills the child. Reaping happens in
-// Wait; callers that never call Wait still release the master fd here.
+// Close tears down the child through agent-runner's graceful chain (SIGTERM →
+// grace → SIGKILL). The master fd is released by the executor's reaper once the
+// child is gone; callers that never call Wait leak nothing.
 func (p *ptySession) Close() error {
-	err := p.f.Close()
-	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
-	return err
+	return p.proc.Cancel()
 }
 
 func (p *ptySession) Resize(s Size) error {
 	s = s.orDefault()
-	return pty.Setsize(p.f, &pty.Winsize{Rows: s.Rows, Cols: s.Cols})
+	return p.proc.Resize(runner.TermSize{Cols: s.Cols, Rows: s.Rows})
 }
 
-// Wait reaps the child and returns its exit code. A non-zero exit (ExitError)
-// is reported via the code, not as an error; err is non-nil only for genuine
-// wait failures.
+// Wait reaps the child and returns its exit code. A non-zero exit is reported
+// via the code, not as an error; err is non-nil only for genuine wait failures.
 func (p *ptySession) Wait() (int, error) {
-	err := p.cmd.Wait()
-	if err == nil {
-		return 0, nil
+	status, err := p.proc.Wait()
+	if err != nil {
+		return -1, err
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode(), nil
-	}
-	return -1, err
+	return status.ExitCode, nil
 }
 
 // Spawn launches cfg.Argv under a fresh PTY at the requested initial size.
@@ -126,19 +133,20 @@ func Spawn(cfg Config) (PTY, error) {
 	if len(cfg.Argv) == 0 {
 		return nil, ErrEmptyArgv
 	}
-
-	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
-	if cfg.Cwd != "" {
-		cmd.Dir = cfg.Cwd
-	}
-	cmd.Env = buildEnv(cfg.Env)
-
 	size := cfg.InitialSize.orDefault()
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: size.Rows, Cols: size.Cols})
+	spec := runner.CommandSpec{
+		Argv:      cfg.Argv,
+		Dir:       cfg.Cwd,
+		Env:       cfg.Env,
+		ExtraDirs: cfg.ExtraDirs,
+	}
+	// Lifecycle is owned by Close/Wait (session.Manager kill/GC), matching the
+	// previous behaviour where no context ever cancelled a spawned PTY.
+	proc, err := executor.StartPTY(context.Background(), spec, runner.TermSize{Cols: size.Cols, Rows: size.Rows})
 	if err != nil {
 		return nil, err
 	}
-	s := &ptySession{f: f, cmd: cmd}
+	s := &ptySession{proc: proc}
 	if len(cfg.StartupInput) > 0 {
 		go playStartupInput(s, cfg.StartupInput)
 	}
@@ -158,21 +166,4 @@ func playStartupInput(p PTY, chunks []StartupChunk) {
 			_, _ = p.Write(c.Data)
 		}
 	}
-}
-
-// buildEnv merges extra vars onto the parent environment and ensures TERM is
-// set so the CLI emits a full xterm-256color TUI.
-func buildEnv(extra map[string]string) []string {
-	env := os.Environ()
-	hasTerm := false
-	for k, v := range extra {
-		env = append(env, k+"="+v)
-		if k == "TERM" {
-			hasTerm = true
-		}
-	}
-	if !hasTerm {
-		env = append(env, "TERM=xterm-256color")
-	}
-	return env
 }
