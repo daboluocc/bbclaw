@@ -43,6 +43,12 @@
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 0
 #endif
 
+/* Keep the low-brightness ambient standby view visible after the idle timeout.
+ * Boards that leave this off retain the conventional DIMMING -> SLEEPING flow. */
+#ifndef BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY
+#define BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY 0
+#endif
+
 /* ── CPU/系统级低功耗（ADR-047）:自动 light sleep + DFS。默认关,仅带电池且验证过
  * 的板打开(需同时在 sdkconfig 开 CONFIG_PM_ENABLE)。bb_pm 模块内自门控为 no-op。 ── */
 #ifndef BBCLAW_PM_LIGHT_SLEEP_ENABLE

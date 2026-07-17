@@ -151,10 +151,16 @@ void bb_sleep_manager_tick(void) {
       break;
 
     case BB_SLEEP_STATE_DIMMING:
+#if BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY
+      /* BBClaw's ambient standby is an intentional, visible idle state. Keep
+       * the panel on; manual sleep remains the explicit route to DISPOFF. */
+      break;
+#else
       if (idle_time >= (int32_t)g_state.sleep_timeout_ms) {
         transition_to_state(BB_SLEEP_STATE_SLEEPING);
       }
       break;
+#endif
 
     case BB_SLEEP_STATE_WAKING:
       /* 唤醒去抖窗口内无真实交互 → 回到睡眠(原实现拿 idle 时长与时间戳

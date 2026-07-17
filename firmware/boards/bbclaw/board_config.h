@@ -184,6 +184,8 @@
 #define BBCLAW_SLEEP_MANAGER_WAKE_COOLDOWN_MS 2000
 #define BBCLAW_SLEEP_MANAGER_IMU_WAKE_ENABLED 0                /* 无 IMU */
 #define BBCLAW_SLEEP_MANAGER_MESSAGE_WAKE_ENABLED 1            /* 云端消息唤醒 */
+/* 生产板以最低亮度的 Z··· 呼吸表示在线待机；自动超时不关背光。真正息屏仍可手动触发。 */
+#define BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY 1
 
 /* CPU 自动 light-sleep + DFS(bb_pm)。需配合 CONFIG_PM_ENABLE:本地测试放
  * boards/bbclaw/sdkconfig.board(不进 OTA 生产 sdkconfig.bbclaw.latest,待真机验证后

@@ -12,9 +12,9 @@ CO5300 AMOLED 亮度降为 0、发送 `DISPOFF`，并允许 ESP32-S3 自动 ligh
 ## 方案设计
 
 - 复用现有 `DIMMING` 阶段作为环境待机，不增加新的电源状态。
-- 环境待机显示纯黑全屏和 3 个居中点，三个点错相缓慢呼吸。
+- 环境待机显示纯黑全屏和居中的 `Z · · ·`，Z 与三个点错相缓慢呼吸。
 - 面板亮度使用最低档 `BB_BRIGHTNESS_MIN`，动画以 200 ms 步进（5 FPS）刷新。
-- 到达原有 `SLEEPING` 超时后隐藏动画并继续执行 `DISPOFF + light sleep`。
+- BBClaw 生产板环境待机常驻；手动关屏仍会执行 `DISPOFF + light sleep`。
 - ACTIVE、WAKING 和手动唤醒均关闭环境待机；按键、触摸及云端消息唤醒链路不变。
 - BBClaw 无 IMU，保持 `BBCLAW_SLEEP_MANAGER_IMU_WAKE_ENABLED=0`。
 
@@ -34,7 +34,6 @@ CO5300 AMOLED 亮度降为 0、发送 `DISPOFF`，并允许 ESP32-S3 自动 ligh
 
 1. `make -C firmware sim-build`：确认 LVGL API 与模拟器构建通过。
 2. `make -C firmware build`：使用 ESP-IDF 构建 BBClaw 固件。
-3. 真机观察：进入 DIMMING 后只显示 3 个呼吸点；到达 SLEEPING 后面板全黑。
+3. 真机观察：进入 DIMMING 后显示低亮度 `Z · · ·` 呼吸效果；超过原有 SLEEPING 超时后仍保持可见。
 4. 真机唤醒：验证导航按键、触摸和云端消息均恢复正常页面。
-5. 串口日志：确认 `ACTIVE → DIMMING → SLEEPING` 状态转换及 light-sleep 门控不变。
-
+5. 串口日志：确认 `ACTIVE → DIMMING` 状态转换；BBClaw 生产板不再自动进入 `SLEEPING`。

@@ -25,6 +25,9 @@
 #if LV_FONT_MONTSERRAT_14
 LV_FONT_DECLARE(lv_font_montserrat_14)
 #endif
+#if LV_FONT_MONTSERRAT_40
+LV_FONT_DECLARE(lv_font_montserrat_40)
+#endif
 
 #define DISP_W BBCLAW_ST7789_WIDTH
 #define DISP_H BBCLAW_ST7789_HEIGHT
@@ -98,6 +101,7 @@ static lv_obj_t* s_bat_cap;
 static lv_obj_t* s_bat_pct;
 static lv_obj_t* s_notif_badge; /* unread-reminder badge, top-center (ADR-021 §9.3) */
 static lv_obj_t* s_ambient_view;
+static lv_obj_t* s_ambient_z;
 static lv_obj_t* s_ambient_dots[3];
 static lv_timer_t* s_ambient_timer;
 static volatile int s_ambient_requested;
@@ -116,6 +120,14 @@ static const lv_font_t* small_font_fn(void) {
   return &lv_font_montserrat_14;
 #else
   return lv_font_get_default();
+#endif
+}
+
+static const lv_font_t* ambient_z_font_fn(void) {
+#if LV_FONT_MONTSERRAT_40
+  return &lv_font_montserrat_40;
+#else
+  return small_font_fn();
 #endif
 }
 
@@ -216,6 +228,7 @@ static void ambient_timer_cb(lv_timer_t* timer) {
   }
 
   static const uint8_t offsets[3] = {0, 5, 10};
+  lv_obj_set_style_text_opa(s_ambient_z, AMBIENT_OPA[s_ambient_phase], 0);
   for (int i = 0; i < 3; i++) {
     lv_obj_set_style_bg_opa(s_ambient_dots[i], AMBIENT_OPA[(s_ambient_phase + offsets[i]) & 0x0f], 0);
   }
@@ -377,13 +390,25 @@ void bb_page_standby_create(lv_obj_t* scr) {
 
   const int dot_size = BB_UI_PORTRAIT ? 10 : 6;
   const int dot_gap = BB_UI_PORTRAIT ? 24 : 16;
+  const int z_w = BB_UI_PORTRAIT ? 34 : 28;
   const int dots_w = dot_size * 3 + dot_gap * 2;
+  const int group_w = z_w + dot_gap + dots_w;
+  const int group_x = (DISP_W - group_w) / 2;
+  const int group_y = DISP_H / 2;
+
+  s_ambient_z = lv_label_create(s_ambient_view);
+  lv_obj_set_style_text_color(s_ambient_z, lv_color_hex(UI_DOT_LIT), 0);
+  lv_obj_set_style_text_font(s_ambient_z, ambient_z_font_fn(), 0);
+  lv_obj_set_style_text_opa(s_ambient_z, AMBIENT_OPA[0], 0);
+  lv_label_set_text(s_ambient_z, "Z");
+  lv_obj_set_pos(s_ambient_z, group_x, group_y - 22);
+
   for (int i = 0; i < 3; i++) {
     lv_obj_t* dot = lv_obj_create(s_ambient_view);
     lv_obj_remove_style_all(dot);
     lv_obj_set_size(dot, dot_size, dot_size);
-    lv_obj_set_pos(dot, (DISP_W - dots_w) / 2 + i * (dot_size + dot_gap),
-                   (DISP_H - dot_size) / 2);
+    lv_obj_set_pos(dot, group_x + z_w + dot_gap + i * (dot_size + dot_gap),
+                   group_y - dot_size / 2);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(UI_DOT_LIT), 0);
     lv_obj_set_style_bg_opa(dot, AMBIENT_OPA[i * 5], 0);
