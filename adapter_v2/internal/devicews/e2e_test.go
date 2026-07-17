@@ -36,6 +36,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/butler"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/deviceapi"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )
@@ -46,7 +47,7 @@ func TestE2EDeviceRoundTrip(t *testing.T) {
 	mgr := session.NewManager()
 	// StreamReplyDelta on so the round-trip also exercises the Phase B live-subtitle
 	// path (reply.delta) ahead of the authoritative reply.end.
-	srv := New(mgr, deviceapi.StaticRecognizer{Text: "hello"}, deviceapi.SilentSynthesizer{}, []string{bin}, "", Options{StreamReplyDelta: true})
+	srv := New(mgr, deviceapi.StaticRecognizer{Text: "hello"}, deviceapi.SilentSynthesizer{}, butler.NewDeviceSession(mgr, []string{bin}, ""), Options{StreamReplyDelta: true})
 	httpSrv := httptest.NewServer(srv.Handler())
 	defer httpSrv.Close()
 	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/v2/dev/ws"
