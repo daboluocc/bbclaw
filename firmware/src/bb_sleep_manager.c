@@ -7,6 +7,7 @@
 #include "bb_sleep_manager.h"
 #include "bb_imu.h"
 #include "bb_display_control.h"
+#include "bb_page_standby.h"
 #include "bb_config.h"
 
 #include <esp_log.h>
@@ -70,14 +71,17 @@ static void transition_to_state(bb_sleep_state_t new_state) {
 
   switch (new_state) {
     case BB_SLEEP_STATE_ACTIVE:
+      bb_page_standby_set_ambient(0);
       bb_display_fade_brightness(BB_BRIGHTNESS_MAX, 200);
       break;
 
     case BB_SLEEP_STATE_DIMMING:
-      bb_display_fade_brightness(BB_BRIGHTNESS_LOW, 500);
+      bb_page_standby_set_ambient(1);
+      bb_display_fade_brightness(BB_BRIGHTNESS_MIN, 500);
       break;
 
     case BB_SLEEP_STATE_SLEEPING:
+      bb_page_standby_set_ambient(0);
       bb_display_fade_brightness(BB_BRIGHTNESS_OFF, 1000);
       /* 0x51 写 0 熄不灭 CO5300 AMOLED(仍扫描发光)——DISPOFF 才真正黑屏。
        * fade 已把亮度降到 0(唤醒时从黑淡入),DISPOFF 停止面板输出近零功耗。 */
@@ -89,6 +93,7 @@ static void transition_to_state(bb_sleep_state_t new_state) {
       break;
 
     case BB_SLEEP_STATE_WAKING:
+      bb_page_standby_set_ambient(0);
       /* 记录唤醒时间 */
       g_state.wake_detected_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
       bb_display_fade_brightness(BB_BRIGHTNESS_MID, 300);

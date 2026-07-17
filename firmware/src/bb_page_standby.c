@@ -97,6 +97,19 @@ static lv_obj_t* s_bat_frame;
 static lv_obj_t* s_bat_cap;
 static lv_obj_t* s_bat_pct;
 static lv_obj_t* s_notif_badge; /* unread-reminder badge, top-center (ADR-021 §9.3) */
+static lv_obj_t* s_ambient_view;
+static lv_obj_t* s_ambient_dots[3];
+static lv_timer_t* s_ambient_timer;
+static volatile int s_ambient_requested;
+static int s_ambient_active;
+static uint8_t s_ambient_phase;
+
+/* 16-step ease-in/out pulse, deliberately quantized for a 5 FPS low-power
+ * animation. The three dots use 120-degree-ish phase offsets. */
+static const lv_opa_t AMBIENT_OPA[16] = {
+    28, 34, 48, 72, 104, 144, 184, 216,
+    232, 216, 184, 144, 104, 72, 48, 34,
+};
 
 static const lv_font_t* small_font_fn(void) {
 #if LV_FONT_MONTSERRAT_14
@@ -186,6 +199,34 @@ static void build_colon(void) {
 static void standby_tap_cb(lv_event_t* e) {
   (void)e;
   bb_nav_input_inject(BB_NAV_EVENT_UP);
+}
+
+static void ambient_timer_cb(lv_timer_t* timer) {
+  if (!s_ambient_requested) {
+    if (s_ambient_view != NULL) lv_obj_add_flag(s_ambient_view, LV_OBJ_FLAG_HIDDEN);
+    s_ambient_active = 0;
+    lv_timer_pause(timer);
+    return;
+  }
+
+  if (!s_ambient_active) {
+    lv_obj_clear_flag(s_ambient_view, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_ambient_view);
+    s_ambient_active = 1;
+  }
+
+  static const uint8_t offsets[3] = {0, 5, 10};
+  for (int i = 0; i < 3; i++) {
+    lv_obj_set_style_bg_opa(s_ambient_dots[i], AMBIENT_OPA[(s_ambient_phase + offsets[i]) & 0x0f], 0);
+  }
+  s_ambient_phase = (s_ambient_phase + 1) & 0x0f;
+}
+
+void bb_page_standby_set_ambient(int enabled) {
+  s_ambient_requested = enabled != 0;
+  /* Starting a paused LVGL timer from stream_task is unsafe. The normal clock
+   * refresh below notices the request within one second and resumes it. While
+   * active, the timer itself notices disable requests within 200 ms. */
 }
 
 void bb_page_standby_create(lv_obj_t* scr) {
@@ -321,6 +362,36 @@ void bb_page_standby_create(lv_obj_t* scr) {
 
   lv_obj_add_flag(s_bat_box, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(s_bat_pct, LV_OBJ_FLAG_HIDDEN);
+
+  /* Full-screen ambient overlay lives on the top layer so it also covers chat
+   * or settings if the idle timeout expires there. It is normally hidden. */
+  s_ambient_view = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(s_ambient_view);
+  lv_obj_set_size(s_ambient_view, DISP_W, DISP_H);
+  lv_obj_set_pos(s_ambient_view, 0, 0);
+  lv_obj_set_style_bg_color(s_ambient_view, lv_color_hex(BB_UI_BG), 0);
+  lv_obj_set_style_bg_opa(s_ambient_view, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(s_ambient_view, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_ambient_view, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(s_ambient_view, standby_tap_cb, LV_EVENT_CLICKED, NULL);
+
+  const int dot_size = BB_UI_PORTRAIT ? 10 : 6;
+  const int dot_gap = BB_UI_PORTRAIT ? 24 : 16;
+  const int dots_w = dot_size * 3 + dot_gap * 2;
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t* dot = lv_obj_create(s_ambient_view);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, dot_size, dot_size);
+    lv_obj_set_pos(dot, (DISP_W - dots_w) / 2 + i * (dot_size + dot_gap),
+                   (DISP_H - dot_size) / 2);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(UI_DOT_LIT), 0);
+    lv_obj_set_style_bg_opa(dot, AMBIENT_OPA[i * 5], 0);
+    s_ambient_dots[i] = dot;
+  }
+  lv_obj_add_flag(s_ambient_view, LV_OBJ_FLAG_HIDDEN);
+  s_ambient_timer = lv_timer_create(ambient_timer_cb, 200, NULL);
+  lv_timer_pause(s_ambient_timer);
 }
 
 /* __APPEND__ */
@@ -350,6 +421,13 @@ void bb_page_standby_set_visible(int visible) {
 
 void bb_page_standby_refresh_clock(const char* hm) {
   if (s_dots[0][0][0] == NULL || hm == NULL) return;
+
+  /* This function runs in the LVGL task once per second. It is the safe bridge
+   * that starts the paused ambient animation requested by stream_task. */
+  if (s_ambient_requested && s_ambient_timer != NULL && !s_ambient_active) {
+    lv_timer_resume(s_ambient_timer);
+    lv_timer_ready(s_ambient_timer);
+  }
 
   /* Pull up to 4 ASCII digits out of "HH:MM" (tolerates "H:MM"/junk). */
   int d[4] = {-1, -1, -1, -1};

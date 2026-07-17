@@ -14,3 +14,7 @@ void bb_page_standby_update_battery(int supported, int available, int percent, i
 /* Show/refresh the unread-reminder badge on the idle screen (ADR-021 §9.3).
  * count<=0 hides it. Fed from bb_notification_unread_count() by the display tick. */
 void bb_page_standby_set_unread(int count);
+
+/* Request the low-power three-dot ambient overlay. Thread-safe: callers only
+ * publish the desired state; LVGL objects are updated by the page timer. */
+void bb_page_standby_set_ambient(int enabled);
