@@ -1,7 +1,9 @@
 package claudecode
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,24 +12,71 @@ import (
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	claudeengine "github.com/zhoushoujianwork/agent-runner/engine/claude"
+	agentrunner "github.com/zhoushoujianwork/agent-runner/runner"
 )
 
-// Test the stream-json parser by feeding it a canned transcript that
-// exercises init / assistant text / tool_use / result.
-func TestParseStreamJSON(t *testing.T) {
+// parseStreamJSON is a test-compat shim for the pre-agent-runner parser
+// tests: it feeds the canned transcript through the SAME agent-runner
+// protocol parser production uses, then through the driver's translation
+// layer — a contract test of the full parse+translate path. Malformed lines
+// are skipped (in production agent-runner fails the turn on them instead of
+// tolerating).
+func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
+	d := New(Options{}, log)
+	protocol, err := claudeengine.New("claude").NewSession(agentrunner.SessionRequest{})
+	if err != nil {
+		panic(err)
+	}
+	if s.seenToolUse == nil { // robust to directly-constructed sessions
+		s.seenToolUse = make(map[string]bool)
+	}
+	cap := &stderrCapture{}
+	toolUseNames := make(map[string]string)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		if len(strings.TrimSpace(sc.Text())) == 0 {
+			continue
+		}
+		step, err := protocol.ParseLine(sc.Bytes())
+		if err != nil {
+			continue
+		}
+		for _, ev := range step.Events {
+			d.consumeRunnerEvent(s, cap, toolUseNames, ev)
+		}
+	}
+}
+
+func runTranscript(t *testing.T, _ *Driver, s *session, transcript string) {
+	t.Helper()
+	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+}
+
+func newTestDriver(t *testing.T) *Driver {
+	t.Helper()
+	return New(Options{}, obs.NewLogger())
+}
+
+// Test the parse+translate path with a canned transcript that exercises
+// init / assistant text / tool_use / result.
+func TestTranslateStream(t *testing.T) {
 	const transcript = `{"type":"system","subtype":"init","session_id":"abc-123","model":"claude-sonnet-4-6"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}
 {"type":"assistant","message":{"content":[{"type":"text","text":" world"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls -la"}}]}}
 {"type":"result","subtype":"success","result":"Hello world","usage":{"input_tokens":12,"output_tokens":3}}
 `
 
+	d := newTestDriver(t)
 	s := &session{
-		id:      "sid-test",
-		events:  make(chan agent.Event, 16),
-		rootCtx: context.Background(),
+		id:          "sid-test",
+		events:      make(chan agent.Event, 16),
+		rootCtx:     context.Background(),
+		seenToolUse: make(map[string]bool),
 	}
 
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var got []agent.Event
@@ -67,22 +116,53 @@ func TestParseStreamJSON(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONToolUseEmitsEvToolCall feeds a transcript with a single
+// TestTranslateStreamDropsPartialFrames verifies that stream_event partial
+// frames (text deltas / content_block_start replays emitted because agent-
+// runner passes --include-partial-messages) are NOT double-surfaced: only the
+// full assistant frame produces device events.
+func TestTranslateStreamDropsPartialFrames(t *testing.T) {
+	const transcript = `{"type":"stream_event","session_id":"abc","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}
+{"type":"stream_event","session_id":"abc","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}]}}
+`
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
+	close(s.events)
+
+	var texts, tools int
+	for e := range s.events {
+		switch e.Type {
+		case agent.EvText:
+			texts++
+		case agent.EvToolCall:
+			tools++
+		}
+	}
+	if texts != 1 {
+		t.Errorf("want exactly 1 EvText (deltas dropped), got %d", texts)
+	}
+	if tools != 1 {
+		t.Errorf("want exactly 1 EvToolCall (partial frame dropped), got %d", tools)
+	}
+}
+
+// TestTranslateStreamToolUseEmitsEvToolCall feeds a transcript with a single
 // tool_use block whose command is longer than the toolHintMaxLen truncation
 // limit and verifies exactly one EvToolCall event is emitted with the expected
-// tool name and truncated hint. Ties the expected prefix to toolHintMaxLen so
-// the test tracks the constant instead of a hardcoded length (was pinned to 80
-// and silently broke when the cap moved to 240 in abee1d1).
-func TestParseStreamJSONToolUseEmitsEvToolCall(t *testing.T) {
+// tool name and truncated hint.
+func TestTranslateStreamToolUseEmitsEvToolCall(t *testing.T) {
 	longCmd := strings.Repeat("x", toolHintMaxLen+40)
 	transcript := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_42","name":"Bash","input":{"command":"` + longCmd + `"}}]}}` + "\n"
 
+	d := newTestDriver(t)
 	s := &session{
-		id:      "sid-test",
-		events:  make(chan agent.Event, 4),
-		rootCtx: context.Background(),
+		id:          "sid-test",
+		events:      make(chan agent.Event, 4),
+		rootCtx:     context.Background(),
+		seenToolUse: make(map[string]bool),
 	}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var tools []agent.Event
@@ -143,34 +223,11 @@ func TestSummarizeToolInput(t *testing.T) {
 	}
 }
 
-func TestParseStreamJSONMalformedLineIsSkipped(t *testing.T) {
-	const transcript = `not-json
-{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}
-`
-	s := &session{
-		id:      "sid-test",
-		events:  make(chan agent.Event, 4),
-		rootCtx: context.Background(),
-	}
-
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
-	close(s.events)
-
-	var got []agent.Event
-	for e := range s.events {
-		got = append(got, e)
-	}
-
-	if len(got) != 1 || got[0].Type != agent.EvText || got[0].Text != "ok" {
-		t.Fatalf("want 1 EvText 'ok', got %+v", got)
-	}
-}
-
 func TestCapabilitiesStable(t *testing.T) {
 	d := New(Options{}, obs.NewLogger())
 	caps := d.Capabilities()
 	if caps.ToolApproval {
-		t.Error("Phase 1 must not advertise ToolApproval (not yet wired)")
+		t.Error("must not advertise ToolApproval until OnPermission is wired")
 	}
 	if !caps.Resume || !caps.Streaming {
 		t.Error("Resume and Streaming must be true")
@@ -234,37 +291,39 @@ func TestCLISessionExists(t *testing.T) {
 	}
 }
 
-// TestSessionFlags verifies the per-session CLI flag assembly: model override,
-// system prompt (--append-system-prompt, ADR-018 §3), then driver extra args.
-func TestSessionFlags(t *testing.T) {
-	join := func(ss []string) string { return strings.Join(ss, "\x00") }
-	cases := []struct {
-		name         string
-		model        string
-		systemPrompt string
-		mcpConfig    string
-		extra        []string
-		want         []string
-	}{
-		{"empty", "", "", "", nil, nil},
-		{"model only", "claude-opus-4-8", "", "", nil,
-			[]string{"--model", "claude-opus-4-8"}},
-		{"system prompt only", "", "be brief", "", nil,
-			[]string{"--append-system-prompt", "be brief"}},
-		{"mcp-config only (butler)", "", "", "/cfg/butler-mcp.json", nil,
-			[]string{"--mcp-config", "/cfg/butler-mcp.json"}},
-		{"model+prompt+mcp+extra", "m", "p", "/cfg.json", []string{"--foo", "bar"},
-			[]string{"--model", "m", "--append-system-prompt", "p", "--mcp-config", "/cfg.json", "--foo", "bar"}},
-		{"extra only", "", "", "", []string{"--model", "x"}, []string{"--model", "x"}},
+// TestBuildRequest verifies the per-turn agent-runner request assembly: model
+// override, system prompt, mcp-config, session continuity (resume vs new
+// session id) and driver extra args pass-through.
+func TestBuildRequest(t *testing.T) {
+	s := &session{
+		id:           "sid-1",
+		model:        "claude-opus-4-8",
+		systemPrompt: "be brief",
+		mcpConfig:    "/cfg/butler-mcp.json",
+		cwd:          "/workspace",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := session{model: tc.model, systemPrompt: tc.systemPrompt, mcpConfig: tc.mcpConfig}
-			got := s.sessionFlags(tc.extra)
-			if join(got) != join(tc.want) {
-				t.Errorf("sessionFlags = %v, want %v", got, tc.want)
-			}
-		})
+	req := buildRequest(s, "hello", []string{"--foo", "bar"}, map[string]string{"X": "1"})
+	if req.Prompt != "hello" || req.WorkDir != "/workspace" {
+		t.Errorf("prompt/cwd: %+v", req)
+	}
+	if req.Model != "claude-opus-4-8" || req.AppendSystemPrompt != "be brief" || req.MCPConfig != "/cfg/butler-mcp.json" {
+		t.Errorf("session flags not mapped: %+v", req)
+	}
+	if len(req.ExtraArgs) != 2 || req.ExtraArgs[0] != "--foo" {
+		t.Errorf("extra args: %v", req.ExtraArgs)
+	}
+	if req.Env["X"] != "1" {
+		t.Errorf("env: %v", req.Env)
+	}
+	// New session: adapter uuid becomes the CLI session id.
+	if req.SessionID != "" || req.NewSessionID != "sid-1" {
+		t.Errorf("new session continuity: %+v", req)
+	}
+	// Resumed session: prior resume id wins.
+	s.resumeID = "resume-9"
+	req = buildRequest(s, "again", nil, nil)
+	if req.SessionID != "resume-9" || req.NewSessionID != "" {
+		t.Errorf("resume continuity: %+v", req)
 	}
 }
 
@@ -294,13 +353,14 @@ func TestDefaultModelMatchesCatalog(t *testing.T) {
 
 // ─── dispatch_status tests (ADR-021-firmware-ui §1.2) ───────────────────────
 
-// TestParseStreamJSONDispatchStarted verifies that mcp__bbclaw__dispatch tool_use
+// TestTranslateStreamDispatchStarted verifies that mcp__bbclaw__dispatch tool_use
 // frames emit EvDispatchStatus(started) instead of EvToolCall.
-func TestParseStreamJSONDispatchStarted(t *testing.T) {
+func TestTranslateStreamDispatchStarted(t *testing.T) {
 	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_disp1","name":"mcp__bbclaw__dispatch","input":{"cwd":"bbclaw","prompt":"重构 auth"}}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -328,14 +388,15 @@ func TestParseStreamJSONDispatchStarted(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONNonDispatchMCPToolStillEvToolCall verifies that other
+// TestTranslateStreamNonDispatchMCPToolStillEvToolCall verifies that other
 // mcp__bbclaw__* tools (list_projects, task_status, task_result) are NOT
 // treated as dispatch and still emit EvToolCall.
-func TestParseStreamJSONNonDispatchMCPToolStillEvToolCall(t *testing.T) {
+func TestTranslateStreamNonDispatchMCPToolStillEvToolCall(t *testing.T) {
 	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_ls","name":"mcp__bbclaw__list_projects","input":{}}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -350,17 +411,16 @@ func TestParseStreamJSONNonDispatchMCPToolStillEvToolCall(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONDispatchToolResult verifies that a tool_result frame for
+// TestTranslateStreamDispatchToolResult verifies that a tool_result frame for
 // mcp__bbclaw__dispatch emits EvDispatchStatus with the parsed phase/elapsedMs.
 // The transcript must contain the tool_use frame first so toolUseNames is populated.
-func TestParseStreamJSONDispatchToolResult(t *testing.T) {
-	// tool_use first so the parser maps tu_disp1 → mcp__bbclaw__dispatch
-	// tool_result content is a JSON-encoded string (quotes escaped inside the outer JSON)
+func TestTranslateStreamDispatchToolResult(t *testing.T) {
 	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_disp1","name":"mcp__bbclaw__dispatch","input":{"cwd":"bbclaw","prompt":"重构 auth"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_disp1","content":"{\"status\":\"done\",\"taskId\":\"tu_disp1\",\"elapsedMs\":3200}"}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -386,13 +446,14 @@ func TestParseStreamJSONDispatchToolResult(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONDispatchAsyncPhase verifies the async phase parsing.
-func TestParseStreamJSONDispatchAsyncPhase(t *testing.T) {
+// TestTranslateStreamDispatchAsyncPhase verifies the async phase parsing.
+func TestTranslateStreamDispatchAsyncPhase(t *testing.T) {
 	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_async1","name":"mcp__bbclaw__dispatch","input":{"cwd":"proj","prompt":"大重构"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_async1","content":"{\"status\":\"async\",\"taskId\":\"tu_async1\"}"}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -407,13 +468,14 @@ func TestParseStreamJSONDispatchAsyncPhase(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONDispatchErrorPhase verifies the error phase and ErrorMsg.
-func TestParseStreamJSONDispatchErrorPhase(t *testing.T) {
+// TestTranslateStreamDispatchErrorPhase verifies the error phase and ErrorMsg.
+func TestTranslateStreamDispatchErrorPhase(t *testing.T) {
 	const transcript = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_err1","name":"mcp__bbclaw__dispatch","input":{"cwd":"proj","prompt":"lint"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_err1","content":"{\"status\":\"error\",\"taskId\":\"tu_err1\",\"error\":\"timeout\"}"}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -431,13 +493,14 @@ func TestParseStreamJSONDispatchErrorPhase(t *testing.T) {
 	}
 }
 
-// TestParseStreamJSONNonMCPToolResultIgnored verifies that a tool_result for a
+// TestTranslateStreamNonMCPToolResultIgnored verifies that a tool_result for a
 // non-mcp__bbclaw__dispatch tool_use_id is silently ignored (no events emitted).
-func TestParseStreamJSONNonMCPToolResultIgnored(t *testing.T) {
+func TestTranslateStreamNonMCPToolResultIgnored(t *testing.T) {
 	const transcript = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash_123","content":"exit 0"}]}}
 `
-	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background()}
-	parseStreamJSON(strings.NewReader(transcript), s, obs.NewLogger())
+	d := newTestDriver(t)
+	s := &session{id: "sid-test", events: make(chan agent.Event, 16), rootCtx: context.Background(), seenToolUse: make(map[string]bool)}
+	runTranscript(t, d, s, transcript)
 	close(s.events)
 
 	var evs []agent.Event
@@ -459,7 +522,9 @@ func TestInterruptKillsTurnKeepsSession(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "claude")
 	// `exec sleep` replaces the shell so SIGTERM lands on the blocker directly
-	// and the stdout pipe closes immediately on death.
+	// and the stdout pipe closes immediately on death. agent-runner delivers
+	// the prompt via stdin (stream-json) and closes it right away; the script
+	// never reads stdin, which is fine.
 	script := "#!/bin/sh\n" +
 		`echo '{"type":"system","subtype":"init","session_id":"int-1","model":"m"}'` + "\n" +
 		"exec sleep 30\n"
@@ -536,6 +601,47 @@ collect:
 	// No in-flight turn now → Interrupt is a no-op.
 	if err := d.Interrupt(sid); err != nil {
 		t.Errorf("idle Interrupt: want nil, got %v", err)
+	}
+	_ = d.Stop(sid)
+}
+
+// TestSendPromptNotInArgv spawns a fake `claude` that dumps its argv and
+// verifies the prompt travels via stdin (stream-json), never argv — the
+// security property agent-runner enforces (the old driver leaked it via -p).
+func TestSendPromptNotInArgv(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	argsFile := filepath.Join(dir, "args.txt")
+	script := "#!/bin/sh\n" +
+		`printf '%s\n' "$@" > ` + argsFile + "\n" +
+		`cat > /dev/null` + "\n" + // wait for stdin EOF like a stream-json consumer
+		`echo '{"type":"system","subtype":"init","session_id":"argv-1"}'` + "\n" +
+		`echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"argv-1"}'` + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New(Options{Bin: bin}, obs.NewLogger())
+	sid, err := d.Start(context.Background(), agent.StartOpts{Cwd: dir})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	go func() {
+		for range d.Events(sid) {
+		}
+	}()
+	if err := d.Send(sid, "super secret prompt"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "super secret prompt") {
+		t.Fatalf("prompt leaked into argv: %s", data)
+	}
+	if !strings.Contains(string(data), "--session-id") {
+		t.Errorf("first turn should pass --session-id, argv: %s", data)
 	}
 	_ = d.Stop(sid)
 }

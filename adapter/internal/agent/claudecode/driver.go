@@ -1,34 +1,36 @@
-// Package claudecode implements agent.Driver by spawning the `claude` CLI
-// in `-p --output-format stream-json --verbose` mode and translating its
-// NDJSON output into the unified agent.Event stream.
+// Package claudecode implements agent.Driver on top of the agent-runner SDK
+// (github.com/zhoushoujianwork/agent-runner): each Send runs one headless
+// claude turn through runner.Runner (stream-json in/out, prompt via stdin —
+// never argv) and translates the normalized runner events into the unified
+// agent.Event stream.
 //
-// Phase 1 scope (see design/agent_bus.md):
-//   - one-shot per Send: spawn a fresh subprocess, carry session continuity
-//     via --resume using the session_id Claude emits in its init event
-//   - emit EvText for assistant text blocks, EvTurnEnd on result, EvError
+// Scope (see design/agent_bus.md):
+//   - one-shot per Send: agent-runner spawns a fresh subprocess per turn,
+//     session continuity via --resume using the session_id Claude emits in
+//     its init event
+//   - emit EvText for assistant text blocks, EvTurnEnd on completion, EvError
 //     on failures. tool_use frames are surfaced as EvToolCall *display-only*
-//     events — Capabilities().ToolApproval stays false because the
-//     approval round-trip (Phase 2) is not yet wired.
+//     events — Capabilities().ToolApproval stays false until the approval
+//     round-trip is wired onto agent-runner's OnPermission callback.
 package claudecode
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/daboluocc/bbclaw/adapter/internal/agent"
 	"github.com/daboluocc/bbclaw/adapter/internal/obs"
+	claudeengine "github.com/zhoushoujianwork/agent-runner/engine/claude"
+	"github.com/zhoushoujianwork/agent-runner/executor/host"
+	agentrunner "github.com/zhoushoujianwork/agent-runner/runner"
 )
 
 const (
@@ -39,10 +41,11 @@ const (
 
 // Driver is the claude-code AgentDriver implementation.
 type Driver struct {
-	bin   string
-	log   *obs.Logger
-	extra []string
-	env   map[string]string // driver-level env overrides (e.g. ANTHROPIC_BASE_URL)
+	bin    string
+	runner *agentrunner.Runner
+	log    *obs.Logger
+	extra  []string
+	env    map[string]string // driver-level env overrides (e.g. ANTHROPIC_BASE_URL)
 
 	mu       sync.Mutex
 	sessions map[agent.SessionID]*session
@@ -61,7 +64,7 @@ type Options struct {
 	Bin string
 	// ExtraArgs appended after the fixed args (e.g. "--model",
 	// "claude-sonnet-4-6"). Do not include `-p` or `--output-format` —
-	// the driver sets those itself.
+	// the runner engine sets those itself.
 	ExtraArgs []string
 	// Env holds extra environment variables injected into every claude
 	// subprocess. Keys here override the inherited process environment.
@@ -101,7 +104,7 @@ func New(opts Options, log *obs.Logger) *Driver {
 	}
 	// Enable extended thinking so stream-json emits `thinking` content blocks
 	// (ADR-029 §2.2). Skipped when the operator already pinned --settings via
-	// ExtraArgs. Flows into the per-turn args through sessionFlags(d.extra).
+	// ExtraArgs. Flows into every turn through buildRequest's ExtraArgs.
 	if opts.Thinking && !hasFlag(extra, "--settings") {
 		extra = append(extra, "--settings", `{"alwaysThinkingEnabled":true}`)
 	}
@@ -117,6 +120,7 @@ func New(opts Options, log *obs.Logger) *Driver {
 	}
 	return &Driver{
 		bin:      bin,
+		runner:   &agentrunner.Runner{Engine: claudeengine.New(bin), Executor: host.New()},
 		log:      log,
 		extra:    extra,
 		env:      driverEnv,
@@ -127,8 +131,8 @@ func New(opts Options, log *obs.Logger) *Driver {
 // Name implements agent.Driver.
 func (d *Driver) Name() string { return driverName }
 
-// Capabilities implements agent.Driver. Phase 1 advertises what is actually
-// wired: streaming and resume work, tool approval is not yet plumbed.
+// Capabilities implements agent.Driver: streaming and resume work, tool
+// approval is not yet plumbed onto agent-runner's OnPermission callback.
 func (d *Driver) Capabilities() agent.Capabilities {
 	return agent.Capabilities{
 		ToolApproval:  false,
@@ -195,10 +199,10 @@ func (d *Driver) Events(sid agent.SessionID) <-chan agent.Event {
 	return s.events
 }
 
-// Send spawns `claude -p <text> ...` for this turn and streams its
-// stream-json output onto the session's event channel. Blocks until the
-// subprocess exits (caller should invoke Send in a goroutine if they want
-// to keep reading Events concurrently; events are buffered anyway).
+// Send runs one claude turn through agent-runner and streams its normalized
+// events onto the session's event channel. Blocks until the turn completes
+// (caller should invoke Send in a goroutine if they want to keep reading
+// Events concurrently; events are buffered anyway).
 func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	d.mu.Lock()
 	s, ok := d.sessions[sid]
@@ -216,54 +220,17 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 		}
 	}()
 
-	args := []string{"-p", text, "--output-format", "stream-json", "--verbose"}
-
-	// Determine session args. Priority:
-	//   1. Session already has a resumeID from a prior turn → --resume.
-	//   2. No resumeID yet → first turn: use --session-id so the CLI writes to
-	//      the same UUID we already handed to the device. No TrimPrefix needed
-	//      because adapter IDs are now plain UUIDs.
-	if s.resumeID != "" {
-		args = append(args, "--resume", s.resumeID)
-	} else {
-		// First turn, new session: tell the CLI which UUID to use so adapter
-		// id == CLI session id == JSONL filename from the very first turn.
-		args = append(args, "--session-id", string(sid))
-		s.setResumeID(string(sid))
+	req := buildRequest(s, text, d.extra, mergeEnvMaps(d.env, s.env))
+	if req.NewSessionID != "" {
+		// First turn, new session: the CLI was told which UUID to use so
+		// adapter id == CLI session id == JSONL filename from the very start.
+		s.setResumeID(req.NewSessionID)
 	}
-	// Per-session flags (model override + system prompt) followed by the
-	// driver/operator extra args. Extracted into a pure helper so it can be
-	// unit-tested without spawning the CLI.
-	args = append(args, s.sessionFlags(d.extra)...)
 
 	ctx, cancel := context.WithCancel(s.rootCtx)
-	cmd := exec.CommandContext(ctx, d.bin, args...)
-	// Barge-in (ADR-028 §2.5.1): on ctx cancel send SIGTERM first so the CLI
-	// gets a chance to flush its session JSONL, then SIGKILL after WaitDelay.
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Signal(syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 2 * time.Second
-	cmd.Dir = s.cwd
-	if len(d.env) > 0 || len(s.env) > 0 {
-		base := mergeEnv(os.Environ(), d.env)
-		cmd.Env = mergeEnv(base, s.env)
-	}
-	stdout, err := cmd.StdoutPipe()
+	defer cancel()
+	handle, err := d.runner.Run(ctx, req)
 	if err != nil {
-		cancel()
-		return fmt.Errorf("claude-code: stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return fmt.Errorf("claude-code: stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
 		return fmt.Errorf("claude-code: start %s: %w", d.bin, err)
 	}
 
@@ -273,24 +240,22 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	s.mu.Unlock()
 
 	d.log.Infof("claude-code: input sid=%s text=%q", sid, truncate(text, 200))
-	d.log.Infof("claude-code: spawned sid=%s resume=%q model=%q pid=%d",
-		sid, s.resumeID, s.model, cmd.Process.Pid)
+	d.log.Infof("claude-code: spawned sid=%s resume=%q session=%q model=%q",
+		sid, req.SessionID, req.NewSessionID, s.model)
 
-	// Capture stderr while logging it: if claude-code refuses to resume a
-	// locked session, we want to surface SESSION_BUSY to the device rather
-	// than the bare "claude-code exit: 1" we'd otherwise emit.
+	// Capture stderr diagnostics while logging them: if claude-code refuses to
+	// resume a locked session, we want to surface SESSION_BUSY to the device
+	// rather than a bare exit error.
 	stderrCap := &stderrCapture{}
-	stderrDone := make(chan struct{})
-	go func() {
-		drainStderr(stderr, d.log, sid, stderrCap)
-		close(stderrDone)
-	}()
+	// toolUseNames maps tool_use.id → tool_use.name so tool_result events can
+	// look up which tool produced each result and decide whether to emit
+	// EvDispatchStatus (ADR-021-firmware-ui §1.2).
+	toolUseNames := make(map[string]string)
+	for ev := range handle.Events() {
+		d.consumeRunnerEvent(s, stderrCap, toolUseNames, ev)
+	}
+	_, waitErr := handle.Wait()
 
-	// Parse stdout stream-json, emitting events.
-	parseStreamJSON(stdout, s, d.log)
-
-	waitErr := cmd.Wait()
-	<-stderrDone
 	// Turn over: drop the cancel func so a late Interrupt() is a clean no-op
 	// instead of marking the NEXT turn as interrupted.
 	s.mu.Lock()
@@ -316,6 +281,163 @@ func (d *Driver) Send(sid agent.SessionID, text string) (sendErr error) {
 	}
 	s.emit(agent.Event{Type: agent.EvTurnEnd})
 	return nil
+}
+
+// buildRequest maps one turn onto an agent-runner request. Session continuity:
+// a session that already has a resumeID resumes it; otherwise the adapter's
+// own UUID becomes the CLI session id via NewSessionID. Pure (no side
+// effects) so it is unit-testable without spawning the CLI.
+func buildRequest(s *session, text string, driverExtra []string, env map[string]string) agentrunner.Request {
+	req := agentrunner.Request{
+		Prompt:             text,
+		WorkDir:            s.cwd,
+		Model:              s.currentModel(),
+		AppendSystemPrompt: s.systemPrompt,
+		MCPConfig:          s.mcpConfig,
+		Env:                env,
+		ExtraArgs:          append([]string(nil), driverExtra...),
+	}
+	if s.resumeID != "" {
+		req.SessionID = s.resumeID
+	} else {
+		req.NewSessionID = string(s.id)
+	}
+	return req
+}
+
+// consumeRunnerEvent translates one normalized agent-runner event into the
+// unified agent.Event stream, preserving the exact semantics of the old
+// in-process stream-json parser. Events that originate from stream_event
+// partial frames are dropped via frameMeta so text/thinking/tool blocks are
+// surfaced exactly once (from their full assistant/user frame).
+func (d *Driver) consumeRunnerEvent(s *session, cap *stderrCapture, toolUseNames map[string]string, ev agentrunner.Event) {
+	switch ev.Type {
+	case agentrunner.EventDiagnostic:
+		d.log.Warnf("claude-code stderr sid=%s: %s", s.id, ev.Text)
+		cap.add(ev.Text)
+
+	case agentrunner.EventInit:
+		if _, subtype := frameMeta(ev.Raw); subtype == "init" && ev.SessionID != "" {
+			s.setResumeID(ev.SessionID)
+			s.emit(agent.Event{Type: agent.EvSessionInit, Text: ev.SessionID})
+			d.log.Infof("claude-code: session init sid=%s cli_session=%s", s.id, ev.SessionID)
+		}
+
+	case agentrunner.EventText:
+		if frameType, _ := frameMeta(ev.Raw); frameType != "assistant" {
+			return
+		}
+		if ev.Text != "" {
+			d.log.Infof("claude-code: reply sid=%s text=%q", s.id, truncate(ev.Text, 200))
+			s.emit(agent.Event{Type: agent.EvText, Text: ev.Text})
+		}
+
+	case agentrunner.EventThinking:
+		// Extended-thinking block. Only present when thinking is enabled
+		// (Options.Thinking → --settings alwaysThinkingEnabled, ADR-029 §2.2).
+		// Surfaced as EvThinking so the admin conversation page can render a
+		// collapsible thinking stream; the device side only consumes the
+		// coarse turn.state phase.
+		if frameType, _ := frameMeta(ev.Raw); frameType != "assistant" {
+			return
+		}
+		if ev.Text != "" {
+			d.log.Infof("claude-code: thinking sid=%s len=%d", s.id, len(ev.Text))
+			s.emit(agent.Event{Type: agent.EvThinking, Text: ev.Text})
+		}
+
+	case agentrunner.EventToolUse:
+		if frameType, _ := frameMeta(ev.Raw); frameType != "assistant" {
+			return
+		}
+		if ev.Tool == nil {
+			return
+		}
+		if isMCPBBClawDispatch(ev.Tool.Name) {
+			// mcp__bbclaw__dispatch tool: emit EvDispatchStatus(started)
+			// so butler.Engine can record it in the ring buffer and
+			// the device can show "派发中: <cwd>…" in s_lbl_status.
+			// (ADR-021-firmware-ui §1.2)
+			toolUseNames[ev.Tool.ID] = ev.Tool.Name // track id→name for tool_result lookup
+			cwd, title := parseDispatchInput(ev.Tool.Input)
+			d.log.Infof("claude-code: dispatch started sid=%s id=%s cwd=%q", s.id, ev.Tool.ID, cwd)
+			s.emit(agent.Event{
+				Type: agent.EvDispatchStatus,
+				Dispatch: &agent.DispatchStatus{
+					Phase:  "started",
+					TaskID: ev.Tool.ID,
+					Cwd:    cwd,
+					Title:  title,
+				},
+			})
+		} else if ev.Tool.ID != "" && s.seenToolUse[ev.Tool.ID] {
+			// Already surfaced this exact tool_use earlier in the session —
+			// a replayed/duplicate frame (e.g. a --resume that re-streams the
+			// prior conversation). Drop it so the device doesn't re-paint a
+			// stale grey tool chip (e.g. a greeting "replaying" an earlier
+			// turn's door-control / set-volume calls).
+			d.log.Infof("claude-code: tool_use dup-skip sid=%s tool=%s id=%s", s.id, ev.Tool.Name, ev.Tool.ID)
+		} else {
+			// All other tool_use frames: surface as EvToolCall (display-only).
+			// Capabilities().ToolApproval stays false.
+			if ev.Tool.ID != "" {
+				s.seenToolUse[ev.Tool.ID] = true
+			}
+			hint := summarizeToolInput(ev.Tool.Name, ev.Tool.Input)
+			d.log.Infof("claude-code: tool_use sid=%s tool=%s id=%s hint=%q", s.id, ev.Tool.Name, ev.Tool.ID, hint)
+			s.emit(agent.Event{
+				Type: agent.EvToolCall,
+				Tool: &agent.ToolCall{
+					ID:   agent.ToolID(ev.Tool.ID),
+					Tool: ev.Tool.Name,
+					Hint: hint,
+				},
+			})
+		}
+
+	case agentrunner.EventToolResult:
+		// tool_result frames: parse MCP bbclaw dispatch results and emit
+		// EvDispatchStatus. All other tool_results remain ignored.
+		if frameType, _ := frameMeta(ev.Raw); frameType != "user" {
+			return
+		}
+		if ev.Tool == nil {
+			return
+		}
+		if isMCPBBClawDispatch(toolUseNames[ev.Tool.ToolUseID]) {
+			ds := parseDispatchResult(ev.Tool.ToolUseID, ev.Tool.Content)
+			d.log.Infof("claude-code: dispatch result sid=%s id=%s phase=%s elapsed=%dms", s.id, ds.TaskID, ds.Phase, ds.ElapsedMs)
+			s.emit(agent.Event{Type: agent.EvDispatchStatus, Dispatch: ds})
+		}
+
+	case agentrunner.EventUsage:
+		if ev.Usage != nil {
+			s.emit(agent.Event{
+				Type:   agent.EvTokens,
+				Tokens: &agent.Tokens{In: int(ev.Usage.InputTokens), Out: int(ev.Usage.OutputTokens)},
+			})
+		}
+
+	default:
+		// EventTextDelta / EventResult / EventRaw carry no additional
+		// information for the device stream: deltas duplicate the full text
+		// blocks and the result aggregate is consumed via handle.Wait.
+	}
+}
+
+// frameMeta extracts the type/subtype of the original stream-json frame an
+// event was parsed from, so duplicate partial frames (stream_event) can be
+// filtered out.
+func frameMeta(raw json.RawMessage) (frameType, subtype string) {
+	if len(raw) == 0 {
+		return "", ""
+	}
+	var f struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+	}
+	_ = json.Unmarshal(raw, &f)
+	return f.Type, f.Subtype
 }
 
 // Approve is not yet supported; returns ErrUnsupported per Capabilities.
@@ -351,9 +473,9 @@ func (d *Driver) UpdateModel(sid agent.SessionID, model string) error {
 	return nil
 }
 
-// Interrupt aborts the in-flight turn's subprocess (SIGTERM → 2s grace →
-// SIGKILL via cmd.Cancel/WaitDelay) while KEEPING the session and its
-// resumeID, so the next Send still --resume's the same conversation.
+// Interrupt aborts the in-flight turn (agent-runner cancels the run: SIGTERM
+// → grace → SIGKILL through the host executor) while KEEPING the session and
+// its resumeID, so the next Send still --resume's the same conversation.
 // Implements agent.Interrupter (barge-in, ADR-028 §2.5.1). No-op when no
 // turn is in flight.
 func (d *Driver) Interrupt(sid agent.SessionID) error {
@@ -422,7 +544,7 @@ type session struct {
 	// pendingDispatches maps tool_use_id → pendingDispatch for mcp__bbclaw__
 	// dispatch tool calls that have been started but not yet resolved. Keyed by
 	// claude's tool_use.id (e.g. "toolu_01…"). Access is single-threaded within
-	// parseStreamJSON so no mutex is needed.
+	// the Send event loop so no mutex is needed.
 	pendingDispatches map[string]*pendingDispatch
 
 	// seenToolUse remembers tool_use.id values already surfaced as EvToolCall so
@@ -432,7 +554,7 @@ type session struct {
 	// conversation) the repeats are dropped instead of re-painting stale grey
 	// tool chips on the device — the symptom seen when a plain greeting "replayed"
 	// a previous turn's door-control / set-volume calls. Single-threaded within
-	// parseStreamJSON; persists across turns because the session is reused.
+	// the Send event loop; persists across turns because the session is reused.
 	seenToolUse map[string]bool
 
 	mu     sync.Mutex
@@ -451,31 +573,6 @@ func (s *session) consumeInterrupted() bool {
 	v := s.interrupted
 	s.interrupted = false
 	return v
-}
-
-// sessionFlags returns the per-session CLI flags appended after the
-// resume/session-id args: the model override (StartOpts.Model), the system
-// prompt (StartOpts.SystemPrompt → --append-system-prompt), then the
-// driver/operator extra args. Pure (no side effects) so it is unit-testable.
-//
-// Model is placed before driverExtra so an operator-set --model in
-// AGENT_CLAUDE_CODE_EXTRA_ARGS still wins (last-flag semantics), while the
-// user's UI choice is honoured when no operator override is configured.
-// --append-system-prompt is additive, so ordering is immaterial.
-func (s *session) sessionFlags(driverExtra []string) []string {
-	var out []string
-	if s.model != "" {
-		out = append(out, "--model", s.model)
-	}
-	if s.systemPrompt != "" {
-		out = append(out, "--append-system-prompt", s.systemPrompt)
-	}
-	// --mcp-config wires the butler dispatch MCP server (ADR-021 §2). Only the
-	// per-device butler session carries it; worker sessions leave it empty.
-	if s.mcpConfig != "" {
-		out = append(out, "--mcp-config", s.mcpConfig)
-	}
-	return append(out, driverExtra...)
 }
 
 func (s *session) emit(e agent.Event) {
@@ -498,175 +595,10 @@ func (s *session) setModel(m string) {
 	s.mu.Unlock()
 }
 
-// ─── stream-json parser ─────────────────────────────────────────────────
-
-// claude-code stream-json schema (the subset we care about for Phase 1):
-//
-//   {"type":"system","subtype":"init","session_id":"...", ...}
-//   {"type":"assistant","message":{"content":[{"type":"text","text":"..."},
-//                                              {"type":"tool_use", ...}]}}
-//   {"type":"user","message":{"content":[{"type":"tool_result", ...}]}}
-//   {"type":"result","subtype":"success","result":"...","usage":{...}}
-//
-// We emit:
-//   - EvText for each assistant text block
-//   - EvTokens on result.usage
-//   - EvError on any line we can't parse (logged, not fatal)
-//   - tool_use / tool_result are logged only — EvToolCall plumbing is Phase 2
-
-type streamEnvelope struct {
-	Type      string          `json:"type"`
-	Subtype   string          `json:"subtype,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Message   *streamMessage  `json:"message,omitempty"`
-	Result    string          `json:"result,omitempty"`
-	Usage     *streamUsage    `json:"usage,omitempty"`
-	Raw       json.RawMessage `json:"-"`
-}
-
-type streamMessage struct {
-	Content []streamContent `json:"content"`
-}
-
-type streamContent struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"` // extended-thinking block payload (ADR-029 §2.2)
-	Name      string          `json:"name,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"` // present in tool_result frames
-	Input     json.RawMessage `json:"input,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"` // tool_result content (string or array)
-}
-
-type streamUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
-	sc := bufio.NewScanner(r)
-	// stream-json can emit long lines (large tool_result payloads).
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	// toolUseNames maps tool_use.id → tool_use.name so that tool_result frames
-	// (in the "user" envelope) can look up which tool produced each result and
-	// decide whether to emit EvDispatchStatus (ADR-021-firmware-ui §1.2).
-	toolUseNames := make(map[string]string)
-	if s.seenToolUse == nil { // robust to directly-constructed sessions (tests)
-		s.seenToolUse = make(map[string]bool)
-	}
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var env streamEnvelope
-		if err := json.Unmarshal(line, &env); err != nil {
-			log.Warnf("claude-code: unparseable line sid=%s err=%v line=%q", s.id, err, truncate(string(line), 200))
-			continue
-		}
-		switch env.Type {
-		case "system":
-			if env.Subtype == "init" && env.SessionID != "" {
-				s.setResumeID(env.SessionID)
-				s.emit(agent.Event{Type: agent.EvSessionInit, Text: env.SessionID})
-				log.Infof("claude-code: session init sid=%s cli_session=%s", s.id, env.SessionID)
-			}
-		case "assistant":
-			if env.Message == nil {
-				continue
-			}
-			for _, c := range env.Message.Content {
-				switch c.Type {
-				case "text":
-					if c.Text != "" {
-						log.Infof("claude-code: reply sid=%s text=%q", s.id, truncate(c.Text, 200))
-						s.emit(agent.Event{Type: agent.EvText, Text: c.Text})
-					}
-				case "thinking":
-					// Extended-thinking block. Only present when thinking is
-					// enabled (Options.Thinking → --settings alwaysThinkingEnabled,
-					// ADR-029 §2.2). Surfaced as EvThinking so the admin
-					// conversation page can render a collapsible thinking stream;
-					// the device side only consumes the coarse turn.state phase.
-					if c.Thinking != "" {
-						log.Infof("claude-code: thinking sid=%s len=%d", s.id, len(c.Thinking))
-						s.emit(agent.Event{Type: agent.EvThinking, Text: c.Thinking})
-					}
-				case "tool_use":
-					if isMCPBBClawDispatch(c.Name) {
-						// mcp__bbclaw__dispatch tool: emit EvDispatchStatus(started)
-						// so butler.Engine can record it in the ring buffer and
-						// the device can show "派发中: <cwd>…" in s_lbl_status.
-						// (ADR-021-firmware-ui §1.2)
-						toolUseNames[c.ID] = c.Name // track id→name for tool_result lookup
-						cwd, title := parseDispatchInput(c.Input)
-						log.Infof("claude-code: dispatch started sid=%s id=%s cwd=%q", s.id, c.ID, cwd)
-						s.emit(agent.Event{
-							Type: agent.EvDispatchStatus,
-							Dispatch: &agent.DispatchStatus{
-								Phase:  "started",
-								TaskID: c.ID,
-								Cwd:    cwd,
-								Title:  title,
-							},
-						})
-					} else if c.ID != "" && s.seenToolUse[c.ID] {
-						// Already surfaced this exact tool_use earlier in the session —
-						// a replayed/duplicate frame (e.g. a --resume that re-streams the
-						// prior conversation). Drop it so the device doesn't re-paint a
-						// stale grey tool chip (e.g. a greeting "replaying" an earlier
-						// turn's door-control / set-volume calls).
-						log.Infof("claude-code: tool_use dup-skip sid=%s tool=%s id=%s", s.id, c.Name, c.ID)
-					} else {
-						// All other tool_use frames: surface as EvToolCall (display-only).
-						// Capabilities().ToolApproval stays false (Phase 2).
-						if c.ID != "" {
-							s.seenToolUse[c.ID] = true
-						}
-						hint := summarizeToolInput(c.Name, c.Input)
-						log.Infof("claude-code: tool_use sid=%s tool=%s id=%s hint=%q", s.id, c.Name, c.ID, hint)
-						s.emit(agent.Event{
-							Type: agent.EvToolCall,
-							Tool: &agent.ToolCall{
-								ID:   agent.ToolID(c.ID),
-								Tool: c.Name,
-								Hint: hint,
-							},
-						})
-					}
-				}
-			}
-		case "user":
-			// tool_result frames: parse MCP bbclaw dispatch results and emit
-			// EvDispatchStatus. All other tool_results remain ignored (Phase 1).
-			if env.Message != nil {
-				for _, c := range env.Message.Content {
-					if c.Type == "tool_result" && isMCPBBClawDispatch(toolUseNames[c.ToolUseID]) {
-						ds := parseDispatchResult(c.ToolUseID, c.Content)
-						log.Infof("claude-code: dispatch result sid=%s id=%s phase=%s elapsed=%dms", s.id, ds.TaskID, ds.Phase, ds.ElapsedMs)
-						s.emit(agent.Event{Type: agent.EvDispatchStatus, Dispatch: ds})
-					}
-				}
-			}
-		case "result":
-			if env.Usage != nil {
-				s.emit(agent.Event{
-					Type:   agent.EvTokens,
-					Tokens: &agent.Tokens{In: env.Usage.InputTokens, Out: env.Usage.OutputTokens},
-				})
-			}
-			// `result.result` duplicates the final assistant text — we've
-			// already emitted it as EvText fragments, don't re-emit here.
-		default:
-			// Unhandled envelope types (e.g. partial_assistant frames in
-			// future claude-code versions) are silently ignored; stream-json
-			// is forward-compatible.
-		}
-	}
-	if err := sc.Err(); err != nil {
-		s.emit(agent.Event{Type: agent.EvError, Text: fmt.Sprintf("stream read: %v", err)})
-	}
+func (s *session) currentModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────
@@ -674,7 +606,8 @@ func parseStreamJSON(r io.Reader, s *session, log *obs.Logger) {
 // stderrCapture holds the last few stderr lines plus a "session busy" flag
 // flipped when claude-code rejects a --resume because the session is locked
 // by another live process. We can't probe the lock proactively (claude-code
-// owns its own filesystem locks), so we observe the stderr surface instead.
+// owns its own filesystem locks), so we observe the stderr surface (agent-
+// runner's diagnostic events) instead.
 type stderrCapture struct {
 	mu              sync.Mutex
 	lines           []string
@@ -736,33 +669,19 @@ func (c *stderrCapture) snapshot() stderrSnapshot {
 	}
 }
 
-func drainStderr(r io.Reader, log *obs.Logger, sid agent.SessionID, cap *stderrCapture) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := sc.Text()
-		log.Warnf("claude-code stderr sid=%s: %s", sid, line)
-		if cap != nil {
-			cap.add(line)
-		}
+// mergeEnvMaps merges driver-level env overrides with per-session ones; the
+// session wins on conflicts. Returns nil when both are empty so agent-runner
+// simply inherits the process environment.
+func mergeEnvMaps(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
 	}
-}
-
-func mergeEnv(base []string, extra map[string]string) []string {
-	out := make([]string, 0, len(base)+len(extra))
-	seen := make(map[string]bool, len(extra))
-	for k := range extra {
-		seen[k] = true
+	out := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		out[k] = v
 	}
-	for _, kv := range base {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			if seen[kv[:i]] {
-				continue
-			}
-		}
-		out = append(out, kv)
-	}
-	for k, v := range extra {
-		out = append(out, k+"="+v)
+	for k, v := range override {
+		out[k] = v
 	}
 	return out
 }
