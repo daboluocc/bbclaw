@@ -67,8 +67,13 @@ esp_err_t bb_pca9557_init(void) {
     ESP_RETURN_ON_ERROR(write_reg(REG_CONFIG, cfg), TAG, "cfg dir");
 
     s_ready = 1;
-    ESP_LOGI(TAG, "pca9557 ready addr=0x%02x (lcd_cs=bit%d pa_en=bit%d)", BBCLAW_PCA9557_I2C_ADDR,
-             BBCLAW_PCA9557_LCD_CS_BIT, BBCLAW_PCA9557_PA_EN_BIT);
+    /* 回读自证：确认方向/输出位真的落进了芯片（bring-up 排障关键证据）。
+     * 注意此日志在 CDC tee 启动前发出，通常只在 UART0 可见。 */
+    uint8_t out_rb = 0xEE, cfg_rb = 0xEE;
+    (void)read_reg(REG_OUTPUT, &out_rb);
+    (void)read_reg(REG_CONFIG, &cfg_rb);
+    ESP_LOGI(TAG, "pca9557 ready addr=0x%02x (lcd_cs=bit%d pa_en=bit%d) readback out=0x%02x cfg=0x%02x",
+             BBCLAW_PCA9557_I2C_ADDR, BBCLAW_PCA9557_LCD_CS_BIT, BBCLAW_PCA9557_PA_EN_BIT, out_rb, cfg_rb);
     return ESP_OK;
 }
 

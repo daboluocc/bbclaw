@@ -74,7 +74,9 @@
 #define BBCLAW_ST7789_RST_GPIO  -1  /* 未接 */
 #define BBCLAW_ST7789_CS_GPIO   -1  /* CS 在 PCA9557 bit0，init 时拉低常选通 */
 #define BBCLAW_ST7789_BL_GPIO   42
-#define BBCLAW_ST7789_BL_ACTIVE_LEVEL 0  /* 背光低电平点亮（反相驱动） */
+/* 背光高有效(真机实测:驱到 0 全黑、驱到 1 亮;xiaozhi 的 OUTPUT_INVERT 标记
+ * 语义与直觉相反,勿照抄) */
+#define BBCLAW_ST7789_BL_ACTIVE_LEVEL 1
 
 #define BBCLAW_ST7789_WIDTH    320
 #define BBCLAW_ST7789_HEIGHT   240
@@ -95,3 +97,7 @@
 
 /* 息屏 = 关背光 GPIO42；无 IMU，消息唤醒 + 触摸/按键唤醒 */
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1
+
+/* LVGL 内部 DMA 缓冲减半(320*20*2=12.8KB):默认 40 行时 WiFi 起来后内部堆
+ * largest 不足,cloud_saas TLS 握手 mbedtls alloc 失败(-0x7F00,真机踩过) */
+#define BBCLAW_LVGL_BUFF_LINES 20

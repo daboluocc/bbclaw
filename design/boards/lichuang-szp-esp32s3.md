@@ -28,7 +28,7 @@
 | I2S DOUT（ESP→ES8311 DAC）/ DIN（ES7210→ESP） | 45 / 12 |
 | LCD SPI MOSI / SCLK / DC | 40 / 41 / 39 |
 | LCD CS / RST | PCA9557 bit0（拉低常选通）/ 未接 |
-| LCD 背光 | 42，**低电平点亮（反相）** |
+| LCD 背光 | 42，**高电平点亮**（真机实测；xiaozhi 的 `OUTPUT_INVERT true` 勿按字面照抄） |
 | PA 功放使能 | PCA9557 bit1，高有效 |
 | BOOT 键（= PTT） | 0，低有效 |
 
@@ -38,8 +38,10 @@
    LCD_CS=0（唯一 SPI 设备，常选通）、PA=0；由 `bb_panel.c` SPI 路径在建 panel io 前调用
    （保证首条 LCD 命令前 CS 已有效）。功放在 radio app 音频 init 后置 1 常开（同 ATK
    板 XL9555 先例）。
-2. **背光反相**: 新增 `BBCLAW_ST7789_BL_ACTIVE_LEVEL`（默认 1，旧板零变化），
-   本板设 0。覆盖 bb_display_bitmap / bb_lvgl_display / bb_display_control_st7789 三处。
+2. **背光有效电平**: 新增 `BBCLAW_ST7789_BL_ACTIVE_LEVEL`（默认 1，旧板零变化）。
+   本板**真机实测为高有效**（驱 0 全黑、驱 1 亮）——最初按 xiaozhi 的
+   `DISPLAY_BACKLIGHT_OUTPUT_INVERT true` 推断为低有效，是错的。
+   覆盖 bb_display_bitmap / bb_lvgl_display / bb_display_control_st7789 三处。
 2b. **SPI mode 2（真机黑屏坑）**: 本板面板要求 CPOL=1 的 SPI mode 2；bb_panel 原
    硬编码 mode 0，首刷软件层全"正常"（panel ready / LVGL 渲染 / 截图都好）但物理屏
    全黑。新增 `BBCLAW_ST7789_SPI_MODE`（默认 0，本板 2）。真相来源 = xiaozhi
@@ -52,6 +54,9 @@
 5. **OTA 平台名**: `esp32s3-lichuang-szp`，云端无此平台 release → 不会被误推 bbclaw 固件。
 6. 导航无实体键：`BBCLAW_NAV_ENABLE 0`，触摸 indev + 手势（右滑 BACK/左滑 LEFT）
    沿用手表板路径；PTT= BOOT 键。
+7. **LVGL 内部 DMA 缓冲 20 行**（默认 40）：320x240 下 40 行=25.6KB，WiFi 起来后
+   内部堆 largest 仅 ~34KB，cloud_saas TLS 握手 mbedtls alloc 失败(-0x7F00)。
+   减半到 12.8KB 后 largest ~59KB，TLS/配对正常（真机验证）。
 
 ## 构建
 
