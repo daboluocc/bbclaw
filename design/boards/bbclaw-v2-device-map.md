@@ -1,0 +1,68 @@
+# bbclaw v2 器件映射表（S1 构建备料，2026-07-16）
+
+> 构建期工件：EasyEDA 器件库身份（libraryUuid 统一为 `0819f05c4eef4c71ace90d822a990e87`，
+> 下表只列 deviceUuid）。全部经 `easyeda lib search` 按 MPN **精确命中**解析。
+> 复刻放置用 `easyeda sch place --lib <libraryUuid> --uuid <deviceUuid>`。
+
+## 沿用 v1 的器件（27 种）
+
+| MPN | 用途 | LCSC | deviceUuid |
+|---|---|---|---|
+| ESP32-S3-WROOM-1U-N8R8 | U7 主控 | C2980300 | 1668c760d3304244b0e10fb780fa5ca0 |
+| 20009-UCAF001-X | U8 USB-C 16P | C3148200 | 8c95ad7c8d5f44e1afa13cd186ed59af |
+| ME4054BM5G-N | U1 锂充 | C478383 | 136003aa39f94d4ea125773174263700 |
+| SX1308 | U2 升压 | C78162 | 3bec56a3cdb148b194a40a86d3a19eef |
+| XC6210B332MR | U64 3V3 LDO | C3021084 | 6429a1186bba44f08db5475142223fba |
+| WS-003 | U4 拨轮（ERR-001 重接） | C46598197 | d3b4512b675b4728afc877d56150b57a |
+| GT-TC072A-H060-L1 | U5 触摸弹簧 | C5117864 | 5a7a7921ea6346c1abddfceefe45cb34 |
+| SK6812MINI-HS | U6 RGB | C2922787 | 4e250aae83494c408bfb7730c0646ad5 |
+| NCD0603G1 | LED1 充电灯 | C84267 | dbe98914df974fd2b1c4006c32a64b38 |
+| DSS24 | D1 升压二极管 | C511865 | 090669697b7f4b47b25544beff280fdd |
+| SRG0624-4R7-M | L1 升压电感 | C53462981 | 0aa25a1e1aa148afa61e3fc5b5371f11 |
+| TA-3525-A3 | SW1/SW2 拨动 | C514020 | 4c12ad30bbf14525863080f700e96406 |
+| K2-1806SA-A3DW-04 | SW3/4/5 轻触 | C2690015 | 425831660e4640799d60f756c7ee855b |
+| AFC07-S08ECA-00 | FPC1 屏座 8P | C262581 | 5a456936ad024cb28382350693eb8241 |
+| WAFER-MX1.25-6PLB | H1 烧录座 | C3029354 | 955feca346d1422f8993cafe054ac457 |
+| WAFER-MX1.25-7PLB | H2 功放座 | C3029355 | 7135c2689cf64459912e2d6a0762af27 |
+| WAFER-MX1.25-3PLB | U3 马达座 | C3029351 | 7572c649b8de4600a3c1be26aa554135 |
+| PZ254V-11-03P | H3/H4 2.54-3P | C2937625 | a7c65807c5894564893a45460053a26d |
+| 1.0-2PLT | SH1 电池端子 | C2763621 | 4e02f7df2841412a8ac15d2fdcef40d0 |
+| CL10A106MA8NRNC | 10µF 0603 | C96446 | 2c0b8c28991349ce9fd1ddf484d5b92d |
+| CC0603KRX7R9BB104 | 100nF 0603 | C14663 | 96b39256cc3f4d80bd3b503deb4f3328 |
+| CL10A105KB8NNNC | 1µF 0603 | C15849 | f4744ff7405a46a48e360c2c6fadeca3 |
+| 0603WAJ0122T5E | 1.2k（PROG，⚠电池容量待确认） | C25987 | 80a5b9b863434ffbb54708d42a92d00f |
+| 0603WAF3902T5E | 39k | C23153 | 80b791b4bc9146a497082e3134a376dc |
+| 0603WAF5101T5E | 5.1k（CC + …） | C23186 | b5d09b57bc354a60b86d6a6308651647 |
+| 0603WAF1002T5E | 10k | C25804 | b948db94476e4027ac8953235755ec96 |
+| RMC06031K1%N | 1k | C269704 | b003a1f0d1e342bead8e0fa975a8f532 |
+
+TP1–4 / SCREW1–4：v1 里无器件身份（画图级符号/机械孔），PCB 阶段直接补，不入此表。
+
+## v2 新增器件（升级项，来自 easyeda-agent 块库/标准件库）
+
+| 角色 | 件 | LCSC | deviceUuid | 说明 |
+|---|---|---|---|---|
+| U_CH340 | CH340C SOP-16 | C84681 | 4951b3094e3e48a7b4c8c708b64932e4 | 免晶振;VCC=3V3、V3 接 VCC（3.3V 模式） |
+| C_VCC / C_V3 | 100nF 0402 | C1525 | 87bb635d0b2f489a9f60e7cd225beb3c | CH340 去耦 ×2 |
+| D_USB | USBLC6-2SC6 | C2687116 | 1e5e214711544da8ba71fb2137ae703f | **替代块默认的 SM712**（该块已知选型错误,本板修正） |
+| Q1 / Q2 | MMBT3904 SOT-23 | C20526 | e84258a7c4c54ed6b903438d47c3f671 | 自动下载交叉耦合 ×2 |
+| R_RTS / R_DTR | 4.7k 0402 | C25940 | 3c6cd697d7c742bc8177ac96f91ce532 | 基极串阻 ×2 |
+| R_IO0PU | 10k 0402 | C25744 | c3b9baa5ef2e4070a4c0f9e9cd04fe6e | IO0 上拉（D3；**不加电容**） |
+| D_VBUS | SMAJ5V0A SMA | C143135 | fbafe715cf2a4ad58ba384c7d477da09 | VBUS TVS（D5） |
+| R_ADC×2 | 100k 0603（0603WAF1003T5E） | C25803 | 40ff282b3d594c33b798d1707d8406cb | 电池分压 10k→100k（D6）;0603 与全板一致 |
+
+注：块默认无源件是 0402，本板 v1 全 0603——新增 CH340/自动下载的 0402 保持块原样
+（JLC 同贴无碍）；仅分压电阻特意选 0603 型号与既有一致。
+
+## 新增连接关系（升级项网表增量）
+
+```
+U8.DP/DN(A6+B6 / A7+B7) ── D_USB(USBLC6) ── U_CH340.UD+/UD-
+U_CH340.VCC = V3 → +3V3（C_VCC/C_V3 贴脚）
+U_CH340.TXD → RXD0(IO44)   U_CH340.RXD ← TXD0(IO43)   （H1.3/4 并联保留）
+U_CH340.DTR#/RTS# → 自动下载(Q1/Q2+4.7k×2) → EN / IO0
+IO0 += R_IO0PU 10k → +3V3
+VBUS += D_VBUS(SMAJ5V0)
+POWER_ADC: R6/R7 10k→100k
+U4 拨轮按 ERR-001 重接：T→IO1、C→GND、外壳→GND
+```
