@@ -55,6 +55,7 @@ set(_bb_srcs
     "bb_transport.c"
     "bb_wifi.c"
     "bb_xl9555.c"
+    "bb_pca9557.c"
     "bb_display_control.c"
     "bb_display_control_co5300.c"
     "bb_display_control_st7789.c"

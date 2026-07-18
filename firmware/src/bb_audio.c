@@ -907,16 +907,19 @@ esp_err_t bb_audio_init(void) {
              BBCLAW_ES8311_I2C_SDA_GPIO, BBCLAW_ES8311_I2C_SCL_GPIO, BBCLAW_ES8311_I2C_ADDR,
              BBCLAW_AUDIO_I2S_MCK_GPIO, BBCLAW_AUDIO_I2S_BCK_GPIO, BBCLAW_AUDIO_I2S_WS_GPIO,
              BBCLAW_AUDIO_I2S_DO_GPIO, BBCLAW_AUDIO_I2S_DI_GPIO);
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&(i2c_master_bus_config_t){
-                                                 .i2c_port = BBCLAW_ES8311_I2C_PORT,
-                                                 .sda_io_num = BBCLAW_ES8311_I2C_SDA_GPIO,
-                                                 .scl_io_num = BBCLAW_ES8311_I2C_SCL_GPIO,
-                                                 .clk_source = I2C_CLK_SRC_DEFAULT,
-                                                 .glitch_ignore_cnt = 7,
-                                                 .flags.enable_internal_pullup = true,
-                                             },
-                                             &s_i2c_bus),
-                        TAG, "new i2c master bus");
+    /* 显示 init 可能已建同一条总线（实战派 LCD_CS 挂 PCA9557）：get-or-create */
+    if (i2c_master_get_bus_handle(BBCLAW_ES8311_I2C_PORT, &s_i2c_bus) != ESP_OK) {
+      ESP_RETURN_ON_ERROR(i2c_new_master_bus(&(i2c_master_bus_config_t){
+                                                   .i2c_port = BBCLAW_ES8311_I2C_PORT,
+                                                   .sda_io_num = BBCLAW_ES8311_I2C_SDA_GPIO,
+                                                   .scl_io_num = BBCLAW_ES8311_I2C_SCL_GPIO,
+                                                   .clk_source = I2C_CLK_SRC_DEFAULT,
+                                                   .glitch_ignore_cnt = 7,
+                                                   .flags.enable_internal_pullup = true,
+                                               },
+                                               &s_i2c_bus),
+                          TAG, "new i2c master bus");
+    }
 #if BBCLAW_AXP2101_MINIMAL_INIT
     /* PMIC 先于 codec：确保 MIC 电轨（ALDO1）在 ES8311 模拟路径起来前就绪 */
     if (axp2101_minimal_init() != ESP_OK) {

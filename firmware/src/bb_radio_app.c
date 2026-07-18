@@ -48,6 +48,7 @@
 #include "bb_ui_settings.h"
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
+#include "bb_pca9557.h"
 #include "bb_ota.h"
 #include "bb_power_mgmt.h"
 #include "esp_err.h"
@@ -4270,6 +4271,18 @@ esp_err_t bb_radio_app_start(void) {
     } else {
       (void)bb_xl9555_set_output(BBCLAW_XL9555_SPK_EN_BIT, 1);
       (void)bb_xl9555_set_output(BBCLAW_XL9555_AMP_EN_BIT, 1);
+    }
+  }
+#endif
+#if BBCLAW_PCA9557_ENABLE
+  {
+    /* 实战派：功放使能挂 PCA9557 bit1。显示 init 已跑过 pca9557_init（拉低 LCD_CS），
+     * 这里兜底 init 后常开功放（同 XL9555 先例）。 */
+    esp_err_t pca_err = bb_pca9557_init();
+    if (pca_err != ESP_OK) {
+      ESP_LOGW(TAG, "pca9557 init failed err=%s", esp_err_to_name(pca_err));
+    } else {
+      (void)bb_pca9557_set_output(BBCLAW_PCA9557_PA_EN_BIT, 1);
     }
   }
 #endif

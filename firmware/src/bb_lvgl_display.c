@@ -1166,7 +1166,7 @@ static void backlight_on(void) {
       .intr_type = GPIO_INTR_DISABLE,
   };
   (void)gpio_config(&io_conf);
-  (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, 1);
+  (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, BBCLAW_ST7789_BL_ACTIVE_LEVEL);
 #endif
 }
 

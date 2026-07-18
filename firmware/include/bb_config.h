@@ -7,6 +7,8 @@
 #include "../boards/atk-dnesp32s3-box/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_WS_AMOLED_206)
 #include "../boards/waveshare-amoled-206/board_config.h"
+#elif defined(CONFIG_BBCLAW_BOARD_LICHUANG_SZP)
+#include "../boards/lichuang-szp/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BBCLAW)
 #include "../boards/bbclaw/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BREADBOARD) || !defined(BBCLAW_DISPLAY_BUS_SPI)
@@ -27,6 +29,21 @@
 /* ── AXP2101 PMIC minimal init (MIC rail ALDO1 + charger config), see bb_audio.c ── */
 #ifndef BBCLAW_AXP2101_MINIMAL_INIT
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
+#endif
+
+/* ── PCA9557 IO expander（实战派：LCD_CS + PA_EN 挂它上面），见 bb_pca9557.c ── */
+#ifndef BBCLAW_PCA9557_ENABLE
+#define BBCLAW_PCA9557_ENABLE 0
+#endif
+
+/* ── ST7789 背光有效电平（实战派为反相驱动=0；旧板全部高有效） ── */
+#ifndef BBCLAW_ST7789_BL_ACTIVE_LEVEL
+#define BBCLAW_ST7789_BL_ACTIVE_LEVEL 1
+#endif
+
+/* ── ST7789 SPI mode（CPOL/CPHA）：实战派面板要 mode 2，其余板 mode 0 ── */
+#ifndef BBCLAW_ST7789_SPI_MODE
+#define BBCLAW_ST7789_SPI_MODE 0
 #endif
 
 /* ── IMU（QMI8658）+ 息屏管理默认值:无此硬件的板自动降级(模块内自门控) ── */

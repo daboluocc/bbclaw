@@ -4,6 +4,7 @@
  */
 #include "bb_panel.h"
 #include "bb_config.h"
+#include "bb_pca9557.h"
 
 #include <esp_check.h>
 #include <esp_log.h>
@@ -29,6 +30,10 @@ static const char *TAG = "bb_panel";
 /* ── SPI bus ── */
 #if BBCLAW_DISPLAY_BUS_SPI
 static esp_err_t init_spi(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_handle_t *panel) {
+#if BBCLAW_PCA9557_ENABLE
+    /* 实战派：LCD CS 挂 PCA9557 bit0，首条 LCD 命令前必须拉低选通 */
+    ESP_RETURN_ON_ERROR(bb_pca9557_init(), TAG, "pca9557 (lcd cs)");
+#endif
     const spi_host_device_t host = (spi_host_device_t)BBCLAW_ST7789_HOST;
     spi_bus_config_t buscfg = {
         .sclk_io_num = BBCLAW_ST7789_SCLK_GPIO,
@@ -45,7 +50,7 @@ static esp_err_t init_spi(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_handle_t 
         .dc_gpio_num = BBCLAW_ST7789_DC_GPIO,
         .cs_gpio_num = BBCLAW_ST7789_CS_GPIO,
         .pclk_hz = BBCLAW_ST7789_PCLK_HZ,
-        .spi_mode = 0,
+        .spi_mode = BBCLAW_ST7789_SPI_MODE,
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,

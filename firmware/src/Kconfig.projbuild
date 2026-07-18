@@ -31,6 +31,14 @@ config BBCLAW_BOARD_WS_AMOLED_206
         touch, ES8311 codec, and AXP2101 PMIC. Octal PSRAM — switch boards via
         make set-board so the sdkconfig.board overlay is applied. See ADR-040.
 
+config BBCLAW_BOARD_LICHUANG_SZP
+    bool "嘉立创·实战派 ESP32-S3 (ES8311+ES7210 + SPI ST7789 320x240 + FT6336)"
+    help
+        LiChuang (JLC) ShiZhanPai ESP32-S3 dev board: ES8311 DAC + ES7210 mic
+        ADC, SPI ST7789 320x240, FT6336 touch, PCA9557 IO expander (LCD CS +
+        PA enable). Octal PSRAM — switch via make set-board so the
+        sdkconfig.board overlay is applied. See design/boards/lichuang-szp-esp32s3.md.
+
 endchoice
 
 menu "Transport"

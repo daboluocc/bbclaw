@@ -31,7 +31,7 @@ extern esp_lcd_panel_handle_t bb_display_get_panel_handle(void);
 /* 背光开关(纯 GPIO)。无 BL 脚的板(如 atk I80,BL=-1)整段跳过。 */
 static void st7789_backlight(int on) {
 #if BBCLAW_ST7789_BL_GPIO >= 0
-  gpio_set_level(BBCLAW_ST7789_BL_GPIO, on ? 1 : 0);
+  gpio_set_level(BBCLAW_ST7789_BL_GPIO, on ? BBCLAW_ST7789_BL_ACTIVE_LEVEL : !BBCLAW_ST7789_BL_ACTIVE_LEVEL);
 #else
   (void)on;
 #endif

@@ -1,0 +1,20 @@
+# 嘉立创·实战派 ESP32-S3 板级 sdkconfig 覆盖
+# make set-board BOARD=lichuang-szp 会把本文件逐行覆盖进 sdkconfig；
+# 独立构建可用 SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lichuang-szp/sdkconfig.board"
+
+CONFIG_BBCLAW_BOARD_LICHUANG_SZP=y
+# CONFIG_BBCLAW_BOARD_BBCLAW is not set
+# CONFIG_BBCLAW_BOARD_BREADBOARD is not set
+# CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX is not set
+# CONFIG_BBCLAW_BOARD_WS_AMOLED_206 is not set
+
+# WROOM-1 N16R8: 8MB Octal PSRAM（sdkconfig.defaults 全局默认 QUAD，
+# 不切会 "wrong PSRAM line mode" boot loop）
+CONFIG_SPIRAM_MODE_OCT=y
+# CONFIG_SPIRAM_MODE_QUAD is not set
+
+# Flash 16MB（默认 8MB）；首次 bring-up 保守用 DIO
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set
