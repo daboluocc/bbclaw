@@ -58,3 +58,4 @@
 | [ADR-038](ADR-038-firmware-miyu-show-recognized-text.md) | 密语解锁失败显示识别到的语音文本——纯固件消费云端已回的 transcript，锁屏「听到「…」」 | 2026-06-25 | 已接受（已实现，`make build` 通过；待真机验证 + owner 发布） |
 | [ADR-043](ADR-043-no-shared-agent-driver-sdk.md) | 不抽公共 Agent 驱动 SDK——bbclaw adapter 与 agent-room 两边独立实现（stream-json 已是互通标准，PTY 独家只设备需要） | 2026-07-01 | 已接受（决定不做） |
 | [ADR-048](ADR-048-device-adapter-allocation.md) | 设备级 Adapter 分配——后台白名单管控设备可见/可切的 adapter 集合（空集合=全可见，固件零改动） | 2026-07-19 | 提议（待评审） |
+| [ADR-049](ADR-049-device-image-capture-multimodal.md) | 摄像头拍照→多模态 Agent——实战派 OV2640 单帧 JPEG 走 base64 文本 envelope relay 到 adapter 喂 claude 读图（cloud 零改动，硬骨头=摄像头 bring-up） | 2026-07-19 | 提议（待评审） |
