@@ -25,6 +25,11 @@ CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 # 8MB 生产板的 partitions_ota.csv（2.5MB 槽）装不下摄像头固件。
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/lichuang-szp/partitions_16mb.csv"
 
+# 摄像头 DMA 缓冲上限降到 8KB（默认 32KB）：运行时内部 DRAM 只剩 ~19KB，默认
+# 30KB DMA 缓冲 malloc 失败（cam_dma_config failed）。8KB→DMA 缓冲 ~7.6KB 可塞下，
+# 一次性拍照 DMA 周期多一点无妨。帧缓冲仍在 PSRAM，不吃内部堆。（ADR-049）
+CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=8192
+
 # mbedtls 走 PSRAM（与 sdkconfig.bbclaw.latest 生产配置一致）。默认 INTERNAL 时
 # TLS 每次握手要 ~40KB 连续内部堆，运行一段时间后必现 -0x7F00 alloc 失败 →
 # healthz/心跳全挂，屏上误报 CLOUD ERR/adapter offline（真机踩过）

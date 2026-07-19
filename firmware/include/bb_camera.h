@@ -39,6 +39,10 @@ void bb_camera_fb_return(bb_camera_frame_t *frame);
  *  cam_hal 占的内部 DRAM，避免挤爆 WiFi/TLS 所需的内部堆。幂等。 */
 void bb_camera_deinit(void);
 
+/** ADR-049 一键拍照上行：按需 init→拍一帧 JPEG→base64 发 image.capture→deinit。
+ *  note=给 agent 的意图/问题（受控文案）。需云 WS 已连（cloud_saas）。 */
+esp_err_t bb_camera_shoot_and_send(const char *note);
+
 #if BBCLAW_CAMERA_SELFTEST
 /** Bring-up 自测：抓一帧，打印 size / JPEG magic / 分辨率到串口。失败打错误。
  *  证据优先（embedded-serial-first）：串口日志即验收依据，无需 SD/截图。 */

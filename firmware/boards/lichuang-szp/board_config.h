@@ -59,8 +59,12 @@
 #define BBCLAW_CAMERA_PIN_D6     4
 #define BBCLAW_CAMERA_PIN_D7     9
 #define BBCLAW_CAMERA_XCLK_HZ    20000000
+/* frame2jpg 软编质量 0-63（越小越清越大）。10 → VGA 约 30-50KB，base64 后远在 1MiB 内。 */
+#define BBCLAW_CAMERA_JPEG_QUALITY 10
 /* Phase 1 自测：boot 时拍一帧 JPEG 打日志（size + FFD8 magic + 分辨率）。生产关。 */
 #define BBCLAW_CAMERA_SELFTEST   1
+/* Phase 1 端到端测试：cloud 连上后拍一张发 image.capture 给 adapter（验证上行链路）。生产关。 */
+#define BBCLAW_CAMERA_TEST_UPLOAD 1
 
 /* 功放经 PCA9557，非直连 GPIO；GPIO1 是本板 I2C SDA，必须覆盖全局默认 SPK_SW=1 */
 #define BBCLAW_PA_EN_GPIO        -1

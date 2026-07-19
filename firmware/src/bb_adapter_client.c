@@ -291,6 +291,56 @@ esp_err_t bb_adapter_send_prompt_select(const char* prompt_id, const char* optio
   return err;
 }
 
+/* ADR-049: send a device photo to the home adapter over the cloud WS. The JPEG is
+ * base64'd into an image.capture request envelope; the cloud relays it to the bound
+ * adapter, which stashes the file and runs a multimodal turn (claude reads the
+ * image). Big payload → PSRAM buffers (base64 ≈ 4/3 × jpeg, envelope a bit more). */
+esp_err_t bb_adapter_send_image_capture(const uint8_t* jpeg, size_t jpeg_len, uint16_t width,
+                                        uint16_t height, const char* note) {
+  if (jpeg == NULL || jpeg_len == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  size_t b64_cap = 4 * ((jpeg_len + 2) / 3) + 1;
+  char* b64 = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM);
+  if (b64 == NULL) {
+    ESP_LOGE(TAG, "image.capture: b64 alloc %u failed", (unsigned)b64_cap);
+    return ESP_ERR_NO_MEM;
+  }
+  size_t b64_len = 0;
+  int rc = mbedtls_base64_encode((unsigned char*)b64, b64_cap, &b64_len, jpeg, jpeg_len);
+  if (rc != 0) {
+    free(b64);
+    ESP_LOGE(TAG, "image.capture: base64 encode failed rc=%d", rc);
+    return ESP_FAIL;
+  }
+  size_t body_cap = b64_len + 512;
+  char* body = heap_caps_malloc(body_cap, MALLOC_CAP_SPIRAM);
+  if (body == NULL) {
+    free(b64);
+    ESP_LOGE(TAG, "image.capture: body alloc %u failed", (unsigned)body_cap);
+    return ESP_ERR_NO_MEM;
+  }
+  /* note 仅用受控文案（无引号/反斜杠），故直接内联不做 JSON 转义。 */
+  int n = snprintf(body, body_cap,
+                   "{\"type\":\"request\",\"kind\":\"image.capture\",\"messageId\":\"img-%lld\","
+                   "\"deviceId\":\"%s\",\"payload\":{\"format\":\"jpeg\",\"width\":%u,\"height\":%u,"
+                   "\"bytes\":%u,\"note\":\"%s\",\"dataBase64\":\"%.*s\"}}",
+                   (long long)bb_now_ms(), BBCLAW_DEVICE_ID, (unsigned)width, (unsigned)height,
+                   (unsigned)jpeg_len, note ? note : "", (int)b64_len, b64);
+  free(b64);
+  esp_err_t err = (n > 0 && (size_t)n < body_cap) ? ESP_OK : ESP_ERR_INVALID_SIZE;
+  if (err == ESP_OK) {
+    err = ws_client_ensure_connected();
+  }
+  if (err == ESP_OK) {
+    err = ws_send_text_message(body);
+  }
+  free(body);
+  ESP_LOGI(TAG, "image.capture sent err=%s jpeg=%u b64=%u %ux%u", esp_err_to_name(err),
+           (unsigned)jpeg_len, (unsigned)b64_len, (unsigned)width, (unsigned)height);
+  return err;
+}
+
 static int json_extract_int(const char* body, const char* key, int fallback) {
   if (body == NULL || key == NULL || key[0] == '\0') {
     return fallback;

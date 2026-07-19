@@ -200,6 +200,18 @@ static void pca9557_pa_ctrl(int on) {
 }
 #endif
 
+#if BBCLAW_CAMERA_ENABLE && BBCLAW_CAMERA_TEST_UPLOAD
+/* ADR-049 端到端测试：cloud 连上后延迟拍一张发给 adapter，验证「设备拍照→云→
+ * adapter→claude 读图」全链路。PSRAM 栈任务，跑完自删。生产关 BBCLAW_CAMERA_TEST_UPLOAD。 */
+static void camera_test_upload_task(void *arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(3000)); /* 让联网/首帧对话稳定后再拍 */
+  ESP_LOGI(TAG, "camera test upload: shooting...");
+  (void)bb_camera_shoot_and_send("这是设备摄像头拍的测试照片，请描述你看到了什么。");
+  vTaskDelete(NULL);
+}
+#endif
+
 static esp_err_t bb_play_embedded_boot_wav(void) {
   const uint8_t* wav = _binary_bbclaw_wav_start;
   const size_t wav_len = (size_t)(_binary_bbclaw_wav_end - _binary_bbclaw_wav_start);
@@ -4422,6 +4434,16 @@ esp_err_t bb_radio_app_start(void) {
                s_transport_registration_expires_at);
       if (s_transport_ready && s_transport_audio_streaming_ready) {
         ESP_LOGI(TAG, "cloud transport ready status=%d", health_status);
+#if BBCLAW_CAMERA_ENABLE && BBCLAW_CAMERA_TEST_UPLOAD
+        {
+          static int s_cam_test_fired = 0;
+          if (!s_cam_test_fired) {
+            s_cam_test_fired = 1;
+            xTaskCreateWithCaps(camera_test_upload_task, "cam_test", 8192, NULL, 4, NULL,
+                                MALLOC_CAP_SPIRAM);
+          }
+        }
+#endif
         esp_err_t rpt = bb_transport_report_device_info();
         if (rpt != ESP_OK) {
           ESP_LOGW(TAG, "device info report failed err=%s (non-fatal)", esp_err_to_name(rpt));

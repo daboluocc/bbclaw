@@ -8,6 +8,7 @@
 
 #if BBCLAW_CAMERA_ENABLE
 
+#include <stdlib.h>
 #include <esp_check.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -17,7 +18,9 @@
 #include <freertos/task.h>
 
 #include "esp_camera.h"
+#include "img_converters.h"
 #include "bb_pca9557.h"
+#include "bb_adapter_client.h"
 
 static const char *TAG = "bb_camera";
 
@@ -65,11 +68,10 @@ esp_err_t bb_camera_init(void) {
          * 取 TIMER_2/CH4（明确空闲，不管板子 LED 开没开都不撞）。 */
         .ledc_timer = LEDC_TIMER_2,
         .ledc_channel = LEDC_CHANNEL_4,
-        /* bring-up 诊断：先用 RGB565 探明 sensor（xiaozhi 该板用 RGB565）。detected
-         * sensor 报「JPEG not supported」说明可能非 OV2640——init 成功后读 PID 定案。
-         * JPEG 上行是 ADR-049 目标，待 sensor 定型后再切回/软编。 */
+        /* 板上是 GC0308（PID=0x9b，非 OV2640），无硬件 JPEG，只能采 RGB565/YUV，
+         * 由 frame2jpg 软编成 JPEG（ADR-049）。VGA 是 GC0308 上限，给 claude 足够细节。 */
         .pixel_format = PIXFORMAT_RGB565,
-        .frame_size = FRAMESIZE_QVGA,         /* 320x240，够验证 + 省内存 */
+        .frame_size = FRAMESIZE_VGA,          /* 640x480 = GC0308 上限 */
         .jpeg_quality = 12,
         .fb_count = 1,
         .fb_location = CAMERA_FB_IN_PSRAM,
@@ -86,15 +88,12 @@ esp_err_t bb_camera_init(void) {
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        /* bring-up 定案：打出检测到的 sensor 真身（PID/MIDH/MIDL）。OV2640=PID 0x26。 */
-        ESP_LOGI(TAG, "sensor detected: PID=0x%02x VER=0x%02x MIDH=0x%02x MIDL=0x%02x",
-                 s->id.PID, s->id.VER, s->id.MIDH, s->id.MIDL);
         s->set_vflip(s, 1);
         s->set_hmirror(s, 0);
     }
 
     s_ready = 1;
-    ESP_LOGI(TAG, "camera ready: RGB565 QVGA, sccb=port%d, fb=PSRAM", BBCLAW_CAMERA_SCCB_PORT);
+    ESP_LOGI(TAG, "camera ready: GC0308 RGB565 VGA, sccb=port%d, fb=PSRAM", BBCLAW_CAMERA_SCCB_PORT);
     return ESP_OK;
 }
 
@@ -105,21 +104,47 @@ esp_err_t bb_camera_capture_jpeg(bb_camera_frame_t *out) {
         ESP_LOGE(TAG, "esp_camera_fb_get returned NULL");
         return ESP_FAIL;
     }
-    /* bring-up 阶段格式随 sensor（RGB565）；JPEG 上行待 sensor 定型后再收口。 */
-    out->buf = fb->buf;
-    out->len = fb->len;
-    out->width = fb->width;
-    out->height = fb->height;
-    out->_handle = fb; /* 保留原始 fb 指针，归还时 esp_camera_fb_return 按指针身份匹配 */
+    /* GC0308 无硬件 JPEG：软编 RGB565 fb → JPEG（frame2jpg 在 PSRAM 分配 out）。
+     * 编完立即归还原始 fb，只留 JPEG 缓冲给调用方。 */
+    uint8_t *jpg = NULL;
+    size_t jpg_len = 0;
+    bool ok = frame2jpg(fb, BBCLAW_CAMERA_JPEG_QUALITY, &jpg, &jpg_len);
+    uint16_t w = fb->width, h = fb->height;
+    esp_camera_fb_return(fb);
+    if (!ok || !jpg || jpg_len == 0) {
+        if (jpg) free(jpg);
+        ESP_LOGE(TAG, "frame2jpg failed");
+        return ESP_FAIL;
+    }
+    out->buf = jpg;
+    out->len = jpg_len;
+    out->width = w;
+    out->height = h;
+    out->_handle = jpg; /* JPEG 堆缓冲，fb_return 时 free */
     return ESP_OK;
 }
 
 void bb_camera_fb_return(bb_camera_frame_t *frame) {
     if (!frame || !frame->_handle) return;
-    esp_camera_fb_return((camera_fb_t *)frame->_handle);
+    free(frame->_handle); /* JPEG 缓冲由 frame2jpg malloc，free 释放（原始 fb 已在 capture 内归还） */
     frame->_handle = NULL;
     frame->buf = NULL;
     frame->len = 0;
+}
+
+esp_err_t bb_camera_shoot_and_send(const char *note) {
+    /* 按需 init→拍→发→deinit：不常驻，拍完立刻释放内部 DRAM 与 WiFi 共存。 */
+    esp_err_t err = bb_camera_init();
+    if (err != ESP_OK) return err;
+    bb_camera_frame_t f = {0};
+    err = bb_camera_capture_jpeg(&f);
+    if (err == ESP_OK) {
+        err = bb_adapter_send_image_capture(f.buf, f.len, f.width, f.height, note);
+        bb_camera_fb_return(&f);
+    }
+    bb_camera_deinit();
+    ESP_LOGI(TAG, "shoot_and_send err=%s", esp_err_to_name(err));
+    return err;
 }
 
 void bb_camera_deinit(void) {
@@ -143,13 +168,12 @@ void bb_camera_selftest(void) {
         ESP_LOGE(TAG, "selftest: capture failed: %s", esp_err_to_name(err));
         return;
     }
-    /* 采集成功即证明整条链路通（DVP+SCCB+PSRAM fb）。此刻已过 boot 日志爆发期，
-     * CDC0 排空，把 sensor PID 一并在这行打出（init 时那行常被 CDC0 丢字节）。 */
-    sensor_t *s = esp_camera_sensor_get();
-    ESP_LOGI(TAG, "selftest: captured %ux%u %u bytes head=%02X%02X — pipeline OK; sensor PID=0x%02x VER=0x%02x MID=0x%02x%02x",
-             f.width, f.height, (unsigned)f.len,
-             f.len > 0 ? f.buf[0] : 0, f.len > 1 ? f.buf[1] : 0,
-             s ? s->id.PID : 0, s ? s->id.VER : 0, s ? s->id.MIDH : 0, s ? s->id.MIDL : 0);
+    /* 现在是软编后的真 JPEG：验 FFD8 起 / FFD9 收尾。 */
+    uint8_t h0 = f.len > 0 ? f.buf[0] : 0, h1 = f.len > 1 ? f.buf[1] : 0;
+    uint8_t t0 = f.len > 1 ? f.buf[f.len - 2] : 0, t1 = f.len > 0 ? f.buf[f.len - 1] : 0;
+    int magic_ok = (h0 == 0xFF && h1 == 0xD8 && t0 == 0xFF && t1 == 0xD9);
+    ESP_LOGI(TAG, "selftest: %ux%u JPEG %u bytes head=%02X%02X tail=%02X%02X magic=%s (GC0308 frame2jpg)",
+             f.width, f.height, (unsigned)f.len, h0, h1, t0, t1, magic_ok ? "OK" : "BAD");
     bb_camera_fb_return(&f);
 
     /* 一次性自测拍完即 deinit——释放 cam_hal 占的内部 DRAM + 停 XCLK，否则 WiFi

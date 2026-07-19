@@ -161,6 +161,11 @@ esp_err_t bb_adapter_display_ack(const char* task_id, const char* action_id);
 /* Send a raw text frame over the adapter client WebSocket (cloud_saas mode). */
 esp_err_t bb_adapter_client_send_text(const char* payload);
 
+/** ADR-049: 发一张照片（JPEG）给云端→adapter 做多模态。base64 进 image.capture
+ *  envelope，走已连的云 WS。note=给 agent 的意图/问题（受控文案，无引号）。 */
+esp_err_t bb_adapter_send_image_capture(const uint8_t* jpeg, size_t jpeg_len, uint16_t width,
+                                        uint16_t height, const char* note);
+
 /* ── ADR-044 P1b ambient 回网补传（bb_ambient_sync 任务专用） ──────────
  * 用法:发 ambient.segment.start(send_text) → 段文件字节(send_bin,可分块)
  * → arm_ack → 发 ambient.segment.finish(send_text) → wait_ack。
