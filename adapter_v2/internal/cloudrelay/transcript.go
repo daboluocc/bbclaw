@@ -28,7 +28,6 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	// so this transcript + the reply below are the full I/O visible to adapter_v2 —
 	// the primary signal for debugging a relayed voice turn.
 	r.log("cloudrelay: ◀ asr device=%s text=%q", deviceID, text)
-	started := time.Now()
 	if text == "" {
 		r.log("cloudrelay: ▶ reply device=%s (empty transcript — skipped, no CLI turn)", deviceID)
 		return write(Envelope{
@@ -37,6 +36,22 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 			Payload: map[string]any{"ok": true, "text": ""},
 		})
 	}
+	// Inject the transcript as the turn prompt; the device's committed-turn bubble
+	// shows the same text.
+	return r.runTurn(ctx, write, env, text, text)
+}
+
+// runTurn drives ONE agent turn: inject `prompt` into the device's PTY, stream the
+// reply back as voice.reply.delta events, finish with the authoritative voice.reply.
+// `committedText` is what the device shows as the user's turn bubble (ADR-040) — for
+// a voice turn it's the transcript; for an image turn it's a short "📷 …" label, not
+// the full file-path prompt. Shared by handleTranscript and handleImageCapture.
+func (r *Relay) runTurn(ctx context.Context, write func(Envelope) error, env Envelope, prompt, committedText string) error {
+	deviceID := strings.TrimSpace(env.DeviceID)
+	if deviceID == "" {
+		deviceID = "cloud-anon"
+	}
+	started := time.Now()
 
 	cb, err := r.bridges.get(deviceID)
 	if err != nil {
@@ -62,7 +77,7 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	done := cb.ev.begin(write, env, r.cfg.HomeSiteID)
 	defer cb.ev.end()
 
-	if err := cb.bridge.SubmitVoiceTurn(text); err != nil {
+	if err := cb.bridge.SubmitVoiceTurn(prompt); err != nil {
 		return err
 	}
 
@@ -77,9 +92,9 @@ func (r *Relay) handleTranscript(ctx context.Context, write func(Envelope) error
 	_ = write(Envelope{
 		Type: "event", MessageID: env.MessageID, DeviceID: env.DeviceID,
 		HomeSiteID: r.cfg.HomeSiteID, Kind: "turn.committed",
-		Payload: map[string]any{"seq": turnSeq, "text": text},
+		Payload: map[string]any{"seq": turnSeq, "text": committedText},
 	})
-	r.log("cloudrelay: ⊙ turn.committed device=%s seq=%d text=%q", deviceID, turnSeq, text)
+	r.log("cloudrelay: ⊙ turn.committed device=%s seq=%d text=%q", deviceID, turnSeq, committedText)
 
 	// Keepalive: a silent turn (long thinking / a long-running tool call) must
 	// reset the cloud's per-request reply-idle timer (ReplyIdleWait, default 120s)

@@ -327,7 +327,10 @@ func (r *Relay) runOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial cloud: %w", err)
 	}
-	conn.SetReadLimit(1 << 20)
+	// 4 MiB read limit: an image.capture envelope (ADR-049) carries a base64 JPEG
+	// in-band; SVGA/VGA frames are ~150KB base64 but headroom avoids a hard cliff on
+	// a larger frame. Cloud has no read limit, so raising ours is sufficient.
+	conn.SetReadLimit(4 << 20)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Per-connection context: cancelled when this connection ends, so any in-flight
@@ -480,6 +483,15 @@ func (r *Relay) handleRequest(ctx context.Context, write func(Envelope) error, e
 	// live bridge; a stale/unknown promptId is a safe no-op there.
 	if strings.EqualFold(strings.TrimSpace(env.Kind), "prompt.select") {
 		r.handlePromptSelect(write, env)
+		return
+	}
+	// image.capture is a device photo (ADR-049): decode + stash the JPEG and run a
+	// multimodal turn (claude reads the image), replying with voice.reply like a
+	// voice turn. Same turn machinery as handleTranscript (barge-in, heartbeat).
+	if strings.EqualFold(strings.TrimSpace(env.Kind), "image.capture") {
+		if err := r.handleImageCapture(ctx, write, env); err != nil {
+			r.log("cloudrelay: image.capture device=%s error: %v", env.DeviceID, err)
+		}
 		return
 	}
 	// Settings/UI proxy kinds (agent.drivers, agent.messages, agent.menu, …) get a
