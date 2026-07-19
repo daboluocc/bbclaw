@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/extract"
+	extract "github.com/zhoushoujianwork/agent-runner/engine/claude/termscrape"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
 )

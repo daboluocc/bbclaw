@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
+	vtscreen "github.com/zhoushoujianwork/agent-runner/termscreen"
 )
 
 const (

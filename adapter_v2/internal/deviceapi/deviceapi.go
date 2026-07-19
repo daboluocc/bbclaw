@@ -49,9 +49,10 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/command"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/extract"
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/session"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
+	"github.com/daboluocc/bbclaw/adapter_v2/internal/tasklist"
+	extract "github.com/zhoushoujianwork/agent-runner/engine/claude/termscrape"
+	vtscreen "github.com/zhoushoujianwork/agent-runner/termscreen"
 )
 
 // debugExtract, when ADAPTER_V2_DEBUG_EXTRACT is set, logs what the boundary
@@ -1131,7 +1132,7 @@ const taskProbeMinRows = 2
 // ADAPTER_V2_DEBUG_TASKLIST set it also dumps the raw screen tail. Not gated on
 // b.events: useful even when no device sink is attached (e.g. a web-terminal turn).
 func (b *Bridge) captureTaskListProbe(visible string) {
-	run := extract.LongestRun(extract.ScanTaskListCandidates(visible))
+	run := tasklist.LongestRun(tasklist.ScanTaskListCandidates(visible))
 	if len(run) < taskProbeMinRows {
 		return
 	}
