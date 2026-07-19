@@ -33,6 +33,30 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/esp32-camera:
+    component_hash: bc9c8a6b51df777a014fa295825b3de5069bc0300c317acff20c97cf4a10ac7d
+    dependencies:
+    - name: espressif/esp_jpeg
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^1.3.1
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.1.7
+  espressif/esp_jpeg:
+    component_hash: defb83669293cbf86d0fa86b475ba5517aceed04ed70db435388c151ab37b5d7
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.3.1
   espressif/esp_lcd_touch:
     component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
     dependencies:
@@ -96,7 +120,7 @@ dependencies:
       type: service
     version: 1.6.1
   espressif/tinyusb:
-    component_hash: a40b7f67df6ac254a4afd96c6401cc56f2059ae747d6d7e66b568bca53ad0edc
+    component_hash: a72b7d67472914ab76309340fd50d578b31e310963d45ad0f81144bde3314752
     dependencies:
     - name: idf
       require: private
@@ -110,7 +134,7 @@ dependencies:
     - esp32p4
     - esp32h4
     - esp32s31
-    version: 0.19.0~3
+    version: 0.21.0~1
   idf:
     source:
       type: idf
@@ -139,12 +163,13 @@ dependencies:
 direct_dependencies:
 - 78/esp-opus
 - 78/esp-opus-encoder
+- espressif/esp32-camera
 - espressif/esp_lcd_touch_ft5x06
 - espressif/esp_lvgl_port
 - espressif/esp_tinyusb
 - espressif/esp_websocket_client
 - lvgl/lvgl
 - waveshare/esp_lcd_sh8601
-manifest_hash: 218c4b34a95adbc52b2cfaaccf61788b78835d84da48f349f95f6eb92b06b131
+manifest_hash: 334bcc7f38268a47291ae0f5b93cfac535e20fd293eac164c3603b2a6be1db56
 target: esp32s3
 version: 2.0.0

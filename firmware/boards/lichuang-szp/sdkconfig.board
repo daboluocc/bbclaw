@@ -21,6 +21,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 # CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set
 
+# 16MB 专属分区表：app 槽 4MB，容得下带 esp32-camera 的固件（ADR-049）。
+# 8MB 生产板的 partitions_ota.csv（2.5MB 槽）装不下摄像头固件。
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/lichuang-szp/partitions_16mb.csv"
+
 # mbedtls 走 PSRAM（与 sdkconfig.bbclaw.latest 生产配置一致）。默认 INTERNAL 时
 # TLS 每次握手要 ~40KB 连续内部堆，运行一段时间后必现 -0x7F00 alloc 失败 →
 # healthz/心跳全挂，屏上误报 CLOUD ERR/adapter offline（真机踩过）

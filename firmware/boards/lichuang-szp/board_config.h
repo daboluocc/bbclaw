@@ -29,11 +29,38 @@
 #define BBCLAW_ES8311_I2C_SCL_GPIO 2
 #define BBCLAW_ES8311_I2C_ADDR     0x18
 
-/* ── PCA9557 IO 扩展（0x19）: bit0=LCD_CS(低=选通) bit1=PA_EN(高=开) ── */
+/* ── PCA9557 IO 扩展（0x19）: bit0=LCD_CS(低=选通) bit1=PA_EN(高=开) bit2=CAM_PWDN ── */
 #define BBCLAW_PCA9557_ENABLE      1
 #define BBCLAW_PCA9557_I2C_ADDR    0x19
 #define BBCLAW_PCA9557_LCD_CS_BIT  0
 #define BBCLAW_PCA9557_PA_EN_BIT   1
+/* 摄像头 PWDN 挂 PCA9557 bit2（高=掉电，低=工作）。enable camera 时该位配为输出。 */
+#define BBCLAW_PCA9557_CAM_PWDN_BIT 2
+
+/* ── Camera: OV2640 DVP（ADR-049 Phase 1 bring-up） ──
+ * 引脚真相来源 = xiaozhi lichuang-dev config.h（同板同源，已验证与显示/音频共存）。
+ * GPIO 冲突核对（2026-07-19）：下列 12 根 DVP 独占线与现用引脚零重叠——
+ *   现用: I2S 38/14/13/45/12, I2C 1/2, PTT 0, 显示 41/40/39/42, WS2812 48。
+ * SCCB(配置总线)= 复用已初始化的 port0 I2C(GPIO1/2)；PWDN 走 PCA9557 bit2。 */
+#define BBCLAW_CAMERA_ENABLE     1
+#define BBCLAW_CAMERA_SCCB_PORT  0   /* 复用 ES8311/PCA9557 的 port0 I2C 总线 */
+#define BBCLAW_CAMERA_PIN_XCLK   5
+#define BBCLAW_CAMERA_PIN_PCLK   7
+#define BBCLAW_CAMERA_PIN_VSYNC  3
+#define BBCLAW_CAMERA_PIN_HREF   46
+#define BBCLAW_CAMERA_PIN_SIOC   2   /* SCCB SCL（= I2C SCL，复用） */
+#define BBCLAW_CAMERA_PIN_SIOD   1   /* SCCB SDA（= I2C SDA，复用；驱动侧填 -1 走总线复用） */
+#define BBCLAW_CAMERA_PIN_D0     16
+#define BBCLAW_CAMERA_PIN_D1     18
+#define BBCLAW_CAMERA_PIN_D2     8
+#define BBCLAW_CAMERA_PIN_D3     17
+#define BBCLAW_CAMERA_PIN_D4     15
+#define BBCLAW_CAMERA_PIN_D5     6
+#define BBCLAW_CAMERA_PIN_D6     4
+#define BBCLAW_CAMERA_PIN_D7     9
+#define BBCLAW_CAMERA_XCLK_HZ    20000000
+/* Phase 1 自测：boot 时拍一帧 JPEG 打日志（size + FFD8 magic + 分辨率）。生产关。 */
+#define BBCLAW_CAMERA_SELFTEST   1
 
 /* 功放经 PCA9557，非直连 GPIO；GPIO1 是本板 I2C SDA，必须覆盖全局默认 SPK_SW=1 */
 #define BBCLAW_PA_EN_GPIO        -1

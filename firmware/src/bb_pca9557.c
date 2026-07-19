@@ -66,8 +66,16 @@ esp_err_t bb_pca9557_init(void) {
      * 总线初始化期间的 SCLK 跳变会被面板计为时钟沿，位计数错位，之后所有命令
      * 全部乱码（官方例程/xiaozhi 均为 reset 后才 lcd_cs(0)，实战派真机踩过）。
      * PA_EN=0（关功放，音频起来后再开）。 */
-    ESP_RETURN_ON_ERROR(write_reg(REG_OUTPUT, (uint8_t)(1U << BBCLAW_PCA9557_LCD_CS_BIT)), TAG, "output init");
-    const uint8_t cfg = (uint8_t)~((1U << BBCLAW_PCA9557_LCD_CS_BIT) | (1U << BBCLAW_PCA9557_PA_EN_BIT));
+    /* 输出位方向掩码 + 初始输出值。CAM_PWDN 若启用一并配为输出，初始拉高（摄像头
+     * 掉电），由 bb_camera_init 上电时再拉低——boot 早期摄像头保持断电省流省热。 */
+    uint8_t out_bits = (uint8_t)((1U << BBCLAW_PCA9557_LCD_CS_BIT) | (1U << BBCLAW_PCA9557_PA_EN_BIT));
+    uint8_t out_init = (uint8_t)(1U << BBCLAW_PCA9557_LCD_CS_BIT); /* LCD_CS=1 不选通; PA=0 */
+#if BBCLAW_CAMERA_ENABLE
+    out_bits |= (uint8_t)(1U << BBCLAW_PCA9557_CAM_PWDN_BIT);
+    out_init |= (uint8_t)(1U << BBCLAW_PCA9557_CAM_PWDN_BIT); /* PWDN=1 掉电 */
+#endif
+    ESP_RETURN_ON_ERROR(write_reg(REG_OUTPUT, out_init), TAG, "output init");
+    const uint8_t cfg = (uint8_t)~out_bits;
     ESP_RETURN_ON_ERROR(write_reg(REG_CONFIG, cfg), TAG, "cfg dir");
 
     s_ready = 1;

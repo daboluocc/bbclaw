@@ -49,6 +49,7 @@
 #include "bb_wifi.h"
 #include "bb_xl9555.h"
 #include "bb_pca9557.h"
+#include "bb_camera.h"
 #include "bb_ota.h"
 #include "bb_power_mgmt.h"
 #include "esp_err.h"
@@ -4285,6 +4286,12 @@ esp_err_t bb_radio_app_start(void) {
       (void)bb_pca9557_set_output(BBCLAW_PCA9557_PA_EN_BIT, 1);
     }
   }
+#endif
+#if BBCLAW_CAMERA_ENABLE && BBCLAW_CAMERA_SELFTEST
+  /* ADR-049 Phase 1：摄像头 bring-up 自测——boot 时抓一帧 JPEG 打串口日志
+   * （size + FFD8/FFD9 magic + 分辨率）。SCCB 复用的 port0 I2C 此刻已由
+   * pca9557/audio 建好。生产构建把 BBCLAW_CAMERA_SELFTEST 关掉即可。 */
+  bb_camera_selftest();
 #endif
 #if BBCLAW_SPK_TEST_ON_BOOT
   show_status_processing("SPK TEST");

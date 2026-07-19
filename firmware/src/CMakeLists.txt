@@ -56,6 +56,7 @@ set(_bb_srcs
     "bb_wifi.c"
     "bb_xl9555.c"
     "bb_pca9557.c"
+    "bb_camera.c"
     "bb_backlight.c"
     "bb_display_control.c"
     "bb_display_control_co5300.c"
@@ -128,6 +129,7 @@ idf_component_register(
         fatfs
         sdmmc
         esp_driver_sdmmc
+        esp32-camera
 )
 
 # 新 ESP-IDF toolchain（GCC14）把 strncpy(dst, samesizebuf, sizeof-1) 以及有意截断

@@ -1,0 +1,24 @@
+# BBClaw 分区表 — 嘉立创实战派 ESP32-S3（lichuang-szp，16MB Flash）
+#
+# 与 8MB 生产板的 partitions_ota.csv 分开：本板 16MB，app 槽放大到 4MB，容得下
+# 带 esp32-camera 的固件（ADR-049，纯固件已 ~2.65MB，2.5MB 槽装不下）。
+# bbclaw 生产板（8MB）继续用 partitions_ota.csv，本表只服务 lichuang-szp。
+#
+# Layout (16MB = 0x1000000):
+#   0x000000-0x00FFFF bootloader + reserved
+#   0x009000          nvs (24KB)
+#   0x00F000          phy_init (4KB)
+#   0x010000          otadata (8KB)
+#   0x020000-0x41FFFF factory app (4MB)
+#   0x420000-0x81FFFF ota_0 (4MB)
+#   0x820000-0xC1FFFF ota_1 (4MB)
+#   0xC20000-0xFFFFFF resources (~3.9MB, fonts/assets)
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     ,         0x6000,
+phy_init,   data, phy,     ,         0x1000,
+otadata,    data, ota,     ,         0x2000,
+factory,    app,  factory, 0x20000,  0x400000,
+ota_0,      app,  ota_0,   ,         0x400000,
+ota_1,      app,  ota_1,   ,         0x400000,
+resources,  data, fat,     ,         0x3E0000,
