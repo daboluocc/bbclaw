@@ -46,6 +46,17 @@
 #define BBCLAW_ST7789_SPI_MODE 0
 #endif
 
+/* ── 触摸坐标变换（横屏板需与显示 MADCTL 同步;竖屏板全 0）── */
+#ifndef BBCLAW_TOUCH_SWAP_XY
+#define BBCLAW_TOUCH_SWAP_XY 0
+#endif
+#ifndef BBCLAW_TOUCH_MIRROR_X
+#define BBCLAW_TOUCH_MIRROR_X 0
+#endif
+#ifndef BBCLAW_TOUCH_MIRROR_Y
+#define BBCLAW_TOUCH_MIRROR_Y 0
+#endif
+
 /* ── ST7789 背光 PWM 驱动（实战派:升压电路要开关信号,恒定电平不亮）── */
 #ifndef BBCLAW_ST7789_BL_PWM
 #define BBCLAW_ST7789_BL_PWM 0

@@ -51,10 +51,15 @@
 /* ── Navigation: 无实体导航键；触摸 indev + 手势（右滑 BACK / 左滑 LEFT） ── */
 #define BBCLAW_NAV_ENABLE 0
 
-/* FT6336 触控（FT5x06 协议兼容，I2C 0x38；INT/RST 未接 GPIO） */
+/* FT6336 触控（FT5x06 协议兼容，I2C 0x38；INT/RST 未接 GPIO）。
+ * 触摸报的是面板原生竖屏坐标,横屏显示需 swap+mirror 与 MADCTL 同步
+ * (xiaozhi lichuang-dev 同参数)。 */
 #define BBCLAW_TOUCH_FT5X06_ENABLE 1
 #define BBCLAW_TOUCH_RST_GPIO -1
 #define BBCLAW_TOUCH_INT_GPIO -1
+#define BBCLAW_TOUCH_SWAP_XY  1
+#define BBCLAW_TOUCH_MIRROR_X 1
+#define BBCLAW_TOUCH_MIRROR_Y 0
 
 /* ── Motor / 电量 / 状态灯：本板无此硬件（GPIO48 是 WS2812，bb_led 不支持，暂关） ── */
 #define BBCLAW_MOTOR_ENABLE  0

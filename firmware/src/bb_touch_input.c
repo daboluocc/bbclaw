@@ -80,9 +80,16 @@ esp_err_t bb_touch_input_init(void) {
   io_cfg.scl_speed_hz = 400000;
   ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(bus, &io_cfg, &io), TAG, "touch panel io");
 
+  /* x_max/y_max 是触摸控制器的原生量程(竖屏面板坐标);横屏板 swap_xy=1 时
+   * 原生宽=显示高、原生高=显示宽,变换后落到显示坐标系。 */
   const esp_lcd_touch_config_t tp_cfg = {
+#if BBCLAW_TOUCH_SWAP_XY
+      .x_max = BBCLAW_ST7789_HEIGHT,
+      .y_max = BBCLAW_ST7789_WIDTH,
+#else
       .x_max = BBCLAW_ST7789_WIDTH,
       .y_max = BBCLAW_ST7789_HEIGHT,
+#endif
       .rst_gpio_num = BBCLAW_TOUCH_RST_GPIO,
       .int_gpio_num = BBCLAW_TOUCH_INT_GPIO,
       .levels = {
@@ -90,9 +97,9 @@ esp_err_t bb_touch_input_init(void) {
           .interrupt = 0,
       },
       .flags = {
-          .swap_xy = 0,
-          .mirror_x = 0,
-          .mirror_y = 0,
+          .swap_xy = BBCLAW_TOUCH_SWAP_XY,
+          .mirror_x = BBCLAW_TOUCH_MIRROR_X,
+          .mirror_y = BBCLAW_TOUCH_MIRROR_Y,
       },
   };
   ESP_RETURN_ON_ERROR(esp_lcd_touch_new_i2c_ft5x06(io, &tp_cfg, &s_tp), TAG, "ft5x06 new");
