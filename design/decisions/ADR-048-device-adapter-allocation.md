@@ -1,7 +1,7 @@
 # ADR-048: 设备级 Adapter 分配 — 后台管控设备端可见的 adapter 集合
 
 - **日期**: 2026-07-19
-- **状态**: 提议（待评审）
+- **状态**: 已实现（cloud+web 已部署生产，bbclaw-reference `6fce78a`，2026-07-19；待真机多设备验证）
 - **关联**: ADR-027（设备端切换 Home Adapter）、ADR-010（授权层/使用层分层）、ADR-025（web 优先配置）、ADR-011（cloud 闭源，绑定模型在 cloud）
 
 ## 背景
@@ -166,10 +166,11 @@ HTTP API（`portal_api.go` + `server.go` 注册，风格沿用现有 query-param
 
 ## 实现 checklist
 
-- [ ] cloud: `Allocation` 模型 + store 方法 + 级联清理 + 单测
-- [ ] cloud: `ListDeviceSites` 过滤 + `ActivateDeviceSite` `NOT_ALLOCATED` + 单测
-- [ ] cloud: 写时不变式（分配保存重指 active / portal 绑定追加分配）+ 单测
-- [ ] cloud: `GET/PUT /v1/allocations` + 路由注册
-- [ ] web: AdapterTab 分配面板 + api.js
-- [ ] design: ADR-027 交叉引用更新
+- [x] cloud: `Allocation` 模型 + store 方法 + 级联清理 + 单测（`account/store.go`）
+- [x] cloud: `ListDeviceSites` 过滤 + `ActivateDeviceSite` `NOT_ALLOCATED` + 单测（`router/sites.go`、`sites_test.go` +9 例全绿）
+- [x] cloud: 写时不变式（分配保存重指 active / portal 绑定追加分配）+ 单测
+- [x] cloud: `GET/PUT /v1/allocations` + 路由注册（`portal_api.go` + `server.go`）
+- [x] web: AdapterTab 分配面板 + api.js（复选可见集合 + 设为当前 + 移出 active 确认提示）
+- [x] design: ADR-027 交叉引用更新
+- [x] 部署生产（bbclaw-reference `6fce78a`，`make deploy-all`，healthz ok）
 - [ ] 部署后真机验证：两台设备各配不同分配集合，picker 各自只见子集，跨集合激活被拒
