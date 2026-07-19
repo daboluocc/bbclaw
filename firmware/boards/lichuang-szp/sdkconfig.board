@@ -13,7 +13,9 @@ CONFIG_BBCLAW_BOARD_LICHUANG_SZP=y
 CONFIG_SPIRAM_MODE_OCT=y
 # CONFIG_SPIRAM_MODE_QUAD is not set
 
-# Flash 16MB（默认 8MB）；首次 bring-up 保守用 DIO
+# Flash 16MB(esptool flash_id 实证 0x46/0x4018,MAC 30:ed:a0:a8:44:e0);DIO。
+# ⚠️ 别的 S3 板多为 8MB——16MB 镜像头刷到 8MB 板会 spi_flash 探测失败无限重启,
+# 烧录前先核对 MAC/flash_id 再动手。
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
