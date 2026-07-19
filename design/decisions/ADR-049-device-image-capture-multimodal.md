@@ -190,7 +190,10 @@
 - [x] firmware: `bb_camera.c` init（PCA9557 bit2 上电）+ capture JPEG（PSRAM fb）+ boot 抓帧串口自测（打 size + FFD8/FFD9 magic + 分辨率）
 - [x] firmware: GPIO 冲突逐脚 diff（DVP 12 线 vs 显示/音频/I2C/PTT 零重叠；XCLK LEDC 避开 bb_led/背光）
 - [x] firmware: 16MB 专属分区表（app 槽 4MB）——带 camera 固件 2.65MB 装不下 8MB 板 2.5MB 槽；`idf.py build` 通过，槽内余 37%
-- [ ] firmware: **真机烧录跑 boot 自测**（板未连，待插上 usbmodem2114301 + flash_id 验身后跑）——看串口 `camera ready` + `selftest: captured … magic=OK`；据此调 vflip/hmirror
+- [x] firmware: **真机验证完成**（2026-07-20）——采到完整 320x240 帧，DVP+SCCB+PSRAM 链路全通。**重要修正：板上 sensor 是 GC0308（PID=0x9b），不是 OV2640**（VGA 上限、无硬件 JPEG）
+- [x] firmware: 拍完 `esp_camera_deinit` 释放内部 DRAM（否则 cam_hal 占内部堆→WiFi 起不来 WIFI ERR；deinit 后 31744→38912，WiFi/cloud 恢复）
+- [ ] **JPEG 上行改软件编码**：GC0308 无硬件 JPEG，`§4` 契约不变，但设备侧改 RGB565/YUV 采集 + esp32-camera `frame2jpg()` 软编成 JPEG 再 base64（VGA quality~12 → ~30-50KB，仍在 1MiB 内）
+- [ ] firmware: 拍照功能走「按需 init→拍→deinit」而非常驻（省内部 DRAM，与 WiFi 共存）
 - [ ] firmware: 主菜单「拍照」行 + capture→base64→`image.capture`→等 ack（PSRAM 栈）
 - [ ] adapter: `cloudrelay.go` SetReadLimit 1→4 MiB
 - [ ] adapter: `handleRequest` `image.capture`（落盘 workspace + `SubmitVoiceTurn` + ack + 清理）
