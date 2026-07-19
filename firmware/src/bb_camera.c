@@ -9,6 +9,7 @@
 #if BBCLAW_CAMERA_ENABLE
 
 #include <esp_check.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/ledc.h>
@@ -31,6 +32,12 @@ esp_err_t bb_camera_init(void) {
     ESP_RETURN_ON_ERROR(i2c_master_get_bus_handle(BBCLAW_CAMERA_SCCB_PORT, &bus), TAG,
                         "port%d I2C bus not ready (call after bb_pca9557_init)", BBCLAW_CAMERA_SCCB_PORT);
 
+#if BBCLAW_CAMERA_SELFTEST
+    /* bring-up 诊断：让 esp32-camera 打出检测到的 sensor PID（默认 DEBUG 级被吞）。 */
+    esp_log_level_set("camera", ESP_LOG_DEBUG);
+    esp_log_level_set("sccb", ESP_LOG_DEBUG);
+    esp_log_level_set("cam_hal", ESP_LOG_DEBUG);
+#endif
     /* PWDN 拉低上电（PCA9557 bit2）。OV2640 上电到稳定需要几个 ms + XCLK 就绪。 */
     ESP_RETURN_ON_ERROR(bb_pca9557_set_output(BBCLAW_PCA9557_CAM_PWDN_BIT, 0), TAG, "cam power on");
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -58,9 +65,12 @@ esp_err_t bb_camera_init(void) {
          * 取 TIMER_2/CH4（明确空闲，不管板子 LED 开没开都不撞）。 */
         .ledc_timer = LEDC_TIMER_2,
         .ledc_channel = LEDC_CHANNEL_4,
-        .pixel_format = PIXFORMAT_JPEG,       /* ADR-049：上行走 JPEG */
-        .frame_size = FRAMESIZE_SVGA,         /* 800x600，base64 后 ~150KB，远离 adapter 1MiB 悬崖 */
-        .jpeg_quality = 12,                   /* 0-63，越小越清晰越大；12 是画质/体积折中 */
+        /* bring-up 诊断：先用 RGB565 探明 sensor（xiaozhi 该板用 RGB565）。detected
+         * sensor 报「JPEG not supported」说明可能非 OV2640——init 成功后读 PID 定案。
+         * JPEG 上行是 ADR-049 目标，待 sensor 定型后再切回/软编。 */
+        .pixel_format = PIXFORMAT_RGB565,
+        .frame_size = FRAMESIZE_QVGA,         /* 320x240，够验证 + 省内存 */
+        .jpeg_quality = 12,
         .fb_count = 1,
         .fb_location = CAMERA_FB_IN_PSRAM,
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
@@ -76,13 +86,15 @@ esp_err_t bb_camera_init(void) {
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        /* OV2640 DVP 数据相对屏幕通常上下/左右镜像，按需校正（真机看自测帧再调）。 */
+        /* bring-up 定案：打出检测到的 sensor 真身（PID/MIDH/MIDL）。OV2640=PID 0x26。 */
+        ESP_LOGI(TAG, "sensor detected: PID=0x%02x VER=0x%02x MIDH=0x%02x MIDL=0x%02x",
+                 s->id.PID, s->id.VER, s->id.MIDH, s->id.MIDL);
         s->set_vflip(s, 1);
         s->set_hmirror(s, 0);
     }
 
     s_ready = 1;
-    ESP_LOGI(TAG, "camera ready: OV2640 SVGA/JPEG, sccb=port%d, fb=PSRAM", BBCLAW_CAMERA_SCCB_PORT);
+    ESP_LOGI(TAG, "camera ready: RGB565 QVGA, sccb=port%d, fb=PSRAM", BBCLAW_CAMERA_SCCB_PORT);
     return ESP_OK;
 }
 
@@ -93,11 +105,7 @@ esp_err_t bb_camera_capture_jpeg(bb_camera_frame_t *out) {
         ESP_LOGE(TAG, "esp_camera_fb_get returned NULL");
         return ESP_FAIL;
     }
-    if (fb->format != PIXFORMAT_JPEG) {
-        ESP_LOGE(TAG, "unexpected format %d (want JPEG)", fb->format);
-        esp_camera_fb_return(fb);
-        return ESP_ERR_INVALID_STATE;
-    }
+    /* bring-up 阶段格式随 sensor（RGB565）；JPEG 上行待 sensor 定型后再收口。 */
     out->buf = fb->buf;
     out->len = fb->len;
     out->width = fb->width;
@@ -114,6 +122,14 @@ void bb_camera_fb_return(bb_camera_frame_t *frame) {
     frame->len = 0;
 }
 
+void bb_camera_deinit(void) {
+    if (!s_ready) return;
+    esp_camera_deinit();
+    /* PWDN 拉高，摄像头掉电（XCLK 由 esp_camera_deinit 停）。 */
+    (void)bb_pca9557_set_output(BBCLAW_PCA9557_CAM_PWDN_BIT, 1);
+    s_ready = 0;
+}
+
 #if BBCLAW_CAMERA_SELFTEST
 void bb_camera_selftest(void) {
     esp_err_t err = bb_camera_init();
@@ -127,13 +143,23 @@ void bb_camera_selftest(void) {
         ESP_LOGE(TAG, "selftest: capture failed: %s", esp_err_to_name(err));
         return;
     }
-    /* JPEG 应以 FFD8 起、FFD9 收尾——打头 4 字节 + 尾 2 字节做自证。 */
-    uint8_t h0 = f.len > 0 ? f.buf[0] : 0, h1 = f.len > 1 ? f.buf[1] : 0;
-    uint8_t t0 = f.len > 1 ? f.buf[f.len - 2] : 0, t1 = f.len > 0 ? f.buf[f.len - 1] : 0;
-    int magic_ok = (h0 == 0xFF && h1 == 0xD8 && t0 == 0xFF && t1 == 0xD9);
-    ESP_LOGI(TAG, "selftest: captured %ux%u JPEG %u bytes head=%02X%02X tail=%02X%02X magic=%s",
-             f.width, f.height, (unsigned)f.len, h0, h1, t0, t1, magic_ok ? "OK" : "BAD");
+    /* 采集成功即证明整条链路通（DVP+SCCB+PSRAM fb）。此刻已过 boot 日志爆发期，
+     * CDC0 排空，把 sensor PID 一并在这行打出（init 时那行常被 CDC0 丢字节）。 */
+    sensor_t *s = esp_camera_sensor_get();
+    ESP_LOGI(TAG, "selftest: captured %ux%u %u bytes head=%02X%02X — pipeline OK; sensor PID=0x%02x VER=0x%02x MID=0x%02x%02x",
+             f.width, f.height, (unsigned)f.len,
+             f.len > 0 ? f.buf[0] : 0, f.len > 1 ? f.buf[1] : 0,
+             s ? s->id.PID : 0, s ? s->id.VER : 0, s ? s->id.MIDH : 0, s ? s->id.MIDL : 0);
     bb_camera_fb_return(&f);
+
+    /* 一次性自测拍完即 deinit——释放 cam_hal 占的内部 DRAM + 停 XCLK，否则 WiFi
+     * 起来抢不到内部堆（本板内部 largest 才 ~31KB，是反复崩因）。真正拍照功能
+     * 走「按需 init→拍→deinit」而非常驻。打 deinit 前后内部 largest 做证。 */
+    size_t before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    bb_camera_deinit();
+    size_t after = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "selftest: camera deinit, internal largest %u -> %u bytes",
+             (unsigned)before, (unsigned)after);
 }
 #endif /* BBCLAW_CAMERA_SELFTEST */
 

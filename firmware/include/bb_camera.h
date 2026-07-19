@@ -35,6 +35,10 @@ esp_err_t bb_camera_capture_jpeg(bb_camera_frame_t *out);
 /** 归还一帧（配对 bb_camera_capture_jpeg）。 */
 void bb_camera_fb_return(bb_camera_frame_t *frame);
 
+/** 释放摄像头（esp_camera_deinit + PWDN 掉电）。一次性拍照用完即调，归还
+ *  cam_hal 占的内部 DRAM，避免挤爆 WiFi/TLS 所需的内部堆。幂等。 */
+void bb_camera_deinit(void);
+
 #if BBCLAW_CAMERA_SELFTEST
 /** Bring-up 自测：抓一帧，打印 size / JPEG magic / 分辨率到串口。失败打错误。
  *  证据优先（embedded-serial-first）：串口日志即验收依据，无需 SD/截图。 */
