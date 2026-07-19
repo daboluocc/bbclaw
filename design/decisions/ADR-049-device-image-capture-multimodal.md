@@ -1,6 +1,6 @@
 # ADR-049: 设备摄像头拍照 → 多模态 Agent —— 图片信息类文本传输链路
 
-- **状态**: 提议（待评审）
+- **状态**: 已实现并真机验证（端到端上行链路，2026-07-20）；剩生产触发 UI + 设备播报接线
 - **日期**: 2026-07-19
 - **组件**: firmware + adapter（+ cloud 纯 relay，MVP 零改动）
 - **关联**: ADR-044（ambient 二进制上传模板）、ADR-035（adapter PTY 跑 claude，原生读图）、ADR-004（cloud_saas agent 代理）、ADR-027/048（cloud_saas 路由与 adapter 分配）
@@ -192,11 +192,15 @@
 - [x] firmware: 16MB 专属分区表（app 槽 4MB）——带 camera 固件 2.65MB 装不下 8MB 板 2.5MB 槽；`idf.py build` 通过，槽内余 37%
 - [x] firmware: **真机验证完成**（2026-07-20）——采到完整 320x240 帧，DVP+SCCB+PSRAM 链路全通。**重要修正：板上 sensor 是 GC0308（PID=0x9b），不是 OV2640**（VGA 上限、无硬件 JPEG）
 - [x] firmware: 拍完 `esp_camera_deinit` 释放内部 DRAM（否则 cam_hal 占内部堆→WiFi 起不来 WIFI ERR；deinit 后 31744→38912，WiFi/cloud 恢复）
-- [ ] **JPEG 上行改软件编码**：GC0308 无硬件 JPEG，`§4` 契约不变，但设备侧改 RGB565/YUV 采集 + esp32-camera `frame2jpg()` 软编成 JPEG 再 base64（VGA quality~12 → ~30-50KB，仍在 1MiB 内）
-- [ ] firmware: 拍照功能走「按需 init→拍→deinit」而非常驻（省内部 DRAM，与 WiFi 共存）
-- [ ] firmware: 主菜单「拍照」行 + capture→base64→`image.capture`→等 ack（PSRAM 栈）
-- [ ] adapter: `cloudrelay.go` SetReadLimit 1→4 MiB
-- [ ] adapter: `handleRequest` `image.capture`（落盘 workspace + `SubmitVoiceTurn` + ack + 清理）
-- [ ] cloud: 回归验证未知 kind default relay 正确转发 `image.capture`（预期零代码改动）
-- [ ] 安全: 上线前确认 wss/https（图片不走明文）
-- [ ] design: README 登记；真机端到端验证（拍照→AI 说出所见）
+- [x] **JPEG 上行软件编码**：GC0308 RGB565 VGA 采集 → esp32-camera `frame2jpg()` 软编（quality=10 → VGA ~7KB，base64 ~9.4KB，远在 1MiB 内）
+- [x] firmware: 拍照走「按需 init→拍→deinit」（`bb_camera_shoot_and_send`），不常驻，与 WiFi 共存
+- [x] firmware: `CAMERA_DMA_BUFFER_SIZE_MAX` 32K→8K——运行时内部 DRAM 仅 ~19KB，默认 30KB DMA 缓冲 malloc 失败，降到 ~7.6KB 可塞下（帧缓冲仍 PSRAM）
+- [x] firmware: `bb_adapter_send_image_capture`（base64 → image.capture envelope → 云 WS，PSRAM 缓冲）
+- [x] adapter: `cloudrelay.go` SetReadLimit 1→4 MiB
+- [x] adapter: `handleImageCapture`（解码 → 落 workspace/inbox → `runTurn` 让 claude 读图 → voice.reply）
+- [x] cloud: 未知 kind default relay 正确转发 `image.capture`（零代码改动，真机确认）
+- [x] **端到端真机验证（2026-07-20）**：设备 VGA JPEG 上行 → cloud relay → adapter → **claude 读图并准确描述画面**（inbox 落图可视化确认）
+- [ ] firmware: 生产触发——主菜单「拍照」行（当前是 `BBCLAW_CAMERA_TEST_UPLOAD` 每 boot 自动拍的测试钩子，待换成用户触发 + 关掉 SELFTEST/TEST_UPLOAD）
+- [ ] 设备侧播报：确认 image.capture 的 voice.reply 被云端 TTS 且设备朗读（当前经 adapter 日志确认 claude 已回复；device-speaks 链路待验/接）
+- [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
+- [ ] design: README 已登记（本 ADR）
