@@ -85,6 +85,8 @@ func isStatusLine(t string) bool {
 		return true // "[Opus 4.8 (1M context)] │ …" model status
 	case strings.Contains(t, "for agents"):
 		return true // "… ← for agents" footer hint
+	case isSlashHintLine(t):
+		return true // "high · /effort" 等输入框脚注设置提示(见 isSlashHintLine)
 	case isTokenCounterOnly(t):
 		return true // a line that is ONLY the completion summary's token counter
 		// ("38 tokens)", "↑ 1.2k tokens · ↓ 3 tokens") — it wraps onto its own
@@ -94,6 +96,35 @@ func isStatusLine(t string) bool {
 		// is prose, recovered as a reply, with the chrome stripped by NormalizeReply.
 	}
 	return false
+}
+
+// isSlashHintLine matches claude's input-footer setting hints — a value plus
+// the slash command that changes it, joined by a middle dot: "high · /effort",
+// "opus · /model". claude 2.1.x renders them with a leading colored "●" dot,
+// which masquerades as the assistant reply bullet: without this check the
+// marker anchor can land on the footer and the device speaks "high · /effort"
+// instead of the reply (case C12). The "· /" pair never occurs in real prose
+// (a middle dot immediately followed by a slash-command token), so a substring
+// match is safe and survives new hint variants without a blocklist per value.
+func isSlashHintLine(t string) bool {
+	i := strings.Index(t, "· /")
+	if i < 0 {
+		return false
+	}
+	rest := t[i+len("· /"):]
+	if rest == "" {
+		return false
+	}
+	// The token after "/" must look like a slash command (lowercase word).
+	for _, r := range rest {
+		if r == ' ' {
+			break
+		}
+		if (r < 'a' || r > 'z') && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // counterRune reports whether r is part of token-counter chrome — digits, the

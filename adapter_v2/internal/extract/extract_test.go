@@ -413,3 +413,37 @@ func TestExtractMarkerBlockFlushLeftParagraphs(t *testing.T) {
 		t.Errorf("reply leaked the completion summary / prompt: %q", r.Text)
 	}
 }
+
+// C12: claude 2.1.x renders the input-footer effort hint with a leading colored
+// "●" — "● high · /effort" — which masquerades as the assistant reply bullet.
+// Anchoring must skip it (real-device bug: the device spoke "high · /effort"
+// instead of the reply when the hint happened to be the last bullet on screen).
+func TestExtractSkipsEffortFooterHint(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"● 在的，有什么可以帮你？\r\n" +
+		"\r\n" +
+		"❯ \r\n" +
+		"● high · /effort\r\n"))
+	r, _ := ext.OnOutput()
+	if !strings.Contains(r.Text, "在的") {
+		t.Fatalf("real reply lost: %q", r.Text)
+	}
+	if strings.Contains(r.Text, "/effort") {
+		t.Fatalf("effort footer hint leaked into reply: %q", r.Text)
+	}
+}
+
+// And when the effort hint is the ONLY bullet on screen (reply not painted
+// yet), nothing is extracted rather than speaking the chrome.
+func TestExtractEffortFooterOnlyYieldsNothing(t *testing.T) {
+	s := vtscreen.New(80, 24)
+	ext := New(s)
+	s.Feed([]byte("\x1b[1;1H" +
+		"❯ \r\n" +
+		"● high · /effort\r\n"))
+	if r, _ := ext.OnOutput(); strings.TrimSpace(r.Text) != "" {
+		t.Errorf("effort footer chrome leaked as reply: %q", r.Text)
+	}
+}

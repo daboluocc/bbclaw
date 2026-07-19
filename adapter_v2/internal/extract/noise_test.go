@@ -77,3 +77,26 @@ func TestContentLinesTrimsEdges(t *testing.T) {
 		}
 	}
 }
+
+// C12: input-footer slash-command setting hints are chrome, real prose with a
+// stray middle dot or slash is not.
+func TestIsSlashHintLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"high · /effort", true},
+		{"● high · /effort", true}, // bulleted variant caught either way
+		{"opus · /model", true},
+		{"medium · /effort to change", true},
+		{"价格是 3 · 5 元", false},
+		{"see /etc/hosts", false},
+		{"路径 · /Etc 不算", false}, // uppercase after slash ⇒ not a command token
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isSlashHintLine(tc.line); got != tc.want {
+			t.Errorf("isSlashHintLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}

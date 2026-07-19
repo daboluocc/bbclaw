@@ -31,6 +31,7 @@
 | C9 | **回复比屏幕高（长列表）** | 回复行数 > 终端可视行数，顶部含 `⏺` 锚点已滚出可视网格进 scrollback | **完整回复**（含已滚出的标题与开头各项），不被截断成可见尾部 | `TestExtractRecoversReplyTallerThanGrid` |
 | C10 | 多段、后续段落顶格 | `⏺ 段一` + 空行 + 顶格`段二` + `✻ … for Ns` | 整段回复（段一+段二），止于 `✻` 完成行 | `TestExtractMarkerBlockFlushLeftParagraphs` |
 | C11 | **token 计数贴在回复行尾** | 短回复同一行尾部带 token chrome：`⏺ 谢谢…吩咐。  ↓ 3 tokens)` | 锚定该行为**真回复**（不当噪声丢弃），且 token chrome 被 `NormalizeReply` 剥掉不念 | `TestExtractReplyWithGluedTokenCounter` / `TestNormalizeReply` / `TestIsNoiseLine` |
+| C12 | **effort 脚注伪装成回复气泡** | claude 2.1.x 输入框脚注 `● high · /effort`（彩色圆点开头），恰为屏幕上最后一个 `●` 行 | 锚定跳过该行念真回复；仅脚注在屏时返回 `""`（真机 bug：设备念出 "high · /effort"） | `TestExtractSkipsEffortFooterHint` / `TestExtractEffortFooterOnlyYieldsNothing` / `TestIsSlashHintLine` |
 
 ## C9 详记（本次修复 —— TTS 念不全的根因）
 
