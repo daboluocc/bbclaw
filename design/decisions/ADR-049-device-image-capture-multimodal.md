@@ -186,9 +186,11 @@
 - **中性**：明文传输与 per-device token 是既有欠债，本功能让它更紧迫但非本 ADR 引入。
 
 ## 12. 实现 checklist
-- [ ] firmware: `esp32-camera` 组件 + `board_config.h` DVP 引脚（照 xiaozhi lichuang-dev）
-- [ ] firmware: `bb_camera.c` init（PCA9557 bit2 上电）+ capture JPEG（PSRAM fb）+ 单拍存 SD 自测
-- [ ] firmware: GPIO 冲突逐脚 diff（DVP vs 显示/音频/I2C/PTT）
+- [x] firmware: `esp32-camera` 组件 + `board_config.h` DVP 引脚（照 xiaozhi lichuang-dev）
+- [x] firmware: `bb_camera.c` init（PCA9557 bit2 上电）+ capture JPEG（PSRAM fb）+ boot 抓帧串口自测（打 size + FFD8/FFD9 magic + 分辨率）
+- [x] firmware: GPIO 冲突逐脚 diff（DVP 12 线 vs 显示/音频/I2C/PTT 零重叠；XCLK LEDC 避开 bb_led/背光）
+- [x] firmware: 16MB 专属分区表（app 槽 4MB）——带 camera 固件 2.65MB 装不下 8MB 板 2.5MB 槽；`idf.py build` 通过，槽内余 37%
+- [ ] firmware: **真机烧录跑 boot 自测**（板未连，待插上 usbmodem2114301 + flash_id 验身后跑）——看串口 `camera ready` + `selftest: captured … magic=OK`；据此调 vflip/hmirror
 - [ ] firmware: 主菜单「拍照」行 + capture→base64→`image.capture`→等 ack（PSRAM 栈）
 - [ ] adapter: `cloudrelay.go` SetReadLimit 1→4 MiB
 - [ ] adapter: `handleRequest` `image.capture`（落盘 workspace + `SubmitVoiceTurn` + ack + 清理）
