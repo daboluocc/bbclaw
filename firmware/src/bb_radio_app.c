@@ -2645,17 +2645,17 @@ static void stream_task(void* arg) {
                   }
                   break;
                 case BB_NAV_EVENT_LEFT:
-#if BB_UI_PORTRAIT
-                  /* 竖屏触摸(手表)：左滑=打开设置。设置可在回复中安全进入
-                   * (TTS 不断)——与 OK 路径同语义,给触摸一个不带取消副作用的
-                   * 入口(右滑 BACK 在 busy 时会取消回合)。 */
+#if BB_UI_PORTRAIT || BBCLAW_TOUCH_FT5X06_ENABLE
+                  /* 触摸板(手表竖屏/实战派横屏)：左滑=打开设置。设置可在回复中
+                   * 安全进入(TTS 不断)——与 OK 路径同语义,给触摸一个不带取消
+                   * 副作用的入口(右滑 BACK 在 busy 时会取消回合)。 */
                   if (settings_overlay_enter() == 0) {
                     set_radio_app_state(BBCLAW_STATE_SETTINGS);
                     ESP_LOGI(TAG, "CHAT: swipe-left -> SETTINGS");
                   }
                   break;
 #endif
-                  /* fallthrough on landscape */
+                  /* fallthrough on landscape without touch */
                 case BB_NAV_EVENT_RIGHT:
                   if (busy) {
                     ESP_LOGI(TAG, "CHAT: LEFT/RIGHT blocked (turn in flight)");
