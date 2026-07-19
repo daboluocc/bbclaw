@@ -3,6 +3,7 @@
 - **日期**: 2026-06-12
 - **状态**: 提议（待评审）
 - **关联**: ADR-004（cloud_saas Agent Bus 代理）、ADR-010（per-device driver 云配置）、ADR-016（设备端 driver/model 选择）、ADR-019（server-driven 菜单协议）、ADR-025（web 优先配置）
+- **后续**: 实现时（issue #33）可切换集合放宽为 owner-level 全可见；设备可见集合的后台管控（分配白名单）见 [ADR-048](ADR-048-device-adapter-allocation.md)
 
 ## 背景
 
