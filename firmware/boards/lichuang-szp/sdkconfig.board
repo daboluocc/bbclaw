@@ -18,3 +18,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 # CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set
+
+# mbedtls 走 PSRAM（与 sdkconfig.bbclaw.latest 生产配置一致）。默认 INTERNAL 时
+# TLS 每次握手要 ~40KB 连续内部堆，运行一段时间后必现 -0x7F00 alloc 失败 →
+# healthz/心跳全挂，屏上误报 CLOUD ERR/adapter offline（真机踩过）
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
+# CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC is not set

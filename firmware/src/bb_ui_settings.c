@@ -318,6 +318,7 @@ static void build_rows_box(int row_count) {
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.rows_box);
+  lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_CLICKABLE); /* 空白点击穿透→屏幕层 BACK */
   /* Bound the list to the region between the header and the footer hint. When
    * the menu has more rows than fit (e.g. cloud_saas: Adapter/Sessions + Volume
    * /Voice/Miyu/Firmware = 6 rows, ~178px on a 172px panel) the box caps to the
@@ -895,6 +896,7 @@ static void render_volume_adjust(void) {
   destroy_rows();
   s_st.rows_box = lv_obj_create(s_st.root);
   lv_obj_remove_style_all(s_st.rows_box);
+  lv_obj_clear_flag(s_st.rows_box, LV_OBJ_FLAG_CLICKABLE); /* 音量页空白点击穿透→BACK */
 #if BB_UI_PORTRAIT
   /* lv_pct() 是编码值，不能与整数加减——方屏那行 lv_pct(100)-HEADER_H 实际
    * 解码成 pct(78)，纯属巧合能看。竖屏直接用像素高度（方屏原状保留，勿动）。 */
@@ -2071,6 +2073,9 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   lv_obj_set_style_bg_color(s_st.root, lv_color_hex(UI_BG), 0);
   lv_obj_set_style_bg_opa(s_st.root, LV_OPA_COVER, 0);
   lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_SCROLLABLE);
+  /* 空白单点=返回上一级(design/firmware_touch_interaction.md):背景容器点击
+   * 穿透,让未命中交互控件的点击落到屏幕层,由 bb_touch_input 统一注入 BACK。 */
+  lv_obj_clear_flag(s_st.root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_move_foreground(s_st.root);
 
   s_st.header_lbl = lv_label_create(s_st.root);
