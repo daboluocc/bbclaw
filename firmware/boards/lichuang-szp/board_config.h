@@ -103,6 +103,8 @@
 
 /* 息屏 = 关背光 GPIO42；无 IMU，消息唤醒 + 触摸/按键唤醒 */
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1
+/* 与 bbclaw 板一致:最低亮度常显 Z··· 呼吸待机页,自动超时不关背光/DISPOFF。 */
+#define BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY 1
 
 /* LVGL 内部 DMA 缓冲减半(320*20*2=12.8KB):默认 40 行时 WiFi 起来后内部堆
  * largest 不足,cloud_saas TLS 握手 mbedtls alloc 失败(-0x7F00,真机踩过) */
