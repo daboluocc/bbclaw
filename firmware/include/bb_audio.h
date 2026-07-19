@@ -17,6 +17,11 @@ esp_err_t bb_audio_stop_tx(void);
 esp_err_t bb_audio_start_playback(void);
 esp_err_t bb_audio_set_playback_sample_rate(int sample_rate);
 esp_err_t bb_audio_stop_playback(void);
+
+/** 注册板级 PA 功放开关钩子（GPIO 直连板不需要，走内建 GPIO 路径）。注册后
+ *  功放改为「播放时开、空闲延迟关」的门控，消除常开底噪/电流声。fn(1)=开 fn(0)=关。
+ *  注册即把 PA 置为关闭态。用于 PCA9557 / XL9555 等经 IO 扩展控制功放的板子。 */
+void bb_audio_set_pa_control(void (*fn)(int on));
 void bb_audio_request_playback_interrupt(void);
 void bb_audio_clear_playback_interrupt(void);
 int bb_audio_is_playback_interrupt_requested(void);

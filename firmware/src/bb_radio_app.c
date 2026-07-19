@@ -193,6 +193,13 @@ static uint32_t read_le32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+#if BBCLAW_PCA9557_ENABLE
+/* 实战派功放挂 PCA9557 bit1，供 bb_audio 播放门控回调（消除常开电流声）。 */
+static void pca9557_pa_ctrl(int on) {
+  (void)bb_pca9557_set_output(BBCLAW_PCA9557_PA_EN_BIT, on ? 1 : 0);
+}
+#endif
+
 static esp_err_t bb_play_embedded_boot_wav(void) {
   const uint8_t* wav = _binary_bbclaw_wav_start;
   const size_t wav_len = (size_t)(_binary_bbclaw_wav_end - _binary_bbclaw_wav_start);
@@ -4283,7 +4290,9 @@ esp_err_t bb_radio_app_start(void) {
     if (pca_err != ESP_OK) {
       ESP_LOGW(TAG, "pca9557 init failed err=%s", esp_err_to_name(pca_err));
     } else {
-      (void)bb_pca9557_set_output(BBCLAW_PCA9557_PA_EN_BIT, 1);
+      /* 功放门控（消除电流声）：不再 boot 常开，交给 bb_audio 按播放开关。
+       * 注册即把 PA 置关，播放时开、空闲延迟关。 */
+      bb_audio_set_pa_control(pca9557_pa_ctrl);
     }
   }
 #endif

@@ -709,6 +709,66 @@ static esp_err_t init_pa_enable(void) {
 #endif
 }
 
+/* ── PA 播放门控（消除功放常开底噪 / 电流声） ──
+ * 功放常年通电会持续放大噪声底 → 喇叭恒定「滋滋」电流声。改为：播放时开功放，
+ * 停止后延迟 PA_OFF_TAIL_MS 再关（避免连续段落间频繁 toggle + 切尾）。板级 PA
+ * 机制不同（GPIO 直连 / PCA9557 / XL9555），由 bb_audio_set_pa_control 注册钩子；
+ * 无钩子则回落到 BBCLAW_PA_EN_GPIO 直连路径。 */
+#define PA_OFF_TAIL_MS      400
+#define PA_ON_SETTLE_MS     8   /* off→on 后给功放一点稳定时间，压掉首音 pop/削顶 */
+
+static void (*s_pa_ctrl)(int on);   /* 板级 PA 开关钩子；NULL=用 GPIO 路径 */
+static int s_pa_on;                 /* 当前逻辑 PA 状态 */
+static esp_timer_handle_t s_pa_off_timer;
+
+static void pa_apply(int on) {
+  if (s_pa_ctrl) {
+    s_pa_ctrl(on);
+  } else if (s_pa_ready && BBCLAW_PA_EN_GPIO >= 0) {
+    gpio_set_level(BBCLAW_PA_EN_GPIO, on ? BBCLAW_PA_EN_ACTIVE_LEVEL : !BBCLAW_PA_EN_ACTIVE_LEVEL);
+  }
+}
+
+static void pa_off_timer_cb(void *arg) {
+  (void)arg;
+  s_pa_on = 0;
+  pa_apply(0);
+}
+
+/* 播放开始：取消待关定时器，若当前是关着的则开功放并短暂稳定。 */
+static void pa_ensure_on(void) {
+  if (!s_pa_ready) return;
+  if (s_pa_off_timer) esp_timer_stop(s_pa_off_timer);
+  if (!s_pa_on) {
+    s_pa_on = 1;
+    pa_apply(1);
+    vTaskDelay(pdMS_TO_TICKS(PA_ON_SETTLE_MS));
+  }
+}
+
+/* 播放停止：延迟关功放（连续段落间不反复 toggle；被下一段 pa_ensure_on 取消）。 */
+static void pa_defer_off(void) {
+  if (!s_pa_ready || !s_pa_on) return;
+  if (s_pa_off_timer) {
+    esp_timer_stop(s_pa_off_timer);
+    (void)esp_timer_start_once(s_pa_off_timer, (uint64_t)PA_OFF_TAIL_MS * 1000);
+  } else {
+    s_pa_on = 0;
+    pa_apply(0);
+  }
+}
+
+void bb_audio_set_pa_control(void (*fn)(int on)) {
+  s_pa_ctrl = fn;
+  s_pa_ready = 1;                 /* 有板级钩子即视为可控 PA，门控生效 */
+  if (!s_pa_off_timer) {
+    const esp_timer_create_args_t a = {.callback = pa_off_timer_cb, .name = "pa_off"};
+    (void)esp_timer_create(&a, &s_pa_off_timer);
+  }
+  s_pa_on = 0;                    /* 起始关闭：空闲无底噪 */
+  pa_apply(0);
+}
+
 static esp_err_t init_speaker_sw(void) {
 #if BBCLAW_SPEAKER_SW_GPIO >= 0
   gpio_config_t cfg = {
@@ -1030,6 +1090,7 @@ esp_err_t bb_audio_stop_tx(void) {
       ESP_LOGI(TAG, "capture stop");
     } else {
       ESP_LOGI(TAG, "playback stop");
+      pa_defer_off(); /* 门控：播放停后延迟关功放，空闲不再有电流声 */
     }
     s_rx_enabled = 0;
   }
@@ -1042,9 +1103,7 @@ esp_err_t bb_audio_start_playback(void) {
   }
   if (s_tx_active == 0) {
     ESP_RETURN_ON_ERROR(ensure_i2s_prepared(false), TAG, "prepare playback i2s failed");
-    if (s_pa_ready && BBCLAW_PA_EN_GPIO >= 0) {
-      (void)gpio_set_level(BBCLAW_PA_EN_GPIO, BBCLAW_PA_EN_ACTIVE_LEVEL);
-    }
+    pa_ensure_on(); /* 门控：开功放（含 off→on 稳定延迟），空闲时它是关的 */
     ESP_RETURN_ON_FALSE(s_tx_chan != NULL, ESP_ERR_INVALID_STATE, TAG, "tx channel not prepared");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx_chan), TAG, "enable tx channel");
     es8311_assert_clock_gates();
