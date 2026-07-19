@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/daboluocc/bbclaw/adapter_v2/internal/ptyhost"
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
+	vtscreen "github.com/zhoushoujianwork/agent-runner/termscreen"
 )
 
 // ErrClosed is returned by Write when the session's PTY has already exited (or

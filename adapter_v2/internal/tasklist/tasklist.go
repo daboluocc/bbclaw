@@ -1,4 +1,4 @@
-package extract
+package tasklist
 
 import (
 	"fmt"
@@ -142,4 +142,29 @@ func LongestRun(cands []TaskCandidate) []TaskCandidate {
 		return nil
 	}
 	return cands[bestEnd-best : bestEnd]
+}
+
+// replyMarkers / stripReplyMarker are a local copy of the claude assistant
+// bullet handling (the authoritative version lives in the agent-runner SDK's
+// engine/claude/termscrape); tasklist stays device-side so it carries its own
+// tiny copy instead of importing SDK internals.
+var replyMarkers = []string{"⏺", "●"}
+
+func stripReplyMarker(l string) string {
+	s := strings.TrimLeft(l, " ")
+	for _, m := range replyMarkers {
+		if rest, ok := strings.CutPrefix(s, m); ok {
+			return strings.TrimLeft(rest, " ")
+		}
+	}
+	return l
+}
+
+// truncateRunes caps s at n runes with an ellipsis (local copy, see above).
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

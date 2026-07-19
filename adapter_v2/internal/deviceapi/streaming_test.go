@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/daboluocc/bbclaw/adapter_v2/internal/vtscreen"
+	vtscreen "github.com/zhoushoujianwork/agent-runner/termscreen"
 )
 
 // TestEmitToolStepsDedupAndDisplayOnly: tool-step bullets on screen produce one
