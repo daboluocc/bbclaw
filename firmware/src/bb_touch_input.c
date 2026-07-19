@@ -18,6 +18,7 @@
 #include "bb_audio.h"
 #include "bb_display.h"
 #include "bb_nav_input.h"
+#include "bb_state.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
@@ -49,6 +50,17 @@ static void screen_gesture_cb(lv_event_t* e) {
     ESP_LOGI(TAG, "gesture=swipe-left -> LEFT");
     bb_nav_input_inject(BB_NAV_EVENT_LEFT);
   }
+}
+
+/* 空白单点 = BACK(统一语义,见 design/firmware_touch_interaction.md)。
+ * 仅设置态生效:聊天页是主页无处可退,且 busy 时 BACK=取消回合,误触不可接受。
+ * target==屏幕本身 才算"空白"(命中可点控件时事件不会落到屏幕上)。 */
+static void screen_blank_tap_cb(lv_event_t* e) {
+  if (lv_event_get_target(e) != lv_screen_active()) return;
+  const bb_state_t st = bb_state_get();
+  if (st.page != BB_PAGE_SETTINGS) return;
+  ESP_LOGI(TAG, "blank-tap -> BACK (settings)");
+  bb_nav_input_inject(BB_NAV_EVENT_BACK);
 }
 
 esp_err_t bb_touch_input_init(void) {
@@ -100,10 +112,11 @@ esp_err_t bb_touch_input_init(void) {
 
   if (lvgl_port_lock(1000)) {
     lv_obj_add_event_cb(lv_screen_active(), screen_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(lv_screen_active(), screen_blank_tap_cb, LV_EVENT_CLICKED, NULL);
     lvgl_port_unlock();
   }
 
-  ESP_LOGI(TAG, "touch ready (native lvgl indev; swipe-right=BACK)");
+  ESP_LOGI(TAG, "touch ready (native lvgl indev; swipe-right=BACK, blank-tap=BACK in settings)");
   return ESP_OK;
 }
 
