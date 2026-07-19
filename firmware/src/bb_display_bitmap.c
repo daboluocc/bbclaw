@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_backlight.h"
 #include "bb_panel.h"
 #include "bb_ui_assets.h"
 #include "driver/gpio.h"
@@ -87,19 +88,7 @@ static const uint16_t kColorAccent = RGB565(0, 200, 136);
 static const uint16_t kColorAccentDim = RGB565(0, 76, 56);
 static const uint16_t kColorErr = RGB565(176, 42, 56);
 
-static void backlight_on(void) {
-#if BBCLAW_ST7789_BL_GPIO >= 0
-  gpio_config_t io_conf = {
-      .pin_bit_mask = 1ULL << BBCLAW_ST7789_BL_GPIO,
-      .mode = GPIO_MODE_OUTPUT,
-      .pull_up_en = GPIO_PULLUP_DISABLE,
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
-  };
-  (void)gpio_config(&io_conf);
-  (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, BBCLAW_ST7789_BL_ACTIVE_LEVEL);
-#endif
-}
+static void backlight_on(void) { (void)bb_backlight_set(1); }
 
 static void copy_rows(uint8_t out[FONT_H], const uint8_t in[FONT_H]) {
   memcpy(out, in, FONT_H);

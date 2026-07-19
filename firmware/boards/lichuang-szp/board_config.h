@@ -74,9 +74,10 @@
 #define BBCLAW_ST7789_RST_GPIO  -1  /* 未接 */
 #define BBCLAW_ST7789_CS_GPIO   -1  /* CS 在 PCA9557 bit0，init 时拉低常选通 */
 #define BBCLAW_ST7789_BL_GPIO   42
-/* 背光高有效(真机实测:驱到 0 全黑、驱到 1 亮;xiaozhi 的 OUTPUT_INVERT 标记
- * 语义与直觉相反,勿照抄) */
-#define BBCLAW_ST7789_BL_ACTIVE_LEVEL 1
+/* 背光必须 PWM(2026-07-19 排障终局结论):升压电路要开关信号,恒定电平 0/1 都
+ * 不亮。5kHz/50% 实测点亮。命令/参数/像素链路当时全正常(RDDPM=9C/MADCTL=60/
+ * RAMRD 回读像素实证),黑屏唯一根因就是这里。 */
+#define BBCLAW_ST7789_BL_PWM 1
 
 #define BBCLAW_ST7789_WIDTH    320
 #define BBCLAW_ST7789_HEIGHT   240

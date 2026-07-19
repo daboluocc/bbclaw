@@ -28,7 +28,7 @@
 | I2S DOUT（ESP→ES8311 DAC）/ DIN（ES7210→ESP） | 45 / 12 |
 | LCD SPI MOSI / SCLK / DC | 40 / 41 / 39 |
 | LCD CS / RST | PCA9557 bit0（拉低常选通）/ 未接 |
-| LCD 背光 | 42，**高电平点亮**（真机实测；xiaozhi 的 `OUTPUT_INVERT true` 勿按字面照抄） |
+| LCD 背光 | 42，**必须 LEDC PWM 驱动**（5kHz/50% 实测点亮；升压电路要开关信号，恒定电平 0/1 都不亮） |
 | PA 功放使能 | PCA9557 bit1，高有效 |
 | BOOT 键（= PTT） | 0，低有效 |
 
@@ -38,10 +38,16 @@
    LCD_CS=0（唯一 SPI 设备，常选通）、PA=0；由 `bb_panel.c` SPI 路径在建 panel io 前调用
    （保证首条 LCD 命令前 CS 已有效）。功放在 radio app 音频 init 后置 1 常开（同 ATK
    板 XL9555 先例）。
-2. **背光有效电平**: 新增 `BBCLAW_ST7789_BL_ACTIVE_LEVEL`（默认 1，旧板零变化）。
-   本板**真机实测为高有效**（驱 0 全黑、驱 1 亮）——最初按 xiaozhi 的
-   `DISPLAY_BACKLIGHT_OUTPUT_INVERT true` 推断为低有效，是错的。
-   覆盖 bb_display_bitmap / bb_lvgl_display / bb_display_control_st7789 三处。
+2. **背光必须 PWM（黑屏排障终局结论，2026-07-19）**: 本板背光升压电路需要
+   **开关信号**——恒定 GPIO 电平（0 和 1 都实测过）永远点不亮，xiaozhi 能亮是因为
+   它走 LEDC PWM。判定过程：面板寄存器回读实证 RDDPM=0x9C（显示开）、MADCTL=0x60
+   （参数到达）、RAMRD 读回写入图案（像素在显存）——链路全通仍黑 → 唯一剩余变量
+   即背光；LEDC 5kHz/50% 占空一次点亮。落地：新模块 `bb_backlight.c`
+   （`BBCLAW_ST7789_BL_PWM` 板级选择 PWM/GPIO 路径，TIMER_1/CH3 避开 bb_led），
+   bb_display_bitmap / bb_lvgl_display / bb_display_control_st7789 三处统一收口。
+   `BBCLAW_ST7789_BL_ACTIVE_LEVEL` 仍保留给电平型背光的板子。
+   排障方法论沉淀：sio 半双工回读面板寄存器（每次开机仅第一读可信）是显示链路
+   最硬的自证手段，比肉眼观察可靠。
 2b. **SPI mode 2（真机黑屏坑）**: 本板面板要求 CPOL=1 的 SPI mode 2；bb_panel 原
    硬编码 mode 0，首刷软件层全"正常"（panel ready / LVGL 渲染 / 截图都好）但物理屏
    全黑。新增 `BBCLAW_ST7789_SPI_MODE`（默认 0，本板 2）。真相来源 = xiaozhi

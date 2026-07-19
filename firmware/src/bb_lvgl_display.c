@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_backlight.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_lvgl_assets.h"
 #include "bb_time.h"
@@ -51,6 +52,7 @@ const char *bbclaw_session_key(void) { return "sim:preview"; }
 #include <string.h>
 
 #include "bb_config.h"
+#include "bb_backlight.h"
 #include "bb_lvgl_element_assets.h"
 #include "bb_lvgl_assets.h"
 #include "bb_panel.h"
@@ -1156,19 +1158,7 @@ static lv_obj_t* create_battery_widget(lv_obj_t* parent, int x, int y) {
 /* ── Panel init (hardware only) ── */
 
 #if !defined(BBCLAW_SIMULATOR)
-static void backlight_on(void) {
-#if BBCLAW_ST7789_BL_GPIO >= 0
-  gpio_config_t io_conf = {
-      .pin_bit_mask = 1ULL << BBCLAW_ST7789_BL_GPIO,
-      .mode = GPIO_MODE_OUTPUT,
-      .pull_up_en = GPIO_PULLUP_DISABLE,
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
-  };
-  (void)gpio_config(&io_conf);
-  (void)gpio_set_level(BBCLAW_ST7789_BL_GPIO, BBCLAW_ST7789_BL_ACTIVE_LEVEL);
-#endif
-}
+static void backlight_on(void) { (void)bb_backlight_set(1); }
 
 static esp_err_t init_panel(void) {
   return bb_panel_init(&s_panel_io, &s_panel);

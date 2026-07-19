@@ -56,6 +56,7 @@ set(_bb_srcs
     "bb_wifi.c"
     "bb_xl9555.c"
     "bb_pca9557.c"
+    "bb_backlight.c"
     "bb_display_control.c"
     "bb_display_control_co5300.c"
     "bb_display_control_st7789.c"
@@ -150,3 +151,6 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_malloc_core")
 
 # panic 现场 RTC 快照(bb_panic_crumb.c):wrap 真 panic handler
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+
+# -Os 下 snprintf 截断分析更激进,bb_adapter_client 误报 format-truncation
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)

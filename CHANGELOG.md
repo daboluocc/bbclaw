@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   第 3 块。ES8311 DAC + ES7210 双 mic ADC(复用手表音频架构)+ SPI ST7789 320x240 +
   FT6336 触摸 + PCA9557 IO 扩展(新最小驱动 `bb_pca9557.c`:LCD_CS bit0 常选通、
   PA_EN bit1)。新增板级宏 `BBCLAW_ST7789_SPI_MODE`(本板面板要 mode 2,mode 0 黑屏)
-  与 `BBCLAW_ST7789_BL_ACTIVE_LEVEL`(本板背光低有效);es8311 I2C 总线改
-  get-or-create(显示先建总线时不再冲突)。真机验证:开机播报、UI 渲染、配网页。
-  见 design/boards/lichuang-szp-esp32s3.md。
+  与背光统一模块 `bb_backlight.c`(本板背光**必须 LEDC PWM**——升压电路要开关信号,
+  恒定电平不亮,黑屏排障终局根因;经面板寄存器回读 RDDPM/MADCTL/RAMRD 逐层实证);
+  es8311 I2C 总线改 get-or-create(显示先建总线时不再冲突)。真机验证:开机播报、
+  UI 点亮、触摸、WiFi 自连、云配对 LINK。见 design/boards/lichuang-szp-esp32s3.md。
 - **固件:录音回放页——设备端媒体播放器(手表,ADR-044 P1a)**:Recordings 列表点一条
   录音不再是「后台连播/再点停」,而是打开一个专属回放页(新 `bb_page_recplay`)。触屏
   手表原生 LVGL 指针 indev,transport 全触控:上一首 / 播放·暂停 / 下一首 / 停止(圆钮)

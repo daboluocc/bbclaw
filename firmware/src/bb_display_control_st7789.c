@@ -12,6 +12,7 @@
 
 #include "bb_display_control.h"
 #include "bb_config.h"
+#include "bb_backlight.h"
 
 #if !BBCLAW_DISPLAY_BUS_QSPI
 
@@ -28,14 +29,8 @@ static const char* TAG = "display_st7789";
 /* Forwards from bb_lvgl_display.c */
 extern esp_lcd_panel_handle_t bb_display_get_panel_handle(void);
 
-/* 背光开关(纯 GPIO)。无 BL 脚的板(如 atk I80,BL=-1)整段跳过。 */
-static void st7789_backlight(int on) {
-#if BBCLAW_ST7789_BL_GPIO >= 0
-  gpio_set_level(BBCLAW_ST7789_BL_GPIO, on ? BBCLAW_ST7789_BL_ACTIVE_LEVEL : !BBCLAW_ST7789_BL_ACTIVE_LEVEL);
-#else
-  (void)on;
-#endif
-}
+/* 背光开关(GPIO 电平或 PWM,bb_backlight 统一处理;无 BL 脚的板内部 no-op) */
+static void st7789_backlight(int on) { (void)bb_backlight_set(on); }
 
 esp_err_t bb_display_set_brightness_raw_impl(uint8_t value) {
   /* LCD 无寄存器亮度:背光 GPIO on/off。raw=0 灭,>0 亮。 */

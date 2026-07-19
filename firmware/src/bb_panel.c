@@ -11,6 +11,8 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #if BBCLAW_DISPLAY_BUS_SPI || BBCLAW_DISPLAY_BUS_QSPI
 #include <driver/spi_master.h>
@@ -208,6 +210,15 @@ esp_err_t bb_panel_init(esp_lcd_panel_io_handle_t *panel_io,
 #endif
 
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(*panel), TAG, "reset");
+#if BBCLAW_PCA9557_ENABLE
+    /* 实战派：此刻才把 LCD_CS 拉低（官方例程顺序：reset 后、init 前）。CS 下降沿
+     * 是 ST7789 的帧同步起点，且此时 SCLK 空闲电平已稳定；之后 CS 常低。
+     * 注：CS 高期间上面的 SWRESET 实际未进面板（与官方行为一致，面板保持上电默认态）。 */
+    ESP_RETURN_ON_ERROR(bb_pca9557_set_output(BBCLAW_PCA9557_LCD_CS_BIT, 0), TAG, "lcd cs low");
+    /* 150ms:若该位实际是经反相的 LCD_RST(原理图待证),释放复位后 ST7789 需要
+     * 120ms 才能收 SLPOUT;当作 CS 时这点延时也无害 */
+    vTaskDelay(pdMS_TO_TICKS(150));
+#endif
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(*panel), TAG, "init");
 #if BBCLAW_DISPLAY_BUS_QSPI
     /* SH8601/CO5300 不支持 swap_xy（无 MADCTL MV），mirror 也可能不支持——

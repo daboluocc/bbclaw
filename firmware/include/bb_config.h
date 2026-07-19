@@ -46,6 +46,17 @@
 #define BBCLAW_ST7789_SPI_MODE 0
 #endif
 
+/* ── ST7789 背光 PWM 驱动（实战派:升压电路要开关信号,恒定电平不亮）── */
+#ifndef BBCLAW_ST7789_BL_PWM
+#define BBCLAW_ST7789_BL_PWM 0
+#endif
+#ifndef BBCLAW_ST7789_BL_PWM_FREQ_HZ
+#define BBCLAW_ST7789_BL_PWM_FREQ_HZ 5000
+#endif
+#ifndef BBCLAW_ST7789_BL_PWM_ON_DUTY
+#define BBCLAW_ST7789_BL_PWM_ON_DUTY 512 /* 10-bit,50%(实战派实测点亮值) */
+#endif
+
 /* ── IMU（QMI8658）+ 息屏管理默认值:无此硬件的板自动降级(模块内自门控) ── */
 #ifndef BBCLAW_IMU_ENABLE
 #define BBCLAW_IMU_ENABLE 0

@@ -60,9 +60,13 @@ esp_err_t bb_pca9557_init(void) {
     };
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev), TAG, "add pca9557");
 
-    /* 先写输出值再开输出方向，避免方向切换瞬间的电平毛刺：
-       LCD_CS=0（选通）、PA_EN=0（关功放，音频起来后再开） */
-    ESP_RETURN_ON_ERROR(write_reg(REG_OUTPUT, 0x00), TAG, "output init");
+    /* 先写输出值再开输出方向，避免方向切换瞬间的电平毛刺。
+     * LCD_CS 初始为 1（不选通）：ST7789 以 CS 下降沿做帧同步，必须等 SPI 总线
+     * 建好、SCLK 空闲电平稳定（mode 2 = 高）、panel reset 之后再拉低——否则
+     * 总线初始化期间的 SCLK 跳变会被面板计为时钟沿，位计数错位，之后所有命令
+     * 全部乱码（官方例程/xiaozhi 均为 reset 后才 lcd_cs(0)，实战派真机踩过）。
+     * PA_EN=0（关功放，音频起来后再开）。 */
+    ESP_RETURN_ON_ERROR(write_reg(REG_OUTPUT, (uint8_t)(1U << BBCLAW_PCA9557_LCD_CS_BIT)), TAG, "output init");
     const uint8_t cfg = (uint8_t)~((1U << BBCLAW_PCA9557_LCD_CS_BIT) | (1U << BBCLAW_PCA9557_PA_EN_BIT));
     ESP_RETURN_ON_ERROR(write_reg(REG_CONFIG, cfg), TAG, "cfg dir");
 
