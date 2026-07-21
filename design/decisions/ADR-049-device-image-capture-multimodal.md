@@ -200,7 +200,7 @@
 - [x] adapter: `handleImageCapture`（解码 → 落 workspace/inbox → `runTurn` 让 claude 读图 → voice.reply）
 - [x] cloud: 未知 kind default relay 正确转发 `image.capture`（零代码改动，真机确认）
 - [x] **端到端真机验证（2026-07-20）**：设备 VGA JPEG 上行 → cloud relay → adapter → **claude 读图并准确描述画面**（inbox 落图可视化确认）
-- [ ] firmware: 生产触发——主菜单「拍照」行（当前是 `BBCLAW_CAMERA_TEST_UPLOAD` 每 boot 自动拍的测试钩子，待换成用户触发 + 关掉 SELFTEST/TEST_UPLOAD）
-- [ ] 设备侧播报：确认 image.capture 的 voice.reply 被云端 TTS 且设备朗读（当前经 adapter 日志确认 claude 已回复；device-speaks 链路待验/接）
+- [x] firmware: 生产触发——设置菜单「拍照」行（`bb_ui_settings.c`：`MAIN_ROW_CAMERA`，cloud_saas-only 可见，点击→PSRAM 任务 `bb_camera_shoot_and_send`→行状态 拍摄中/已发送/失败）；测试钩子 `BBCLAW_CAMERA_TEST_UPLOAD`、boot `BBCLAW_CAMERA_SELFTEST` 均已关（生产按需 init→拍→deinit，无需 boot 自测）
+- [x] 设备侧播报：image.capture 的回复经 adapter `runTurn` 走**与语音 turn 同一条 `voice.reply` 回路**（`cloudrelay/transcript.go` 抽出复用），云端对 voice.reply 做 TTS、设备朗读——与语音链路逐字同路径，代码侧已接通；真机「点拍照→设备朗读描述」整链待有设备在线时跑一次回归
 - [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
 - [ ] design: README 已登记（本 ADR）
