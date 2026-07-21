@@ -55,6 +55,7 @@
 #include "bb_notification.h" /* ADR-021 §9: 已提醒 list + unread badge source */
 #include "bb_power_mgmt.h" /* 息屏时间预设设置行 */
 #include "bb_ota.h"
+#include "bb_camera.h"
 #include "bb_radio_app.h"
 #include "bb_session_store.h"
 #include "bb_transport.h"
@@ -181,6 +182,7 @@ typedef enum {
   MAIN_ROW_REMINDERS,    /* 提醒 — opens the 已提醒 page (LEVEL_REMINDERS) */
   MAIN_ROW_ADAPTER,
   MAIN_ROW_SESSIONS,
+  MAIN_ROW_CAMERA,       /* ADR-049 拍照→发 image.capture 给 adapter 让 AI 看图 */
   MAIN_ROW_VOLUME,
   MAIN_ROW_SLEEP,        /* 息屏时间预设(Never/30s/1min/3min/5min),点击循环 */
   MAIN_ROW_MIYU,
@@ -200,6 +202,16 @@ typedef enum {
   OTA_ROW_ERROR,    /* check failed */
   OTA_ROW_CLOUD_ONLY, /* not cloud_saas — OTA unavailable */
 } ota_row_status_t;
+
+#if BBCLAW_CAMERA_ENABLE
+/* 拍照行状态（ADR-049）：点击→拍一帧发 image.capture 给 adapter 让 AI 看图。 */
+typedef enum {
+  CAM_ROW_IDLE = 0,
+  CAM_ROW_SHOOTING, /* 拍照+编码+上行中 */
+  CAM_ROW_SENT,     /* 已发出，AI 处理中 */
+  CAM_ROW_FAILED,   /* 拍照或上行失败 */
+} cam_row_status_t;
+#endif
 
 /* ── State ── */
 
@@ -228,6 +240,10 @@ typedef struct {
 
   /* Firmware row OTA check (Settings → Firmware → click). */
   ota_row_status_t ota_status;
+#if BBCLAW_CAMERA_ENABLE
+  cam_row_status_t cam_status;   /* 拍照行状态（ADR-049） */
+  volatile int cam_shoot_pending;
+#endif
   int64_t recorder_arm_ms; /* ADR-044 录音行双击确认窗口起点(0=未武装) */
   int64_t miyu_arm_ms;     /* 密语开关双击确认窗口起点(0=未武装,用户要求状态修改需确认) */
   /* ADR-044 录音浏览器:0=会话列表 1=段列表;条目名缓存(会话=epoch 目录名,段=文件名) */
@@ -472,6 +488,10 @@ static int main_visible_rows(main_row_t* out) {
   if (bb_transport_is_cloud_saas()) {
     out[n++] = MAIN_ROW_ADAPTER;
     out[n++] = MAIN_ROW_SESSIONS;
+#if BBCLAW_CAMERA_ENABLE
+    /* 拍照(ADR-049):经云 WS 发 image.capture 给 adapter，仅 cloud_saas 有该通道。 */
+    out[n++] = MAIN_ROW_CAMERA;
+#endif
   }
   out[n++] = MAIN_ROW_VOLUME;
   out[n++] = MAIN_ROW_SLEEP;
@@ -676,6 +696,25 @@ static void render_main(void) {
             break;
         }
         break;
+#if BBCLAW_CAMERA_ENABLE
+      case MAIN_ROW_CAMERA:
+        switch (s_st.cam_status) {
+          case CAM_ROW_SHOOTING:
+            snprintf(buf, sizeof(buf), "拍照 · 拍摄中…");
+            break;
+          case CAM_ROW_SENT:
+            snprintf(buf, sizeof(buf), "拍照 · 已发送");
+            break;
+          case CAM_ROW_FAILED:
+            snprintf(buf, sizeof(buf), "拍照 · 失败,重试");
+            break;
+          case CAM_ROW_IDLE:
+          default:
+            snprintf(buf, sizeof(buf), "拍照");
+            break;
+        }
+        break;
+#endif
       case MAIN_ROW_SYSINFO:
         snprintf(buf, sizeof(buf), "System Info");
         break;
@@ -1454,6 +1493,45 @@ static void ota_check_task(void* arg) {
   }
   vTaskDeleteWithCaps(NULL);
 }
+
+#if BBCLAW_CAMERA_ENABLE
+/* 拍照上行完成后回主线程更新行状态（ADR-049）。arg=1 成功 0 失败。 */
+static void on_camera_shoot_done(void* arg) {
+  s_st.cam_status = ((intptr_t)arg) ? CAM_ROW_SENT : CAM_ROW_FAILED;
+  s_st.cam_shoot_pending = 0;
+  rerender();
+}
+
+/* 拍照任务：按需 init→拍一帧 JPEG→base64 发 image.capture→deinit。PSRAM 栈，
+ * 不碰 NVS/flash（与 ota_check_task 同约束）；frame2jpg + 相机 init 较吃栈，给 16KB。 */
+static void camera_shoot_task(void* arg) {
+  (void)arg;
+  esp_err_t err = bb_camera_shoot_and_send("这是设备摄像头拍的照片，请看图并简洁描述你看到了什么。");
+  if (lvgl_port_lock(200)) {
+    lv_async_call(on_camera_shoot_done, (void*)(intptr_t)(err == ESP_OK));
+    lvgl_port_unlock();
+  } else {
+    s_st.cam_shoot_pending = 0;
+  }
+  vTaskDeleteWithCaps(NULL);
+}
+
+static void spawn_camera_shoot_task(void) {
+  if (s_st.cam_shoot_pending) return;
+  s_st.cam_shoot_pending = 1;
+  s_st.cam_status = CAM_ROW_SHOOTING;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreateWithCaps(camera_shoot_task, "cam_shoot", 16384, NULL,
+                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_camera_shoot_task: xTaskCreateWithCaps failed");
+    s_st.cam_shoot_pending = 0;
+    s_st.cam_status = CAM_ROW_FAILED;
+  }
+  rerender();
+}
+#endif
 
 static void spawn_ota_check_task(void) {
   if (s_st.ota_check_pending) return;
@@ -2365,6 +2443,18 @@ int bb_ui_settings_handle_click(void) {
             spawn_ota_check_task();
           }
           break;
+#if BBCLAW_CAMERA_ENABLE
+        case MAIN_ROW_CAMERA:
+          /* ADR-049：拍一帧发给 adapter 让 AI 看图。cloud_saas only(见可见性)，
+           * 兜底再判一次;拍照/上行在 PSRAM 任务里跑，不阻塞菜单。 */
+          if (!bb_transport_is_cloud_saas()) {
+            s_st.cam_status = CAM_ROW_FAILED;
+            rerender();
+          } else {
+            spawn_camera_shoot_task();
+          }
+          break;
+#endif
         case MAIN_ROW_SYSINFO:
           enter_sysinfo();
           break;
