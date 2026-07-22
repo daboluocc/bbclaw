@@ -1,6 +1,7 @@
 # ADR-049: 设备摄像头拍照 → 多模态 Agent —— 图片信息类文本传输链路
 
-- **状态**: 已实现并真机验证（端到端上行链路，2026-07-20）；剩生产触发 UI + 设备播报接线
+- **状态**: 上行+多模态理解已真机打通（2026-07-20/22）；生产触发菜单已落地真机验证；
+  **设备播报未通**——真机证伪"零改动复用 voice.reply"假设，需云端参与 TTS（跨组件，待定方向，见 §12 checklist）
 - **日期**: 2026-07-19
 - **组件**: firmware + adapter（+ cloud 纯 relay，MVP 零改动）
 - **关联**: ADR-044（ambient 二进制上传模板）、ADR-035（adapter PTY 跑 claude，原生读图）、ADR-004（cloud_saas agent 代理）、ADR-027/048（cloud_saas 路由与 adapter 分配）
@@ -201,6 +202,20 @@
 - [x] cloud: 未知 kind default relay 正确转发 `image.capture`（零代码改动，真机确认）
 - [x] **端到端真机验证（2026-07-20）**：设备 VGA JPEG 上行 → cloud relay → adapter → **claude 读图并准确描述画面**（inbox 落图可视化确认）
 - [x] firmware: 生产触发——设置菜单「拍照」行（`bb_ui_settings.c`：`MAIN_ROW_CAMERA`，cloud_saas-only 可见，点击→PSRAM 任务 `bb_camera_shoot_and_send`→行状态 拍摄中/已发送/失败）；测试钩子 `BBCLAW_CAMERA_TEST_UPLOAD`、boot `BBCLAW_CAMERA_SELFTEST` 均已关（生产按需 init→拍→deinit，无需 boot 自测）
-- [x] 设备侧播报：image.capture 的回复经 adapter `runTurn` 走**与语音 turn 同一条 `voice.reply` 回路**（`cloudrelay/transcript.go` 抽出复用），云端对 voice.reply 做 TTS、设备朗读——与语音链路逐字同路径，代码侧已接通；真机「点拍照→设备朗读描述」整链待有设备在线时跑一次回归
+- [~] 设备侧播报——**真机验证证伪了"下游零新增"假设（2026-07-22，实战派 BBClaw-A844E1）**：
+  设置菜单点「拍照」→上行/relay/adapter/claude 读图/生成回复**全通**（claude 准确描述多张画面含自拍），
+  但**设备不出声、屏幕停在设置页无任何回复 UI**。根因（固件+云语音架构，已定位）：
+  1. cloud_saas 设备**无本地 TTS**，播报音频只能由云端合成后流下来；
+  2. 云端**只在 `voice.stream.finish` 语音回合里做 TTS**（PTT→云 ASR→adapter→回复→云 TTS→回流）；
+     `image.capture` 是旁路 relay 文本，**从不触发 finish 回合**→云端不会 TTS 这条回复；
+  3. 固件 `bb_adapter_client.c:1615`：reply/TTS 事件在 `finish_result==NULL` 时**直接丢弃**，
+     拍照没建立该上下文→即便云端回文本也被丢。
+  → §4"复用 voice.reply 回路、下游零新增"**不成立**（该回路只在设备发起的语音回合里活着）。
+  修复必须让云端参与 TTS，是**跨组件（cloud）+ 部署**改动。候选方案：
+  (A) **Phase 2 优先**：照片挂进 PTT 语音回合（走 `voice.stream.finish`，云端本就 TTS→播报"免费"获得，交互也更自然）——主要固件+adapter，cloud 仅透传图片进 finish；
+  (B) cloud 给 image.capture 的 voice.reply 单独跑 TTS 推 deviceWsAudio + 固件支持 proactive TTS 播放；
+  (C) 纯固件把回复以屏显文本呈现（无声，不满足"播报"语义，仅兜底）。待定方向。
+- [ ] 观察：真机长跑后 CDC0 被 `esp-x509-crt-bundle: Certificate validated` 洪水刷屏（~1–2/s），
+  疑似 camera init/deinit 内部 DRAM 碎片→TLS 反复握手；回合仍能送达，但值得回头查（见 [[internal-dram-recurring-root-cause]]）。
 - [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
 - [ ] design: README 已登记（本 ADR）
