@@ -1501,6 +1501,30 @@ static void ws_handle_text_message(const char* msg) {
       xSemaphoreGive(s_ws.lock);
       return;
     }
+    /* ADR-049: 设备主动发 image.capture(拍照)后,adapter 让 claude 读图并回一条
+     * voice.reply;云端因该回复没有在途 voice 回合(finish 流)可匹配,便把它反向路由
+     * 到设备这里作为文本 reply。此处把它朗读出来(走 cloud /v1/tts/synthesize,与提醒
+     * 播报同一条链路)。正常语音回合里 finish_result 已武装、音频经流式 tts.chunk 播放,
+     * 故仅在 finish_result==NULL(无在途回合)时朗读,避免把语音回合的回复重复念一遍。 */
+    if (strcmp(rkind, "voice.reply") == 0) {
+      int have_turn;
+      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+      have_turn = (s_ws.finish_result != NULL);
+      xSemaphoreGive(s_ws.lock);
+      if (!have_turn) {
+        char reply_text[512] = {0};
+        const char* payload = strstr(msg, "\"payload\"");
+        const char* src = (payload != NULL) ? strchr(payload, '{') : NULL;
+        if (src == NULL) {
+          src = msg;
+        }
+        if (json_extract_string(src, "text", reply_text, sizeof(reply_text)) && reply_text[0] != '\0') {
+          ESP_LOGI(TAG, "image.capture reply → speak (%d chars)", (int)strlen(reply_text));
+          bb_adapter_speak_notification(reply_text);
+        }
+      }
+      return;
+    }
     if (strncmp(rkind, "sites.", 6) != 0) {
       return;
     }
