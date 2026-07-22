@@ -1065,7 +1065,19 @@ static void notif_tts_task(void* arg) {
     esp_err_t err = bb_adapter_tts_synthesize_pcm16(text, &audio, 0);
     if (err == ESP_OK && audio.pcm_data != NULL && audio.pcm_len > 0) {
       ESP_LOGI(TAG, "notif-tts: play %u pcm bytes", (unsigned)audio.pcm_len);
-      bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len);
+      /* 必须 start_playback 才会开 I2S TX + 功放门控(PA)：直接 play_pcm_blocking 会把
+       * PCM 写进关着的 TX/功放 → 无声（实战派等 PA 门控板尤其如此，见 bb_audio.c 播放门控）。
+       * 与语音回合/配对码 TTS 的播放包法一致：start→(设采样率)→play→stop→复位采样率。 */
+      if (bb_audio_start_playback() == ESP_OK) {
+        if (audio.sample_rate > 0 && audio.sample_rate != BBCLAW_AUDIO_SAMPLE_RATE) {
+          (void)bb_audio_set_playback_sample_rate(audio.sample_rate);
+        }
+        bb_audio_play_pcm_blocking(audio.pcm_data, audio.pcm_len);
+        (void)bb_audio_stop_playback();
+        (void)bb_audio_set_playback_sample_rate(BBCLAW_AUDIO_SAMPLE_RATE);
+      } else {
+        ESP_LOGW(TAG, "notif-tts: start_playback failed");
+      }
     } else {
       ESP_LOGW(TAG, "notif-tts: synth empty/failed err=%d", (int)err);
     }
