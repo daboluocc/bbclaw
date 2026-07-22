@@ -144,6 +144,7 @@ static const lv_font_t* action_font(void) {
 
 static void chat_cam_btn_cb(lv_event_t* e) {
   (void)e;
+  ESP_LOGI(TAG, "chat: 拍照 钮 tapped → shoot async"); /* 排障:确认触摸是否送达按钮 */
   bb_camera_shoot_and_send_async(NULL); /* 默认文案:请看图并简洁描述 */
 }
 

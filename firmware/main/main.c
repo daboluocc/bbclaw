@@ -20,6 +20,11 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(err);
 
+  /* mbedTLS 证书包每次 TLS 握手都在 INFO 级打 "Certificate validated"——频繁建连
+   * (TTS 合成走 HTTPS、云 WS 重连)时会刷屏,把摄像头/语音等有效日志从 CDC0 串口
+   * tee 里挤掉,严重妨碍排障。降到 WARN,只留告警/错误。 */
+  esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_WARN);
+
   ESP_LOGI(TAG, "starting BBClaw firmware bootstrap");
   bbclaw_identity_init();
 
