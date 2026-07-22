@@ -1,7 +1,8 @@
 # ADR-049: 设备摄像头拍照 → 多模态 Agent —— 图片信息类文本传输链路
 
-- **状态**: 上行+多模态理解已真机打通（2026-07-20/22）；生产触发菜单已落地真机验证；
-  **设备播报未通**——真机证伪"零改动复用 voice.reply"假设，需云端参与 TTS（跨组件，待定方向，见 §12 checklist）
+- **状态**: **全链路真机打通（2026-07-22）**——设备拍照→cloud→adapter→claude 读图→回复→
+  设备经云端 TTS 朗读，逐段真机验证；生产触发菜单已落地。设备播报采方案 B2（固件朗读云端反向路由的
+  `voice.reply`，走已在产的 `/v1/tts/synthesize`，cloud/adapter 零改动零部署，见 §12 checklist）
 - **日期**: 2026-07-19
 - **组件**: firmware + adapter（+ cloud 纯 relay，MVP 零改动）
 - **关联**: ADR-044（ambient 二进制上传模板）、ADR-035（adapter PTY 跑 claude，原生读图）、ADR-004（cloud_saas agent 代理）、ADR-027/048（cloud_saas 路由与 adapter 分配）
@@ -202,9 +203,9 @@
 - [x] cloud: 未知 kind default relay 正确转发 `image.capture`（零代码改动，真机确认）
 - [x] **端到端真机验证（2026-07-20）**：设备 VGA JPEG 上行 → cloud relay → adapter → **claude 读图并准确描述画面**（inbox 落图可视化确认）
 - [x] firmware: 生产触发——设置菜单「拍照」行（`bb_ui_settings.c`：`MAIN_ROW_CAMERA`，cloud_saas-only 可见，点击→PSRAM 任务 `bb_camera_shoot_and_send`→行状态 拍摄中/已发送/失败）；测试钩子 `BBCLAW_CAMERA_TEST_UPLOAD`、boot `BBCLAW_CAMERA_SELFTEST` 均已关（生产按需 init→拍→deinit，无需 boot 自测）
-- [~] 设备侧播报——**真机验证证伪了"下游零新增"假设（2026-07-22，实战派 BBClaw-A844E1）**：
-  设置菜单点「拍照」→上行/relay/adapter/claude 读图/生成回复**全通**（claude 准确描述多张画面含自拍），
-  但**设备不出声、屏幕停在设置页无任何回复 UI**。根因（固件+云语音架构，已定位）：
+- [x] 设备侧播报——**B2 方案真机验证通过（2026-07-22，实战派 BBClaw-A844E1）**。排查历程：先真机
+  证伪了 §4"下游零新增复用 voice.reply"的假设——点「拍照」上行/relay/adapter/claude 读图/生成回复
+  **全通**（claude 准确描述多张画面含自拍），但**设备不出声、屏幕停在设置页无回复 UI**。根因（已定位）：
   1. cloud_saas 设备**无本地 TTS**，播报音频只能由云端合成后流下来；
   2. 云端**只在 `voice.stream.finish` 语音回合里做 TTS**（PTT→云 ASR→adapter→回复→云 TTS→回流）；
      `image.capture` 是旁路 relay 文本，**从不触发 finish 回合**→云端不会 TTS 这条回复；
@@ -224,9 +225,11 @@
     （无在途语音回合，区别于正常 PTT turn 的流式 `tts.chunk` 播放，避免重复念），提取 `payload.text`
     调既有 `bb_adapter_speak_notification`→`POST /v1/tts/synthesize`→播 PCM16（与提醒播报同一条链路）。
   - **cloud/adapter 零改动、零部署**：云端 TTS 仍出力（`/v1/tts/synthesize` 已在产），是"走云端"的最低风险切法。
-  - 状态：`build-lichuang` 编译通过；**真机回归待补**——烧录时设备多次软重启后掉出 USB（疑 brownout），
-    需物理 BOOT+RESET 复位后 flash `build-lichuang` → 点拍照 → 抓 `image.capture reply → speak` +
-    `notif-tts: play N pcm bytes` 确认出声。
+  - **真机验证通过（2026-07-22，实战派 BBClaw-A844E1）**：点「拍照」→ 串口实锤
+    `bb_adapter: image.capture reply → speak (293 chars)` → `bb_adapter: notif-tts: play 540678 pcm bytes`
+    （claude 293 字描述 → 云端合成 ~540KB PCM ≈17s → `bb_audio_play_pcm_blocking` 出声）。
+    时序对齐：image sent(71589) → reply 回(82760,对上 adapter `elapsed=10.992s`) → 合成+播放(91020)。
+    **整链 设备拍照→cloud→adapter→claude 读图→voice.reply→cloud 反向路由→设备 /v1/tts/synthesize→出声 全通。**
 - [ ] 观察：真机长跑后 CDC0 被 `esp-x509-crt-bundle: Certificate validated` 洪水刷屏（~1–2/s），
   疑似 camera init/deinit 内部 DRAM 碎片→TLS 反复握手；回合仍能送达，但值得回头查（见 [[internal-dram-recurring-root-cause]]）。
 - [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
