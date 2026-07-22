@@ -2,9 +2,11 @@
 #include <string.h>
 
 #include "bb_agent_theme.h"
+#include "bb_camera.h" /* ADR-049: 触屏底部「拍照」钮 → bb_camera_shoot_and_send_async */
 #include "bb_chat_recording.h"
 #include "bb_chat_transcript.h"
 #include "bb_display.h"
+#include "bb_ptt.h" /* ADR-049: 触屏「按住说话」钮 → bb_ptt_inject */
 #include "bb_ui_layout.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
@@ -122,6 +124,74 @@ static void theme_scroll_transcript(int lines) {
 
 /* Message rendering is delegated to bb_chat_transcript.c. */
 
+#if BBCLAW_CAMERA_ENABLE
+/* ── ADR-049 触屏底部功能条：「拍照」+「按住说话」──
+ * 实战派(lichuang-szp)是触屏板、且板载摄像头。对话页底部挂两枚大钮:
+ *   拍照     — 单击拍一帧 JPEG 喂 AI 看图(异步,不阻塞 LVGL 线程)。
+ *   按住说话 — 屏上 PTT:按下开录、松手/滑走发送,与实体 BOOT-PTT 同一条链路。
+ * 钮是主题根 s_st.root 的子节点,随对话页进/出创建/销毁;仅有摄像头的板编进来。 */
+#ifdef BBCLAW_HAVE_CJK_FONT
+extern const lv_font_t lv_font_bbclaw_cjk;
+#endif
+
+static const lv_font_t* action_font(void) {
+#ifdef BBCLAW_HAVE_CJK_FONT
+  return &lv_font_bbclaw_cjk;
+#else
+  return lv_font_get_default();
+#endif
+}
+
+static void chat_cam_btn_cb(lv_event_t* e) {
+  (void)e;
+  bb_camera_shoot_and_send_async(NULL); /* 默认文案:请看图并简洁描述 */
+}
+
+static void chat_ptt_btn_cb(lv_event_t* e) {
+  const lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_PRESSED) {
+    bb_ptt_inject(1);
+  } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+    bb_ptt_inject(0); /* 松手或手指滑出钮都算松开→结束这轮并发送 */
+  }
+}
+
+static lv_obj_t* chat_action_btn(lv_obj_t* parent, const char* text) {
+  lv_obj_t* b = lv_obj_create(parent);
+  lv_obj_remove_style_all(b);
+  lv_obj_set_style_radius(b, 8, 0);
+  lv_obj_set_style_bg_color(b, lv_color_hex(BB_UI_ACCENT), 0);
+  lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_opa(b, LV_OPA_50, LV_STATE_PRESSED); /* 按下变暗给反馈 */
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t* lbl = lv_label_create(b);
+  lv_obj_set_style_text_font(lbl, action_font(), 0);
+  lv_obj_set_style_text_color(lbl, lv_color_hex(0x0a0a0a), 0); /* teal 底 + 深字 */
+  lv_label_set_text(lbl, text);
+  lv_obj_center(lbl);
+  return b;
+}
+
+static void chat_build_action_bar(lv_obj_t* root) {
+  const int bar_h = 44, margin = 6, gap = 8;
+  const int btn_w = (BB_DISP_W - 2 * margin - gap) / 2; /* 两枚等宽 */
+  const int y = BB_DISP_H - bar_h - margin;
+
+  lv_obj_t* cam = chat_action_btn(root, "拍照");
+  lv_obj_set_size(cam, btn_w, bar_h);
+  lv_obj_set_pos(cam, margin, y);
+  lv_obj_add_event_cb(cam, chat_cam_btn_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* ptt = chat_action_btn(root, "按住说话");
+  lv_obj_set_size(ptt, btn_w, bar_h);
+  lv_obj_set_pos(ptt, margin + btn_w + gap, y);
+  lv_obj_add_event_cb(ptt, chat_ptt_btn_cb, LV_EVENT_PRESSED, NULL);
+  lv_obj_add_event_cb(ptt, chat_ptt_btn_cb, LV_EVENT_RELEASED, NULL);
+  lv_obj_add_event_cb(ptt, chat_ptt_btn_cb, LV_EVENT_PRESS_LOST, NULL);
+}
+#endif /* BBCLAW_CAMERA_ENABLE */
+
 /* ── theme callbacks ── */
 
 static void theme_on_enter(lv_obj_t* parent) {
@@ -177,6 +247,11 @@ static void theme_on_enter(lv_obj_t* parent) {
       lv_obj_set_style_radius(cont, 2, LV_PART_SCROLLBAR);
       lv_obj_set_style_pad_right(cont, 6, LV_PART_SCROLLBAR);
 #endif
+#if !BB_UI_PORTRAIT && BBCLAW_CAMERA_ENABLE
+      /* 底部功能条(拍照/按住说话)遮住内容区下缘:补底部内边距,滚到底时最后一条
+       * 气泡停在钮上方(空白垫层滚到钮后面)。 */
+      lv_obj_set_style_pad_bottom(cont, 56, 0);
+#endif
     }
   }
 
@@ -192,6 +267,10 @@ static void theme_on_enter(lv_obj_t* parent) {
   /* 收编悬浮 PTT 钮：作为主题根的前景子节点，设置等 overlay 在屏幕层
    * 天然盖住它（此前钮在全局顶层，浮在设置页之上——bug） */
   bb_display_ptt_button_adopt(s_st.root);
+#endif
+#if BBCLAW_CAMERA_ENABLE
+  /* 触屏板(实战派)：对话页底部挂「拍照」+「按住说话」功能条(前景子节点)。 */
+  chat_build_action_bar(s_st.root);
 #endif
   s_st.built = 1;
 }

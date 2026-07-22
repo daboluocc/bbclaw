@@ -43,6 +43,11 @@ void bb_camera_deinit(void);
  *  note=给 agent 的意图/问题（受控文案）。需云 WS 已连（cloud_saas）。 */
 esp_err_t bb_camera_shoot_and_send(const char *note);
 
+/** ADR-049 异步一键拍照：把 bb_camera_shoot_and_send(note) 丢进 PSRAM 栈任务里跑，
+ *  不阻塞调用线程（适合从 LVGL 触摸按钮触发）。一次一张；note 为 NULL/空则用默认文案，
+ *  非空时会被复制。 */
+void bb_camera_shoot_and_send_async(const char *note);
+
 #if BBCLAW_CAMERA_SELFTEST
 /** Bring-up 自测：抓一帧，打印 size / JPEG magic / 分辨率到串口。失败打错误。
  *  证据优先（embedded-serial-first）：串口日志即验收依据，无需 SD/截图。 */

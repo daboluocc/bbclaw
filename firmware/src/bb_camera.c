@@ -9,6 +9,7 @@
 #if BBCLAW_CAMERA_ENABLE
 
 #include <stdlib.h>
+#include <string.h>
 #include <esp_check.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -145,6 +146,40 @@ esp_err_t bb_camera_shoot_and_send(const char *note) {
     bb_camera_deinit();
     ESP_LOGI(TAG, "shoot_and_send err=%s", esp_err_to_name(err));
     return err;
+}
+
+/* ── ADR-049 异步一键拍照：给触摸按钮 / 非阻塞调用方用 ──
+ * bb_camera_shoot_and_send 阻塞数秒（相机 init + frame2jpg 软编）且吃大栈，绝不能
+ * 跑在 LVGL/事件线程；这里丢进 PSRAM 栈任务里跑，一次一张（inflight 门控，避免相机
+ * init/deinit 撞车）。 */
+static volatile int s_shoot_async_inflight;
+
+static void camera_shoot_async_task(void *arg) {
+    char *note = (char *)arg;
+    (void)bb_camera_shoot_and_send(note);
+    free(note);
+    s_shoot_async_inflight = 0;
+    vTaskDeleteWithCaps(NULL);
+}
+
+void bb_camera_shoot_and_send_async(const char *note) {
+    if (s_shoot_async_inflight) {
+        ESP_LOGW(TAG, "shoot async: 上一张还在拍/上行，忽略本次");
+        return;
+    }
+    const char *n = (note != NULL && note[0] != '\0')
+                        ? note
+                        : "这是设备摄像头拍的照片，请看图并简洁描述你看到了什么。";
+    char *copy = strdup(n);
+    if (copy == NULL) return;
+    s_shoot_async_inflight = 1;
+    TaskHandle_t t = NULL;
+    if (xTaskCreateWithCaps(camera_shoot_async_task, "cam_shoot", 16384, copy, 4, &t,
+                            BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+        ESP_LOGE(TAG, "shoot async: task spawn failed");
+        free(copy);
+        s_shoot_async_inflight = 0;
+    }
 }
 
 void bb_camera_deinit(void) {
