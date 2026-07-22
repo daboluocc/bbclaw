@@ -339,6 +339,13 @@ esp_err_t bb_adapter_send_image_capture(const uint8_t* jpeg, size_t jpeg_len, ui
   free(body);
   ESP_LOGI(TAG, "image.capture sent err=%s jpeg=%u b64=%u %ux%u", esp_err_to_name(err),
            (unsigned)jpeg_len, (unsigned)b64_len, (unsigned)width, (unsigned)height);
+  if (err == ESP_OK) {
+    /* ADR-049：发照片时立刻在对话页记一条「我方」气泡，作为这轮的用户侧痕迹 +
+     * 新回合边界。append_user 会把 s_active_assistant 置 NULL,让本轮回复落到全新气泡,
+     * 不再累加到上一轮回答下面;s_last_user_bubble 置位后 turn.committed 的 reconcile_user
+     * 会 no-op,不会再补一条冗长 prompt 气泡。仅在聊天页激活时生效(post_user_text 内部判)。 */
+    bb_ui_agent_chat_post_user_text("[我拍了张照片，请看]");
+  }
   return err;
 }
 
