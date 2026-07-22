@@ -15,6 +15,7 @@ BOARD_MAP = {
     "atk-dnesp32s3-box": "ATK_DNESP32S3_BOX",
     "waveshare-amoled-206": "WS_AMOLED_206",
     "lichuang-szp": "LICHUANG_SZP",
+    "m5sticks3": "M5STICKS3",
 }
 
 def apply_overlay(text: str, overlay_path: pathlib.Path) -> str:

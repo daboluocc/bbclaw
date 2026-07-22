@@ -9,6 +9,8 @@
 #include "../boards/waveshare-amoled-206/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_LICHUANG_SZP)
 #include "../boards/lichuang-szp/board_config.h"
+#elif defined(CONFIG_BBCLAW_BOARD_M5STICKS3)
+#include "../boards/m5sticks3/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BBCLAW)
 #include "../boards/bbclaw/board_config.h"
 #elif defined(CONFIG_BBCLAW_BOARD_BREADBOARD) || !defined(BBCLAW_DISPLAY_BUS_SPI)

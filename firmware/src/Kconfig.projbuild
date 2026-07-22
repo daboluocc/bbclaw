@@ -39,6 +39,15 @@ config BBCLAW_BOARD_LICHUANG_SZP
         PA enable). Octal PSRAM — switch via make set-board so the
         sdkconfig.board overlay is applied. See design/boards/lichuang-szp-esp32s3.md.
 
+config BBCLAW_BOARD_M5STICKS3
+    bool "M5Stack M5StickS3 (ES8311 codec + SPI ST7789 135x240, M5PM1 PMIC)"
+    help
+        M5Stack M5StickS3 (ESP32-S3-PICO-1-N8R8): 1.14" ST7789P3 135x240 SPI
+        display, ES8311 codec doing both DAC (speaker via AW8737) and ADC (MEMS
+        mic) with no ES7210, BMI270 IMU, and the M5PM1 custom PMIC (I2C 0x6E)
+        gating the speaker amp / battery / display+mic power rail. Octal PSRAM —
+        switch via make set-board so the sdkconfig.board overlay is applied.
+
 endchoice
 
 menu "Transport"

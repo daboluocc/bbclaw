@@ -1,0 +1,25 @@
+# M5Stack M5StickS3 (ESP32-S3-PICO-1-N8R8) 板级 sdkconfig 覆盖
+# make set-board BOARD=m5sticks3 会把本文件逐行覆盖进 sdkconfig；
+# 独立构建可用 SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/m5sticks3/sdkconfig.board"
+
+CONFIG_BBCLAW_BOARD_M5STICKS3=y
+# CONFIG_BBCLAW_BOARD_BBCLAW is not set
+# CONFIG_BBCLAW_BOARD_BREADBOARD is not set
+# CONFIG_BBCLAW_BOARD_ATK_DNESP32S3_BOX is not set
+# CONFIG_BBCLAW_BOARD_WS_AMOLED_206 is not set
+# CONFIG_BBCLAW_BOARD_LICHUANG_SZP is not set
+
+# PICO-1-N8R8: 8MB Octal PSRAM（sdkconfig.defaults 全局默认 QUAD，不切会
+# "wrong PSRAM line mode" boot loop）。速率沿用 base 的 80M。
+CONFIG_SPIRAM_MODE_OCT=y
+# CONFIG_SPIRAM_MODE_QUAD is not set
+
+# Flash 8MB, DIO（与 base 一致;显式写以覆盖从 16MB 板 set-board 切过来的残留）。
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# CONFIG_ESPTOOLPY_FLASHSIZE_16MB is not set
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set
+
+# 无摄像头,固件 ~2.2MB,标准 8MB OTA 分区表(2.5MB app 槽)装得下。
+# 显式覆盖,防从 lichuang(16MB csv) set-board 切过来时残留。
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
