@@ -2450,10 +2450,13 @@ int bb_ui_settings_handle_click(void) {
           if (!bb_transport_is_cloud_saas()) {
             s_st.cam_status = CAM_ROW_FAILED;
             rerender();
-          } else {
-            spawn_camera_shoot_task();
+            break;
           }
-          break;
+          spawn_camera_shoot_task();
+          /* 拍照发出后直接退设置、切到对话页：用户即时看到「识别中…→claude 回答」
+           * 并听到播报，不用手动退菜单再进对话。异步完成回调 on_camera_shoot_done 里的
+           * rerender() 在设置已拆时会因 render_main 的 s_st.root==NULL 早退，安全。 */
+          return 1; /* caller(settings_click_locked): want_exit → settings_exit_to_chat() */
 #endif
         case MAIN_ROW_SYSINFO:
           enter_sysinfo();
