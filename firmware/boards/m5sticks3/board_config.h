@@ -77,6 +77,10 @@
 #define BBCLAW_PA_EN_GPIO      -1
 #define BBCLAW_SPEAKER_SW_GPIO -1   /* 无硬件 mute-switch 输入;必须覆盖全局默认 1 */
 
+/* M5PM1 PMIC 最小上电:开 L3B 轨(屏/mic/喇叭电源)+ 注册功放门控钩子(GPIO3)。
+ * 跑在 bb_audio_init 探 ES8311 之前——不开 L3B 则 codec 无电探不到 → boot loop。 */
+#define BBCLAW_M5PM1_MINIMAL_INIT 1
+
 /* ================= Buttons / PTT ================= */
 #define BBCLAW_PTT_GPIO         11   /* 前面板按键 A;TODO 真机核对 A/B 与有效电平 */
 #define BBCLAW_PTT_ACTIVE_LEVEL 0    /* 假定按下接地,内部上拉 */

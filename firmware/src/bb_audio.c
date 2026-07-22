@@ -323,6 +323,89 @@ static esp_err_t axp2101_minimal_init(void) {
 }
 #endif /* BBCLAW_AXP2101_MINIMAL_INIT */
 
+#if BBCLAW_M5PM1_MINIMAL_INIT
+/* ── M5PM1 PMIC 最小上电（M5StickS3 专用，I2C 0x6E，与 codec 同一条总线）──
+ * M5StickS3 用 M5 自研 M5PM1（非 AXP）。屏/mic/喇叭的 L3B 供电轨挂在 PM1 的
+ * GPIO2（PYG2），OTP 默认为低 → 上电时 LCD 和 ES8311 都没电。必须在探 codec 前把
+ * GPIO2 拉高开 L3B，否则 ES8311 I2C 探测 NAK → detect_codec_address 报错 → boot loop。
+ * 功放 AW8737 挂 GPIO3（PYG3），boot 配成输出并置低（关），播放时由 PA 门控钩子开。
+ * 寄存器序列源自 M5GFX/M5Unified 出货源码（reg0x11 bit2=L3B, bit3=amp；0x10=GPIO_MODE
+ * 输出, 0x13=GPIO_DRV 推挽, 0x09=关 I2C idle-sleep, 0x0A=关看门狗, whoami reg0x00 LE=0x2050）。
+ * 第二阶段做成独立 bb_m5pm1 模块（电量 reg0x22/23、电源来源 reg0x04、PKEY reg0x42）时迁走。 */
+#define M5PM1_I2C_ADDR 0x6E
+
+static i2c_master_dev_handle_t s_m5pm1_dev;   /* 运行期 PA 门控钩子也用它 */
+
+static esp_err_t m5pm1_write_reg(uint8_t reg, uint8_t val) {
+  uint8_t buf[2] = {reg, val};
+  return i2c_master_transmit(s_m5pm1_dev, buf, sizeof(buf), 100);
+}
+
+static esp_err_t m5pm1_read_reg(uint8_t reg, uint8_t *out) {
+  return i2c_master_transmit_receive(s_m5pm1_dev, &reg, 1, out, 1, 100);
+}
+
+/* reg0x11(GPIO_OUT)/0x10/0x13 是 GPIO2+GPIO3 共享寄存器，必须 read-modify-write
+ * 逐位改，否则开 L3B(bit2) 会顺手把功放位(bit3) 清掉、反之亦然。 */
+static esp_err_t m5pm1_set_bits(uint8_t reg, uint8_t mask, int on) {
+  uint8_t v = 0;
+  ESP_RETURN_ON_ERROR(m5pm1_read_reg(reg, &v), TAG, "m5pm1 read 0x%02X", reg);
+  uint8_t nv = on ? (uint8_t)(v | mask) : (uint8_t)(v & (uint8_t)~mask);
+  if (nv == v) return ESP_OK;
+  return m5pm1_write_reg(reg, nv);
+}
+
+/* PA 播放门控钩子：AW8737 = M5PM1 GPIO3 = reg0x11 bit3（1=开 0=关）。 */
+static void m5pm1_pa_ctrl(int on) {
+  if (!s_m5pm1_dev) return;
+  (void)m5pm1_set_bits(0x11, 1u << 3, on ? 1 : 0);
+}
+
+static esp_err_t m5pm1_minimal_init(void) {
+  /* 冷启动时 PM1 可能处于 I2C idle-sleep，首个事务会 NAK；先 probe 唤醒。 */
+  (void)i2c_master_probe(s_i2c_bus, M5PM1_I2C_ADDR, 50);
+
+  const i2c_device_config_t cfg = {
+      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+      .device_address = M5PM1_I2C_ADDR,
+      .scl_speed_hz = 100000, /* PM1 默认 100kHz */
+  };
+  ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(s_i2c_bus, &cfg, &s_m5pm1_dev), TAG, "m5pm1 add dev");
+
+  /* 关 I2C idle-sleep（刚醒时首写可能失败，重试一次）+ 关看门狗 */
+  if (m5pm1_write_reg(0x09, 0x00) != ESP_OK) (void)m5pm1_write_reg(0x09, 0x00);
+  (void)m5pm1_write_reg(0x0A, 0x00);
+
+  /* WHOAMI：reg0x00/0x01 16-bit LE 应为 0x2050（只告警不阻塞启动） */
+  uint8_t id_lo = 0, id_hi = 0;
+  if (m5pm1_read_reg(0x00, &id_lo) == ESP_OK && m5pm1_read_reg(0x01, &id_hi) == ESP_OK) {
+    uint16_t id = (uint16_t)id_lo | ((uint16_t)id_hi << 8);
+    ESP_LOGI(TAG, "m5pm1 whoami=0x%04X%s", id, id == 0x2050 ? " ok" : " (expect 0x2050!)");
+  } else {
+    ESP_LOGW(TAG, "m5pm1 whoami read failed (chip unreachable → L3B 开不了 → codec 会探不到)");
+  }
+
+  esp_err_t err = ESP_OK;
+  /* L3B 轨（LCD/MIC/SPK 电源）= GPIO2：配推挽输出 → 拉高开轨 */
+  err |= m5pm1_set_bits(0x10, 1u << 2, 1); /* GPIO_MODE: GPIO2 输出 */
+  err |= m5pm1_set_bits(0x13, 1u << 2, 0); /* GPIO_DRV : GPIO2 推挽 */
+  err |= m5pm1_set_bits(0x11, 1u << 2, 1); /* GPIO_OUT : GPIO2=HIGH → L3B ON, LCD/codec 上电 */
+  /* 功放 AW8737 = GPIO3：配推挽输出 → 置低（boot 关，播放时钩子开） */
+  err |= m5pm1_set_bits(0x10, 1u << 3, 1);
+  err |= m5pm1_set_bits(0x13, 1u << 3, 0);
+  err |= m5pm1_set_bits(0x11, 1u << 3, 0);
+
+  vTaskDelay(pdMS_TO_TICKS(100)); /* 等 L3B 稳定再探 codec / 驱屏 */
+
+  /* 注册 PA 门控钩子（AW8737=GPIO3）；bb_audio_set_pa_control 会把 PA 置初始关。 */
+  bb_audio_set_pa_control(m5pm1_pa_ctrl);
+
+  ESP_LOGI(TAG, "m5pm1 minimal init %s (L3B/GPIO2 on, amp/GPIO3 off, PA hook set)",
+           err == ESP_OK ? "ok" : "PARTIAL FAIL");
+  return err == ESP_OK ? ESP_OK : ESP_FAIL;
+}
+#endif /* BBCLAW_M5PM1_MINIMAL_INIT */
+
 #if BBCLAW_ES7210_ENABLE
 /* ── ES7210 四通道 ADC（手表：两颗板载 mic + AEC 回环全挂它，ES8311 只管 DAC）──
  * 原理图证实 MIC1/MIC2 接 ES7210，ES8311 模拟输入未接线（其 ADC 恒零）。
@@ -984,6 +1067,12 @@ esp_err_t bb_audio_init(void) {
     /* PMIC 先于 codec：确保 MIC 电轨（ALDO1）在 ES8311 模拟路径起来前就绪 */
     if (axp2101_minimal_init() != ESP_OK) {
       ESP_LOGW(TAG, "axp2101 minimal init failed; continuing (speaker may still work)");
+    }
+#endif
+#if BBCLAW_M5PM1_MINIMAL_INIT
+    /* M5PM1 先于 codec：开 L3B 轨（LCD/mic/spk 电源），否则 ES8311 探测 NAK → boot loop */
+    if (m5pm1_minimal_init() != ESP_OK) {
+      ESP_LOGW(TAG, "m5pm1 minimal init failed; codec/display 可能仍无电（大概率随后探不到 codec）");
     }
 #endif
     ESP_RETURN_ON_ERROR(detect_codec_address(), TAG, "codec i2c not found (check wiring + power + addr)");

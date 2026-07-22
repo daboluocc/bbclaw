@@ -33,6 +33,12 @@
 #define BBCLAW_AXP2101_MINIMAL_INIT 0
 #endif
 
+/* ── M5PM1 PMIC minimal init (M5StickS3): 开 L3B 轨(GPIO2=屏/mic/spk 电源)+ 配功放
+ *    GPIO3 + 注册 PA 钩子，跑在探 ES8311 之前。见 bb_audio.c。 ── */
+#ifndef BBCLAW_M5PM1_MINIMAL_INIT
+#define BBCLAW_M5PM1_MINIMAL_INIT 0
+#endif
+
 /* ── PCA9557 IO expander（实战派：LCD_CS + PA_EN 挂它上面），见 bb_pca9557.c ── */
 #ifndef BBCLAW_PCA9557_ENABLE
 #define BBCLAW_PCA9557_ENABLE 0
