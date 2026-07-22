@@ -12,6 +12,7 @@
 #include "bb_notification.h"
 #include "bb_power_mgmt.h" /* ADR-046 §5: 消息到达唤醒息屏 */
 #include "bb_ui_agent_chat.h" /* ADR-040: reconcile turn.committed/superseded into chat UI */
+#include "bb_state.h" /* ADR-049: 图片回合结束 dispatch BB_EVT_AGENT_TURN_END,清 agent_in_flight */
 #include "bb_ogg_opus.h"
 #include "bb_config.h"
 #include "bb_time.h"
@@ -1536,6 +1537,11 @@ static void ws_handle_text_message(const char* msg) {
            * claude 的回答文字（正常语音回合走 finish-stream 显示，这里补的是图片回合）。 */
           bb_ui_agent_chat_post_reply_delta(reply_text);
           bb_ui_agent_chat_post_reply_done();
+          /* 关掉这轮 agent turn：post_reply_delta 会把 agent 置 BUSY(agent_in_flight=1)，
+           * 而正常语音回合靠 finish-stream 结束时 dispatch BB_EVT_AGENT_TURN_END 清掉它；
+           * 图片回合没有 finish 流，必须在这里补一发,否则 agent 永远卡 BUSY →
+           * INV_6_inflight_no_req 刷屏 + 之后拍照/对话全被挡(用户实测「对话过后拍照没用」)。 */
+          bb_state_dispatch_simple(BB_EVT_AGENT_TURN_END);
           bb_adapter_speak_notification(reply_text);
         }
       }
