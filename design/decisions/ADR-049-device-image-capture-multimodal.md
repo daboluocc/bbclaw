@@ -211,10 +211,22 @@
   3. 固件 `bb_adapter_client.c:1615`：reply/TTS 事件在 `finish_result==NULL` 时**直接丢弃**，
      拍照没建立该上下文→即便云端回文本也被丢。
   → §4"复用 voice.reply 回路、下游零新增"**不成立**（该回路只在设备发起的语音回合里活着）。
-  修复必须让云端参与 TTS，是**跨组件（cloud）+ 部署**改动。候选方案：
-  (A) **Phase 2 优先**：照片挂进 PTT 语音回合（走 `voice.stream.finish`，云端本就 TTS→播报"免费"获得，交互也更自然）——主要固件+adapter，cloud 仅透传图片进 finish；
-  (B) cloud 给 image.capture 的 voice.reply 单独跑 TTS 推 deviceWsAudio + 固件支持 proactive TTS 播放；
-  (C) 纯固件把回复以屏显文本呈现（无声，不满足"播报"语义，仅兜底）。待定方向。
+  修复必须让云端参与 TTS。候选方案：
+  (A) Phase 2：照片挂进 PTT 语音回合（走 `voice.stream.finish`，云端本就 TTS）；
+  (B1) cloud 给 image.capture 单独开一个 TTS-stream 回合（`server.go` 加 `image.capture` case，
+      走 `SendRequestToApprovedHomeAdapterStream`+`deviceTTSChunkStreamer`→`tts.chunk`）+ 固件武装接收上下文；
+  (B2) **【已选·已实现】** 固件朗读云端反向路由回来的 `voice.reply` 文本。
+  → **决策 B2**（用户 2026-07-22 拍板"走云端"，取最低风险的云端方案）：
+  - 关键事实：`image.capture` 走 default relay，adapter 的 `voice.reply` 因无在途 `pending` 被
+    cloud **反向路由回设备**（`hub.go` RouteFromPeer→`WriteEnvelope`）——设备**本就收到**该文本 reply，
+    只是原先在 `bb_adapter_client.c` type=reply 分支丢弃。
+  - 实现（`414b226`，firmware only）：type=reply 里拦截 `kind=voice.reply` 且 `finish_result==NULL`
+    （无在途语音回合，区别于正常 PTT turn 的流式 `tts.chunk` 播放，避免重复念），提取 `payload.text`
+    调既有 `bb_adapter_speak_notification`→`POST /v1/tts/synthesize`→播 PCM16（与提醒播报同一条链路）。
+  - **cloud/adapter 零改动、零部署**：云端 TTS 仍出力（`/v1/tts/synthesize` 已在产），是"走云端"的最低风险切法。
+  - 状态：`build-lichuang` 编译通过；**真机回归待补**——烧录时设备多次软重启后掉出 USB（疑 brownout），
+    需物理 BOOT+RESET 复位后 flash `build-lichuang` → 点拍照 → 抓 `image.capture reply → speak` +
+    `notif-tts: play N pcm bytes` 确认出声。
 - [ ] 观察：真机长跑后 CDC0 被 `esp-x509-crt-bundle: Certificate validated` 洪水刷屏（~1–2/s），
   疑似 camera init/deinit 内部 DRAM 碎片→TLS 反复握手；回合仍能送达，但值得回头查（见 [[internal-dram-recurring-root-cause]]）。
 - [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
