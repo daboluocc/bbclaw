@@ -1519,7 +1519,11 @@ static void ws_handle_text_message(const char* msg) {
           src = msg;
         }
         if (json_extract_string(src, "text", reply_text, sizeof(reply_text)) && reply_text[0] != '\0') {
-          ESP_LOGI(TAG, "image.capture reply → speak (%d chars)", (int)strlen(reply_text));
+          ESP_LOGI(TAG, "image.capture reply → show+speak (%d chars)", (int)strlen(reply_text));
+          /* 显示到聊天界面：与 turn.committed 的问题气泡成对，让用户既能听也能看到
+           * claude 的回答文字（正常语音回合走 finish-stream 显示，这里补的是图片回合）。 */
+          bb_ui_agent_chat_post_reply_delta(reply_text);
+          bb_ui_agent_chat_post_reply_done();
           bb_adapter_speak_notification(reply_text);
         }
       }

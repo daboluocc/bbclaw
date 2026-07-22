@@ -59,15 +59,15 @@ BBClaw 是 OpenClaw 生态中的第三方硬件节点（Node），面向本地�
 
 
 ---
-## 实物展示
-本项目和通过`firmware/boards`目录实现多板子适配，方便大家自行打印和复刻。（参考[xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)的board实现）
+## 支持的开发板
 
-### 极客版本
-![BBClaw 外壳](./bbclaw_geek_v0.1.jpg)
-极客版本实物展示，采用 3D 打印+淘宝散件购买方式，方便大家自行打印和复刻。
+本项目通过 [`firmware/boards`](firmware/boards) 实现多板适配，既支持 BBClaw 原生硬件，也支持社区常用的 ESP32-S3 成品板。（适配方式参考 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的 board 实现。）
 
-### 正点原子box版本
-待测试
+| BBClaw 原生版 | 实战派 | Stick S3 | 微雪手表 |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/images/boards/bbclaw-native.jpg" alt="BBClaw 原生版" width="240"> | <img src="docs/images/boards/shizhanpai.jpg" alt="实战派" width="240"> | <img src="docs/images/boards/stick-s3.jpg" alt="Stick S3" width="240"> | <img src="docs/images/boards/waveshare-watch.jpg" alt="微雪手表" width="240"> |
+
+其中 BBClaw 原生版采用 3D 打印外壳与通用散件，方便自行打印和复刻；其他板卡可复用同一套固件能力，具体支持情况以 [`firmware/boards`](firmware/boards) 中的配置为准。
 
 
 ---
