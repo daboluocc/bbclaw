@@ -50,11 +50,19 @@ static const char* TAG = "bb_page_boot";
 
 /* ── dot-matrix geometry（竖屏手表放大 ~1.4x；方屏板保持原值） ── */
 #if BB_UI_PORTRAIT
-/* 6 字母 × 5 列受 410px 宽度约束：pitch 12 / dot 7 是居中留边（SAFE_LR≥12）
- * 下的最大字模。字模垂直严格居中——远离四角 60px 圆弧，天然圆角安全。 */
+#if BB_DISP_W <= 160
+/* 窄竖屏（M5StickS3 135px，宽度只有手表的 1/3）：dot 3 / pitch 4 → 整词
+ * 6×19 + 5×2 = 124px 居中塞进 135（左右各留 ~5px），保留左→右列扫同款动效。 */
+#define MX_DOT     3
+#define MX_PITCH   4
+#define LETTER_GAP 2
+#else
+/* 宽竖屏（手表/AMOLED 410px）：6 字母 × 5 列受 410px 宽度约束：pitch 12 / dot 7
+ * 是居中留边（SAFE_LR≥12）下的最大字模。字模垂直严格居中——远离四角 60px 圆弧。 */
 #define MX_DOT     7
 #define MX_PITCH   12
 #define LETTER_GAP 10
+#endif
 #else
 #define MX_DOT     5
 #define MX_PITCH   9
@@ -83,7 +91,11 @@ static const char* TAG = "bb_page_boot";
 #define BOOT_TICK_MS 35                       /* one column per tick   */
 #define TOTAL_COLS   (LETTER_COUNT * MX_COLS) /* 30 → sweep ≈ 1.05 s   */
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+#define UNDERLINE_STEP_PX 12 /* 窄竖屏 124px ~10 tick 长满，节奏一致 */
+#else
 #define UNDERLINE_STEP_PX 35 /* 380px 同样 ~11 tick 长满，节奏与方屏一致 */
+#endif
 #else
 #define UNDERLINE_STEP_PX 26 /* grow ≈ 0.4 s          */
 #endif
