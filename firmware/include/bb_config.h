@@ -431,7 +431,7 @@ const char *bbclaw_session_key(void);
  * 功放峰值电流会把电压拉进 brownout → 复位。开机声固定压到这个低值，
  * 播完立即还原用户音量（后续 TTS/回放照设备配置走）。 */
 #ifndef BBCLAW_BOOT_CHIME_VOLUME_PCT
-#define BBCLAW_BOOT_CHIME_VOLUME_PCT 15
+#define BBCLAW_BOOT_CHIME_VOLUME_PCT 10
 #endif
 
 /** 开机点阵动画（诺基亚式 "BBCLAW" 逐列扫亮，见 STATE_MACHINE.md §3.5）。0=关闭 */
