@@ -12,15 +12,16 @@ static const char* TAG = "bb_nav_input";
 /* Compile-time enablement:
  *   - Legacy modes (quadrature encoder OR 3-buttons-as-encoder): require all
  *     three of ENC_A / ENC_B / KEY GPIOs to be valid.
- *   - Flipper 6-button (Option A): require BBCLAW_NAV_FLIPPER_6BUTTON=1 and
- *     at least UP / DOWN / OK GPIOs to be valid (LEFT / RIGHT / BACK optional).
+ *   - Flipper 6-button (Option A): require BBCLAW_NAV_FLIPPER_6BUTTON=1 and at
+ *     least the OK GPIO valid (UP/DOWN/LEFT/RIGHT/BACK all optional — unwired
+ *     keys read -1 and no-op in poll_btn). 单键板（如 M5StickS3 侧键）只接 OK：
+ *     短按=OK、长按≥NAV_LONG_PRESS_MS=BACK（两者互斥，见下方 OK 处理块）。
  */
 #define BB_NAV_HAS_ENCODER_PINS                                                                       \
   ((BBCLAW_NAV_ENC_A_GPIO >= 0) && (BBCLAW_NAV_ENC_B_GPIO >= 0) && (BBCLAW_NAV_KEY_GPIO >= 0))
 
-#define BB_NAV_HAS_FLIPPER_PINS                                                                       \
-  (BBCLAW_NAV_FLIPPER_6BUTTON && (BBCLAW_NAV_BTN_UP_GPIO >= 0) && (BBCLAW_NAV_BTN_DOWN_GPIO >= 0) && \
-   (BBCLAW_NAV_BTN_OK_GPIO >= 0))
+#define BB_NAV_HAS_FLIPPER_PINS \
+  (BBCLAW_NAV_FLIPPER_6BUTTON && (BBCLAW_NAV_BTN_OK_GPIO >= 0))
 
 /* Callback + inject 常驻编译：无实体导航键的板（触摸/纯语音）仍要靠
  * device-monitor / UART 的按键注入驱动 UI。 */

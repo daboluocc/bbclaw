@@ -83,6 +83,15 @@
 #ifndef BBCLAW_IMU_QMI8658_I2C_ADDR
 #define BBCLAW_IMU_QMI8658_I2C_ADDR 0x6B
 #endif
+
+/* ── BMI270 体感导航（M5StickS3）：倾斜→UP/DOWN/LEFT/RIGHT。见 bb_nav_imu.c。
+ *    自成驱动(drivers/bmi270)不走 bb_imu_*。默认关，仅 M5 开。 ── */
+#ifndef BBCLAW_IMU_BMI270_NAV
+#define BBCLAW_IMU_BMI270_NAV 0
+#endif
+#ifndef BBCLAW_IMU_BMI270_I2C_ADDR
+#define BBCLAW_IMU_BMI270_I2C_ADDR 0x68
+#endif
 #ifndef BBCLAW_IMU_SAMPLE_RATE_HZ
 #define BBCLAW_IMU_SAMPLE_RATE_HZ 100
 #endif
@@ -415,6 +424,14 @@ const char *bbclaw_session_key(void);
 
 #ifndef BBCLAW_SPK_TEST_ON_BOOT
 #define BBCLAW_SPK_TEST_ON_BOOT 1
+#endif
+
+/** 开机 chime（本地 boot wav）固定播放音量百分比（0-100）。
+ * 独立于用户/设备配置音量：低电量时用户音量若开到 80-100%，开机那一下
+ * 功放峰值电流会把电压拉进 brownout → 复位。开机声固定压到这个低值，
+ * 播完立即还原用户音量（后续 TTS/回放照设备配置走）。 */
+#ifndef BBCLAW_BOOT_CHIME_VOLUME_PCT
+#define BBCLAW_BOOT_CHIME_VOLUME_PCT 15
 #endif
 
 /** 开机点阵动画（诺基亚式 "BBCLAW" 逐列扫亮，见 STATE_MACHINE.md §3.5）。0=关闭 */

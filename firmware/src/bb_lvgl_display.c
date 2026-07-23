@@ -1350,13 +1350,13 @@ static void create_ui(void) {
   lv_obj_update_layout(s_img_mode);
   const int brand_w = lv_obj_get_width(s_img_mode);
 
-  /* Status icon - after the wordmark */
-  s_img_status = lv_image_create(s_view_active);
-  lv_image_set_src(s_img_status, &bb_img_ready);
-  lv_obj_set_size(s_img_status, UI_STATUS_ICON_SZ, UI_STATUS_ICON_SZ);
+  /* Status icon 移除（用户反馈：空闲态“圆圈+对勾”易被误认为 OTA 升级提示）。
+   * s_img_status 保持 NULL —— 所有引用（apply_status_icon / dot 切换 / 录音路径）
+   * 均已 NULL-guard，活动反馈改由下面的 listen dot + 字幕承担。仍保留槽位坐标给
+   * listen dot 定位与 status_text_x 计算。 */
+  s_img_status = NULL;
   const int status_icon_x = topbar_inset_x + brand_w + 6;
   const int status_icon_y = topbar_y + (status_h - UI_STATUS_ICON_SZ) / 2;
-  lv_obj_set_pos(s_img_status, status_icon_x, status_icon_y);
 
   /* "Live activity" dot — occupies the status-icon slot while a conversation
    * is active (聆听/识别/回复/出错). The status-dot timer pulses it (mic-level
@@ -1435,8 +1435,11 @@ static void create_ui(void) {
         s_bar_status_wifi, &s_lbl_status_wifi_info, wifi_w);
   }
 
-#if BB_UI_PORTRAIT
+#if BB_UI_PORTRAIT && BBCLAW_TOUCH_FT5X06_ENABLE
   /* 屏上 PTT 圆钮（纯触屏主交互）：底部居中大圆，按住=录音、松开=发送。
+   * ⚠️ 仅触屏板显示——无触摸屏的竖屏板（如 M5StickS3）用实体 PTT，画这个点不了的
+   * 大圆圈只会占住对话面板，故按 BBCLAW_TOUCH_FT5X06_ENABLE 门控，无触摸时走 #else
+   * 的底部细线（干净对话面板）。
    * 命中判定在 bb_touch_input 里做纯坐标数学（无 LVGL 锁），这里只负责视觉
    * 并登记圆心/半径；按下反馈由录音视图本身承担（出现即反馈）。 */
   {
@@ -1510,6 +1513,24 @@ static void create_ui(void) {
   {
     const int center_x = body_w / 2;
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+    /* 窄竖屏（M5StickS3 135px）：手表的 badge64/halo108 会顶出屏外，整组缩到 ~一半
+     * （halo54 居中占 40-94px）并压缩行距，让「halo→标题→状态→VU」在 135×240 内
+     * 垂直居中、不裁切。 */
+    const int badge_size = 32;
+    const int halo_inner = 44;
+    const int halo_outer = 54;
+    /* state「请靠近麦克风说话」是 CJK，在 135px 宽会换成 2 行 → 给 2*lh，否则第二行
+     * 压到 meter/hint。 */
+    const int group_h = halo_outer + 12 + lh + 4 + 2 * lh + 10 + UI_RECORD_METER_H;
+    const int group_top = (content_h - UI_BOTTOM_BAR_H - group_h) / 2;
+    const int halo_outer_y = group_top;
+    const int halo_inner_y = group_top + (halo_outer - halo_inner) / 2;
+    const int badge_y_abs = group_top + (halo_outer - badge_size) / 2;
+    const int title_y = group_top + halo_outer + 12;
+    const int state_y = title_y + lh + 4;
+    const int meter_y = state_y + 2 * lh + 10;
+#else
     /* 竖屏（手表）：徽标放大 + 「光晕/徽标 → 标题 → 状态 → VU」整组垂直居中，
      * 消灭旧 172px 布局在 410px 高内容区里的中部空洞；提示仍贴底。 */
     const int badge_size = 64;
@@ -1524,6 +1545,7 @@ static void create_ui(void) {
     const int title_y = group_top + halo_outer + 26;
     const int state_y = title_y + lh + 6;
     const int meter_y = state_y + lh + 28;
+#endif
 #else
     const int badge_size = 42;
     const int halo_outer = UI_RECORD_HALO_BASE_PX + 14;
@@ -1593,7 +1615,11 @@ static void create_ui(void) {
     lv_obj_set_style_text_align(s_lbl_record_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_lbl_record_hint, "松开发送");
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+    lv_obj_set_pos(s_lbl_record_hint, 0, meter_y + UI_RECORD_METER_H + 6); /* 窄屏无触摸钮：贴 meter 下 */
+#else
     lv_obj_set_pos(s_lbl_record_hint, 0, content_h - UI_BOTTOM_BAR_H - 24); /* 悬浮钮上方 */
+#endif
 #else
     lv_obj_set_pos(s_lbl_record_hint, 0, content_h - 16);
 #endif

@@ -65,6 +65,9 @@ set(_bb_srcs
     "bb_power_mgmt.c"
     "bb_pm.c"
     "../drivers/qmi8658/qmi8658.c"
+    "../drivers/bmi270/bmi270.c"
+    "../drivers/bmi270/bmi270_config.c"
+    "bb_nav_imu.c"
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")
@@ -84,7 +87,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bb_lvgl_img_elements.c")
   list(APPEND _bb_srcs "bb_lvgl_img_elements.c")
 endif()
 
-set(_bb_include_dirs "../include" "../boards" "../drivers")
+set(_bb_include_dirs "../include" "../boards" "../drivers" "../drivers/bmi270")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated")
   list(APPEND _bb_include_dirs "../generated")
 endif()

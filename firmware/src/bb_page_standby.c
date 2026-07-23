@@ -41,10 +41,19 @@ LV_FONT_DECLARE(lv_font_montserrat_40)
 
 /* ── dot-matrix geometry（竖屏手表 hero 放大 ~1.8x；方屏板保持原值） ── */
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+/* 窄竖屏（M5StickS3 135px）：HH:MM = 4 位 + 冒号，dot 4 / pitch 5 → 整块
+ * 118px 居中塞进 135（左右各 ~8px）。手表的 9/16 会宽到 371px 严重溢出。 */
+#define MX_DOT     4
+#define MX_PITCH   5
+#define DIGIT_GAP  4
+#define COLON_GAP  5
+#else
 #define MX_DOT     9
 #define MX_PITCH   16
 #define DIGIT_GAP  14          /* gap between paired digits        */
 #define COLON_GAP  21          /* gap each side of the colon       */
+#endif
 #else
 #define MX_DOT     5            /* dot diameter                    */
 #define MX_PITCH   9            /* center-to-center spacing        */

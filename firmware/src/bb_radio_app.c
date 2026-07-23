@@ -18,6 +18,7 @@
 #include "bb_led.h"
 #include "bb_motor.h"
 #include "bb_nav_input.h"
+#include "bb_nav_imu.h"
 #include "bb_touch_input.h"
 #include "bb_ui_layout.h"
 #include "bb_ogg_opus.h"
@@ -4325,11 +4326,17 @@ esp_err_t bb_radio_app_start(void) {
     }
   }
   if (bb_audio_start_playback() == ESP_OK) {
+    /* 开机 chime 固定压到低音量再播，播完还原用户音量：低电量时满音量的
+     * 功放峰值电流会把电压拉进 brownout → 复位。只影响开机这一声，后续
+     * TTS/回放仍按设备配置音量走。 */
+    int user_volume_pct = bb_device_config_get()->volume_pct;
+    bb_audio_set_volume_pct(BBCLAW_BOOT_CHIME_VOLUME_PCT);
     esp_err_t spk_err = bb_play_embedded_boot_wav();
     if (spk_err != ESP_OK) {
       ESP_LOGW(TAG, "boot wav playback failed err=%s, fallback to tone", esp_err_to_name(spk_err));
       (void)bb_audio_play_test_tone(1000, 350, 5000);
     }
+    bb_audio_set_volume_pct(user_volume_pct);
     (void)bb_audio_stop_playback();
   }
 #endif
@@ -4361,6 +4368,13 @@ esp_err_t bb_radio_app_start(void) {
   if (bb_touch_input_init() != ESP_OK) {
     ESP_LOGW(TAG, "touch input init failed; continuing without touch");
   }
+#if BBCLAW_IMU_BMI270_NAV
+  /* 体感导航（BMI270 倾斜 → UP/DOWN/LEFT/RIGHT）；bb_audio_init 已建 I2C 总线，
+   * 失败降级为无体感，不阻塞启动（侧键仍可用）。 */
+  if (bb_nav_imu_init() != ESP_OK) {
+    ESP_LOGW(TAG, "tilt-nav (bmi270) init failed; continuing without it");
+  }
+#endif
   /* Dev-only: accept `key`/`ptt` injection commands over the console UART so a
    * host with only the UART bridge can drive button self-tests (no-op unless
    * CONFIG_BBCLAW_DEVICE_MONITOR). */

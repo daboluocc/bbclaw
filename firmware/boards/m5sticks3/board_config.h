@@ -85,10 +85,14 @@
 #define BBCLAW_PTT_GPIO         11   /* 前面板按键 A;TODO 真机核对 A/B 与有效电平 */
 #define BBCLAW_PTT_ACTIVE_LEVEL 0    /* 假定按下接地,内部上拉 */
 #define BBCLAW_PTT_PULL_UP      1
-/* 侧键 GPIO12 预留作 nav/back,首轮 bring-up 先不接。 */
-
-/* ── Navigation: 无编码器;首轮只用 PTT ── */
-#define BBCLAW_NAV_ENABLE 0
+/* ── Navigation: 侧键 GPIO12 = 单键 OK(短按)/长按 BACK。走 Flipper 6-button
+ *    路径但只接 OK 键,其余 up/down/left/right/back 保持默认 -1 不接(poll_btn 自动
+ *    no-op)。长按阈值 = BBCLAW_NAV_LONG_PRESS_MS(默认 700ms)。 ── */
+#define BBCLAW_NAV_ENABLE           1
+#define BBCLAW_NAV_FLIPPER_6BUTTON  1
+#define BBCLAW_NAV_BTN_OK_GPIO      12
+#define BBCLAW_NAV_KEY_ACTIVE_LEVEL 0   /* 按下接地,内部上拉 */
+#define BBCLAW_NAV_PULL_UP          1
 
 /* ================= 关掉本板没有的外设(否则默认值会抢引脚) ================= */
 /* 马达默认开且 GPIO=21,正好撞 LCD RST → 必须关 */
@@ -100,8 +104,10 @@
 #define BBCLAW_POWER_ENABLE 0
 #define BBCLAW_POWER_ADC_GPIO -1
 
-/* ── IMU: BMI270 @0x68,与 bbclaw 现有 QMI8658 驱动不同型;首轮不启用 ── */
+/* ── IMU: BMI270 @0x68。BBCLAW_IMU_ENABLE(QMI8658 睡眠唤醒)保持关(型号不同);
+ *    但开 BMI270 体感导航(倾斜→UP/DOWN/LEFT/RIGHT,自成 drivers/bmi270 驱动)。 ── */
 #define BBCLAW_IMU_ENABLE 0
+#define BBCLAW_IMU_BMI270_NAV 1
 
 /* ── 息屏:关背光即可;无 IMU,消息/按键唤醒 ── */
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1

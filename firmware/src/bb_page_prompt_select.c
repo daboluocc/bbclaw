@@ -48,10 +48,18 @@ static const char *TAG = "bb_page_prompt_select";
 /* ── countdown bar geometry (same cells as ota_confirm) ── */
 #define CDOWN_CELLS      30  /* 30 cells = 30 s，一秒灭一格（倒计时语义勿动） */
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+/* 窄竖屏（M5StickS3 135px）：30 格 × pitch12 = 356px 严重溢出屏外，缩到 pitch4/dot3
+ * → 条宽 29*4+3 = 119px 居中塞进 135。 */
+#define CDOWN_CELL_DOT    3
+#define CDOWN_CELL_PITCH  4
+#define CDOWN_CELL_RADIUS 1
+#else
 /* 竖屏手表：dot/pitch 放大 ~1.6x，cell 数不变只放大几何（同 ota_confirm） */
 #define CDOWN_CELL_DOT    8
 #define CDOWN_CELL_PITCH  12
 #define CDOWN_CELL_RADIUS 2
+#endif
 #else
 #define CDOWN_CELL_DOT    5
 #define CDOWN_CELL_PITCH  8
@@ -61,6 +69,22 @@ static const char *TAG = "bb_page_prompt_select";
 
 /* ── geometry / Y positions ── */
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+/* 窄竖屏（M5StickS3 135px）：手表的 Q_X36/OPT_PITCH52 会让内容组高过 240 被顶出屏外，
+ * 且长选项在窄列里换行撞行重叠。改：满宽（边距6）、顶对齐（不居中）、行距 40px 容 ~2 行
+ * montserrat14。选项过长仍会紧，但不再重叠。 */
+#define Q_X         6
+#define Q_W         (BB_DISP_W - 2 * Q_X)
+#define Q_H         44  /* ~2-3 行问题文本 */
+#define OPT_X       6
+#define OPT_W       (BB_DISP_W - 2 * OPT_X)
+#define OPT_PITCH   40
+#define OPT_TEXT_DY 4
+#define Q_Y         6   /* 顶对齐：窄屏若居中会溢出 */
+#define OPT_Y0      (Q_Y + Q_H + 6)
+#define BAR_Y       (OPT_Y0 + BB_PROMPT_MAX_OPTIONS * OPT_PITCH + 6)
+#define HINT_Y      (BAR_Y + CDOWN_CELL_DOT + 10)
+#else
 /* 内容组整体垂直居中；Y 栈按最大选项数（4）预留，保证 4 行 + 倒计时条 +
  * hint 三者永不重叠（方屏分支该 bug 原样保留，勿在此回移）。 */
 #define Q_X         36
@@ -75,6 +99,7 @@ static const char *TAG = "bb_page_prompt_select";
 #define OPT_Y0      (Q_Y + Q_H + 8)
 #define BAR_Y       (OPT_Y0 + BB_PROMPT_MAX_OPTIONS * OPT_PITCH + 8)
 #define HINT_Y      (BAR_Y + CDOWN_CELL_DOT + 24)
+#endif
 #else
 #define Q_X         8
 #define Q_W         (BBCLAW_ST7789_WIDTH - 16)
@@ -201,6 +226,9 @@ void bb_page_prompt_select_show(const bb_prompt_t *prompt, bb_page_prompt_select
     lv_obj_set_style_text_align(o, LV_TEXT_ALIGN_LEFT, 0);
     lv_label_set_long_mode(o, LV_LABEL_LONG_DOT);
     lv_obj_set_width(o, OPT_W);
+    /* 限高（行距内）让 LONG_DOT 真正截断——否则标签自动长高、超长选项换行撞下一行
+     * （窄屏 135px 上尤其明显）。正常 1-2 行选项不受影响。 */
+    lv_obj_set_height(o, OPT_PITCH - 4);
     lv_obj_set_pos(o, OPT_X, OPT_Y0 + i * OPT_PITCH + OPT_TEXT_DY);
     s_opt_lbls[i] = o;
   }
