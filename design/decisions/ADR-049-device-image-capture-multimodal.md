@@ -1,8 +1,9 @@
 # ADR-049: 设备摄像头拍照 → 多模态 Agent —— 图片信息类文本传输链路
 
-- **状态**: **全链路真机打通（2026-07-22）**——设备拍照→cloud→adapter→claude 读图→回复→
-  设备经云端 TTS 朗读，逐段真机验证；生产触发菜单已落地。设备播报采方案 B2（固件朗读云端反向路由的
-  `voice.reply`，走已在产的 `/v1/tts/synthesize`，cloud/adapter 零改动零部署，见 §12 checklist）
+- **状态**: **全链路真机打通（2026-07-24）**——设备拍照→cloud→adapter→claude 读图→回复经**同一条云 WS
+  流式 TTS**下发→设备边到边播放并上屏。触屏板(实战派)对话页有「拍照」+「按住说话」触摸大钮。设备播报最终
+  采**方案 B1**（云端给 image.capture 独立 TTS-stream 回合，取代早期 B2 单发 HTTPS——B2 在内部 DRAM 紧的
+  相机板 OOM + ~6s 延迟）；cloud `1d41638` 已部署生产、firmware `a505d0c` 已烧录验证，见 §12 checklist。
 - **日期**: 2026-07-19
 - **组件**: firmware + adapter（+ cloud 纯 relay，MVP 零改动）
 - **关联**: ADR-044（ambient 二进制上传模板）、ADR-035（adapter PTY 跑 claude，原生读图）、ADR-004（cloud_saas agent 代理）、ADR-027/048（cloud_saas 路由与 adapter 分配）
@@ -230,7 +231,21 @@
     （claude 293 字描述 → 云端合成 ~540KB PCM ≈17s → `bb_audio_play_pcm_blocking` 出声）。
     时序对齐：image sent(71589) → reply 回(82760,对上 adapter `elapsed=10.992s`) → 合成+播放(91020)。
     **整链 设备拍照→cloud→adapter→claude 读图→voice.reply→cloud 反向路由→设备 /v1/tts/synthesize→出声 全通。**
-- [ ] 观察：真机长跑后 CDC0 被 `esp-x509-crt-bundle: Certificate validated` 洪水刷屏（~1–2/s），
-  疑似 camera init/deinit 内部 DRAM 碎片→TLS 反复握手；回合仍能送达，但值得回头查（见 [[internal-dram-recurring-root-cause]]）。
+- [x] 设备侧播报——**改用 B1（流式 TTS 走同一条云 WS），已部署 + 真机验证（2026-07-24），取代 B2**。
+  B2 上线后真机暴露两个硬伤(均源于"设备单发第二条 HTTPS 到 /v1/tts/synthesize"):
+  ① `esp-aes: Failed to allocate memory` —— 内部 DRAM 紧的相机板放不下"云 WS 长连 + TTS 合成"两条 TLS,
+     间歇 OOM→合成失败→没声音(先靠本板 mbedTLS 软件 AES + dynamic buffer 压住 OOM,`1503c85`);
+  ② 一次性合成全量下载 → text→audio 延迟 ~6s(软件 AES 又让握手更慢)。
+  → 改 **B1**:云端给 `image.capture` 独立 case,像语音回合一样经
+  `SendRequestToApprovedHomeAdapterStream` 把图片喂 adapter,把 adapter 的 `voice.reply.delta` 喂进
+  `deviceTTSChunkStreamer`→`tts.chunk`,经**同一条云 WS 流式下发**;设备用新
+  `bb_adapter_receive_reply_stream` 武装接收上下文,`tts.chunk` 由 `tts_stream_task` 边到边放。
+  - 改动:cloud `1d41638`(voice 路径零改,image 独立函数 + panic recover;已 `make deploy-cloud` 上生产)+
+    firmware `a505d0c`(新收流 API + `bb_radio_app_shoot_and_receive`,拍照钮/设置菜单都走 B1,删 B2 单发 HTTPS)。
+  - **真机验证(实战派 A844E1)**:`tts_play_start first_chunk=1`(流式首音)、`image reply stream done rc=ESP_OK`、
+    **0 次 esp-aes、0 次 notif-tts**;连拍两轮均通;text 与首音基本同时(旧 ~6s gap 消除,剩余 ~8s 是 claude 思考)。
+  - B1 顺带一并解决:①「对话过后拍照卡死」(复用真语音回合机制,不再自撑 agent BUSY);②拍新照打断旧回合(云端 `turnCancel` barge-in)。
+- [ ] 观察：CDC0 曾被 `esp-x509-crt-bundle: Certificate validated` 洪水刷屏——已把该 tag 降 WARN(`fa79a09`);
+  根因(camera init/deinit 内部 DRAM 碎片→TLS 反复握手)仍在,B1 少了一条 TLS 应有缓解,待回头查（见 [[internal-dram-recurring-root-cause]]）。
 - [ ] 安全: 上线前确认 wss/https（图片不走明文）；per-device token
 - [ ] design: README 已登记（本 ADR）
