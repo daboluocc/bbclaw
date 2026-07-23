@@ -36,3 +36,11 @@ CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=8192
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC is not set
 # CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC is not set
+
+# 硬件 AES 走 DMA，要 DMA-capable 的内部 DRAM。本板内部 DRAM 极紧（运行时 ~19KB），
+# 拍照占用一轮 + 云 WS 长连的 TLS，再叠一条 TTS 合成 HTTPS 的 esp-aes DMA 分配就 OOM
+# （日志 `esp-aes: Failed to allocate memory` → `notif-tts: synth empty/failed` → 没声音，
+# ADR-049 真机实测）。改用软件 AES：纯计算、不吃内部 DMA 缓冲，从根上消除该 OOM。本设备
+# TLS 吞吐很低（音频 ~256kbps、TTS 偶发），软件 AES 的 CPU 开销可忽略。仅本相机板生效。
+# CONFIG_MBEDTLS_HARDWARE_AES is not set
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
