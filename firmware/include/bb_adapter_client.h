@@ -142,6 +142,15 @@ esp_err_t bb_adapter_stream_chunk_pcm(bb_stream_ctx_t* ctx, const uint8_t* pcm, 
 esp_err_t bb_adapter_stream_finish(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result);
 esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_result_t* out_result,
                                           bb_finish_stream_event_cb_t on_event, void* user_ctx);
+
+/* ADR-049 B1: 收一条「已在别处发起」的流式回复(image.capture 场景)。图片已单独发出,
+ * 云端把回复当作一次语音回合、经同一条云 WS 流式下发(voice.reply.delta + tts.chunk +
+ * voice.session.done)。本函数只武装接收上下文并阻塞等到 voice.session.done——不发
+ * voice.stream.finish、不做 opus flush;tts.chunk 经 on_event(通常
+ * on_finish_stream_event_tts_only)入队,由 tts_stream_task 边到边放(~1s 首音,复用
+ * 语音回合播放链路,不开第二条 TLS)。cloud_saas only。收到 done 返回 ESP_OK。 */
+esp_err_t bb_adapter_receive_reply_stream(bb_finish_result_t* out_result,
+                                          bb_finish_stream_event_cb_t on_event, void* user_ctx);
 esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result);
 esp_err_t bb_adapter_tts_synthesize_pcm16(const char* text, bb_tts_audio_t* out_audio, int seg_idx);
 void bb_adapter_tts_audio_free(bb_tts_audio_t* audio);

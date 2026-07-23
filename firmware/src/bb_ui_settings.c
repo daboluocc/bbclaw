@@ -1494,44 +1494,9 @@ static void ota_check_task(void* arg) {
   vTaskDeleteWithCaps(NULL);
 }
 
-#if BBCLAW_CAMERA_ENABLE
-/* 拍照上行完成后回主线程更新行状态（ADR-049）。arg=1 成功 0 失败。 */
-static void on_camera_shoot_done(void* arg) {
-  s_st.cam_status = ((intptr_t)arg) ? CAM_ROW_SENT : CAM_ROW_FAILED;
-  s_st.cam_shoot_pending = 0;
-  rerender();
-}
-
-/* 拍照任务：按需 init→拍一帧 JPEG→base64 发 image.capture→deinit。PSRAM 栈，
- * 不碰 NVS/flash（与 ota_check_task 同约束）；frame2jpg + 相机 init 较吃栈，给 16KB。 */
-static void camera_shoot_task(void* arg) {
-  (void)arg;
-  esp_err_t err = bb_camera_shoot_and_send("这是设备摄像头拍的照片，请看图并简洁描述你看到了什么。");
-  if (lvgl_port_lock(200)) {
-    lv_async_call(on_camera_shoot_done, (void*)(intptr_t)(err == ESP_OK));
-    lvgl_port_unlock();
-  } else {
-    s_st.cam_shoot_pending = 0;
-  }
-  vTaskDeleteWithCaps(NULL);
-}
-
-static void spawn_camera_shoot_task(void) {
-  if (s_st.cam_shoot_pending) return;
-  s_st.cam_shoot_pending = 1;
-  s_st.cam_status = CAM_ROW_SHOOTING;
-  TaskHandle_t t = NULL;
-  BaseType_t ok = xTaskCreateWithCaps(camera_shoot_task, "cam_shoot", 16384, NULL,
-                                      BB_SETTINGS_FETCH_TASK_PRIO, &t,
-                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "spawn_camera_shoot_task: xTaskCreateWithCaps failed");
-    s_st.cam_shoot_pending = 0;
-    s_st.cam_status = CAM_ROW_FAILED;
-  }
-  rerender();
-}
-#endif
+/* ADR-049 B1: 设置菜单「拍照」改用 bb_radio_app_shoot_and_receive(拍照+收云端流式回复,
+ * tts.chunk 边到边放)。旧的 spawn_camera_shoot_task/camera_shoot_task/on_camera_shoot_done
+ * (走 B2 单发 + 行状态)已退役——点击后直接退设置进对话页,回复在对话页流式显示+播报。 */
 
 static void spawn_ota_check_task(void) {
   if (s_st.ota_check_pending) return;
@@ -2452,10 +2417,9 @@ int bb_ui_settings_handle_click(void) {
             rerender();
             break;
           }
-          spawn_camera_shoot_task();
-          /* 拍照发出后直接退设置、切到对话页：用户即时看到「识别中…→claude 回答」
-           * 并听到播报，不用手动退菜单再进对话。异步完成回调 on_camera_shoot_done 里的
-           * rerender() 在设置已拆时会因 render_main 的 s_st.root==NULL 早退，安全。 */
+          /* ADR-049 B1：拍照并收云端流式回复(tts.chunk 边到边放)。随即退设置进对话页,
+           * 回复在对话页流式显示 + 播报。 */
+          bb_radio_app_shoot_and_receive(NULL);
           return 1; /* caller(settings_click_locked): want_exit → settings_exit_to_chat() */
 #endif
         case MAIN_ROW_SYSINFO:

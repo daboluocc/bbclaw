@@ -25,6 +25,12 @@ typedef enum {
 
 esp_err_t bb_radio_app_start(void);
 
+/** ADR-049 B1: 拍一帧发 image.capture,并在同一 PSRAM 任务里武装接收上下文、
+ *  由 tts_stream_task 边到边播放云端流式回复(~1s 首音,不开第二条 TLS)。
+ *  从触摸「拍照」钮 / 设置菜单调用;一次一张;note 为 NULL/空则用默认文案。
+ *  仅 BBCLAW_CAMERA_ENABLE 的板有定义。 */
+void bb_radio_app_shoot_and_receive(const char* note);
+
 /** ADR-044: 请求录音一键启停(与物理 PWR 键同一通路)。devmon 测试注入用;
  *  线程安全,下一轮输入循环消费。 */
 void bb_radio_app_request_recorder_toggle(void);

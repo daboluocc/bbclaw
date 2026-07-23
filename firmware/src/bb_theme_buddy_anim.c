@@ -7,6 +7,7 @@
 #include "bb_chat_transcript.h"
 #include "bb_display.h"
 #include "bb_ptt.h" /* ADR-049: 触屏「按住说话」钮 → bb_ptt_inject */
+#include "bb_radio_app.h" /* ADR-049 B1: 拍照钮 → bb_radio_app_shoot_and_receive */
 #include "bb_ui_layout.h"
 #include "bb_lvgl_assets.h"
 #include "bb_lvgl_element_assets.h"
@@ -144,8 +145,9 @@ static const lv_font_t* action_font(void) {
 
 static void chat_cam_btn_cb(lv_event_t* e) {
   (void)e;
-  ESP_LOGI(TAG, "chat: 拍照 钮 tapped → shoot async"); /* 排障:确认触摸是否送达按钮 */
-  bb_camera_shoot_and_send_async(NULL); /* 默认文案:请看图并简洁描述 */
+  ESP_LOGI(TAG, "chat: 拍照 钮 tapped → shoot+receive"); /* 排障:确认触摸是否送达按钮 */
+  /* ADR-049 B1：拍照并收云端流式回复(tts.chunk 边到边放,~1s 首音)。 */
+  bb_radio_app_shoot_and_receive(NULL);
 }
 
 static void chat_ptt_btn_cb(lv_event_t* e) {

@@ -1990,6 +1990,64 @@ static void on_finish_stream_event_tts_only(bb_finish_stream_event_t* event, voi
   }
 }
 
+#if BBCLAW_CAMERA_ENABLE
+/* ADR-049 B1: 拍照→上行→收流式回复(带 TTS 播放)。图片作为一次「回合」：设备发
+ * image.capture,云端把它当语音回合、经同一条云 WS 流式下发回复(voice.reply.delta +
+ * tts.chunk + voice.session.done);设备武装接收上下文,tts.chunk 经 tts_stream_task
+ * 边到边放(~1s 首音),reply.delta 文本经 on_finish_stream_event_tts_only 上屏。
+ * 整个在一个 PSRAM 栈任务里跑(相机 frame2jpg + 阻塞收流都吃栈,别放 LVGL 线程)。 */
+static volatile int s_image_turn_inflight;
+
+static void image_turn_task(void* arg) {
+  char* note = (char*)arg;
+  esp_err_t send_err = bb_camera_shoot_and_send(note != NULL ? note : "");
+  if (send_err == ESP_OK) {
+    bb_finish_result_t* finish =
+        (bb_finish_result_t*)heap_caps_calloc(1, sizeof(bb_finish_result_t), BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+    bb_reply_stream_ui_ctx_t* ui =
+        (bb_reply_stream_ui_ctx_t*)heap_caps_calloc(1, sizeof(bb_reply_stream_ui_ctx_t), BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+    if (finish != NULL && ui != NULL && tts_stream_ui_init(ui) == ESP_OK) {
+      (void)bb_adapter_receive_reply_stream(finish, on_finish_stream_event_tts_only, ui);
+      tts_stream_ui_shutdown(ui, 0);
+    } else {
+      ESP_LOGE(TAG, "image turn: finish/ui alloc or tts init failed");
+    }
+    free(finish);
+    free(ui);
+  } else {
+    ESP_LOGW(TAG, "image turn: shoot/send failed err=%s", esp_err_to_name(send_err));
+  }
+  free(note);
+  s_image_turn_inflight = 0;
+  vTaskDeleteWithCaps(NULL);
+}
+
+void bb_radio_app_shoot_and_receive(const char* note) {
+  if (!bb_transport_is_cloud_saas()) {
+    ESP_LOGW(TAG, "image turn: not cloud_saas — skip");
+    return;
+  }
+  if (s_image_turn_inflight) {
+    ESP_LOGW(TAG, "image turn: 上一张还在跑,忽略本次");
+    return;
+  }
+  const char* n = (note != NULL && note[0] != '\0')
+                      ? note
+                      : "这是设备摄像头拍的照片，请看图并简洁描述你看到了什么。";
+  char* copy = strdup(n);
+  if (copy == NULL) {
+    return;
+  }
+  s_image_turn_inflight = 1;
+  TaskHandle_t t = NULL;
+  if (xTaskCreateWithCaps(image_turn_task, "img_turn", 16384, copy, 5, &t, BBCLAW_MALLOC_CAP_PREFER_PSRAM) != pdPASS) {
+    ESP_LOGE(TAG, "image turn: task spawn failed");
+    free(copy);
+    s_image_turn_inflight = 0;
+  }
+}
+#endif /* BBCLAW_CAMERA_ENABLE */
+
 static void remember_transport_state(const bb_transport_state_t* state) {
   if (state == NULL) {
     return;

@@ -1526,39 +1526,11 @@ static void ws_handle_text_message(const char* msg) {
       xSemaphoreGive(s_ws.lock);
       return;
     }
-    /* ADR-049: 设备主动发 image.capture(拍照)后,adapter 让 claude 读图并回一条
-     * voice.reply;云端因该回复没有在途 voice 回合(finish 流)可匹配,便把它反向路由
-     * 到设备这里作为文本 reply。此处把它朗读出来(走 cloud /v1/tts/synthesize,与提醒
-     * 播报同一条链路)。正常语音回合里 finish_result 已武装、音频经流式 tts.chunk 播放,
-     * 故仅在 finish_result==NULL(无在途回合)时朗读,避免把语音回合的回复重复念一遍。 */
-    if (strcmp(rkind, "voice.reply") == 0) {
-      int have_turn;
-      xSemaphoreTake(s_ws.lock, portMAX_DELAY);
-      have_turn = (s_ws.finish_result != NULL);
-      xSemaphoreGive(s_ws.lock);
-      if (!have_turn) {
-        char reply_text[512] = {0};
-        const char* payload = strstr(msg, "\"payload\"");
-        const char* src = (payload != NULL) ? strchr(payload, '{') : NULL;
-        if (src == NULL) {
-          src = msg;
-        }
-        if (json_extract_string(src, "text", reply_text, sizeof(reply_text)) && reply_text[0] != '\0') {
-          ESP_LOGI(TAG, "image.capture reply → show+speak (%d chars)", (int)strlen(reply_text));
-          /* 显示到聊天界面：与 turn.committed 的问题气泡成对，让用户既能听也能看到
-           * claude 的回答文字（正常语音回合走 finish-stream 显示，这里补的是图片回合）。 */
-          bb_ui_agent_chat_post_reply_delta(reply_text);
-          bb_ui_agent_chat_post_reply_done();
-          /* 关掉这轮 agent turn：post_reply_delta 会把 agent 置 BUSY(agent_in_flight=1)，
-           * 而正常语音回合靠 finish-stream 结束时 dispatch BB_EVT_AGENT_TURN_END 清掉它；
-           * 图片回合没有 finish 流，必须在这里补一发,否则 agent 永远卡 BUSY →
-           * INV_6_inflight_no_req 刷屏 + 之后拍照/对话全被挡(用户实测「对话过后拍照没用」)。 */
-          bb_state_dispatch_simple(BB_EVT_AGENT_TURN_END);
-          bb_adapter_speak_notification(reply_text);
-        }
-      }
-      return;
-    }
+    /* ADR-049 B1: 图片回合的回复不再走反向路由的 type=reply voice.reply（那是 B2 的
+     * 设备侧单发 HTTPS 合成,已在 DRAM 紧的相机板 OOM + 高延迟）。云端现在把 image.capture
+     * 当作一次语音回合、经同一条云 WS 流式下发(voice.reply.delta + tts.chunk +
+     * voice.session.done),设备用 bb_adapter_receive_reply_stream 武装接收上下文、由
+     * tts_stream_task 边到边放。故这里不再拦 voice.reply 做 notif-tts。 */
     if (strncmp(rkind, "sites.", 6) != 0) {
       return;
     }
@@ -2856,6 +2828,63 @@ esp_err_t bb_adapter_stream_finish_stream(const bb_stream_ctx_t* ctx, bb_finish_
 
   ESP_LOGI(TAG, "stream finish stream ok stream=%s", ctx->stream_id);
   return ESP_OK;
+}
+
+esp_err_t bb_adapter_receive_reply_stream(bb_finish_result_t* out_result,
+                                          bb_finish_stream_event_cb_t on_event, void* user_ctx) {
+  if (out_result == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!bb_transport_is_cloud_saas()) {
+    return ESP_ERR_INVALID_STATE; /* 只有云 WS 会流式下发回复 */
+  }
+  memset(out_result, 0, sizeof(*out_result));
+
+  /* 武装接收上下文(与 bb_adapter_stream_finish_stream 的 cloud_saas 分支同法,但不 flush、
+   * 不发 voice.stream.finish——image.capture 已单独发出)。finish_stream_id 留空:图片回合
+   * 的 voice.reply.delta/tts.chunk 不带匹配的 streamId,空则跳过过滤、全部收下。 */
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  ws_finish_reset_locked();
+  s_ws.finish_result = out_result;
+  s_ws.finish_on_event = on_event;
+  s_ws.finish_user_ctx = user_ctx;
+  xEventGroupClearBits(s_ws.events,
+                       BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT);
+  s_ws.finish_waiting = 1;
+  s_ws.finish_last_activity_ms = bb_now_ms();
+  s_ws.finish_stream_id[0] = '\0';
+  xSemaphoreGive(s_ws.lock);
+
+  /* 空闲超时等待(1s 切片轮询),与语音回合同一逻辑:事件到达续期,DONE/ERROR/ABORT 即时唤醒。 */
+  const int64_t wait_start_ms = bb_now_ms();
+  EventBits_t bits = 0;
+  for (;;) {
+    bits = xEventGroupWaitBits(
+        s_ws.events, BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT, pdFALSE,
+        pdFALSE, pdMS_TO_TICKS(1000));
+    if ((bits & (BB_WS_EVENT_DONE | BB_WS_EVENT_ERROR | BB_WS_EVENT_DISCONNECTED | BB_WS_EVENT_ABORT)) != 0U) {
+      break;
+    }
+    const int64_t now_ms = bb_now_ms();
+    xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+    const int64_t last_ms = s_ws.finish_last_activity_ms;
+    xSemaphoreGive(s_ws.lock);
+    if (now_ms - last_ms >= (int64_t)BBCLAW_STREAM_FINISH_IDLE_TIMEOUT_MS) {
+      break;
+    }
+#if BBCLAW_STREAM_FINISH_MAX_TOTAL_MS > 0
+    if (now_ms - wait_start_ms >= (int64_t)BBCLAW_STREAM_FINISH_MAX_TOTAL_MS) {
+      break;
+    }
+#endif
+  }
+  xSemaphoreTake(s_ws.lock, portMAX_DELAY);
+  s_ws.finish_waiting = 0;
+  const esp_err_t rc = ((bits & BB_WS_EVENT_DONE) != 0U) ? ESP_OK : ESP_FAIL;
+  ws_finish_reset_locked();
+  xSemaphoreGive(s_ws.lock);
+  ESP_LOGI(TAG, "image reply stream done rc=%s reply_chars=%d", esp_err_to_name(rc), (int)strlen(out_result->reply_text));
+  return rc;
 }
 
 esp_err_t bb_adapter_voice_verify_pcm16(const uint8_t* pcm, size_t pcm_len, bb_voice_verify_result_t* out_result) {
