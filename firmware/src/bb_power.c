@@ -12,7 +12,7 @@
 #include "esp_adc/adc_oneshot.h"
 #endif
 
-#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
+#if !defined(BBCLAW_SIMULATOR) && (BBCLAW_POWER_SOURCE_AXP2101 || BBCLAW_POWER_SOURCE_M5PM1)
 #include "bb_audio.h"
 #include "driver/i2c_master.h"
 #endif
@@ -199,8 +199,48 @@ static esp_err_t power_refresh_axp2101(void) {
 }
 #endif /* BBCLAW_POWER_SOURCE_AXP2101 */
 
+#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_M5PM1
+/* ── M5PM1 PMIC 后端（M5StickS3）──
+ * 电量：VBAT reg0x22(L)/0x23(H) 16-bit 小端 = 毫伏，映射百分比（battery_percent_from_mv）。
+ * 外部供电/充电：电源来源 reg0x04 [2:0]（0=USB，2=电池）→ charging = 在 USB 上。
+ * 复用 bb_audio 的 M5PM1 句柄，避免在 0x6E 重复 add_device。 */
+static esp_err_t power_refresh_m5pm1(void) {
+  uint8_t vb[2] = {0, 0}, vbus[2] = {0, 0}, src = 0, gin = 0;
+  /* 启动早期 bb_radio_app 会先于 bb_audio 建好共享 M5PM1 I2C 句柄就试读一次 → 句柄/总线
+   * 未就绪。这是正常时序,不是故障:静默 DEBUG 返回,UI poll(每 5s)与后续交互会重试成功。 */
+  esp_err_t rerr = bb_audio_m5pm1_read(0x22, vb, 2); /* VBAT mV LE */
+  if (rerr != ESP_OK) {
+    ESP_LOGD(TAG, "m5pm1 not ready for vbat (%s)", esp_err_to_name(rerr));
+    return rerr;
+  }
+  rerr = bb_audio_m5pm1_read(0x24, vbus, 2); /* VBUS/USB 输入 mV LE */
+  if (rerr != ESP_OK) {
+    ESP_LOGD(TAG, "m5pm1 not ready for vbus (%s)", esp_err_to_name(rerr));
+    return rerr;
+  }
+  (void)bb_audio_m5pm1_read(0x04, &src, 1);  /* PWR_SRC（调试参考） */
+  (void)bb_audio_m5pm1_read(0x12, &gin, 1);  /* GPIO_IN：bit0=PYG0_CHG_STAT（调试参考） */
+  int mv = (int)((uint16_t)vb[0] | ((uint16_t)vb[1] << 8));
+  int vbus_mv = (int)((uint16_t)vbus[0] | ((uint16_t)vbus[1] << 8));
+  int present = (mv > 2500) ? 1 : 0; /* 有合理电压读数即视为电池在位 */
+  /* 充电/外部供电 = USB 5V 到位（VBUS>4.2V）。比 PWR_SRC 位编码稳。 */
+  int on_usb = (vbus_mv > 4200) ? 1 : 0;
+  s_state.supported = 1;
+  s_state.available = present;
+  s_state.millivolts = mv;
+  s_state.percent = present ? battery_percent_from_mv(mv) : -1;
+  s_state.low = (present && s_state.percent >= 0 && s_state.percent <= BBCLAW_POWER_LOW_PERCENT) ? 1 : 0;
+  s_state.charging = on_usb;
+  ESP_LOGD(TAG, "m5pm1 vbat=%dmv(%d%%) vbus=%dmv usb=%d src=0x%02X gin=0x%02X", mv, s_state.percent, vbus_mv,
+           on_usb, src, gin);
+  return ESP_OK;
+}
+#endif /* BBCLAW_POWER_SOURCE_M5PM1 */
+
 esp_err_t bb_power_refresh(void) {
-#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
+#if !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_M5PM1
+  return power_refresh_m5pm1();
+#elif !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_SOURCE_AXP2101
   return power_refresh_axp2101();
 #elif !defined(BBCLAW_SIMULATOR) && BBCLAW_POWER_ENABLE && (BBCLAW_POWER_ADC_GPIO >= 0)
   if (s_adc_handle == NULL) {

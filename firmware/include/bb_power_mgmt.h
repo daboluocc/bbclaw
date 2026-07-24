@@ -59,6 +59,14 @@ void bb_power_mgmt_on_message_arrived(void);
 int bb_power_mgmt_is_sleeping(void);
 
 /**
+ * 屏幕是否处于「未完全点亮」的休眠/暗屏态（DIMMING/SLEEPING/WAKING）。
+ * 比 is_sleeping 更广，供「暗屏时按 OK 只唤醒、不触发动作」判据。
+ *
+ * @return 1 变暗/息屏/唤醒中，0 完全点亮(ACTIVE)或无息屏管理
+ */
+int bb_power_mgmt_is_resting(void);
+
+/**
  * 获取从上次用户交互至今的空闲时长（毫秒）。
  *
  * @return 毫秒数

@@ -100,16 +100,25 @@
 #define BBCLAW_MOTOR_GPIO   -1
 /* RYG 状态灯默认开且抢 GPIO 2/4/5 → 关 */
 #define BBCLAW_STATUS_LED_ENABLE 0
-/* 电量默认经 M5PM1 I2C,无 ESP ADC 脚;M5PM1 驱动落地前先不报电池 */
-#define BBCLAW_POWER_ENABLE 0
-#define BBCLAW_POWER_ADC_GPIO -1
+/* 电量/充电经 M5PM1 I2C（无 ESP ADC 脚）：VBAT reg0x22/23、电源来源 reg0x04。
+ * 见 bb_power.c 的 M5PM1 后端。250mAh 电池,满/空电压用全局默认 4200/3300mV。 */
+#define BBCLAW_POWER_ENABLE       1
+#define BBCLAW_POWER_SOURCE_M5PM1 1
+#define BBCLAW_POWER_ADC_GPIO     -1
 
-/* ── IMU: BMI270 @0x68。BBCLAW_IMU_ENABLE(QMI8658 睡眠唤醒)保持关(型号不同);
- *    但开 BMI270 体感导航(倾斜→UP/DOWN/LEFT/RIGHT,自成 drivers/bmi270 驱动)。 ── */
-#define BBCLAW_IMU_ENABLE 0
-#define BBCLAW_IMU_BMI270_NAV 1
+/* ── IMU: BMI270 @0x68。用于「拿起唤醒 / 静止息屏」电源管理(接入 bb_sleep_manager)。
+ *    倾斜导航(BBCLAW_IMU_BMI270_NAV)实测难调、非行业主流,默认关,留作实验开关;
+ *    导航交给实体键(PTT + 侧键)。QMI8658 那套(BBCLAW_IMU_ENABLE)型号不同,保持关。 ── */
+#define BBCLAW_IMU_ENABLE      0
+#define BBCLAW_IMU_BMI270_NAV  0
+#define BBCLAW_IMU_BMI270_WAKE 1
 
-/* ── 息屏:关背光即可;无 IMU,消息/按键唤醒 ── */
+/* ── 息屏:关背光;BMI270 拿起唤醒 + 按键/消息唤醒。250mAh 小电池宜短超时省电。
+ *    息屏时长走 preset(设置里可改并存 NVS);默认档 30s(index 1)。变暗 15s。 ── */
 #define BBCLAW_DISPLAY_BRIGHTNESS_CONTROL 1
+#define BBCLAW_SLEEP_DIMMING_TIMEOUT_MS  (15 * 1000) /* 15s 变暗 */
+#define BBCLAW_SLEEP_PRESET_DEFAULT_IDX  1           /* 电池模式:息屏 preset 默认 30s */
+/* 充电模式:插 USB 时不 DISPOFF,停在暗屏桌面时钟(时间+电量+充电),拔了回省电息屏。 */
+#define BBCLAW_CHARGING_AMBIENT_CLOCK    1
 
 /* 无 camera / PCA9557 / XL9555 / touch / SD 卡。 */

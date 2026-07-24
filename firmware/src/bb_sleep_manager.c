@@ -9,6 +9,9 @@
 #include "bb_display_control.h"
 #include "bb_page_standby.h"
 #include "bb_config.h"
+#if BBCLAW_CHARGING_AMBIENT_CLOCK && !defined(BBCLAW_SIMULATOR)
+#include "bb_power.h" /* bbclaw_power_is_charging() — 充电时改停暗屏时钟不 DISPOFF */
+#endif
 
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -42,8 +45,15 @@ typedef struct {
 static sleep_manager_state_t g_state = {0};
 
 /* ── 默认配置值 ── */
-#define DEFAULT_DIMMING_TIMEOUT_MS   (2 * 60 * 1000)   /* 2 min */
-#define DEFAULT_SLEEP_TIMEOUT_MS     (3 * 60 * 1000)   /* 3 min */
+/* 可被 board_config 覆盖：电池小的板（M5StickS3 250mAh）宜更短，省电 + 便于唤醒测试。 */
+#ifndef BBCLAW_SLEEP_DIMMING_TIMEOUT_MS
+#define BBCLAW_SLEEP_DIMMING_TIMEOUT_MS (2 * 60 * 1000) /* 2 min */
+#endif
+#ifndef BBCLAW_SLEEP_TIMEOUT_MS
+#define BBCLAW_SLEEP_TIMEOUT_MS (3 * 60 * 1000) /* 3 min */
+#endif
+#define DEFAULT_DIMMING_TIMEOUT_MS BBCLAW_SLEEP_DIMMING_TIMEOUT_MS
+#define DEFAULT_SLEEP_TIMEOUT_MS   BBCLAW_SLEEP_TIMEOUT_MS
 #define DEFAULT_WAKE_COOLDOWN_MS     2000
 /* QMI8658 样本单位是 m/s²(qmi8658.h 转换 *9.81/32768,原注释 mg 是错的),
  * 静止时 a_total≈重力 9.81。抬手唤醒 = 总加速度偏离重力基线超过阈值(抬腕瞬间
@@ -57,6 +67,15 @@ static sleep_manager_state_t g_state = {0};
 /* ── 状态转换 ── */
 
 static void transition_to_state(bb_sleep_state_t new_state) {
+#if BBCLAW_CHARGING_AMBIENT_CLOCK && !defined(BBCLAW_SIMULATOR)
+  /* 充电 = 桌面时钟:任何进 SLEEPING(DISPOFF)的路径——自动超时 / 手动双击 / 唤醒冷却
+   * 回睡——在充电时都改成停在低亮度 standby 时钟(暗屏常显时间+电量+充电),不熄屏。
+   * 必须放在下面的「已是该态则 no-op」短路【之前】:已在 DIMMING 时被短路吃掉,
+   * 不会每 100ms tick 重复 fade/刷日志。拔掉 USB → 下一 tick 不再改写 → 正常 DISPOFF。 */
+  if (new_state == BB_SLEEP_STATE_SLEEPING && bbclaw_power_is_charging()) {
+    new_state = BB_SLEEP_STATE_DIMMING;
+  }
+#endif
   if (g_state.state == new_state) {
     return;
   }

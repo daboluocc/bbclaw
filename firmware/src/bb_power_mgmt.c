@@ -22,7 +22,12 @@ static const char* TAG = "power_mgmt";
  * {标签, 息屏秒数};0=永不息屏(disable 状态机)。变暗时间 = 息屏时间的 2/3。 */
 #define SLEEP_NVS_NS   "bbpwr"
 #define SLEEP_NVS_KEY  "sleep_preset"
-#define SLEEP_PRESET_DEFAULT 3 /* 3 min,与历史默认一致 */
+/* 息屏 preset 默认档位（可被 board_config 覆盖；电池小的板宜更短）。
+ * 档位：0=Never 1=30s 2=1min 3=3min 4=5min。 */
+#ifndef BBCLAW_SLEEP_PRESET_DEFAULT_IDX
+#define BBCLAW_SLEEP_PRESET_DEFAULT_IDX 3 /* 3 min,与历史默认一致 */
+#endif
+#define SLEEP_PRESET_DEFAULT BBCLAW_SLEEP_PRESET_DEFAULT_IDX
 typedef struct {
   const char* label;
   int sleep_s;
@@ -211,6 +216,16 @@ void bb_power_mgmt_on_message_arrived(void) {
 int bb_power_mgmt_is_sleeping(void) {
   if (bb_sleep_manager_is_ready()) {
     return bb_sleep_manager_is_sleeping();
+  }
+  return 0;
+}
+
+/* 屏「未完全点亮」——DIMMING(变暗待机 / 充电桌面时钟)、SLEEPING(屏灭)或 WAKING。
+ * 用于「休眠/暗屏时按 OK 只唤醒进聊天页,不直接进设置」的判据(比 is_sleeping 更广,
+ * 覆盖充电常停的暗屏时钟态)。未就绪(无息屏管理的板)返回 0=醒着,行为不变。 */
+int bb_power_mgmt_is_resting(void) {
+  if (bb_sleep_manager_is_ready()) {
+    return bb_sleep_manager_get_state() != BB_SLEEP_STATE_ACTIVE;
   }
   return 0;
 }

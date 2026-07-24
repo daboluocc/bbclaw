@@ -12,6 +12,10 @@ typedef struct i2c_master_bus_t *i2c_master_bus_handle_t;
 esp_err_t bb_audio_init(void);
 /** 板级共享 I2C 总线（audio init 后有效；触摸/IMU/RTC 共用）。NULL=未初始化。 */
 i2c_master_bus_handle_t bb_audio_shared_i2c_bus(void);
+
+/* M5StickS3：读 M5PM1 PMIC 寄存器（电量 reg0x22/23、电源来源 reg0x04），供 bb_power。
+ * 复用 bb_audio 内 M5PM1 句柄；未启用 M5PM1 时返回 ESP_ERR_INVALID_STATE。 */
+esp_err_t bb_audio_m5pm1_read(uint8_t reg, uint8_t *buf, size_t n);
 esp_err_t bb_audio_start_tx(void);
 esp_err_t bb_audio_stop_tx(void);
 esp_err_t bb_audio_start_playback(void);

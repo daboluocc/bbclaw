@@ -345,6 +345,13 @@ static esp_err_t m5pm1_read_reg(uint8_t reg, uint8_t *out) {
   return i2c_master_transmit_receive(s_m5pm1_dev, &reg, 1, out, 1, 100);
 }
 
+/* 供 bb_power 读电量(VBAT reg0x22/23)/电源来源(reg0x04)——复用 L3B/PA 的同一
+ * M5PM1 设备句柄，避免在同地址 0x6E 重复 add_device。 */
+esp_err_t bb_audio_m5pm1_read(uint8_t reg, uint8_t *buf, size_t n) {
+  if (!s_m5pm1_dev || !buf) return ESP_ERR_INVALID_STATE;
+  return i2c_master_transmit_receive(s_m5pm1_dev, &reg, 1, buf, n, 100);
+}
+
 /* reg0x11(GPIO_OUT)/0x10/0x13 是 GPIO2+GPIO3 共享寄存器，必须 read-modify-write
  * 逐位改，否则开 L3B(bit2) 会顺手把功放位(bit3) 清掉、反之亦然。 */
 static esp_err_t m5pm1_set_bits(uint8_t reg, uint8_t mask, int on) {

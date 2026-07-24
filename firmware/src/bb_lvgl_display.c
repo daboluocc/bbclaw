@@ -7,6 +7,7 @@
  */
 #include "bb_display.h"
 #include "bb_page_standby.h"
+#include "bb_power.h"
 #include "bb_notification.h" /* unread count for the standby reminder badge (ADR-021 §9.3) */
 #include "bb_page_locked.h"
 #include "bb_chat_recording.h"
@@ -1064,7 +1065,35 @@ static void refresh_clock_only(void) {
 
 static void clock_timer_cb(lv_timer_t* t) {
   (void)t;
-  if (s_ready) refresh_clock_only();
+  if (!s_ready) return;
+  refresh_clock_only();
+#if BBCLAW_POWER_SOURCE_M5PM1 && !defined(BBCLAW_SIMULATOR)
+  /* M5PM1 电量/充电待机刷新：在 UI 任务（本 1s 定时器）上做，每 5s 且仅状态变化时刷。
+   * 用轻量的 apply_battery_widget（直接改控件，非 refresh_ui），避免后台任务栈溢出与
+   * 重量级 UI 重建。语音会话循环的 poll 只覆盖交互期，这里补待机期。 */
+  static int s_bat_poll_tick = 0;
+  static int s_last_pct = -999, s_last_chg = -1, s_last_avail = -1;
+  if (++s_bat_poll_tick >= 5) {
+    s_bat_poll_tick = 0;
+    if (bb_power_refresh() == ESP_OK) {
+      bb_power_state_t ps;
+      bb_power_get_state(&ps);
+      if (ps.percent != s_last_pct || ps.charging != s_last_chg || ps.available != s_last_avail) {
+        s_last_pct = ps.percent;
+        s_last_chg = ps.charging;
+        s_last_avail = ps.available;
+        portENTER_CRITICAL(&s_state_lock);
+        s_battery_supported = ps.supported ? 1 : 0;
+        s_battery_available = ps.available ? 1 : 0;
+        s_battery_percent = ps.percent;
+        s_battery_low = ps.low ? 1 : 0;
+        s_battery_charging = ps.charging ? 1 : 0;
+        portEXIT_CRITICAL(&s_state_lock);
+        apply_battery_widget();
+      }
+    }
+  }
+#endif
 }
 
 /* ── View visibility ── */
@@ -1297,6 +1326,13 @@ static void create_ui(void) {
   const int body_w = DISP_W - UI_SAFE_LEFT - UI_SAFE_RIGHT;
   const int status_h = (lh + 2 > UI_STATUS_ICON_SZ + 2) ? (lh + 2) : (UI_STATUS_ICON_SZ + 2);
 #if BB_UI_PORTRAIT
+#if BB_DISP_W <= 160
+  /* 窄竖屏(M5StickS3 135px,方角无圆弧):顶栏用小边距,否则套手表 68px 圆角退让会把
+   * 时间/WiFi/电量全挤出屏外。顶栏只排这三样(见下方 BBCLAW_STATUSBAR_MINIMAL)。 */
+  const int topbar_y = 6;
+  const int topbar_inset_x = UI_SAFE_LEFT;
+  const int content_y = topbar_y + status_h + 6;
+#else
   /* 顶栏占用顶部圆角带（把角带让给 chrome、内容让给中心区）：条上移到 y=10，
    * 条内文字按 R114 在该高度带的弧线水平退让（r−√(r²−(r−y)²) ≈ 50，取 52）。 */
   const int topbar_y = 10;
@@ -1304,6 +1340,7 @@ static void create_ui(void) {
    * r−√(r²−(r−y)²) = 114−√(114²−104²) ≈ 67 → 取 68 */
   const int topbar_inset_x = 68;
   const int content_y = topbar_y + status_h + 8;
+#endif
 #else
   const int topbar_y = UI_SAFE_TOP;
   const int topbar_inset_x = UI_SAFE_LEFT;
@@ -1342,6 +1379,12 @@ static void create_ui(void) {
   /* Brand wordmark "BBClaw" — leftmost. Replaces the old HOME/CLOUD mode glyph
    * (cloud/home 不再在页头单独显示;s_cloud_mode 仍在别处跟踪)。宽度按字体实测,
    * 后面的状态图标 / 活动点 / 状态文字据此右移。 */
+#if BB_DISP_W <= 160
+  /* 窄竖屏(M5StickS3):不放 "BBClaw" 字样,顶栏空间紧张,只留 时间/WiFi/电量。
+   * brand_w=0 → 后面的 listen dot / 状态文字从最左小边距起。 */
+  s_img_mode = NULL;
+  const int brand_w = 0;
+#else
   s_img_mode = lv_label_create(s_view_active);
   lv_label_set_text(s_img_mode, "BBClaw");
   lv_obj_set_style_text_font(s_img_mode, font, 0);
@@ -1349,6 +1392,7 @@ static void create_ui(void) {
   lv_obj_set_pos(s_img_mode, topbar_inset_x, topbar_y + (status_h - lh) / 2);
   lv_obj_update_layout(s_img_mode);
   const int brand_w = lv_obj_get_width(s_img_mode);
+#endif
 
   /* Status icon 移除（用户反馈：空闲态“圆圈+对勾”易被误认为 OTA 升级提示）。
    * s_img_status 保持 NULL —— 所有引用（apply_status_icon / dot 切换 / 录音路径）
@@ -1402,6 +1446,11 @@ static void create_ui(void) {
     lv_obj_set_height(s_lbl_status, lh + 2);
     lv_label_set_text(s_lbl_status, BB_STATUS_BOOT);
     lv_obj_set_pos(s_lbl_status, status_text_x, row_y);
+#if BB_DISP_W <= 160
+    /* 窄竖屏(M5StickS3 135px):顶栏只留 时间/WiFi/电量,活动状态文字放不下且会压电量,
+     * 隐掉(仍创建+可 set_text,只是不显示);"listening/thinking" 由内容区/录音页承担。 */
+    lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     /* Clock in status bar (right side) */
     s_lbl_status_clock = lv_label_create(s_view_active);

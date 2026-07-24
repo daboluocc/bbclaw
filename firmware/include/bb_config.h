@@ -89,6 +89,10 @@
 #ifndef BBCLAW_IMU_BMI270_NAV
 #define BBCLAW_IMU_BMI270_NAV 0
 #endif
+/* BMI270 拿起唤醒 / 静止息屏（接入 bb_sleep_manager，见 bb_imu_wake.c）。默认关，仅 M5 开。 */
+#ifndef BBCLAW_IMU_BMI270_WAKE
+#define BBCLAW_IMU_BMI270_WAKE 0
+#endif
 #ifndef BBCLAW_IMU_BMI270_I2C_ADDR
 #define BBCLAW_IMU_BMI270_I2C_ADDR 0x68
 #endif
@@ -103,6 +107,13 @@
  * Boards that leave this off retain the conventional DIMMING -> SLEEPING flow. */
 #ifndef BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY
 #define BBCLAW_SLEEP_MANAGER_AMBIENT_STANDBY 0
+#endif
+
+/* 充电时当「桌面时钟」：插着 USB 时不进 DISPOFF，改停在低亮度 standby 时钟常显
+ * （充电与用电池两套体验——电池激进息屏省电，充电有外部供电则保时钟+充电状态）。
+ * 拔掉 USB 立即回到常规息屏。需要 BBCLAW_POWER_* 能读充电状态的板才有意义。 */
+#ifndef BBCLAW_CHARGING_AMBIENT_CLOCK
+#define BBCLAW_CHARGING_AMBIENT_CLOCK 0
 #endif
 
 /* ── CPU/系统级低功耗（ADR-047）:自动 light sleep + DFS。默认关,仅带电池且验证过
@@ -145,8 +156,13 @@
 #endif
 
 /* 「本板支持电池显示」统一判定（UI 与数据层共用） */
-#define BBCLAW_POWER_SUPPORTED \
-  (BBCLAW_POWER_ENABLE && ((BBCLAW_POWER_ADC_GPIO >= 0) || BBCLAW_POWER_SOURCE_AXP2101))
+/* M5StickS3：电量/充电来自 M5PM1 PMIC I2C（VBAT reg0x22/23、来源 reg0x04），见 bb_power.c。 */
+#ifndef BBCLAW_POWER_SOURCE_M5PM1
+#define BBCLAW_POWER_SOURCE_M5PM1 0
+#endif
+#define BBCLAW_POWER_SUPPORTED                                                     \
+  (BBCLAW_POWER_ENABLE && ((BBCLAW_POWER_ADC_GPIO >= 0) || BBCLAW_POWER_SOURCE_AXP2101 || \
+                           BBCLAW_POWER_SOURCE_M5PM1))
 
 /* ── ES7210 四通道 ADC（mic 不走 ES8311 的板子，如手表），see bb_audio.c ── */
 #ifndef BBCLAW_ES7210_ENABLE
