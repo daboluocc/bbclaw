@@ -68,6 +68,7 @@ set(_bb_srcs
     "../drivers/bmi270/bmi270.c"
     "../drivers/bmi270/bmi270_config.c"
     "bb_nav_imu.c"
+    "bb_imu_wake.c"
 )
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../generated/lv_font_bbclaw_cjk.c")

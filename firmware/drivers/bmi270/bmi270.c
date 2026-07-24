@@ -67,6 +67,7 @@ static esp_err_t upload_config(void) {
 }
 
 esp_err_t bb_bmi270_init(void) {
+  if (s_ready) return ESP_OK; /* 幂等：wake/nav 模块可能都调 */
   s_ready = false;
   i2c_master_bus_handle_t bus = bb_audio_shared_i2c_bus();
   if (!bus) {

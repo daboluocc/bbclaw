@@ -19,6 +19,7 @@
 #include "bb_motor.h"
 #include "bb_nav_input.h"
 #include "bb_nav_imu.h"
+#include "bb_imu_wake.h"
 #include "bb_touch_input.h"
 #include "bb_ui_layout.h"
 #include "bb_ogg_opus.h"
@@ -335,6 +336,10 @@ static volatile unsigned s_nav_event_versions[BB_NAV_EVENT_COUNT];
  * stream_task consume loop to drop a stale backlog that piled up while the
  * task was blocked (cloud_wait / TTS). */
 static volatile int64_t s_nav_event_ms[BB_NAV_EVENT_COUNT];
+/* 收到该 nav 边沿的那一刻设备是否处于 SLEEPING(屏灭)——on_nav_event 里在唤醒动作
+ * 之前采样。派发时 is_sleeping() 已被唤醒清零,故必须在此定格。用于「屏灭时按 OK 只
+ * 唤醒进聊天页,不直接进设置」：醒着 standby 按 OK 才进设置。 */
+static volatile int s_nav_event_woke[BB_NAV_EVENT_COUNT];
 /* A queued nav press older than this when the task finally gets to it is
  * dropped instead of fired. Comfortably above the loop's worst idle delay
  * (~250 ms) so genuine presses are never dropped; only presses stuck behind a
@@ -1297,6 +1302,11 @@ static void on_ptt_changed(int pressed) {
 static void on_nav_event(bb_nav_event_t event) {
   if ((int)event < 0 || event >= BB_NAV_EVENT_COUNT) return;
 
+  /* 在下面 on_user_activity 唤醒【之前】定格「这一按是不是在暗屏/息屏态收到的」。
+   * 暗屏(含充电桌面时钟)或屏灭时按 OK 应只唤醒进聊天页(而非直接进设置)——
+   * 派发时机设备已醒,只有此刻能判。 */
+  int was_resting = bb_power_mgmt_is_resting();
+
   /* Issue #145 — 任意导航键（UP/DOWN/LEFT/RIGHT/OK/BACK）都算用户活动，
    * 统一在入口续命空闲计时器。此前仅 UP/DOWN 快速路径刷新，导致用户切
    * driver（LEFT/RIGHT）或翻页（OK/BACK）看回复时计时器仍按上次 PTT 起算，
@@ -1338,6 +1348,7 @@ static void on_nav_event(bb_nav_event_t event) {
 
   if (!fast_path) {
     s_nav_event_ms[event] = bb_now_ms();
+    s_nav_event_woke[event] = was_resting;
     s_nav_event_versions[event]++;
   }
   /* Phase 4.9: 同步分发到 bb_state 用于状态日志和未来的转换决策。
@@ -2651,8 +2662,11 @@ static void stream_task(void* arg) {
             if (!agent_chat_is_active() && !radio_app_is_locked()) {
               /* Single-click OK from the idle/buddy (standby) screen → SETTINGS
                * directly, so OK is a consistent "open settings" gesture in every
-               * unlocked state. Other nav keys (and PTT) still wake into chat. */
-              if (nav == BB_NAV_EVENT_OK) {
+               * unlocked state. Other nav keys (and PTT) still wake into chat.
+               * 例外(用户反馈):若这一按 OK 是把设备从【暗屏/息屏】唤醒的那一下,则视作
+               * 纯唤醒——落到下面 agent_chat_enter 唤醒进聊天页,不进设置。醒着在
+               * standby 再按 OK(未在休眠态,s_nav_event_woke=0)才进设置。 */
+              if (nav == BB_NAV_EVENT_OK && !s_nav_event_woke[event]) {
                 if (settings_overlay_enter() == 0) {
                   set_radio_app_state(BBCLAW_STATE_SETTINGS);
                   ESP_LOGI(TAG, "STANDBY: OK -> SETTINGS");
@@ -4426,9 +4440,15 @@ esp_err_t bb_radio_app_start(void) {
   if (bb_touch_input_init() != ESP_OK) {
     ESP_LOGW(TAG, "touch input init failed; continuing without touch");
   }
+#if BBCLAW_IMU_BMI270_WAKE
+  /* BMI270 拿起/运动唤醒（接入 bb_sleep_manager）；bb_audio_init 已建 I2C 总线，
+   * 失败降级，不阻塞启动。 */
+  if (bb_imu_wake_init() != ESP_OK) {
+    ESP_LOGW(TAG, "imu-wake (bmi270) init failed; continuing without motion wake");
+  }
+#endif
 #if BBCLAW_IMU_BMI270_NAV
-  /* 体感导航（BMI270 倾斜 → UP/DOWN/LEFT/RIGHT）；bb_audio_init 已建 I2C 总线，
-   * 失败降级为无体感，不阻塞启动（侧键仍可用）。 */
+  /* 体感倾斜导航（实验性，默认关；导航走实体键）。失败降级，不阻塞启动。 */
   if (bb_nav_imu_init() != ESP_OK) {
     ESP_LOGW(TAG, "tilt-nav (bmi270) init failed; continuing without it");
   }
