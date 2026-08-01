@@ -153,6 +153,11 @@ openclaw:
 
 #### macOS（launchd）
 
+当前 Adapter V2 的完整常驻、bypass 权限和验收流程见
+[Adapter V2 macOS 常驻运行手册](adapter-v2-macos-runbook.md)。下面仅保留最小 launchd 示例；
+实际部署应使用 `make -C adapter install` 生成的 `~/.local/bin/bbclaw-adapter`，配置由
+`~/.bbclaw-adapter/settings.json` 管理，不再依赖旧版 `adapter.yaml`。
+
 创建 `~/Library/LaunchAgents/com.bbclaw.adapter.plist`：
 
 ```xml
