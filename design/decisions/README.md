@@ -59,3 +59,4 @@
 | [ADR-043](ADR-043-no-shared-agent-driver-sdk.md) | 不抽公共 Agent 驱动 SDK——bbclaw adapter 与 agent-room 两边独立实现（stream-json 已是互通标准，PTY 独家只设备需要） | 2026-07-01 | 已接受（决定不做） |
 | [ADR-048](ADR-048-device-adapter-allocation.md) | 设备级 Adapter 分配——后台白名单管控设备可见/可切的 adapter 集合（空集合=全可见，固件零改动） | 2026-07-19 | 提议（待评审） |
 | [ADR-049](ADR-049-device-image-capture-multimodal.md) | 摄像头拍照→多模态 Agent——实战派 OV2640 单帧 JPEG 走 base64 文本 envelope relay 到 adapter 喂 claude 读图（cloud 零改动，硬骨头=摄像头 bring-up） | 2026-07-19 | 提议（待评审） |
+| [ADR-050](ADR-050-firmware-wifi-outage-recovery-reprovision.md) | WiFi 断网恢复与重新配网——运行期四级阶梯（快速重试→退避→全网轮换→门户回落）+ 免重启热切网 + 设置页网络入口（纯固件，cloud/adapter 零改动） | 2026-08-01 | 提议（待评审） |
