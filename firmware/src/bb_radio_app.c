@@ -2244,6 +2244,13 @@ static esp_err_t wait_for_transport_health(int* out_status) {
     }
     remember_transport_state(&state);
     if (last_err == ESP_OK) {
+      if (bb_transport_is_cloud_saas()) {
+        /* adapterConnected 是 PTT 的硬门槛(见 chat_voice 拒绝分支)，开机就打出来，
+         * 免得线上「菜单显示在线、一按就 ADAPTER OFFLINE」时无从对证。
+         * raw=-1 表示云端回包里根本没这个字段。 */
+        ESP_LOGI(TAG, "transport bootstrap ok ready=%d adapter_connected raw=%d effective=%d detail=%s",
+                 state.ready, state.cloud_adapter_connected, s_transport_adapter_connected, state.detail);
+      }
       if (out_status != NULL) {
         *out_status = status;
       }
@@ -2892,7 +2899,12 @@ static void stream_task(void* arg) {
           signal_error_haptic();
         } else if (agent_chat_is_adapter_offline_locked() ||
                    (bb_transport_is_cloud_saas() && s_transport_adapter_connected == 0)) {
-          ESP_LOGW(TAG, "agent_chat: PTT press refused (adapter offline)");
+          /* 两个来源都能触发这条拒绝，日志必须分得清是哪一个：
+           * drv_cache=1 → 聊天页 /v1/agent/drivers 拉取失败(卡在 OFFLINE)；
+           * xport=0     → 云端 pairing 回包 adapterConnected=false / 字段缺失。 */
+          ESP_LOGW(TAG, "agent_chat: PTT press refused (adapter offline) drv_cache=%d xport=%d cloud=%d",
+                   agent_chat_is_adapter_offline_locked(), s_transport_adapter_connected,
+                   bb_transport_is_cloud_saas() ? 1 : 0);
           agent_chat_voice_post_error("ADAPTER OFFLINE");
           signal_error_haptic();
           if (lvgl_port_lock(50)) {
@@ -4015,6 +4027,15 @@ static void stream_task(void* arg) {
         s_transport_display_ready = state.supports_display;
         if (bb_transport_is_cloud_saas() && state.cloud_adapter_connected >= 0) {
           s_transport_adapter_connected = state.cloud_adapter_connected;
+        } else if (bb_transport_is_cloud_saas()) {
+          /* 字段缺失 → 保持旧值。开机首帧就缺的话会一直停在初值 0，PTT 永远被拒，
+           * 而设置页的 sites/drivers 走另一条链路照常显示「在线」。只警告一次。 */
+          static int s_missing_adapter_field_warned = 0;
+          if (!s_missing_adapter_field_warned) {
+            s_missing_adapter_field_warned = 1;
+            ESP_LOGW(TAG, "cloud pairing reply has no adapterConnected — keeping %d",
+                     s_transport_adapter_connected);
+          }
         }
         remember_transport_state(&state);
         if (health_err == ESP_OK && bb_transport_is_cloud_saas()) {
@@ -4025,6 +4046,21 @@ static void stream_task(void* arg) {
            * confirmed healthy here, so re-establishing is safe; a no-op when the
            * WS is already connected. */
           (void)bb_adapter_client_keep_ws_alive();
+          /* 聊天页的 driver 缓存一旦拉取失败就锁死在 OFFLINE，之前只有两个解锁点：
+           * 用户按 PTT(拒绝后才补拉)、adapter_connected 发生 0→1 跳变。适配器在设备
+           * 没重启的情况下重启过一轮(先掉线、再上线)时，跳变发生在聊天页未激活的时刻
+           * 就被错过，之后 adapter_connected 稳定为 1 不再跳变——设置页每次进入都重拉
+           * 所以显示「在线」，聊天页却永远停在 OFFLINE，PTT 一按就是 ADAPTER OFFLINE。
+           * 这里改成电平驱动：只要云端说适配器在线而聊天页还锁着，每次心跳都补一次拉取
+           * (retry 内部有 pending 去重，成功后自愈，失败则下个心跳再来)。 */
+          if (s_transport_adapter_connected == 1 && agent_chat_is_active() &&
+              agent_chat_is_adapter_offline_locked()) {
+            ESP_LOGW(TAG, "agent_chat: driver cache stuck OFFLINE while cloud says adapter online — refetching");
+            if (lvgl_port_lock(50)) {
+              bb_ui_agent_chat_retry_adapter();
+              lvgl_port_unlock();
+            }
+          }
           if (state.cloud_volume_pct >= 0) {
             /* The locally-saved volume (applied at boot + via the on-device
              * Volume setting) is the source of truth. Only let the cloud value
