@@ -41,8 +41,10 @@ bbclaw v2 = v1 全功能保持不变 + **板载单 CH340 USB 自动下载**（�
 6. **拨轮**：WS-003：UP=IO8 / DOWN=IO6 / PUSH=IO1 —— **必须按 ERR-001 勘误表修正接线**
    （v1 把外壳固定脚接成了 PUSH 信号，PUSH 完全无效；正确接法：T 触点→IO1、C 触点→GND、
    外壳脚只做机械固定接 GND）。
-7. **按键**：KEY1=IO42、KEY2=IO41（各带 100nF 去抖到地）；RESET 按 EN
-   （EN 上有 10k 上拉 + 100nF + 1µF RC）。
+7. **按键**：~~KEY1=IO42、KEY2=IO41（各带 100nF 去抖到地）~~ —— **2026-08-01 移除**：
+   固件从未使用这两颗键（`board_config.h` 明写 KEY1/KEY2 unused，OK/BACK 全靠拨轮
+   短按/长按），SW4/SW5 + C11/C12 已从原理图和 PCB 删除，**IO41/IO42 释放为空闲 GPIO**
+   （已置 no-connect）。RESET 按 EN 保留（EN 上有 10k 上拉 + 100nF + 1µF RC）。
 8. **RGB 指示**：SK6812MINI-HS，3V3 供电，数据 IO5 经串阻。
 9. **振动马达**：功能保留（IO21 驱动），但**实现改为板载**——见升级项 D（v1 的 MX1.25 3P 外接马达座已删除）。
 10. **电源链**：
