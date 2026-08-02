@@ -166,4 +166,52 @@ Tony/Tiny 更小，若高度也不大，是比 Mini 更优的候选——**但�
 2. ⬜ 收货后**拍丝印照片核对实际引脚位置**，确认 A/B 线序同圈的推断
 3. ⬜ 查 ML307A **峰值电流**官方数（文档指向 ML307A 子文档，未展开）
 4. ⬜ 定电芯规格（容量 + 脉冲能力）
-5. ⬜ 决定板子放大方案 or 背面安装 → 再开 `bbclaw-v2-4g` 工程
+5. ✅ ~~决定板子放大方案 or 背面安装 → 再开 `bbclaw-v2-4g` 工程~~——工程已建（2026-08-02），
+   见 §10 复刻记录
+
+## 10. `bbclaw-v2-4g` 工程复刻记录（2026-08-02）
+
+### 排障：easyeda-agent 批量写操作长时间失败 → 根因是 uuid 语义误用
+
+新建工程后，`sch place` 批量重放持续 `DISPATCH_FAILED / connector did not respond`，
+排查了近 2 小时，依次排除：daemon 进程状态、windowId 过期、多标签并发、连接心跳、
+doc-switch guard、页面是否"活"（用户交互画布）——**均不是根因**。
+
+**真正原因**：`sch list --include-pins` 读回的已放置器件的 `component.uuid` /
+`device.uuid`，**不是**可以拿去 `sch place --uuid` 跨工程复用的"设备库 uuid"。
+两者字符串不同（例如 U8 Type-C：源工程读回 `79dccae1...`，但 `lib search` 查到的
+真实库 uuid 是 `8c95ad7c...`）。用前者 place 会稳定超时（可能触发某种版本快照/
+供应商绑定解析失败），用后者秒开。
+
+**结论/以后适用**：**跨工程复刻器件，必须对每个唯一料号重新 `lib search` 取 uuid，
+不能直接复用源工程 `sch list` 读回的 component/device uuid**——即便两个字段
+数值相同、看起来像是"标准库 uuid"。
+
+### 复刻方法（已验证可行，供后续页面复用）
+
+1. 源工程 `sch list --page <name> --stay --include-pins --include-bbox` 逐页导出 JSON
+2. 汇总所有唯一 `manufacturerId`，用 Python + `subprocess`（**不要用 bash 循环**，
+   会莫名卡死；`easyeda lib search` 单条 15s 超时保护）逐个 `lib search` 建立
+   `manufacturerId → 真实uuid` 映射表
+3. 用映射表生成逐页 shell 脚本：`sch place`（真实 uuid + 源坐标/旋转/镜像/位号）
+   后跟 **`sleep 0.5`**（连续无间隔调用会让页面主线程繁忙、错过心跳、被扩展判定
+   "3 pings unanswered → reconnect" 强制断线），再 `sch autoconnect` 逐引脚接线
+4. **不要用 `easyeda apply` playbook 引擎**——它内部的 `meta.doc` 自动切页动作会与
+   紧接着的第一条写操作竞态，稳定超时；改用 per-step `--doc` flag 或干脆用原始
+   shell 脚本（本项目最终采用后者）
+5. 跑完一页后 **回读校验**而非信任脚本里的成功/失败字样（`| tail -1` 截到的可能是
+   autoconnect 候选拒绝详情行，不是真正的结果行）：
+   `sch list --include-pins` 统计"已接线引脚数 / 总引脚数"，核对未接线的是否
+   在源数据里本来就是 `noConnected=true`
+6. 对源数据里本就悬空的引脚补 `sch no-connect`，再跑
+   `sch bridge-check` + `sch check` + `sch layout-lint` 三件套确认 0 问题
+
+### 进度
+
+| 页 | 状态 |
+|---|---|
+| 01-POWER（34件/97脚） | ✅ 完成，bridge-check 0 / check 0 findings / layout-lint gate passed |
+| 02-MCU（10件） | 🔄 进行中 |
+| 03-USB-DL（9件） | ⬜ 待做 |
+| 04-IO-HMI（16件） | ⬜ 待做 |
+| 05-4G-MODULE（新页，ML307A-DCLN Mini核心板+P-MOS负载开关） | ⬜ 待做，见 §5/§6 电路设计 |
