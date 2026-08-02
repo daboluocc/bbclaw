@@ -382,3 +382,71 @@ json 描述 zone/module，对这种 7 件的小电路没必要，直接手动指
 画布依然卡在旧渲染帧。已按铁律"判断对错只看 list/check/drc，不看截图"，
 全部验收基于数据完成，**未能用截图对用户做视觉确认**，需要用户自己在
 浏览器里点一下画布触发重绘后目视核实。
+
+## 15. 后续会话：截图终于刷新后发现器件跑到图纸外，二次修复（2026-08-02）
+
+上一轮的 stale 截图问题在下一次会话里自然解开（tab 重新前台后 `sch snapshot`
+返回 `stale:false` 的新鲜帧），但新鲜截图暴露了一个第 14 节验收时**数据没查出来**
+的问题：
+
+### 问题：7 个器件的坐标跑到 A4 图纸边框外面了
+
+第 14 节把器件坐标从 100~200mil 拉大到 400~600mil 间距时，只保证了**器件之间
+不重叠**（`layout-lint`/`check` 都只查器件间关系和电气连通性，不查是否在图纸
+框内），没检查这组坐标（如 U11@1400,800、C11@1200,1000）是否还落在 A4 图纸的
+实际范围内。用 `sch list --include-bbox` 读图纸(`sheet`)本身的 bbox 才发现：
+
+```
+sheet bbox: {minX:0, maxX:1170, minY:0, maxY:825}
+U11 (1400,800) Q5(800,1000) R15(1000,900) C11(1200,1000)  ← 全部超出 maxX=1170 / maxY=825
+```
+
+**教训**：判断布局是否"在纸内"不能只看 `layout-lint`（只管器件间距），
+必须额外拿 `sheet` 的 bbox 和器件 bbox 做包含关系检查（这次之后应该固化成
+一条常规验收项）。
+
+### 修复方法
+
+1. `sch disconnect --pin` 逐个断开 7 个器件全部 18 个已连接引脚(wire+flag 一起删)
+2. `sch modify --id --patch {x,y}` 把 7 个器件整体平移回图纸内（保持第 14 节
+   验证过的相对间距不变，等价于把整组坐标减去一个偏移量）
+3. `sch autoconnect --spec`(18 条连接一次性提交)重新接线
+4. 重新补 8 个 U11 no-connect 标记
+5. 边界复核发现 2 处netport 标签仍超出图纸右/上边（U11 的 4G_TXD、Q5 的
+   VBAT 标签，各溢出约 20mil）——**追加教训**：`sch group-move` 只支持
+   component+wire，**不支持把 netflag/netport 一起纳入平移**（对 flag 调用
+   会报 `仅当器件类型为元件时允许使用该函数进行修改`）；改用逐引脚
+   disconnect → 单独 `sch modify` 移动器件本体 → 重新 autoconnect 的方式处理
+6. 单独重连 U11 时踩到一个新坑：**同批 4 个引脚一起 autoconnect，后面的引脚
+   会被前面引脚刚选中的 offset/方向挤到无解**（`stub touches an existing
+   (foreign-net) wire (hard reject)`，2.54mm 间距的排针本来可用空间就窄）。
+   解法：先断开全部 4 引脚，一次性用 `--spec` 批量提交（不要分批），让
+   打分器一次性看到全部约束统一分配方向；仍然卡住的个别引脚改用底层
+   `sch connect --x --y --direction --offset`（比 autoconnect 默认的
+   18~80mil 范围更大的 offset，如 100mil）手动指定
+7. 修复中发现 **`sch group-move` 半途失败会留下孤儿**：两次
+   group-move 调用都在处理到 flag 时报错退出，但**之前处理过的 wire 已经
+   被"删除重建+按 dx,dy 平移两端"**——由于 flag 那一端根本没被移动，
+   重建出的 wire 变成一段两端都不挨着任何东西的悬空线，而原始 flag 也
+   变成了孤儿。之后 `sch check` 会把这些悬空线报成 `dangling-wire`，但
+   **孤儿 flag 本身不会被 `dangling-wire`/`markerOverlap` 之外的规则单独
+   点名**——这次是靠肉眼在坐标表里比对"新旧两套 flag 是否共存"才挖出来的
+   （比如同时存在着 `U11 4G_TXD` 的两个 netport primitive，一个在器件旧
+   位置、一个在新位置）。**教训**：`group-move` 只要包含了非
+   component/非wire 的 id（如 netflag/netport），一旦中途报错，必须假设
+   已经处理过的项目发生了不对称的平移，需要人工核对 `sch list` 全量坐标
+   表，不能只信 `bridge-check`/`sch check` 的汇总数字（这次两者全程报 0
+   问题，孤儿是纯几何残留、不产生电气异常，检查工具照样测不出来）。
+
+### 验收（本轮最终状态）
+
+| 检查项 | 结果 |
+|---|---|
+| 图纸内 bbox 包含关系 | 7 个器件 + 18 个 flag 全部在 `sheet` bbox `(0,0)-(1170,825)` 内，最小边距 14.5mil |
+| 接线率 | 18/18（连接的引脚全部成功，U11 剩余 8 脚 no-connect） |
+| `bridge-check` | 0 桥接 / 0 孤儿 / 18 wire tree（与连接数一致） |
+| `sch check` | 0 finding |
+| `layout-lint` | placement gate passed |
+| 截图 | 拿到过 1 张非 stale 的确认帧（修复到一半时），最后一次微调后截图又
+  回到 stale——按铁律以数据验收为准，未能对最终状态做二次视觉确认，
+  已告知用户可自行点击画布刷新查看 |
