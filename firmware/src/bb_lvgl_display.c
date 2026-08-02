@@ -328,6 +328,8 @@ static lv_obj_t* s_obj_status_battery_fill;
 static lv_obj_t* s_obj_status_battery_cap;
 static lv_obj_t* s_obj_status_battery_charge_lbl; /* ⚡ overlay for charging state */
 static lv_obj_t* s_lbl_status_battery_pct;        /* numeric "NN%" left of the icon */
+static int s_battery_charge_anim_on;              /* 充电注入动效是否已挂在 fill 上 */
+static int s_battery_charge_anim_from_w;          /* 动效起点宽度(建时的真实电量) */
 
 /* Conversation activity state. The heavy full-width dot-matrix sweep strip that
  * used to live at the bottom of the ACTIVE view was removed (UI calm-down pass):
@@ -446,6 +448,12 @@ static void apply_wifi_bars(lv_obj_t* bars[], lv_obj_t* info_lbl, const char* st
   }
 }
 
+static void stop_battery_charge_anim(void) {
+  if (!s_battery_charge_anim_on) return;
+  lv_anim_delete(s_obj_status_battery_fill, (lv_anim_exec_xcb_t)lv_obj_set_width);
+  s_battery_charge_anim_on = 0;
+}
+
 static void apply_battery_widget(void) {
   if (s_obj_status_battery == NULL || s_obj_status_battery_fill == NULL) return;
 
@@ -463,6 +471,7 @@ static void apply_battery_widget(void) {
   portEXIT_CRITICAL(&s_state_lock);
 
   if (!supported) {
+    stop_battery_charge_anim();
     lv_obj_add_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
     if (s_lbl_status_battery_pct != NULL) lv_obj_add_flag(s_lbl_status_battery_pct, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -471,6 +480,7 @@ static void apply_battery_widget(void) {
   lv_obj_clear_flag(s_obj_status_battery, LV_OBJ_FLAG_HIDDEN);
   if (!available || percent < 0) {
     /* No reading yet — show empty frame, hide fill + % */
+    stop_battery_charge_anim();
     lv_obj_add_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
     if (s_obj_status_battery_charge_lbl != NULL)
       lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -491,27 +501,55 @@ static void apply_battery_widget(void) {
     fill_color = UI_TEXT_MAIN; /* cool white — standard battery look */
   }
 
-  /* Fill width: charging shows full bar regardless of percent */
-  int fill_w = charging ? UI_BATTERY_FILL_W : (percent * UI_BATTERY_FILL_W) / 100;
+  int fill_w = (percent * UI_BATTERY_FILL_W) / 100;
   if (fill_w < 1 && percent > 0) fill_w = 1; /* always show at least 1px when non-zero */
 
   lv_obj_clear_flag(s_obj_status_battery_fill, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_width(s_obj_status_battery_fill, fill_w);
   lv_obj_set_style_bg_color(s_obj_status_battery_fill, lv_color_hex(fill_color), 0);
 
-  /* Frame border color matches fill for charging/low, dim otherwise */
-  if (s_obj_status_battery_frame != NULL) {
-    lv_obj_set_style_border_color(s_obj_status_battery_frame,
-                                  lv_color_hex(charging ? BB_UI_OK : (low ? BB_UI_ERR : UI_STATUS_FG)), 0);
+  /* 充电动效:填充条从「当前电量」循环生长到满格,和待机时钟页footer 同一套语言
+   * (bb_page_standby_update_battery)。之前是充电就把 fill 钉死在满格——3% 插着电
+   * 顶栏显示一整条满绿,完全看不出真实电量,还容易被误读成「充满了」。
+   * 本函数会被电量轮询周期性重入,所以只在充电状态翻转时启停,避免动画反复重建。 */
+  if (charging) {
+    /* 电量涨上去了就重建一次动效,否则起点会一直钉在刚插上电那一刻的电量,
+     * 充到 80% 了动效还从 3% 处起跳。2px 阈值 ≈ 11% 电量,不会频繁重建。 */
+    if (s_battery_charge_anim_on && fill_w - s_battery_charge_anim_from_w >= 2) {
+      stop_battery_charge_anim();
+    }
+    if (!s_battery_charge_anim_on) {
+      s_battery_charge_anim_from_w = fill_w;
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, s_obj_status_battery_fill);
+      lv_anim_set_values(&a, fill_w, UI_BATTERY_FILL_W);
+      lv_anim_set_duration(&a, 1600);
+      lv_anim_set_repeat_delay(&a, 400); /* 满格停一拍再从电量位重来 */
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+      lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_width);
+      lv_anim_start(&a);
+      s_battery_charge_anim_on = 1;
+    }
+  } else {
+    stop_battery_charge_anim();
+    lv_obj_set_width(s_obj_status_battery_fill, fill_w);
   }
 
-  /* Charging lightning overlay */
+  /* Frame + cap follow the same state color as the fill. 之前 cap 恒为暗色，
+   * 充电/低电时和边框对不上，图标看着是拼出来的。 */
+  uint32_t trim_color = charging ? BB_UI_OK : (low ? BB_UI_ERR : UI_STATUS_FG);
+  if (s_obj_status_battery_frame != NULL) {
+    lv_obj_set_style_border_color(s_obj_status_battery_frame, lv_color_hex(trim_color), 0);
+  }
+  if (s_obj_status_battery_cap != NULL) {
+    lv_obj_set_style_bg_color(s_obj_status_battery_cap, lv_color_hex(trim_color), 0);
+  }
+
+  /* ⚡ 常驻覆盖层已撤:它固定画在 x=4、颜色恒为背景色,只有在 fill 盖住它时才可见——
+   * 现在 fill 宽度随动效变化,会一路闪烁；而生长动效本身已经把「在充电」说清楚了。 */
   if (s_obj_status_battery_charge_lbl != NULL) {
-    if (charging) {
-      lv_obj_clear_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
-    }
+    lv_obj_add_flag(s_obj_status_battery_charge_lbl, LV_OBJ_FLAG_HIDDEN);
   }
 
   /* Numeric "NN%" left of the icon — dim normal, red low, green charging. */
