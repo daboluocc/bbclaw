@@ -206,12 +206,41 @@ doc-switch guard、页面是否"活"（用户交互画布）——**均不是根
 6. 对源数据里本就悬空的引脚补 `sch no-connect`，再跑
    `sch bridge-check` + `sch check` + `sch layout-lint` 三件套确认 0 问题
 
-### 进度
+### 进度（2026-08-02 四页原理图全部复刻完成）
 
-| 页 | 状态 |
-|---|---|
-| 01-POWER（34件/97脚） | ✅ 完成，bridge-check 0 / check 0 findings / layout-lint gate passed |
-| 02-MCU（10件） | 🔄 进行中 |
-| 03-USB-DL（9件） | ⬜ 待做 |
-| 04-IO-HMI（16件） | ⬜ 待做 |
-| 05-4G-MODULE（新页，ML307A-DCLN Mini核心板+P-MOS负载开关） | ⬜ 待做，见 §5/§6 电路设计 |
+| 页 | 器件 | 状态 |
+|---|---|---|
+| 01-POWER | 34件/97脚 | ✅ bridge-check 0 / check 0 findings / layout-lint gate passed |
+| 02-MCU | 10件/61脚 | ✅ bridge-check 0 / check 0 findings / layout-lint gate passed |
+| 03-USB-DL | 9件/38脚 | ✅ bridge-check 0 / check 2 findings（丝印重叠，非电气）|
+| 04-IO-HMI | 16件/63脚 | ✅ bridge-check 0 / check 1 finding（R23 侵入图签区，继承自源工程既有布局，非电气）|
+| 05-4G-MODULE（新页） | — | ⬜ 待做，见 §5/§6 电路设计 |
+
+**四页电气 100% 干净**：0 短路、0 悬空引脚、0 孤儿线。剩余 3 处 WARN 全部是
+丝印/图签视觉重叠，不影响电路，留到收尾统一处理。
+
+### 复刻过程中额外踩的坑（补充记录）
+
+1. **同一 manufacturerId 在不同 lib search 结果里，symbol 引脚编号可能不同**——
+   R23（0603电阻）复刻后 pin1/pin2 的物理位置与源数据对调了（电阻无极性，
+   电气不受影响，但按"标号"直接连线会连错位置）。**教训：批量复刻后，凡是
+   autoconnect 报错或结果可疑的，必须回读当前工程里的真实 pin 坐标，
+   不能假设新工程的坐标/编号与源工程逐一对应。**
+
+2. **`sch place --rotation 270` 实际落地可能变成 90°**（等效镜像 180°）——
+   U4（拨轮）复刻后 rotation 从源数据 270° 变成 90°，所有引脚坐标随之偏移。
+   直接用源数据坐标做 `autoconnect --x --y` 会打偏（表面显示✓成功，但
+   `bridge-check` 也测不出来，因为它连的是空白点而非真实 pin——**必须用
+   `sch list --include-pins` 现读真实坐标核对，不能信任 place 调用的
+   rotation 参数被原样保留**。
+
+3. **两脚间距很小的器件（如 0603 电阻两脚仅 40mil）批量 autoconnect 容易
+   共线合并成 bridge（真短路）**——需要 `bridge-check` 逐页复核，
+   发现后 `sch prim-delete` 整棵线树重连，用大幅不同的 `--offset-min/--offset-max`
+   参数强制两条线走不同路径。
+
+4. **`sch autoconnect --pin "X:N"` 遇到 pin 引用歧义时会静默失败**
+   （pinNumber 和另一个 pin 的 pinName 字符串相同）——批量脚本里这类失败
+   不会中断整体流程，**必须逐页做"接线率核对"（已接线引脚数/总引脚数），
+   不能只看脚本自己打印的 ok/FAIL 计数**（那只反映 place 是否成功，不反映
+   autoconnect 是否真的接上）。
