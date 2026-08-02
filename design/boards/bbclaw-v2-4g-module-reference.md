@@ -321,3 +321,64 @@ Q4/Q5 都处于默认关断，4G 模块断电——符合"不用时不耗电"的
    见 §7）——需要用户确认板子加高多少，或者核心板挪到背面（背面已有电池，需机构确认）
 3. U11 的封装（PCB footprint）需要跟 §11 的占位假设一起在实物到货后核实
 4. R23/03-USB-DL 页遗留的 3 处丝印视觉重叠，PCB 布线阶段前一并清理
+
+## 14. 网标视觉重叠修复 + `sch autolayout` 实测记录（2026-08-02）
+
+### 问题：05-4G-MODULE 页网标文字粘连
+
+用户截图显示 Q4 附近 "4G_GATE"/"VBAT" 等网标文字重叠糊在一起。
+
+**根因**：最初画这 7 个器件时坐标间距只有 100~200mil（如 R13@(400,500)、
+Q4@(600,500)、Q5@(600,700)），`autoconnect` 在这么小的空间里给每个引脚
+自动选的网标文字位置挤不开，视觉上贴在一起。
+
+### 试过 `sch autolayout --engine official --apply --rewire`，效果更差，已回滚
+
+官方引擎会先删除已有布线、重新摆放器件、再按原网表重建接线。实测结果：
+
+```
+✓ official autolayout applied — 7 part(s), 0 overlap(s), 0 pin-coincidence(s),
+  0 dangling wire(s), 3 floating pin(s)
+note: the platform engine is connectivity-clustered (radial) and off-grid;
+it is messier than `--engine template` and a scattered layout can leave
+stub-collision shorts. Prefer template for a known block.
+```
+
+问题：
+- 器件被聚拢到更小范围（整体收缩到 160×215mil 内，比之前更挤）
+- **丢失 3 条真实连接**（U11.RXD、U11.TXD、R13→4G_PWR_EN 那端）
+- 之前手动打的 8 个 no-connect 标记全部丢失（变回未定义悬空状态）
+- 留下 15 条两端不接任何东西的孤立残留导线（`sch check` 报 15 条 dangling-wire）
+
+**结论**：`official` 引擎适合"从零开始、未布线"的页面（帮你摆初始位置），
+**不适合已经手工布好线、只是想解决局部拥挤的页面**——它的 radial 聚类算法
+以及 rewire 的"best-effort"重建都不可靠。`--engine template` 需要写 spec
+json 描述 zone/module，对这种 7 件的小电路没必要，直接手动指定坐标更快更可控。
+
+### 修复方案
+
+1. `sch prim-delete` 精确删除所有非器件 primitive（15 条 wire+flag），**保留 7 个器件不动**
+2. `sch modify --patch {x,y,rotation}` 把 7 个器件的坐标间距从 100~200mil
+   拉大到 **400~600mil**
+3. 重新逐条 `sch autoconnect` 走 16 条连接（内容与 §12 网络拓扑完全一致，坐标不同）
+4. 补回 8 个 no-connect 标记
+5. `sch check` 发现 15 条 dangling-wire（本轮 autolayout 试验遗留的旧碎片），
+   `sch prim-delete` 清理，删除前后接线率不变（18/26）、bridge-check 仍 0 问题——
+   确认删的是纯几何垃圾，电气未受影响
+
+### 验收（最终状态）
+
+| 检查项 | 结果 |
+|---|---|
+| 接线率 | 18/26（其余 8 个是 U11 占位悬空脚，§11） |
+| `bridge-check` | 0 桥接 / 0 孤儿 |
+| `sch check` | **0 finding** |
+| `layout-lint` | placement gate passed，0 tight |
+
+### ⚠️ 截图渲染 stale，无法用视觉确认（记录一个新坑）
+
+`sch snapshot --previous-sha256` 连续 3 次检测到 **`stale: true`**——
+即便用了 skill 文档提到的 stale-frame 检测+强制重绘机制，这个标签页的
+画布依然卡在旧渲染帧。已按铁律"判断对错只看 list/check/drc，不看截图"，
+全部验收基于数据完成，**未能用截图对用户做视觉确认**，需要用户自己在
+浏览器里点一下画布触发重绘后目视核实。
