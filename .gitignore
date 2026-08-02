@@ -54,3 +54,6 @@ Thumbs.db
 videos/
 
 # Local release ops config (deploy host + key source) — never commit
+
+# easyeda-agent snapshot/debug artifacts (ephemeral, not a deliverable)
+.easyeda/
