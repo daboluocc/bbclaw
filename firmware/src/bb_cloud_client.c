@@ -563,6 +563,21 @@ esp_err_t bb_cloud_pair_request(bb_cloud_pairing_t* out_pairing) {
   return ESP_OK;
 }
 
+esp_err_t bb_cloud_release_pairing(void) {
+  char body[128] = {0};
+  snprintf(body, sizeof(body), "{\"deviceId\":\"%s\"}", BBCLAW_DEVICE_ID);
+
+  bb_http_resp_t resp = {0};
+  ESP_RETURN_ON_ERROR(http_perform_json("POST", "/v1/pairings/release", body, &resp), TAG,
+                      "pairing release failed");
+  if (resp.status_code < 200 || resp.status_code >= 300 || !body_contains_ok_true(resp.body)) {
+    ESP_LOGE(TAG, "pairing release bad status=%d body=%s", resp.status_code, resp.body);
+    return ESP_FAIL;
+  }
+  ESP_LOGI(TAG, "pairing released device=%s body=%s", BBCLAW_DEVICE_ID, resp.body);
+  return ESP_OK;
+}
+
 esp_err_t bb_cloud_report_device_info(void) {
   const esp_app_desc_t *app = esp_app_get_description();
   const char *fw_ver = (app && app->version[0]) ? app->version : "unknown";

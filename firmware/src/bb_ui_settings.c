@@ -49,6 +49,7 @@
 #include "bb_adapter_client.h"
 #include "bb_agent_client.h"
 #include "bb_audio.h"
+#include "bb_cloud_client.h" /* ADR-051 Reset Device 行:云端解绑 */
 #include "bb_config.h"
 #include "bb_device_config.h"
 #include "bb_nav_input.h" /* touch row-tap → inject OK (same path as the physical key) */
@@ -65,6 +66,7 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_system.h"  /* esp_get_free_heap_size — System Info page */
+#include "nvs_flash.h"   /* ADR-051 Reset Device:整分区擦除 */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -189,6 +191,7 @@ typedef enum {
   MAIN_ROW_RECORDER,     /* ADR-044 长录音入口(有 SD 卡槽的板);双击确认防误进 */
   MAIN_ROW_RECFILES,     /* ADR-044:SD 录音浏览+设备端回放 */
   MAIN_ROW_CHECK_UPDATE, /* cloud_saas only — runs an OTA check (→ confirm page) */
+  MAIN_ROW_RESET,        /* ADR-051 解绑+恢复出厂:云端 release claim → NVS 全擦 → 重启 */
   MAIN_ROW_SYSINFO,      /* read-only "About" page */
   MAIN_ROW_BACK,
   MAIN_ROW_ID_COUNT,
@@ -212,6 +215,13 @@ typedef enum {
   CAM_ROW_FAILED,   /* 拍照或上行失败 */
 } cam_row_status_t;
 #endif
+
+/* Reset Device 行状态（ADR-051）。BUSY 之后正常路径是设备重启，回不到 IDLE。 */
+typedef enum {
+  RESET_ROW_IDLE = 0,
+  RESET_ROW_BUSY,   /* 云端解绑 + 擦除进行中 */
+  RESET_ROW_FAILED, /* 云端解绑失败——本地未擦，可重试 */
+} reset_row_status_t;
 
 /* ── State ── */
 
@@ -246,6 +256,9 @@ typedef struct {
 #endif
   int64_t recorder_arm_ms; /* ADR-044 录音行双击确认窗口起点(0=未武装) */
   int64_t miyu_arm_ms;     /* 密语开关双击确认窗口起点(0=未武装,用户要求状态修改需确认) */
+  int64_t reset_arm_ms;    /* ADR-051 Reset 行双击确认窗口起点(0=未武装) */
+  reset_row_status_t reset_status; /* ADR-051 Reset 行状态 */
+  volatile int reset_pending;      /* 1=解绑/擦除任务在跑,防重入 */
   /* ADR-044 录音浏览器:0=会话列表 1=段列表;条目名缓存(会话=epoch 目录名,段=文件名) */
   int recfiles_mode;
   char recfiles_dir[24];              /* 当前会话目录名 */
@@ -509,6 +522,9 @@ static int main_visible_rows(main_row_t* out) {
      * read-only in System Info below, which is available in any mode. */
     out[n++] = MAIN_ROW_CHECK_UPDATE;
   }
+  /* Reset Device (ADR-051) — 所有模式常显:cloud_saas 先云端解绑再擦本地,
+   * local_home 只擦本地(WiFi 凭据/配置/会话缓存)。 */
+  out[n++] = MAIN_ROW_RESET;
   /* System Info ("About") — read-only firmware version / device id / mode / heap.
    * Always shown; click pushes the read-only sub-page. */
   out[n++] = MAIN_ROW_SYSINFO;
@@ -715,6 +731,25 @@ static void render_main(void) {
         }
         break;
 #endif
+      case MAIN_ROW_RESET:
+        /* ADR-051:双击确认武装态提示即将解绑+全擦;BUSY 后正常路径是重启。 */
+        switch (s_st.reset_status) {
+          case RESET_ROW_BUSY:
+            snprintf(buf, sizeof(buf), "Reset Device · resetting…");
+            break;
+          case RESET_ROW_FAILED:
+            snprintf(buf, sizeof(buf), "Reset Device · cloud failed, retry");
+            break;
+          case RESET_ROW_IDLE:
+          default:
+            if (s_st.reset_arm_ms != 0) {
+              snprintf(buf, sizeof(buf), "Reset Device · tap again to UNBIND+WIPE");
+            } else {
+              snprintf(buf, sizeof(buf), "Reset Device");
+            }
+            break;
+        }
+        break;
       case MAIN_ROW_SYSINFO:
         snprintf(buf, sizeof(buf), "System Info");
         break;
@@ -1494,6 +1529,77 @@ static void ota_check_task(void* arg) {
   vTaskDeleteWithCaps(NULL);
 }
 
+/* ── Reset Device (ADR-051) — 云端解绑 + NVS 全擦 + 重启, async ──
+ * 顺序不可倒:必须云端 release claim 成功后才擦本地。device_id 由 MAC 派生、
+ * 跨重置稳定,若只擦本地不解绑,重启配网后 /v1/pairings/request 直接返回
+ * approved——看似重置了实际还绑在原账号(ADR-051 §3.3)。 */
+
+/* 擦除+重启:NVS 擦除期间 flash cache 关闭,任务栈必须在内部 RAM
+ * (plain xTaskCreate,同 volume persist 任务的 cache-safe 理由)。 */
+static void reset_wipe_task(void* arg) {
+  (void)arg;
+  ESP_LOGW(TAG, "reset: wiping nvs partition and restarting");
+  vTaskDelay(pdMS_TO_TICKS(150)); /* 让日志与行状态有机会刷出去 */
+  nvs_flash_deinit();
+  esp_err_t err = nvs_flash_erase();
+  if (err != ESP_OK) {
+    /* 擦除失败也照样重启:云端 claim 已解除,重启后最多回到 claim_required,
+     * 不会出现"看似重置实际仍绑定"的反向残局。 */
+    ESP_LOGE(TAG, "reset: nvs_flash_erase failed (%s), restarting anyway", esp_err_to_name(err));
+  }
+  esp_restart();
+}
+
+static void on_reset_release_failed(void* arg) {
+  (void)arg;
+  s_st.reset_pending = 0;
+  if (!s_st.active) return;
+  s_st.reset_status = RESET_ROW_FAILED;
+  rerender();
+}
+
+/* 云端解绑任务:HTTPS(TLS 吃栈)走 PSRAM 大栈;本任务绝不能碰 NVS
+ * (PSRAM 栈 + flash-cache-disable 冲突,见 ota_check_task 注释)。 */
+static void reset_release_task(void* arg) {
+  (void)arg;
+  esp_err_t err = ESP_OK;
+  if (bb_transport_is_cloud_saas()) {
+    err = bb_cloud_release_pairing();
+  }
+  if (err == ESP_OK) {
+    /* 云端解绑成功(或 local_home 无绑定可解)→ 交棒内部栈任务擦除+重启。 */
+    if (xTaskCreate(reset_wipe_task, "bbreset_wipe", BB_SETTINGS_PERSIST_TASK_STACK,
+                    NULL, 5, NULL) == pdPASS) {
+      vTaskDeleteWithCaps(NULL);
+      return;
+    }
+    ESP_LOGE(TAG, "reset: wipe task create failed (internal RAM frag?)");
+  }
+  if (lvgl_port_lock(200)) {
+    lv_async_call(on_reset_release_failed, NULL);
+    lvgl_port_unlock();
+  } else {
+    s_st.reset_pending = 0;
+  }
+  vTaskDeleteWithCaps(NULL);
+}
+
+static void spawn_reset_task(void) {
+  if (s_st.reset_pending) return;
+  s_st.reset_pending = 1;
+  s_st.reset_status = RESET_ROW_BUSY;
+  TaskHandle_t t = NULL;
+  BaseType_t ok = xTaskCreateWithCaps(reset_release_task, "bbreset", BB_SETTINGS_FETCH_TASK_STACK,
+                                      NULL, BB_SETTINGS_FETCH_TASK_PRIO, &t,
+                                      BBCLAW_MALLOC_CAP_PREFER_PSRAM);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "spawn_reset_task: xTaskCreateWithCaps failed");
+    s_st.reset_pending = 0;
+    s_st.reset_status = RESET_ROW_FAILED;
+  }
+  rerender();
+}
+
 /* ADR-049 B1: 设置菜单「拍照」改用 bb_radio_app_shoot_and_receive(拍照+收云端流式回复,
  * tts.chunk 边到边放)。旧的 spawn_camera_shoot_task/camera_shoot_task/on_camera_shoot_done
  * (走 B2 单发 + 行状态)已退役——点击后直接退设置进对话页,回复在对话页流式显示+播报。 */
@@ -2097,6 +2203,8 @@ void bb_ui_settings_show(lv_obj_t* parent) {
   s_st.vol_fill = NULL;
   s_st.vol_pct_lbl = NULL;
   s_st.ota_status = OTA_ROW_IDLE; /* fresh each session — no stale check result */
+  s_st.reset_arm_ms = 0;          /* ADR-051: fresh each session — no stale arm/error */
+  if (!s_st.reset_pending) s_st.reset_status = RESET_ROW_IDLE;
   /* Seed active_driver from NVS cache so the first paint of the main page
    * shows something sensible even before the async fetch lands. */
   if (s_st.active_driver[0] == '\0') {
@@ -2422,6 +2530,21 @@ int bb_ui_settings_handle_click(void) {
           bb_radio_app_shoot_and_receive(NULL);
           return 1; /* caller(settings_click_locked): want_exit → settings_exit_to_chat() */
 #endif
+        case MAIN_ROW_RESET: {
+          /* ADR-051:解绑+恢复出厂。双击确认(5s 窗口,同 Recording/Miyu 惯例):
+           * 首击武装(行文案变 tap again to UNBIND+WIPE),窗口内再击执行。 */
+          if (s_st.reset_pending) break;
+          int64_t reset_now = bb_now_ms();
+          if (s_st.reset_arm_ms != 0 && reset_now - s_st.reset_arm_ms < 5000) {
+            s_st.reset_arm_ms = 0;
+            spawn_reset_task();
+            break;
+          }
+          s_st.reset_arm_ms = reset_now;
+          s_st.reset_status = RESET_ROW_IDLE; /* FAILED 后重试:清错误态回武装文案 */
+          rerender();
+          break;
+        }
         case MAIN_ROW_SYSINFO:
           enter_sysinfo();
           break;

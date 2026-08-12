@@ -35,3 +35,8 @@ const char* bb_cloud_pair_status_name(bb_cloud_pair_status_t status);
 
 /** POST device info to Cloud once after successful pairing. */
 esp_err_t bb_cloud_report_device_info(void);
+
+/** ADR-051 设备自助解绑：POST /v1/pairings/release 解除本机在云端的 claim。
+ * 成功(2xx + ok:true)后才允许擦本地 NVS——云端失败时本地必须原样保留，
+ * 否则设备重启后仍绑在原账号（device_id 由 MAC 派生、跨重置稳定）。 */
+esp_err_t bb_cloud_release_pairing(void);
