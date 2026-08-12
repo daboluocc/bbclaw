@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件+云:设备端自助解绑与重置(ADR-051)**:设置菜单新增「Reset Device」行
+  (所有模式常显,双击确认同 Recording/Miyu 惯例)。cloud_saas 下先调新增的设备面
+  端点 `POST /v1/pairings/release` 解除云端 claim(级联清 Binding/Allocation),
+  成功后才在内部栈任务里 `nvs_flash_erase` 全擦本地(WiFi 凭据/设备配置/会话缓存)
+  并重启——云端失败则本地原样保留可重试(device_id 由 MAC 派生跨重置稳定,只擦
+  本地会假重置)。重启后:SoftAP 配网 → `claim_required` → 屏幕重新出 6 位配对码,
+  任意账号可重新认领。**发布顺序:云端先部署,固件后发 OTA**(旧固件不调新端点,
+  零影响;固件先发则重置按失败安全退化)。
 - **固件:嘉立创·实战派 ESP32-S3 板适配(`boards/lichuang-szp`)**:第三方开发板
   第 3 块。ES8311 DAC + ES7210 双 mic ADC(复用手表音频架构)+ SPI ST7789 320x240 +
   FT6336 触摸 + PCA9557 IO 扩展(新最小驱动 `bb_pca9557.c`:LCD_CS bit0 常选通、
