@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **固件:设置菜单新增「已保存 WiFi」列表(ADR-052)**:主菜单新增
+  `Saved WiFi (n/8)` 行,点击进二级页逐条查看已保存网络(当前连接标 `*`),点选中
+  行双击确认(同 Recording/Miyu 惯用法)「忘记」——调用既有 `delete_wifi_slot`
+  存储层(NVS 槎位压缩逻辑不变),只新增两个公开包装函数
+  `bb_wifi_saved_get`/`bb_wifi_forget_saved`。设备屏幕不支持新增/编辑 WiFi(仍走
+  SoftAP 配网门户),纯查看+删除。cloud/adapter 零改动。上限仍是
+  `BBCLAW_WIFI_MAX_SAVED=8`(`bb_config.h`,2026-07-04 field test 后从 4 调到 8)。
 - **固件+云:设备端自助解绑与重置(ADR-051)**:设置菜单新增「Reset Device」行
   (所有模式常显,双击确认同 Recording/Miyu 惯例)。cloud_saas 下先调新增的设备面
   端点 `POST /v1/pairings/release` 解除云端 claim(级联清 Binding/Allocation),

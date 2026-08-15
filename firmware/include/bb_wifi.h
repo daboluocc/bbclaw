@@ -23,3 +23,12 @@ const char* bb_wifi_get_ap_password(void);
 const char* bb_wifi_get_ap_ip(void);
 /** Return current STA RSSI in dBm, or 0 if not connected. */
 int bb_wifi_get_rssi(void);
+
+/** Load the SSID of a saved-WiFi slot (0..BBCLAW_WIFI_MAX_SAVED-1). Returns
+ *  ESP_ERR_NOT_FOUND (or similar) if that slot is empty — callers should scan
+ *  the whole range rather than assume slots are contiguous. */
+esp_err_t bb_wifi_saved_get(int slot, char* ssid, size_t ssid_size);
+
+/** Forget (delete) a saved-WiFi slot; remaining slots compact down. Does not
+ *  affect an already-established connection using that slot's credentials. */
+esp_err_t bb_wifi_forget_saved(int slot);

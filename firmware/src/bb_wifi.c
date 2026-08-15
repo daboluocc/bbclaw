@@ -325,6 +325,20 @@ static esp_err_t save_sta_credentials(const char* ssid, const char* password) {
   return save_wifi_slot(slot, ssid, password);
 }
 
+/* --- Public: Settings-menu saved-WiFi list/forget (device-side UI) --- */
+
+esp_err_t bb_wifi_saved_get(int slot, char* ssid, size_t ssid_size) {
+  if (ssid == NULL || ssid_size == 0U) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  char password[sizeof(((wifi_sta_config_t*)0)->password)]; /* discarded — caller only wants the SSID */
+  return load_saved_wifi_slot(slot, ssid, ssid_size, password, sizeof(password));
+}
+
+esp_err_t bb_wifi_forget_saved(int slot) {
+  return delete_wifi_slot(slot);
+}
+
 /* ── 运行期自动重连辅助函数（issue #170）──────────────────────────────── */
 
 /* 计算下一档退避值（当前值 ×3，封顶 MAX）。

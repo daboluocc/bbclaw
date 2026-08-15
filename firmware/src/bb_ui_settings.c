@@ -60,6 +60,7 @@
 #include "bb_radio_app.h"
 #include "bb_session_store.h"
 #include "bb_transport.h"
+#include "bb_wifi.h" /* 已保存 WiFi 列表行:bb_wifi_saved_get / bb_wifi_forget_saved */
 #include "bb_ui_agent_chat.h"
 #include "bb_ui_layout.h"
 #include "bb_ui_theme.h"
@@ -172,6 +173,7 @@ typedef enum {
   LEVEL_REMINDERS,
   LEVEL_RECFILES,   /* ADR-044:SD 录音浏览(会话列表→点按打开回放页) */
   LEVEL_RECPLAY,    /* ADR-044:录音回放页(bb_page_recplay,touch transport) */
+  LEVEL_WIFI_SAVED, /* 已保存 WiFi 列表——逐条查看/忘记(delete_wifi_slot) */
 } settings_level_t;
 
 /* Logical main-page row ids. MAIN_ROW_ADAPTER (ADR-027) is only shown in
@@ -190,6 +192,7 @@ typedef enum {
   MAIN_ROW_MIYU,
   MAIN_ROW_RECORDER,     /* ADR-044 长录音入口(有 SD 卡槽的板);双击确认防误进 */
   MAIN_ROW_RECFILES,     /* ADR-044:SD 录音浏览+设备端回放 */
+  MAIN_ROW_WIFI_SAVED,   /* 已保存 WiFi 列表(n/BBCLAW_WIFI_MAX_SAVED)——逐条忘记 */
   MAIN_ROW_CHECK_UPDATE, /* cloud_saas only — runs an OTA check (→ confirm page) */
   MAIN_ROW_RESET,        /* ADR-051 解绑+恢复出厂:云端 release claim → NVS 全擦 → 重启 */
   MAIN_ROW_SYSINFO,      /* read-only "About" page */
@@ -259,6 +262,12 @@ typedef struct {
   int64_t reset_arm_ms;    /* ADR-051 Reset 行双击确认窗口起点(0=未武装) */
   reset_row_status_t reset_status; /* ADR-051 Reset 行状态 */
   volatile int reset_pending;      /* 1=解绑/擦除任务在跑,防重入 */
+  /* 已保存 WiFi 列表(LEVEL_WIFI_SAVED):slot 号+SSID 缓存,槎位号不连续(压缩后才连续)。
+   * 上限=BBCLAW_WIFI_MAX_SAVED(8),小于行池容量 rows[16),不会越界。 */
+  int wifi_saved_slot[BBCLAW_WIFI_MAX_SAVED];
+  char wifi_saved_ssid[BBCLAW_WIFI_MAX_SAVED][33]; /* wifi_sta_config_t.ssid 上限 32+NUL */
+  int wifi_saved_count;
+  int64_t wifi_forget_arm_ms; /* 双击确认「忘记」窗口起点(0=未武装),同 Recording/Miyu 惯例 */
   /* ADR-044 录音浏览器:0=会话列表 1=段列表;条目名缓存(会话=epoch 目录名,段=文件名) */
   int recfiles_mode;
   char recfiles_dir[24];              /* 当前会话目录名 */
@@ -508,6 +517,7 @@ static int main_visible_rows(main_row_t* out) {
   }
   out[n++] = MAIN_ROW_VOLUME;
   out[n++] = MAIN_ROW_SLEEP;
+  out[n++] = MAIN_ROW_WIFI_SAVED; /* 常显——local_home/cloud_saas 都靠 WiFi 联网 */
 #if BBCLAW_SDMMC_ENABLE
   /* 长录音(ADR-044):有卡槽的板常显;无卡时行文案提示 no SD card */
   out[n++] = MAIN_ROW_RECORDER;
@@ -689,6 +699,15 @@ static void render_main(void) {
       case MAIN_ROW_RECFILES:
         snprintf(buf, sizeof(buf), "Recordings");
         break;
+      case MAIN_ROW_WIFI_SAVED: {
+        int cnt = 0;
+        char tmp[33];
+        for (int s = 0; s < BBCLAW_WIFI_MAX_SAVED; ++s) {
+          if (bb_wifi_saved_get(s, tmp, sizeof(tmp)) == ESP_OK && tmp[0] != '\0') cnt++;
+        }
+        snprintf(buf, sizeof(buf), "Saved WiFi (%d/%d)", cnt, BBCLAW_WIFI_MAX_SAVED);
+        break;
+      }
       case MAIN_ROW_CHECK_UPDATE:
         /* Dedicated OTA-check action (the read-only version lives in System
          * Info now). Click runs bb_ota_check; the result is shown inline here,
@@ -1145,6 +1164,7 @@ static void render_reminders(void) {
 }
 
 static void render_recfiles(void); /* fwd: 定义在 rerender 之后 */
+static void render_wifi_saved(void); /* fwd: 定义在 rerender 之后 */
 
 static void rerender(void) {
   switch (s_st.level) {
@@ -1158,6 +1178,7 @@ static void rerender(void) {
     case LEVEL_REMINDERS:      render_reminders(); break;
     case LEVEL_RECFILES:       render_recfiles(); break;
     case LEVEL_RECPLAY:        break; /* bb_page_recplay 自持 UI + timer,不经 rerender */
+    case LEVEL_WIFI_SAVED:     render_wifi_saved(); break;
   }
 }
 
@@ -1362,6 +1383,54 @@ static void enter_recplay(int idx) {
   if (idx < 0 || idx >= s_st.recfiles_count) return;
   s_st.level = LEVEL_RECPLAY;
   bb_page_recplay_open(s_st.root, idx);
+}
+
+/* ── Render: 已保存 WiFi 列表 (LEVEL_WIFI_SAVED) ──
+ * 槎位号(0..BBCLAW_WIFI_MAX_SAVED-1)可能不连续(中间被忘记过又没新增填上),
+ * 缓存时压成连续下标 i,但记住原始 slot 号供忘记时调 bb_wifi_forget_saved()。 */
+
+static void wifi_saved_scan(void) {
+  s_st.wifi_saved_count = 0;
+  for (int slot = 0; slot < BBCLAW_WIFI_MAX_SAVED; ++slot) {
+    char ssid[33];
+    if (bb_wifi_saved_get(slot, ssid, sizeof(ssid)) == ESP_OK && ssid[0] != '\0') {
+      int i = s_st.wifi_saved_count;
+      s_st.wifi_saved_slot[i] = slot;
+      snprintf(s_st.wifi_saved_ssid[i], sizeof(s_st.wifi_saved_ssid[i]), "%s", ssid);
+      s_st.wifi_saved_count++;
+    }
+  }
+}
+
+static void render_wifi_saved(void) {
+  if (s_st.root == NULL) return;
+  lv_label_set_text(s_st.header_lbl, "Saved WiFi");
+  if (s_st.wifi_saved_count <= 0) {
+    build_rows_box(1);
+    lv_label_set_text(s_st.rows[0], "No saved networks");
+    highlight_selected();
+    return;
+  }
+  build_rows_box(s_st.wifi_saved_count);
+  for (int i = 0; i < s_st.wifi_saved_count; ++i) {
+    char buf[48];
+    const char* active = (strcmp(bb_wifi_get_active_ssid(), s_st.wifi_saved_ssid[i]) == 0) ? "* " : "  ";
+    if (i == s_st.sel && s_st.wifi_forget_arm_ms != 0) {
+      snprintf(buf, sizeof(buf), "%s%s · tap again to FORGET", active, s_st.wifi_saved_ssid[i]);
+    } else {
+      snprintf(buf, sizeof(buf), "%s%s", active, s_st.wifi_saved_ssid[i]);
+    }
+    lv_label_set_text(s_st.rows[i], buf);
+  }
+  highlight_selected();
+}
+
+static void enter_wifi_saved(void) {
+  s_st.level = LEVEL_WIFI_SAVED;
+  s_st.sel = 0;
+  s_st.wifi_forget_arm_ms = 0;
+  wifi_saved_scan();
+  rerender();
 }
 
 /* ── Driver+model fetch (async) ── */
@@ -2408,9 +2477,15 @@ void bb_ui_settings_handle_rotate(int delta) {
     case LEVEL_RECFILES:
       row_count = s_st.recfiles_count > 0 ? s_st.recfiles_count : 1;
       break;
+    case LEVEL_WIFI_SAVED:
+      row_count = s_st.wifi_saved_count > 0 ? s_st.wifi_saved_count : 1;
+      break;
     default:
       return;
   }
+  /* Leaving the armed row un-arms it — matches the row-scoped state
+   * (recorder/miyu don't need this since those are single fixed rows). */
+  if (s_st.level == LEVEL_WIFI_SAVED) s_st.wifi_forget_arm_ms = 0;
   /* No wrap-around: the cursor clamps at the ends. When a press can't move it
    * (already on the first/last row) we play a rubber-band bounce so the user
    * feels the edge instead of the cursor silently looping to the other end.
@@ -2491,6 +2566,9 @@ int bb_ui_settings_handle_click(void) {
         }
         case MAIN_ROW_RECFILES:
           enter_recfiles();
+          break;
+        case MAIN_ROW_WIFI_SAVED:
+          enter_wifi_saved();
           break;
         case MAIN_ROW_RECORDER: {
           /* ADR-044:录音是隐私敏感操作,双击确认(5s 窗口)。确认后返回 2,
@@ -2693,6 +2771,30 @@ int bb_ui_settings_handle_click(void) {
       /* 触屏钮直接驱动 transport;按键降级:OK = 播放/暂停 */
       bb_page_recplay_key_toggle();
       return 0;
+
+    case LEVEL_WIFI_SAVED: {
+      if (s_st.wifi_saved_count <= 0) {
+        return_to_main(MAIN_ROW_WIFI_SAVED);
+        return 0;
+      }
+      if (s_st.sel < 0 || s_st.sel >= s_st.wifi_saved_count) return 0;
+      /* 双击确认「忘记」,同 Recording/Miyu 惯例——WiFi 密码属误触代价较高的操作。 */
+      int64_t wf_now = bb_now_ms();
+      if (s_st.wifi_forget_arm_ms != 0 && wf_now - s_st.wifi_forget_arm_ms < 5000) {
+        s_st.wifi_forget_arm_ms = 0;
+        int slot = s_st.wifi_saved_slot[s_st.sel];
+        bb_wifi_forget_saved(slot);
+        wifi_saved_scan();
+        if (s_st.sel >= s_st.wifi_saved_count) {
+          s_st.sel = s_st.wifi_saved_count > 0 ? s_st.wifi_saved_count - 1 : 0;
+        }
+        rerender();
+        return 0;
+      }
+      s_st.wifi_forget_arm_ms = wf_now;
+      rerender();
+      return 0;
+    }
   }
   return 0;
 }
@@ -2748,6 +2850,9 @@ int bb_ui_settings_handle_back(void) {
       s_st.vol_fill = NULL;
       s_st.vol_pct_lbl = NULL;
       return_to_main(MAIN_ROW_VOLUME);
+      return 0;
+    case LEVEL_WIFI_SAVED:
+      return_to_main(MAIN_ROW_WIFI_SAVED);
       return 0;
   }
   return 0;

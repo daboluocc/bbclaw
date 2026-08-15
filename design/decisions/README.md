@@ -60,3 +60,5 @@
 | [ADR-048](ADR-048-device-adapter-allocation.md) | 设备级 Adapter 分配——后台白名单管控设备可见/可切的 adapter 集合（空集合=全可见，固件零改动） | 2026-07-19 | 提议（待评审） |
 | [ADR-049](ADR-049-device-image-capture-multimodal.md) | 摄像头拍照→多模态 Agent——实战派 OV2640 单帧 JPEG 走 base64 文本 envelope relay 到 adapter 喂 claude 读图（cloud 零改动，硬骨头=摄像头 bring-up） | 2026-07-19 | 提议（待评审） |
 | [ADR-050](ADR-050-firmware-wifi-outage-recovery-reprovision.md) | WiFi 断网恢复与重新配网——运行期四级阶梯（快速重试→退避→全网轮换→门户回落）+ 免重启热切网 + 设置页网络入口（纯固件，cloud/adapter 零改动） | 2026-08-01 | 提议（待评审） |
+| [ADR-051](ADR-051-device-self-unbind-reset.md) | 设备端自助解绑与重置——菜单一键回到出厂待配对态（firmware+cloud，云端先部署固件后发 OTA） | 2026-08-12 | 已接受 |
+| [ADR-052](ADR-052-device-saved-wifi-list-forget.md) | 设置菜单新增「已保存 WiFi」列表——设备端逐条查看/忘记（纯固件，ADR-050 §4.5 子集，cloud/adapter 零改动） | 2026-08-15 | 已接受 |
