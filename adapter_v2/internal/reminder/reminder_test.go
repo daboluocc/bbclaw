@@ -9,8 +9,12 @@ import (
 )
 
 func baseNow() time.Time {
-	// A fixed local instant so "tomorrow HH:MM" is deterministic.
-	return time.Date(2026, 6, 30, 14, 0, 0, 0, time.Local)
+	// Anchored to today (not a fixed calendar date): a fixed past date drifts out
+	// of persistLocked's real-time 30-day history window as the test suite ages,
+	// silently pruning records a test just wrote (List/History empty → index
+	// panic). Still deterministic within a single test run.
+	n := time.Now()
+	return time.Date(n.Year(), n.Month(), n.Day(), 14, 0, 0, 0, time.Local)
 }
 
 func TestResolveDelay(t *testing.T) {
@@ -43,7 +47,8 @@ func TestResolveTomorrow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	want := time.Date(2026, 7, 1, 9, 30, 0, 0, time.Local)
+	tomorrow := now.AddDate(0, 0, 1)
+	want := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 9, 30, 0, 0, time.Local)
 	if !runAt.Equal(want) {
 		t.Errorf("runAt = %v, want %v", runAt, want)
 	}
